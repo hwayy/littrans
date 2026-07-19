@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Literature Translation"
+  short_description: "Audit a translation without editing the translated text"
+  default_prompt: "Use $audit-literature-translation to independently audit this translated batch."

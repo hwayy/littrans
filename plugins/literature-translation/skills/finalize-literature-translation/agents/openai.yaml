@@ -1,0 +1,4 @@
+interface:
+  display_name: "Finalize Literature Translation"
+  short_description: "Gate, approve, and render reviewed translations"
+  default_prompt: "Use $finalize-literature-translation to validate and render the reviewed translation."

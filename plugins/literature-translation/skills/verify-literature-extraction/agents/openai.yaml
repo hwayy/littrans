@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Literature Extraction"
+  short_description: "Verify PDF structure, math, tables, code, and figures"
+  default_prompt: "Use $verify-literature-extraction to audit and correct this PDF extraction before translation."

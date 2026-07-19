@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "IssueStatus": {
+      "enum": [
+        "open",
+        "resolved",
+        "rejected",
+        "waived"
+      ],
+      "title": "IssueStatus",
+      "type": "string"
+    },
+    "IssueType": {
+      "enum": [
+        "meaning",
+        "omission",
+        "addition",
+        "terminology",
+        "technical",
+        "style",
+        "reference",
+        "number-unit",
+        "format"
+      ],
+      "title": "IssueType",
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "suggestion"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "issue_id": {
+      "title": "Issue Id",
+      "type": "string"
+    },
+    "batch_id": {
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "unit_id": {
+      "title": "Unit Id",
+      "type": "string"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity"
+    },
+    "type": {
+      "$ref": "#/$defs/IssueType"
+    },
+    "source_span": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Span"
+    },
+    "target_span": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Span"
+    },
+    "explanation": {
+      "title": "Explanation",
+      "type": "string"
+    },
+    "suggested_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Suggested Revision"
+    },
+    "confidence": {
+      "default": 1.0,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "reviewer": {
+      "title": "Reviewer",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/IssueStatus",
+      "default": "open"
+    },
+    "resolution": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolution"
+    },
+    "resolved_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved At"
+    }
+  },
+  "required": [
+    "issue_id",
+    "batch_id",
+    "unit_id",
+    "severity",
+    "type",
+    "explanation",
+    "reviewer"
+  ],
+  "title": "ReviewIssue",
+  "type": "object"
+}

@@ -1,0 +1,34 @@
+name: technical-book
+description: Technical books with prose, code, screenshots, figures, notes, and tables.
+outline_source: pdf-bookmarks
+batch:
+  max_source_words: 900
+  preserve_heading_boundaries: true
+code:
+  preserve_body: true
+  translate_comments: false
+  translate_string_literals: false
+  preserve_indentation: true
+  detect_language: true
+equations:
+  mode: verified-latex
+  inline: verified-latex
+  keep_crop_as_review_evidence_only: true
+figures:
+  preserve_image: true
+  translate_caption: true
+  internal_labels: explain-below
+  require_visual_text_review: true
+tables:
+  mode: verified-structured
+  require_translated_cells: true
+  image_fallback_in_final: false
+notes:
+  render_as_admonition: true
+verification:
+  require_visual_overlay_review: true
+  block_unverified_math_tables_and_figures: true
+reader_notes:
+  allow_modernization: true
+  require_primary_https_sources: true
+  keep_separate: true

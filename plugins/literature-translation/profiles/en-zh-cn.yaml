@@ -1,0 +1,16 @@
+name: en-zh-CN
+source_language: en
+target_language: zh-CN
+principles:
+  - Preserve meaning, logical force, scope, modality, and author stance.
+  - Write idiomatic Simplified Chinese without adding explanation to the translation.
+  - Preserve protected tokens exactly.
+  - Record uncertainty separately instead of hiding it in fluent prose.
+terminology:
+  approved_is_mandatory: true
+  candidates_are_not_mandatory: true
+  translation_memory_minimum_status: machine-reviewed
+punctuation:
+  prose: chinese
+  code_and_identifiers: preserve
+

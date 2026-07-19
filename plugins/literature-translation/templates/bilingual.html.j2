@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ config.title }} - 双语译本</title>
+  <style>
+    :root { color-scheme: light dark; --paper:#f8f5ee; --ink:#20201e; --muted:#6b6b65; --line:#d6d0c4; --accent:#315d7d; --note:#fff2c9; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", "Noto Sans SC", sans-serif; color:var(--ink); background:var(--paper); }
+    header { position:sticky; top:0; z-index:2; padding:1rem 4vw; background:color-mix(in srgb, var(--paper) 94%, transparent); border-bottom:1px solid var(--line); backdrop-filter:blur(8px); }
+    h1 { margin:0 0 .35rem; font:600 clamp(1.25rem,3vw,2rem)/1.2 Georgia,serif; }
+    header p { margin:0; color:var(--muted); font-size:.9rem; }
+    main { width:min(1500px,96vw); margin:1.5rem auto 5rem; }
+    article { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border-top:1px solid var(--line); scroll-margin-top:6rem; }
+    .meta { grid-column:1/-1; padding:.35rem .8rem; color:var(--muted); font:12px/1.4 ui-monospace,monospace; overflow-wrap:anywhere; background:color-mix(in srgb,var(--paper) 80%,var(--line)); }
+    .source,.target { min-width:0; padding:1rem 1.25rem 1.35rem; font:17px/1.72 Georgia,"Noto Serif SC",serif; overflow-wrap:anywhere; }
+    .source p,.target p { margin:.15rem 0; }
+    .source { border-right:1px solid var(--line); }
+    .target { font-family:"Noto Serif SC","Microsoft YaHei",serif; }
+    .assets { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:1rem; padding:0 1.25rem 1rem; }
+    .assets img { max-width:min(100%,900px); height:auto; border:1px solid var(--line); background:white; }
+    pre { margin:.25rem 0; padding:1rem; overflow:auto; white-space:pre; tab-size:4; border:1px solid var(--line); border-radius:.4rem; background:color-mix(in srgb,var(--paper) 75%,#64748b 10%); font:14px/1.5 "Cascadia Code",Consolas,monospace; }
+    table { width:100%; min-width:38rem; border-collapse:collapse; font:15px/1.45 "Segoe UI","Noto Sans SC",sans-serif; }
+    .source:has(table),.target:has(table) { overflow-x:auto; }
+    th:first-child,td:first-child { min-width:8rem; }
+    th,td { padding:.55rem .65rem; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:color-mix(in srgb,var(--paper) 78%,var(--line)); }
+    .math.display { position:relative; overflow-x:auto; padding:.5rem 2.5rem; text-align:center; }
+    .math math { font-size:1.08em; } .equation-number { position:absolute; right:.25rem; top:50%; transform:translateY(-50%); }
+    .source-note { padding:.8rem 1rem; border-left:4px solid #c99618; background:var(--note); color:#2d2a20; }
+    .footnote { border-top:1px solid var(--line); padding-top:.5rem; font-size:.86em; color:var(--muted); }
+    .figure-labels { font:14px/1.5 "Segoe UI",sans-serif; }
+    .k,.kd,.kn,.kt { color:#7c3aed; font-weight:600 } .s,.s1,.s2,.sa { color:#047857 } .c,.c1,.cm { color:#64748b;font-style:italic } .nt,.na { color:#0369a1 } .mi,.mf { color:#b45309 }
+    .reader-note { margin-top:1rem; padding:.8rem 1rem; background:var(--note); color:#2d2a20; border-left:4px solid #c99618; font:14px/1.55 "Segoe UI",sans-serif; }
+    .page-gap { margin:2rem 0; padding:.7rem 1rem; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:.5rem; }
+    .badge { display:inline-block; margin-left:.5rem; padding:.1rem .45rem; border:1px solid var(--line); border-radius:999px; }
+    a { color:var(--accent); }
+    @media (max-width: 800px) { article { grid-template-columns:1fr; } .source { border-right:0; border-bottom:1px dashed var(--line); } }
+    @media (prefers-color-scheme: dark) { :root { --paper:#181a1b; --ink:#e8e4dc; --muted:#aaa69e; --line:#3b3d3e; --accent:#8ec4ea; --note:#403619; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>{{ config.title }}</h1>
+  <p>PDF 页 {{ pages }} · {{ config.source_language }} → {{ config.target_language }} · {{ config.status }}{% if allow_draft %}<span class="badge">预览</span>{% endif %}</p>
+</header>
+<main>
+{% for row in rows %}
+  {% if not loop.first and row.unit.page - loop.previtem.unit.page > 1 %}<div class="page-gap">选定试译范围：PDF p.{{ loop.previtem.unit.page }} → p.{{ row.unit.page }}</div>{% endif %}
+  <article id="{{ row.unit.unit_id }}">
+    <div class="meta"><a href="{{ pdf_uri }}#page={{ row.unit.page }}">PDF p.{{ row.unit.page }}{% if row.last_page != row.unit.page %}-{{ row.last_page }}{% endif %}</a> · {{ row.unit.kind }} · {{ row.unit.unit_id }}</div>
+    {% if row.assets %}<div class="assets">{% for asset in row.assets %}<img src="{{ asset }}" alt="{{ row.unit.kind }} on PDF page {{ row.unit.page }}">{% endfor %}</div>{% endif %}
+    <section class="source">{{ row.source_html | safe }}</section>
+    <section class="target">
+      {{ row.target_html | safe }}
+      {% for note in row.reader_notes %}<aside class="reader-note"><strong>读者注：</strong>{{ note.text }}<br><small>{% for source in note.sources %}<a href="{{ source }}">来源 {{ loop.index }}</a>{% if not loop.last %} · {% endif %}{% endfor %} · 访问日期 {{ note.accessed_at or "未记录" }}</small></aside>{% endfor %}
+    </section>
+  </article>
+{% endfor %}
+</main>
+</body>
+</html>

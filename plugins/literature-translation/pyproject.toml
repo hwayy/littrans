@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "littrans"
+version = "0.2.0"
+description = "Deterministic project tooling for agent-assisted literature translation"
+requires-python = ">=3.12"
+dependencies = [
+  "jinja2>=3.1,<4",
+  "latex2mathml>=3.81,<4",
+  "pydantic>=2.8,<3",
+  "pymupdf>=1.24,<2",
+  "pygments>=2.18,<3",
+  "pyyaml>=6.0,<7",
+  "rapidfuzz>=3.9,<4",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11,<2",
+  "pytest>=8.2,<9",
+  "reportlab>=4.2,<5",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+littrans = "littrans.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/littrans"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "E501", "UP047"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["littrans"]
+ignore_missing_imports = true
+disable_error_code = ["import-untyped"]

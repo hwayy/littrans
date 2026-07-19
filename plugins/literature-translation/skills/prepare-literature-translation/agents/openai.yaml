@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Literature Translation"
+  short_description: "Inspect and prepare a source document for reliable translation"
+  default_prompt: "Use $prepare-literature-translation to initialize and prepare this document for translation."

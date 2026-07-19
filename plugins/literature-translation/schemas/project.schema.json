@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "ProjectStatus": {
+      "enum": [
+        "initialized",
+        "extracted",
+        "prepared",
+        "draft",
+        "qa-passed",
+        "reviewed",
+        "revised",
+        "machine-reviewed",
+        "human-approved"
+      ],
+      "title": "ProjectStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "source_path": {
+      "title": "Source Path",
+      "type": "string"
+    },
+    "source_sha256": {
+      "title": "Source Sha256",
+      "type": "string"
+    },
+    "source_pages": {
+      "title": "Source Pages",
+      "type": "integer"
+    },
+    "profile": {
+      "title": "Profile",
+      "type": "string"
+    },
+    "source_language": {
+      "default": "en",
+      "title": "Source Language",
+      "type": "string"
+    },
+    "target_language": {
+      "default": "zh-CN",
+      "title": "Target Language",
+      "type": "string"
+    },
+    "rights_status": {
+      "default": "private-research-only",
+      "title": "Rights Status",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ProjectStatus",
+      "default": "initialized"
+    },
+    "extractor_version": {
+      "default": "2",
+      "title": "Extractor Version",
+      "type": "string"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "project_id",
+    "title",
+    "source_path",
+    "source_sha256",
+    "source_pages",
+    "profile"
+  ],
+  "title": "ProjectConfig",
+  "type": "object"
+}

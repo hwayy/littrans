@@ -1,0 +1,25 @@
+{
+  "name": "literature-translation",
+  "version": "0.2.0+codex.20260719182400",
+  "description": "A controlled, resumable workflow for high-quality literature translation.",
+  "author": {
+    "name": "Hwa"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Literature Translation",
+    "shortDescription": "Translate technical books and papers with auditable quality gates.",
+    "longDescription": "Verify PDF structure and exact LaTeX, translate stable prose and tables, preserve highlighted code, run independent audits, and render private Chinese reading editions.",
+    "developerName": "Hwa",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Prepare this English PDF as a controlled Chinese translation project.",
+      "Translate the next prepared batch and run quality checks.",
+      "Audit and finalize the current translation range."
+    ]
+  }
+}

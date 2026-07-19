@@ -1,0 +1,30 @@
+name: research-paper
+description: Research papers with columns, equations, figures, citations, and bibliographies.
+outline_source: font-and-numbering
+batch:
+  max_source_words: 700
+  preserve_heading_boundaries: true
+headers_footers:
+  remove_repeated_text: true
+equations:
+  mode: verified-latex
+  inline: verified-latex
+  keep_crop_as_review_evidence_only: true
+  preserve_numbers: true
+  protect_symbols: true
+figures:
+  preserve_image: true
+  translate_caption: true
+  require_visual_text_review: true
+tables:
+  mode: verified-structured
+  require_translated_cells: true
+  image_fallback_in_final: false
+citations:
+  preserve_inline: true
+  preserve_bibliography: true
+reader_notes:
+  allow_modernization: false
+verification:
+  require_visual_overlay_review: true
+  block_unverified_math_tables_and_figures: true

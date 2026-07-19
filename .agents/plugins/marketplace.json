@@ -1,0 +1,20 @@
+{
+  "name": "literature-translation-local",
+  "interface": {
+    "displayName": "Literature Translation Local"
+  },
+  "plugins": [
+    {
+      "name": "literature-translation",
+      "source": {
+        "source": "local",
+        "path": "./plugins/literature-translation"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
