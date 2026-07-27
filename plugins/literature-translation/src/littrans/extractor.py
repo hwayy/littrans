@@ -17,6 +17,7 @@ from littrans.models import (
     FigureLabel,
     IssueStatus,
     ProjectStatus,
+    RenderPolicy,
     SemanticStatus,
     Severity,
     SourceFragment,
@@ -866,6 +867,10 @@ def _apply_override(
             updates["kind"] = UnitKind(str(override["kind"]))
         if "translatable" in override:
             updates["translatable"] = bool(override["translatable"])
+        if "render_policy" in override:
+            updates["render_policy"] = RenderPolicy(str(override["render_policy"]))
+            if updates["render_policy"] is RenderPolicy.OMIT:
+                updates["translatable"] = False
         if "source_text" in override:
             if not str(override.get("reason", "")).strip():
                 raise ValueError("A source_text override requires a reason")

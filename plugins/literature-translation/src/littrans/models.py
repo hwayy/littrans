@@ -48,6 +48,11 @@ class SemanticStatus(StrEnum):
     VERIFIED = "verified"
 
 
+class RenderPolicy(StrEnum):
+    INCLUDE = "include"
+    OMIT = "omit"
+
+
 class Severity(StrEnum):
     BLOCKER = "blocker"
     MAJOR = "major"
@@ -146,6 +151,7 @@ class SourceUnit(StrictModel):
     source_markdown: str | None = None
     parent_id: str | None = None
     translatable: bool = True
+    render_policy: RenderPolicy = RenderPolicy.INCLUDE
     protected_tokens: list[str] = Field(default_factory=list)
     asset_refs: list[AssetRef] = Field(default_factory=list)
     fragments: list[SourceFragment] = Field(default_factory=list)
@@ -161,6 +167,12 @@ class SourceUnit(StrictModel):
     verification_status: SemanticStatus = SemanticStatus.UNVERIFIED
     confidence: float = Field(ge=0, le=1)
     status: ProjectStatus = ProjectStatus.EXTRACTED
+
+    @model_validator(mode="after")
+    def require_omitted_units_to_be_nontranslatable(self) -> SourceUnit:
+        if self.render_policy is RenderPolicy.OMIT and self.translatable:
+            raise ValueError("omitted units cannot be translatable")
+        return self
 
 
 class ReaderNote(StrictModel):

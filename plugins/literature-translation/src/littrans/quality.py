@@ -76,6 +76,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
                 "source_hash",
                 "source_markdown",
                 "translatable",
+                "render_policy",
                 "protected_tokens",
                 "latex",
                 "equation_number",
@@ -166,6 +167,24 @@ def _without_quoted_titles(text: str) -> str:
     return re.sub(r'["“][^"”]{2,}["”]', " ", text)
 
 
+def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
+    if unit.kind is UnitKind.HEADING and re.match(r"^\s*#{1,6}\s+", target):
+        return "Heading target must contain body text only; the renderer owns the heading marker."
+    if unit.kind is UnitKind.LIST_ITEM and re.match(
+        r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", target
+    ):
+        return "List-item target must contain body text only; the renderer owns the list marker."
+    if unit.kind is UnitKind.NOTE and (
+        re.match(r"^\s*>", target)
+        or re.search(r"\[!(?:NOTE|TIP|WARNING|CAUTION)\]", target, re.I)
+        or re.match(
+            r"^\s*(?:注意|提示|警告|note|tip|warning|caution)\s*[:：]", target, re.I
+        )
+    ):
+        return "Note target must contain body text only; the renderer owns the admonition shell."
+    return None
+
+
 def run_qa(root: Path, batch_id: str) -> QAReport:
     config = load_project(root)
     manifest = load_manifest(root, batch_id)
@@ -213,6 +232,16 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
                     code="empty-translation",
                     severity="error",
                     message="Target text is empty.",
+                    unit_id=unit_id,
+                )
+            )
+        structural_error = _target_structure_error(unit, record.target_text)
+        if structural_error:
+            errors.append(
+                QAItem(
+                    code="target-structural-markup",
+                    severity="error",
+                    message=structural_error,
                     unit_id=unit_id,
                 )
             )

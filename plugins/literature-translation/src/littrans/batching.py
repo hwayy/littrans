@@ -5,7 +5,13 @@ from pathlib import Path
 import yaml
 
 from littrans.extractor import parse_page_spec
-from littrans.models import BatchManifest, ProjectStatus, SourceUnit, TranslationRecord
+from littrans.models import (
+    BatchManifest,
+    ProjectStatus,
+    RenderPolicy,
+    SourceUnit,
+    TranslationRecord,
+)
 from littrans.project import load_profile, load_terms, promote_status, translation_map
 from littrans.semantics import fenced_code, table_to_markdown
 from littrans.storage import (
@@ -99,7 +105,11 @@ def create_batches(
         raise ValueError("max_words must be at least 100")
     pages = set(parse_page_spec(page_spec, config.source_pages))
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    selected = [unit for unit in all_units if unit.page in pages]
+    selected = [
+        unit
+        for unit in all_units
+        if unit.page in pages and unit.render_policy is RenderPolicy.INCLUDE
+    ]
     if untranslated_only:
         translated_ids = set(translation_map(root))
         selected = [
@@ -186,7 +196,13 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
     missing = [unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map]
     if missing:
         raise ValueError(f"Batch references removed units: {missing}")
-    group = [unit_map[unit_id] for unit_id in manifest.unit_ids]
+    group = [
+        unit_map[unit_id]
+        for unit_id in manifest.unit_ids
+        if unit_map[unit_id].render_policy is RenderPolicy.INCLUDE
+    ]
+    if not group:
+        raise ValueError("Batch contains no renderable units after applying structural overrides")
     previous_scope = set(manifest.translatable_unit_ids)
     refreshed_scope = [
         unit.unit_id for unit in group if unit.translatable and unit.unit_id in previous_scope
@@ -194,6 +210,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
     revised = manifest.model_copy(
         update={
             "pages": sorted({unit.page for unit in group}),
+            "unit_ids": [unit.unit_id for unit in group],
             "translatable_unit_ids": refreshed_scope,
             "source_words": sum(
                 _word_count(unit.source_text) for unit in group if unit.unit_id in refreshed_scope

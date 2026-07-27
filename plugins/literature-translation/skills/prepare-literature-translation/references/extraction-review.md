@@ -38,4 +38,6 @@ Use `source_text` only to correct demonstrable OCR text against the visible PDF.
 
 Set semantic fields such as `latex`, `source_markdown`, `table`, `code_language`, continuation flags, and `figure_labels` in the same override. `verified: true` requires an evidence-based `reason` and is never inferred from extraction confidence.
 
+For running heads, decorative separators, and other source matter that should stay traceable but must not enter the reading edition, set `render_policy: omit`. This also makes the unit non-translatable. Do not use `ignore: true` for this purpose because ignoring removes the unit from the source inventory.
+
 Run `littrans source apply-overrides <project>`. The command preserves unit IDs, rejects destructive source-text changes after translation, and invalidates prior QA/review status when semantic source data changes. Rerun `source verify`, refresh affected batches, and re-audit revised translations.

@@ -13,8 +13,17 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
+from littrans.batching import load_manifest
 from littrans.extractor import parse_page_spec
-from littrans.models import IssueStatus, ProjectStatus, ReviewIssue, Severity, SourceUnit, UnitKind
+from littrans.models import (
+    IssueStatus,
+    ProjectStatus,
+    RenderPolicy,
+    ReviewIssue,
+    Severity,
+    SourceUnit,
+    UnitKind,
+)
 from littrans.project import load_terms, translation_map
 from littrans.semantics import (
     escape_markdown_prose,
@@ -173,7 +182,13 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
         table = target_table or unit.table
         return table_to_html(table, _inline_html) if table else _inline_html(text)
     if unit.kind is UnitKind.NOTE:
-        return '<aside class="source-note"><strong>Note</strong><p>' + _inline_html(_note_body(text)) + "</p></aside>"
+        source_view = target == (unit.source_markdown or unit.source_text)
+        label = "Note" if source_view else "注意"
+        return (
+            f'<aside class="source-note"><strong>{label}</strong><p>'
+            + _inline_html(_note_body(text))
+            + "</p></aside>"
+        )
     if unit.kind is UnitKind.HEADING:
         return "<h2>" + _inline_html(text) + "</h2>"
     if unit.kind is UnitKind.LIST_ITEM:
@@ -194,19 +209,32 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
 
 def render_project(
     root: Path,
-    page_spec: str,
+    page_spec: str | None,
     name: str,
     allow_draft: bool = False,
+    batch_id: str | None = None,
 ) -> dict[str, str]:
     config = load_project(root)
-    pages = set(parse_page_spec(page_spec, config.source_pages))
+    if (page_spec is None) == (batch_id is None):
+        raise ValueError("Specify exactly one of page_spec or batch_id")
+    manifest = load_manifest(root, batch_id) if batch_id else None
+    pages = (
+        set(manifest.pages)
+        if manifest
+        else set(parse_page_spec(page_spec or "", config.source_pages))
+    )
     if not allow_draft:
         require_verified_extraction(root, pages)
-    units = [
-        unit
-        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-        if unit.page in pages
-    ]
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    if manifest:
+        unit_map = {unit.unit_id: unit for unit in all_units}
+        missing_manifest_units = [unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map]
+        if missing_manifest_units:
+            raise ValueError(f"Batch references missing source units: {missing_manifest_units}")
+        units = [unit_map[unit_id] for unit_id in manifest.unit_ids]
+    else:
+        units = [unit for unit in all_units if unit.page in pages]
+    units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
     render_units, grouped_code_ids = _coalesce_code_units(units)
     translations = translation_map(root)
     missing = [
@@ -356,7 +384,8 @@ def render_project(
             )
         previous_page = unit_last_page
         previous_unit = unit
-    markdown_path.write_text("\n".join(markdown).rstrip() + "\n", encoding="utf-8")
+    markdown_text = "\n".join(markdown).rstrip() + "\n"
+    markdown_path.write_text(markdown_text, encoding="utf-8")
 
     environment = Environment(
         loader=FileSystemLoader(plugin_root() / "templates"),
@@ -376,12 +405,44 @@ def render_project(
 
     _write_quality_summary(qa_path, root, units, missing, unapproved, open_severe)
     _write_unresolved(unresolved_path, root, selected_ids)
+    render_qa_path = output / f"{output_name}.render-qa.json"
+    render_errors = _render_quality_errors(markdown_text, units)
+    render_qa_path.write_text(
+        json.dumps(
+            {
+                "passed": not render_errors,
+                "selection": {"batch_id": batch_id, "pages": sorted(pages)},
+                "unit_ids": [unit.unit_id for unit in units],
+                "errors": render_errors,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if render_errors:
+        raise ValueError(f"Rendered output failed structural QA: {render_errors}")
     return {
         "markdown": str(markdown_path),
         "html": str(html_path),
         "quality": str(qa_path),
         "unresolved": str(unresolved_path),
+        "render_qa": str(render_qa_path),
     }
+
+
+def _render_quality_errors(markdown: str, units: list[SourceUnit]) -> list[str]:
+    errors: list[str] = []
+    if re.search(r"(?m)^-\s+[•▪■●]\s+", markdown):
+        errors.append("duplicated-list-marker")
+    if re.search(r"(?m)^>\s+>\s+", markdown):
+        errors.append("nested-admonition-marker")
+    for unit in units:
+        anchor = f'<a id="{unit.unit_id}"></a>'
+        if markdown.count(anchor) != 1:
+            errors.append(f"unit-anchor-count:{unit.unit_id}:{markdown.count(anchor)}")
+    return errors
 
 
 def _write_quality_summary(

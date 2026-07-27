@@ -43,6 +43,12 @@ render. Open blocker or major issues stop formal output.
 ## Formats and boundaries
 
 - Display and inline mathematics are stored as reviewed LaTeX; crops are evidence only.
+- Running heads, decorative separators, and other non-reading matter remain traceable source
+  units but may use `render_policy: omit`; omitted units are neither batched nor rendered.
+- `target_text` contains semantic body text only. The renderer owns heading, list, note,
+  caption, and footnote wrappers, and deterministic QA rejects duplicated structural markup.
+- Use `render --batch-id <id>` for a batch-exact artifact. Page rendering remains available
+  for intentionally page-scoped collections and can include units from several batches.
 - Tables are rectangular local structures and are translated cell by cell.
 - Code retains exact whitespace and gains a language fence/highlighter when known.
 - Figure images remain local; meaningful internal labels are translated alongside them.

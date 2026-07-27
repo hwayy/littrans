@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from littrans.models import (
     IssueStatus,
     IssueType,
     ProjectStatus,
+    RenderPolicy,
     ReviewIssue,
     Severity,
     SourceUnit,
@@ -24,13 +26,14 @@ from littrans.quality import (
     NUMBER_RE,
     UNIT_RE,
     _semantic_comparison_text,
+    _target_structure_error,
     _token_counts,
     approve_batch,
     import_review,
     resolve_issue,
     run_qa,
 )
-from littrans.rendering import render_project
+from littrans.rendering import _unit_html, render_project
 from littrans.storage import read_jsonl, sha256_text, write_jsonl, write_yaml
 from littrans.translation import submit_translation
 from littrans.verification import verify_extraction
@@ -191,6 +194,99 @@ def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
     markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
     assert "```xaml" in markdown
     assert "$$\na = b + 3" in markdown
+
+
+def test_render_policy_omit_is_persistent_and_excluded_from_batches(
+    prepared_project: Path,
+) -> None:
+    unit = next(
+        item
+        for item in read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+        if item.translatable
+    )
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "render_policy": "omit",
+                    "verified": True,
+                    "reason": "Synthetic running matter is intentionally omitted from delivery.",
+                }
+            ]
+        },
+    )
+    revised = apply_layout_overrides(prepared_project)
+    omitted = next(item for item in revised if item.unit_id == unit.unit_id)
+    assert omitted.render_policy is RenderPolicy.OMIT
+    assert not omitted.translatable
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="omit")[0]
+    assert unit.unit_id not in manifest.unit_ids
+
+
+@pytest.mark.parametrize(
+    ("kind", "target"),
+    [
+        (UnitKind.HEADING, "## 标题"),
+        (UnitKind.LIST_ITEM, "• 项目"),
+        (UnitKind.NOTE, "> [!NOTE]\n> 正文"),
+        (UnitKind.NOTE, "注意：正文"),
+    ],
+)
+def test_target_structure_contract_rejects_renderer_owned_markup(
+    kind: UnitKind, target: str
+) -> None:
+    unit = SourceUnit(
+        unit_id="p0001-u001-test",
+        kind=kind,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="Source",
+        source_hash=sha256_text("Source"),
+        confidence=1.0,
+    )
+    assert _target_structure_error(unit, target)
+
+
+def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
+    unit = SourceUnit(
+        unit_id="p0001-u001-note",
+        kind=UnitKind.NOTE,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="■Note Source note body.",
+        source_hash=sha256_text("■Note Source note body."),
+        confidence=1.0,
+    )
+    assert "<strong>Note</strong>" in _unit_html(unit, unit.source_text)
+    assert "<strong>注意</strong>" in _unit_html(unit, "中文提示正文。")
+
+
+def test_batch_scoped_render_excludes_other_units_on_the_same_pages(
+    prepared_project: Path,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="exact")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review = prepared_project / "reviews" / "exact-empty.jsonl"
+    review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, review)
+    approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    outputs = render_project(
+        prepared_project,
+        None,
+        "exact-batch",
+        batch_id=manifest.batch_id,
+    )
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    report = json.loads(Path(outputs["render_qa"]).read_text(encoding="utf-8"))
+    all_units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    outside = next(unit for unit in all_units if unit.unit_id not in manifest.unit_ids)
+    assert f'<a id="{outside.unit_id}"></a>' not in markdown
+    assert report["passed"]
+    assert report["unit_ids"] == manifest.unit_ids
 
 
 def test_qa_rejects_protected_token_and_human_gate(prepared_project: Path) -> None:

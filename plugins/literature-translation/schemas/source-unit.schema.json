@@ -81,6 +81,14 @@
       "title": "ProjectStatus",
       "type": "string"
     },
+    "RenderPolicy": {
+      "enum": [
+        "include",
+        "omit"
+      ],
+      "title": "RenderPolicy",
+      "type": "string"
+    },
     "SemanticStatus": {
       "enum": [
         "unverified",
@@ -250,6 +258,10 @@
       "default": true,
       "title": "Translatable",
       "type": "boolean"
+    },
+    "render_policy": {
+      "$ref": "#/$defs/RenderPolicy",
+      "default": "include"
     },
     "protected_tokens": {
       "items": {

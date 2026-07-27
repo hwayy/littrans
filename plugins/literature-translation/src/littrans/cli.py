@@ -210,11 +210,12 @@ def approve(
 @app.command("render")
 def render_command(
     project: PathArg,
-    pages: str = typer.Option(...),
+    pages: str | None = typer.Option(None),
+    batch_id: str | None = typer.Option(None),
     name: str = typer.Option(...),
     allow_draft: bool = typer.Option(False),
 ) -> None:
-    emit(render_project(project, pages, name, allow_draft))
+    emit(render_project(project, pages, name, allow_draft, batch_id))
 
 
 @app.command()
