@@ -62,6 +62,20 @@ def _note_body(text: str) -> str:
     )
 
 
+def _note_variant(text: str) -> str:
+    match = re.match(r"^(?:[■▪●]\s*)?(note|tip|warning|caution)\b", text, re.I)
+    return match.group(1).lower() if match else "note"
+
+
+def _list_body(text: str) -> str:
+    return re.sub(r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", "", text, count=1)
+
+
+def _list_ordinal(text: str) -> int | None:
+    match = re.match(r"^\s*(\d+)[.)]\s+", text)
+    return int(match.group(1)) if match else None
+
+
 def _coalesce_code_units(
     units: list[SourceUnit],
 ) -> tuple[list[SourceUnit], dict[str, list[str]]]:
@@ -106,10 +120,12 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.HEADING:
         return f"## {safe_text}"
     if unit.kind is UnitKind.LIST_ITEM:
-        return f"- {safe_text}"
+        marker = f"{_list_ordinal(unit.source_text)}." if _list_ordinal(unit.source_text) else "-"
+        return f"{marker} {escape_markdown_prose(_list_body(text))}"
     if unit.kind is UnitKind.NOTE:
         lines = escape_markdown_prose(_note_body(text)).splitlines() or [safe_text]
-        return "> [!NOTE]\n" + "\n".join(f"> {line}" for line in lines)
+        marker = _note_variant(unit.source_text).upper()
+        return f"> [!{marker}]\n" + "\n".join(f"> {line}" for line in lines)
     if unit.kind is UnitKind.CODE:
         return fenced_code(unit.source_text, unit.code_language)
     if unit.kind is UnitKind.EQUATION:
@@ -183,7 +199,20 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
         return table_to_html(table, _inline_html) if table else _inline_html(text)
     if unit.kind is UnitKind.NOTE:
         source_view = target == (unit.source_markdown or unit.source_text)
-        label = "Note" if source_view else "注意"
+        variant = _note_variant(unit.source_text)
+        source_labels = {
+            "note": "Note",
+            "tip": "Tip",
+            "warning": "Warning",
+            "caution": "Caution",
+        }
+        target_labels = {
+            "note": "注意",
+            "tip": "提示",
+            "warning": "警告",
+            "caution": "注意",
+        }
+        label = source_labels[variant] if source_view else target_labels[variant]
         return (
             f'<aside class="source-note"><strong>{label}</strong><p>'
             + _inline_html(_note_body(text))
@@ -192,7 +221,11 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
     if unit.kind is UnitKind.HEADING:
         return "<h2>" + _inline_html(text) + "</h2>"
     if unit.kind is UnitKind.LIST_ITEM:
-        return "<ul><li>" + _inline_html(text) + "</li></ul>"
+        ordinal = _list_ordinal(unit.source_text)
+        body = _inline_html(_list_body(text))
+        if ordinal is not None:
+            return f'<ol start="{ordinal}"><li>{body}</li></ol>'
+        return "<ul><li>" + body + "</li></ul>"
     if unit.kind is UnitKind.CAPTION:
         return "<figcaption>" + _inline_html(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:

@@ -163,6 +163,13 @@ def _semantic_token_present(token: str, raw_target: str, semantic_target: str) -
     return bool(normalized and normalized in semantic_target)
 
 
+def _comparison_source_text(unit: SourceUnit) -> str:
+    text = unit.source_markdown or unit.source_text
+    if unit.kind is UnitKind.LIST_ITEM:
+        return re.sub(r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", "", text, count=1)
+    return text
+
+
 def _without_quoted_titles(text: str) -> str:
     return re.sub(r'["“][^"”]{2,}["”]', " ", text)
 
@@ -224,7 +231,7 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
             )
-        semantic_source = _semantic_comparison_text(unit.source_markdown or unit.source_text)
+        semantic_source = _semantic_comparison_text(_comparison_source_text(unit))
         semantic_target = _semantic_comparison_text(effective_target)
         if not effective_target.strip():
             errors.append(
@@ -477,13 +484,21 @@ def import_review(
     existing.update({issue.issue_id: issue for issue in issues})
     merged_issues = list(existing.values())
     write_jsonl(issue_path, merged_issues)
+    audit_path = root / "reviews" / f"{batch_id}.audit.json"
+    fingerprint = batch_translation_fingerprint(root, batch_id)
+    prior_lenses: set[str] = set()
+    if audit_path.exists():
+        prior_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if prior_audit.get("translation_fingerprint") == fingerprint:
+            prior_lenses.update(prior_audit.get("lenses", []))
+    prior_lenses.update(lenses or REQUIRED_AUDIT_LENSES)
     write_json(
-        root / "reviews" / f"{batch_id}.audit.json",
+        audit_path,
         {
             "batch_id": batch_id,
             "reviewed_at": utc_now(),
-            "translation_fingerprint": batch_translation_fingerprint(root, batch_id),
-            "lenses": lenses or ["fidelity", "technical", "chinese-style"],
+            "translation_fingerprint": fingerprint,
+            "lenses": sorted(prior_lenses),
             "new_issue_count": len(issues),
             "total_issue_count": len(merged_issues),
         },

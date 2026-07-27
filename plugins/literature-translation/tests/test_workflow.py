@@ -25,15 +25,17 @@ from littrans.project import initialize_project, translation_map
 from littrans.quality import (
     NUMBER_RE,
     UNIT_RE,
+    _comparison_source_text,
     _semantic_comparison_text,
     _target_structure_error,
     _token_counts,
     approve_batch,
     import_review,
     resolve_issue,
+    review_status,
     run_qa,
 )
-from littrans.rendering import _unit_html, render_project
+from littrans.rendering import _target_markdown, _unit_html, render_project
 from littrans.storage import read_jsonl, sha256_text, write_jsonl, write_yaml
 from littrans.translation import submit_translation
 from littrans.verification import verify_extraction
@@ -262,6 +264,33 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
     assert "<strong>Note</strong>" in _unit_html(unit, unit.source_text)
     assert "<strong>注意</strong>" in _unit_html(unit, "中文提示正文。")
 
+    tip = unit.model_copy(
+        update={
+            "source_text": "■Tip Source tip body.",
+            "source_hash": sha256_text("■Tip Source tip body."),
+        }
+    )
+    assert "<strong>Tip</strong>" in _unit_html(tip, tip.source_text)
+    assert "<strong>提示</strong>" in _unit_html(tip, "中文提示正文。")
+    assert _target_markdown(tip, "中文提示正文。").startswith("> [!TIP]\n")
+
+
+def test_ordered_list_marker_is_renderer_owned() -> None:
+    unit = SourceUnit(
+        unit_id="p0001-u001-list",
+        kind=UnitKind.LIST_ITEM,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="2. Choose 96 dpi.",
+        source_hash=sha256_text("2. Choose 96 dpi."),
+        confidence=1.0,
+    )
+    assert _comparison_source_text(unit) == "Choose 96 dpi."
+    assert _target_markdown(unit, "选择 96 dpi。").startswith("2. 选择 96 dpi。")
+    assert '<ol start="2"><li>选择 96 dpi。</li></ol>' == _unit_html(
+        unit, "选择 96 dpi。"
+    )
+
 
 def test_batch_scoped_render_excludes_other_units_on_the_same_pages(
     prepared_project: Path,
@@ -335,6 +364,21 @@ def test_human_approval_requires_explicit_confirmation(prepared_project: Path) -
         approve_batch(prepared_project, manifest.batch_id, "human", confirm_user_approved=True)
         == ProjectStatus.HUMAN_APPROVED
     )
+
+
+def test_independent_audit_lenses_accumulate(prepared_project: Path) -> None:
+    manifest = create_batches(prepared_project, "2", max_words=300, prefix="lenses")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review = prepared_project / "reviews" / "lenses-empty.jsonl"
+    review.write_text("", encoding="utf-8")
+
+    import_review(prepared_project, manifest.batch_id, review, ["fidelity"])
+    assert not review_status(prepared_project, manifest.batch_id)["audit_lenses_complete"]
+    import_review(prepared_project, manifest.batch_id, review, ["technical"])
+    assert not review_status(prepared_project, manifest.batch_id)["audit_lenses_complete"]
+    import_review(prepared_project, manifest.batch_id, review, ["chinese-style"])
+    assert review_status(prepared_project, manifest.batch_id)["audit_lenses_complete"]
 
 
 def test_revision_invalidates_prior_audit(prepared_project: Path) -> None:
