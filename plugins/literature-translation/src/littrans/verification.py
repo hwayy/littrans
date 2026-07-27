@@ -68,10 +68,15 @@ def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]
             if not unit.code_language or unit.code_language == "text":
                 errors.append({"code": "unknown-code-language", "unit_id": unit.unit_id})
             code_lines = unit.source_text.splitlines()
+            indentation_lines = [
+                re.sub(r"^\s*\d+\s?", "", line) for line in code_lines
+            ]
             if (
                 len(code_lines) > 2
                 and re.search(r"[<{]", unit.source_text)
-                and not any(line.startswith((" ", "\t")) for line in code_lines[1:])
+                and not any(
+                    line.startswith((" ", "\t")) for line in indentation_lines[1:]
+                )
             ):
                 errors.append({"code": "code-indentation-suspect", "unit_id": unit.unit_id})
         if unit.kind is UnitKind.FIGURE:

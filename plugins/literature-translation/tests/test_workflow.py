@@ -558,6 +558,27 @@ def test_sidebar_contiguity_ignores_omitted_running_headers(tmp_path: Path) -> N
         for error in _semantic_errors(tmp_path, [title, running_header, body])
     )
 
+
+def test_numbered_code_preserves_indentation_semantics(tmp_path: Path) -> None:
+    source = '1 <Grid>\n2     <Button />\n3 </Grid>'
+    code = SourceUnit(
+        unit_id="p0001-u001-code",
+        kind=UnitKind.CODE,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text=source,
+        source_hash=sha256_text(source),
+        translatable=False,
+        code_language="xaml",
+        confidence=1,
+    )
+
+    assert not any(
+        error["code"] == "code-indentation-suspect"
+        for error in _semantic_errors(tmp_path, [code])
+    )
+
+
 def test_ordered_list_marker_is_renderer_owned() -> None:
     unit = SourceUnit(
         unit_id="p0001-u001-list",
