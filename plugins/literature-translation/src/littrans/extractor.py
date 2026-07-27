@@ -13,6 +13,7 @@ from rapidfuzz.fuzz import ratio
 
 from littrans.models import (
     AssetRef,
+    CalloutKind,
     ExtractionIssue,
     FigureLabel,
     IssueStatus,
@@ -47,6 +48,11 @@ from littrans.storage import (
 )
 
 CAPTION_RE = re.compile(r"^(figure|fig\.|table)\s*\d+(?:[-–.]\d+)?[.:]?", re.I)
+PROSE_FIGURE_TABLE_RE = re.compile(
+    r"^(?:figure|fig\.|table)\s*\d+(?:[-–.]\d+)?\s+"
+    r"(?:and|compares|demonstrates|illustrates|includes|lists|provides|sheds|shows|summarizes)\b",
+    re.I,
+)
 LIST_RE = re.compile(r"^(?:[•▪■●○◦–—-]|\(?\d+[.)]|[a-z][.)])\s+", re.I)
 CODE_RE = re.compile(
     r"(?:^\s*using\s+[\w.]+\s*;\s*$|"
@@ -84,6 +90,25 @@ class BlockCandidate:
     math_status: SemanticStatus | None = None
     visual_text_status: SemanticStatus | None = None
     figure_labels: list[FigureLabel] | None = None
+    callout_kind: CalloutKind | None = None
+
+
+def _callout_kind(text: str) -> CalloutKind | None:
+    match = re.match(
+        r"^(?:[■▪●]\s*)?(note|tip|warning|caution|what[’']s new)\b",
+        " ".join(text.splitlines()),
+        re.I,
+    )
+    if not match:
+        return None
+    value = match.group(1).casefold().replace("’", "'")
+    return {
+        "note": CalloutKind.NOTE,
+        "tip": CalloutKind.TIP,
+        "warning": CalloutKind.WARNING,
+        "caution": CalloutKind.CAUTION,
+        "what's new": CalloutKind.WHATS_NEW,
+    }[value]
 
 
 def _bbox(values: Any) -> tuple[float, float, float, float]:
@@ -114,6 +139,10 @@ def parse_page_spec(spec: str | None, total_pages: int) -> list[int]:
 
 def normalize_text(text: str) -> str:
     return normalize_prose(text)
+
+
+def _is_caption(text: str) -> bool:
+    return bool(CAPTION_RE.match(text) and not PROSE_FIGURE_TABLE_RE.match(text))
 
 
 def protected_tokens(text: str) -> list[str]:
@@ -267,6 +296,7 @@ def _merge_note_fragments(candidates: list[BlockCandidate]) -> list[BlockCandida
                     translatable=True,
                     font_size=current.font_size,
                     font_names=set().union(*(part.font_names for part in parts)),
+                    callout_kind=current.callout_kind,
                 )
             )
         index = cursor
@@ -292,9 +322,13 @@ def _classify_text(
 ) -> tuple[UnitKind, float, bool]:
     lowered_fonts = " ".join(fonts).casefold()
     one_line = " ".join(text.splitlines())
-    if CAPTION_RE.match(one_line):
+    if _is_caption(one_line):
         return UnitKind.CAPTION, 0.97, True
-    if re.match(r"^(?:[■▪●]\s*)?(tip|note|warning|caution)\b", one_line, re.I):
+    if re.match(
+        r"^(?:[■▪●]\s*)?(tip|note|warning|caution|what[’']s new)\b",
+        one_line,
+        re.I,
+    ):
         return UnitKind.NOTE, 0.95, True
     if (
         "courier" in lowered_fonts
@@ -495,15 +529,43 @@ def _merge_table_regions(
         # and code below them.  A broad "until the next heading" window silently
         # swallowed that material into the table.  Prefer the table's last
         # horizontal rule as a hard semantic boundary when the PDF exposes one.
-        horizontal_rules = [
+        clear_boundaries = [
+            candidate.bbox[1]
+            for candidate in result
+            if candidate.bbox[1] > caption.bbox[3]
+            and candidate.kind
+            in {
+                UnitKind.HEADING,
+                UnitKind.CAPTION,
+                UnitKind.NOTE,
+                UnitKind.CODE,
+                UnitKind.FIGURE,
+            }
+        ]
+        clear_boundary = min(clear_boundaries, default=page.rect.height - 35.0)
+        horizontal_rules = sorted(
+            {
             float(drawing["rect"].y1)
             for drawing in page.get_drawings()
             if drawing["rect"].width >= max(100.0, page.rect.width * 0.25)
             and drawing["rect"].height <= 3.0
             and caption.bbox[3] < drawing["rect"].y1
-            and drawing["rect"].y1 - caption.bbox[3] < page.rect.height * 0.48
-        ]
-        table_bottom = max(horizontal_rules, default=caption.bbox[3] + page.rect.height * 0.48)
+            and drawing["rect"].y1 < clear_boundary
+            }
+        )
+        if (
+            len(horizontal_rules) == 2
+            and horizontal_rules[1] - horizontal_rules[0] <= 45.0
+        ):
+            # A top rule followed closely by a header separator, with no later
+            # bottom rule, is an open table segment that continues to the end of
+            # the physical page (and possibly onto the next page).
+            table_bottom = page.rect.height - 35.0
+        else:
+            table_bottom = max(
+                horizontal_rules,
+                default=min(clear_boundary, caption.bbox[3] + page.rect.height * 0.48),
+            )
         content = [
             candidate
             for candidate in result
@@ -909,6 +971,12 @@ def _apply_override(
                 if override["sidebar_role"] is not None
                 else None
             )
+        if "callout_kind" in override:
+            updates["callout_kind"] = (
+                CalloutKind(str(override["callout_kind"]))
+                if override["callout_kind"] is not None
+                else None
+            )
         if "table" in override:
             updates["table"] = TableData.model_validate(override["table"])
         if "figure_labels" in override:
@@ -968,8 +1036,10 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
         "parent_id",
         "sidebar_id",
         "sidebar_role",
+        "callout_kind",
         "translatable",
         "render_policy",
+        "protected_tokens",
         "latex",
         "equation_number",
         "code_language",
@@ -1235,6 +1305,7 @@ def extract_source(
                     latex=latex,
                     math_status=math_status,
                     code_language=code_language,
+                    callout_kind=_callout_kind(text) if kind is UnitKind.NOTE else None,
                 )
             )
 
@@ -1277,6 +1348,7 @@ def extract_source(
                 source_hash=source_hash,
                 source_markdown=candidate.source_markdown,
                 parent_id=parent_id,
+                callout_kind=candidate.callout_kind,
                 translatable=candidate.translatable,
                 protected_tokens=protected_tokens(candidate.text),
                 asset_refs=refs,

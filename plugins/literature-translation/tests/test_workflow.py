@@ -18,9 +18,16 @@ from littrans.external_review import (
     external_review_status,
     external_reviewer_usage,
 )
-from littrans.extractor import apply_layout_overrides, extract_source, inspect_source
+from littrans.extractor import (
+    _callout_kind,
+    _is_caption,
+    apply_layout_overrides,
+    extract_source,
+    inspect_source,
+)
 from littrans.migration import migrate_translations
 from littrans.models import (
+    CalloutKind,
     ExternalReviewConfig,
     ExternalReviewerConfig,
     ExternalReviewRun,
@@ -98,6 +105,14 @@ def test_scaled_number_normalization_handles_chinese_readable_forms() -> None:
     source = _semantic_comparison_text("2 million particles")
     target = _semantic_comparison_text("200 万个粒子")
     assert _token_counts(NUMBER_RE, source) == _token_counts(NUMBER_RE, target)
+
+
+def test_caption_detection_requires_caption_punctuation() -> None:
+    assert _is_caption("Figure 3-2. The StackPanel in action")
+    assert _is_caption("Table 3-3. Layout Properties")
+    assert _is_caption("Figure 4 Velocity profiles")
+    assert not _is_caption("Figure 3-2 shows the window that results.")
+    assert not _is_caption("Table 3-3 lists the layout properties.")
 
 
 @pytest.fixture()
@@ -242,6 +257,28 @@ def test_layout_overrides_only_invalidate_affected_translations(
     assert current[unaffected.unit_id].status is ProjectStatus.EXTERNAL_REVIEWED
     assert load_project(prepared_project).status is ProjectStatus.DRAFT
 
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unaffected.unit_id,
+                    "protected_tokens": ["ReviewedIdentifier"],
+                    "verified": True,
+                    "reason": "Verified the exact identifier against the source.",
+                }
+            ]
+        },
+    )
+    apply_layout_overrides(prepared_project)
+    current = {
+        record.unit_id: record
+        for record in read_jsonl(
+            prepared_project / "translations" / "current.jsonl", TranslationRecord
+        )
+    }
+    assert current[unaffected.unit_id].status is ProjectStatus.DRAFT
+
 
 def _submit_identity_translations(root: Path, batch_id: str) -> None:
     manifest_path = root / "batches" / batch_id / "manifest.yaml"
@@ -330,6 +367,7 @@ def test_render_policy_omit_is_persistent_and_excluded_from_batches(
         (UnitKind.LIST_ITEM, "• 项目"),
         (UnitKind.NOTE, "> [!NOTE]\n> 正文"),
         (UnitKind.NOTE, "注意：正文"),
+        (UnitKind.NOTE, "新增内容：正文"),
     ],
 )
 def test_target_structure_contract_rejects_renderer_owned_markup(
@@ -348,6 +386,7 @@ def test_target_structure_contract_rejects_renderer_owned_markup(
 
 
 def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
+    assert _callout_kind("■What’s New WPF 4.5 changes this behavior.") is CalloutKind.WHATS_NEW
     unit = SourceUnit(
         unit_id="p0001-u001-note",
         kind=UnitKind.NOTE,
@@ -369,6 +408,33 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
     assert "<strong>Tip</strong>" in _unit_html(tip, tip.source_text)
     assert "<strong>提示</strong>" in _unit_html(tip, "中文提示正文。")
     assert _target_markdown(tip, "中文提示正文。").startswith("> [!TIP]\n")
+
+    whats_new = unit.model_copy(
+        update={
+            "source_text": "■What’s New Source update body.",
+            "source_hash": sha256_text("■What’s New Source update body."),
+            "callout_kind": CalloutKind.WHATS_NEW,
+        }
+    )
+    assert "<strong>What's New</strong>" in _unit_html(
+        whats_new, whats_new.source_text
+    )
+    assert "<strong>新增内容</strong>" in _unit_html(whats_new, "中文新增正文。")
+    assert _target_markdown(whats_new, "中文新增正文。").startswith(
+        "> **新增内容**\n"
+    )
+
+    with pytest.raises(ValueError, match="valid only for note"):
+        SourceUnit(
+            unit_id="p0001-u002-invalid-callout",
+            kind=UnitKind.PARAGRAPH,
+            page=1,
+            bbox=(0, 0, 1, 1),
+            source_text="Source",
+            source_hash=sha256_text("Source"),
+            callout_kind=CalloutKind.TIP,
+            confidence=1.0,
+        )
 
 
 def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:

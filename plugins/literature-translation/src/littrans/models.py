@@ -48,6 +48,14 @@ class SidebarRole(StrEnum):
     BODY = "body"
 
 
+class CalloutKind(StrEnum):
+    NOTE = "note"
+    TIP = "tip"
+    WARNING = "warning"
+    CAUTION = "caution"
+    WHATS_NEW = "whats-new"
+
+
 class SemanticStatus(StrEnum):
     UNVERIFIED = "unverified"
     AUTO = "auto"
@@ -241,6 +249,7 @@ class SourceUnit(StrictModel):
     parent_id: str | None = None
     sidebar_id: str | None = None
     sidebar_role: SidebarRole | None = None
+    callout_kind: CalloutKind | None = None
     translatable: bool = True
     render_policy: RenderPolicy = RenderPolicy.INCLUDE
     protected_tokens: list[str] = Field(default_factory=list)
@@ -277,6 +286,8 @@ class SourceUnit(StrictModel):
             UnitKind.FIGURE,
         }:
             raise ValueError("unsupported sidebar body unit kind")
+        if self.callout_kind is not None and self.kind is not UnitKind.NOTE:
+            raise ValueError("callout_kind is valid only for note units")
         return self
 
 

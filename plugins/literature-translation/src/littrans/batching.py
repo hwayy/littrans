@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -36,11 +37,12 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
         if unit.sidebar_id and unit.sidebar_role
         else ""
     )
+    callout = f" | callout: {unit.callout_kind}" if unit.callout_kind else ""
     marker = (
         f"<!-- unit: {unit.unit_id} | page: {unit.page} | kind: {unit.kind} | "
         f"translatable: {str(unit.translatable).lower()} | source_hash: {unit.source_hash} | "
         f"verified: {unit.verification_status} | continues: {str(unit.continues_from_previous).lower()}"
-        f"{sidebar} -->"
+        f"{sidebar}{callout} -->"
     )
     if unit.kind == "code":
         body = fenced_code(unit.source_text, unit.code_language)
@@ -54,9 +56,22 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
     elif unit.sidebar_role == "body":
         body = "\n".join(f"> {line}" for line in unit.source_text.splitlines())
     elif unit.kind == "note":
-        body = "> [!NOTE]\n" + "\n".join(
-            f"> {line}" for line in unit.source_text.splitlines()
+        variant = unit.callout_kind.value if unit.callout_kind else "note"
+        source_body = re.sub(
+            r"^(?:[■▪●]\s*)?(?:note|tip|warning|caution|what[’']s new)\s*[:：]?\s*",
+            "",
+            unit.source_text,
+            count=1,
+            flags=re.I,
         )
+        if variant == "whats-new":
+            body = "> **What's New**\n" + "\n".join(
+                f"> {line}" for line in source_body.splitlines()
+            )
+        else:
+            body = f"> [!{variant.upper()}]\n" + "\n".join(
+                f"> {line}" for line in source_body.splitlines()
+            )
     elif unit.asset_refs:
         refs = []
         for asset in unit.asset_refs:

@@ -16,6 +16,7 @@ from pygments.util import ClassNotFound
 from littrans.batching import load_manifest
 from littrans.extractor import parse_page_spec
 from littrans.models import (
+    CalloutKind,
     IssueStatus,
     ProjectStatus,
     RenderPolicy,
@@ -59,7 +60,7 @@ def _asset_markdown(unit: SourceUnit) -> str:
 
 def _note_body(text: str) -> str:
     return re.sub(
-        r"^(?:[■▪●]\s*)?(?:note|tip|warning|caution|注意|提示|警告)\s*[:：]?\s*",
+        r"^(?:[■▪●]\s*)?(?:note|tip|warning|caution|what[’']s new|注意|提示|警告|新增内容)\s*[:：]?\s*",
         "",
         text,
         count=1,
@@ -67,9 +68,17 @@ def _note_body(text: str) -> str:
     )
 
 
-def _note_variant(text: str) -> str:
-    match = re.match(r"^(?:[■▪●]\s*)?(note|tip|warning|caution)\b", text, re.I)
-    return match.group(1).lower() if match else "note"
+def _note_variant(text: str, explicit: CalloutKind | None = None) -> str:
+    if explicit is not None:
+        return explicit.value
+    match = re.match(
+        r"^(?:[■▪●]\s*)?(note|tip|warning|caution|what[’']s new)\b",
+        text,
+        re.I,
+    )
+    if not match:
+        return "note"
+    return match.group(1).lower().replace("’", "'").replace("what's new", "whats-new")
 
 
 def _list_body(text: str) -> str:
@@ -135,7 +144,11 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
         return f"{marker} {escape_markdown_prose(_list_body(text))}"
     if unit.kind is UnitKind.NOTE:
         lines = escape_markdown_prose(_note_body(text)).splitlines() or [safe_text]
-        marker = _note_variant(unit.source_text).upper()
+        variant = _note_variant(unit.source_text, unit.callout_kind)
+        if variant == "whats-new":
+            label = "新增内容" if target is not None else "What's New"
+            return f"> **{label}**\n" + "\n".join(f"> {line}" for line in lines)
+        marker = variant.upper()
         return f"> [!{marker}]\n" + "\n".join(f"> {line}" for line in lines)
     if unit.kind is UnitKind.CODE:
         return fenced_code(unit.source_text, unit.code_language)
@@ -217,18 +230,20 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
         return table_to_html(table, _inline_html) if table else _inline_html(text)
     if unit.kind is UnitKind.NOTE:
         source_view = target == (unit.source_markdown or unit.source_text)
-        variant = _note_variant(unit.source_text)
+        variant = _note_variant(unit.source_text, unit.callout_kind)
         source_labels = {
             "note": "Note",
             "tip": "Tip",
             "warning": "Warning",
             "caution": "Caution",
+            "whats-new": "What's New",
         }
         target_labels = {
             "note": "注意",
             "tip": "提示",
             "warning": "警告",
             "caution": "注意",
+            "whats-new": "新增内容",
         }
         label = source_labels[variant] if source_view else target_labels[variant]
         return (

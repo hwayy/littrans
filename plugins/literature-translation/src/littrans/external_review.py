@@ -206,6 +206,8 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
             if unit.sidebar_id and unit.sidebar_role
             else ""
         )
+        if unit.callout_kind:
+            structure += f"; callout {unit.callout_kind}"
         sections.append(
             f"## Unit {unit_id} (PDF page {unit.page}; {unit.kind}{structure})\n\n"
             f"### Source\n\n{unit.source_markdown or unit.source_text}\n\n"

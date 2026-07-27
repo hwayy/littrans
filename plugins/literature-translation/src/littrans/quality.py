@@ -75,6 +75,9 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
                 "kind",
                 "source_hash",
                 "source_markdown",
+                "sidebar_id",
+                "sidebar_role",
+                "callout_kind",
                 "translatable",
                 "render_policy",
                 "protected_tokens",
@@ -183,9 +186,11 @@ def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
         return "List-item target must contain body text only; the renderer owns the list marker."
     if unit.kind is UnitKind.NOTE and (
         re.match(r"^\s*>", target)
-        or re.search(r"\[!(?:NOTE|TIP|WARNING|CAUTION)\]", target, re.I)
+        or re.search(r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]", target, re.I)
         or re.match(
-            r"^\s*(?:注意|提示|警告|note|tip|warning|caution)\s*[:：]", target, re.I
+            r"^\s*(?:注意|提示|警告|新增内容|note|tip|warning|caution|what[’']s new)\s*[:：]",
+            target,
+            re.I,
         )
     ):
         return "Note target must contain body text only; the renderer owns the admonition shell."
