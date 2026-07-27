@@ -71,7 +71,7 @@ from littrans.storage import (
     write_yaml,
 )
 from littrans.translation import submit_translation
-from littrans.verification import verify_extraction
+from littrans.verification import _semantic_errors, verify_extraction
 
 
 def make_pdf(path: Path) -> None:
@@ -186,6 +186,48 @@ def test_reviewed_protected_token_override_can_correct_a_source_typo(
     updated = next(item for item in revised if item.unit_id == unit.unit_id)
     assert updated.source_text == unit.source_text
     assert updated.protected_tokens == ["CorrectedApiName"]
+
+
+def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "derived").mkdir()
+    (root / "overrides").mkdir()
+    unit = SourceUnit(
+        unit_id="p0001-u001-sidebar",
+        kind=UnitKind.PARAGRAPH,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text="SIDEBAR",
+        source_hash=sha256_text("SIDEBAR"),
+        confidence=1,
+    )
+    write_jsonl(root / "derived" / "units.jsonl", [unit])
+    write_yaml(
+        root / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "kind": "heading",
+                    "verified": True,
+                    "reason": "Verified title.",
+                },
+                {
+                    "unit_id": unit.unit_id,
+                    "sidebar_id": "p0001-sidebar-001",
+                    "sidebar_role": "title",
+                    "verified": True,
+                    "reason": "Verified sidebar membership.",
+                },
+            ]
+        },
+    )
+
+    updated = apply_layout_overrides(root)[0]
+    assert updated.kind is UnitKind.HEADING
+    assert updated.sidebar_id == "p0001-sidebar-001"
+    assert updated.sidebar_role is SidebarRole.TITLE
 
 
 def test_layout_overrides_only_invalidate_affected_translations(
@@ -472,6 +514,49 @@ def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
             body.model_copy(update={"sidebar_role": None}).model_dump()
         )
 
+
+def test_sidebar_contiguity_ignores_omitted_running_headers(tmp_path: Path) -> None:
+    title = SourceUnit(
+        unit_id="p0001-u001-sidebar",
+        kind=UnitKind.HEADING,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text="SIDEBAR",
+        source_hash=sha256_text("SIDEBAR"),
+        sidebar_id="p0001-sidebar-001",
+        sidebar_role=SidebarRole.TITLE,
+        verification_status="verified",
+        confidence=1,
+    )
+    running_header = SourceUnit(
+        unit_id="p0002-u001-header",
+        kind=UnitKind.PARAGRAPH,
+        page=2,
+        bbox=(0, 0, 10, 10),
+        source_text="CHAPTER 1",
+        source_hash=sha256_text("CHAPTER 1"),
+        translatable=False,
+        render_policy=RenderPolicy.OMIT,
+        verification_status="verified",
+        confidence=1,
+    )
+    body = SourceUnit(
+        unit_id="p0002-u002-sidebar",
+        kind=UnitKind.PARAGRAPH,
+        page=2,
+        bbox=(0, 20, 10, 30),
+        source_text="Body.",
+        source_hash=sha256_text("Body."),
+        sidebar_id="p0001-sidebar-001",
+        sidebar_role=SidebarRole.BODY,
+        verification_status="verified",
+        confidence=1,
+    )
+
+    assert not any(
+        error["code"] == "noncontiguous-sidebar"
+        for error in _semantic_errors(tmp_path, [title, running_header, body])
+    )
 
 def test_ordered_list_marker_is_renderer_owned() -> None:
     unit = SourceUnit(

@@ -12,6 +12,7 @@ from littrans.extractor import parse_page_spec
 from littrans.models import (
     ExtractionIssue,
     IssueStatus,
+    RenderPolicy,
     SemanticStatus,
     Severity,
     SidebarRole,
@@ -92,7 +93,14 @@ def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]
         titles = [unit for _, unit in members if unit.sidebar_role is SidebarRole.TITLE]
         if len(titles) != 1 or members[0][1].sidebar_role is not SidebarRole.TITLE:
             errors.append({"code": "invalid-sidebar-title", "sidebar_id": sidebar_id})
-        if indices != list(range(indices[0], indices[-1] + 1)):
+        intervening = units[indices[0] : indices[-1] + 1]
+        if any(
+            unit.sidebar_id != sidebar_id
+            and not (
+                unit.render_policy is RenderPolicy.OMIT and not unit.translatable
+            )
+            for unit in intervening
+        ):
             errors.append({"code": "noncontiguous-sidebar", "sidebar_id": sidebar_id})
     return errors
 

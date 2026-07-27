@@ -897,7 +897,21 @@ def _load_overrides(project_root: Path) -> list[dict[str, Any]]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict) or not isinstance(payload.get("overrides", []), list):
         raise ValueError(f"{path} must contain an overrides list")
-    return [item for item in payload["overrides"] if isinstance(item, dict)]
+    overrides = [item for item in payload["overrides"] if isinstance(item, dict)]
+    merged: list[dict[str, Any]] = []
+    unit_positions: dict[str, int] = {}
+    for override in overrides:
+        unit_id = override.get("unit_id")
+        if not isinstance(unit_id, str):
+            merged.append(override)
+            continue
+        if unit_id not in unit_positions:
+            unit_positions[unit_id] = len(merged)
+            merged.append(override)
+            continue
+        position = unit_positions[unit_id]
+        merged[position] = {**merged[position], **override}
+    return merged
 
 
 def _apply_override(
