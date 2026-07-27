@@ -12,6 +12,7 @@ from littrans.external_review import (
     _packet_text,
     _parse_antigravity,
     _parse_claude,
+    _require_machine_reviewed,
     _select_reviewer,
     build_antigravity_command,
     build_claude_command,
@@ -35,6 +36,7 @@ from littrans.models import (
     IssueStatus,
     IssueType,
     ProjectStatus,
+    ReaderNote,
     RenderPolicy,
     ReviewIssue,
     Severity,
@@ -864,6 +866,19 @@ def test_external_packet_is_isolated_and_external_gate_is_strict(
 ) -> None:
     manifest = create_batches(prepared_project, "1", max_words=300, prefix="external")[0]
     _submit_identity_translations(prepared_project, manifest.batch_id)
+    current = read_jsonl(
+        prepared_project / "translations" / "current.jsonl", TranslationRecord
+    )
+    current[0] = current[0].model_copy(
+        update={
+            "reader_note": ReaderNote(
+                text="Documented correction note.",
+                sources=["https://example.com/reference"],
+                accessed_at="2026-07-28",
+            )
+        }
+    )
+    write_jsonl(prepared_project / "translations" / "current.jsonl", current)
     assert run_qa(prepared_project, manifest.batch_id).passed
     review_input = prepared_project / "reviews" / "historical.jsonl"
     historical = ReviewIssue(
@@ -895,6 +910,9 @@ def test_external_packet_is_isolated_and_external_gate_is_strict(
     save_project(prepared_project, config)
     packet, _ = _packet_text(prepared_project, manifest.batch_id)
     assert "SECRET PRIOR REVIEW OPINION" not in packet
+    assert "Reader note (separate from translated body)" in packet
+    assert "Documented correction note." in packet
+    assert "https://example.com/reference" in packet
     with pytest.raises(ValueError, match="Formal rendering is blocked"):
         render_project(
             prepared_project, None, "before-external", batch_id=manifest.batch_id
@@ -935,3 +953,36 @@ def test_external_packet_is_isolated_and_external_gate_is_strict(
     external_summary = Path(outputs["external_review"])
     assert external_summary.is_file()
     assert "External approval gate: PASS" in external_summary.read_text(encoding="utf-8")
+
+
+def test_external_issue_does_not_block_second_opinion_gate(
+    prepared_project: Path,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="second")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "second-opinion-internal.jsonl"
+    empty_review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    external_issue = ReviewIssue(
+        issue_id="external-major-r001",
+        batch_id=manifest.batch_id,
+        unit_id=manifest.translatable_unit_ids[0],
+        severity=Severity.MAJOR,
+        type=IssueType.TECHNICAL,
+        explanation="External primary finding awaiting a second opinion.",
+        reviewer="external:claude",
+    )
+    external_input = prepared_project / "reviews" / "external-major.jsonl"
+    write_jsonl(external_input, [external_issue])
+    import_review(
+        prepared_project,
+        manifest.batch_id,
+        external_input,
+        lenses=["external:claude"],
+        preserve_status=True,
+    )
+
+    _require_machine_reviewed(prepared_project, manifest.batch_id)

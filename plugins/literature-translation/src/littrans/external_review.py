@@ -32,7 +32,6 @@ from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     batch_translation_fingerprint,
     import_review,
-    review_status,
 )
 from littrans.storage import (
     append_jsonl,
@@ -195,6 +194,19 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
             target += "\n\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
             )
+        reader_note = ""
+        if record and record.reader_note:
+            note = record.reader_note
+            sources = (
+                "\nSources:\n" + "\n".join(f"- {source}" for source in note.sources)
+                if note.sources
+                else ""
+            )
+            accessed = f"\nAccessed: {note.accessed_at}" if note.accessed_at else ""
+            reader_note = (
+                "\n\nReader note (separate from translated body):\n"
+                f"{note.text}{sources}{accessed}"
+            )
         labels = ""
         if unit.kind is UnitKind.FIGURE and unit.figure_labels:
             labels = "\nFigure labels:\n" + "\n".join(
@@ -211,7 +223,7 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
         sections.append(
             f"## Unit {unit_id} (PDF page {unit.page}; {unit.kind}{structure})\n\n"
             f"### Source\n\n{unit.source_markdown or unit.source_text}\n\n"
-            f"### Translation\n\n{target}{labels}\n"
+            f"### Translation\n\n{target}{labels}{reader_note}\n"
         )
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
@@ -235,7 +247,10 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
         "Formula wording and units remain in the verified LaTeX.\n"
         "- Only labels listed on units of kind `figure` are translatable figure labels. "
         "OCR inventory attached to an equation is formula evidence, not a missing label "
-        "translation.\n\n"
+        "translation.\n"
+        "- A `Reader note` is deliberately separate from the translated body. Treat it as "
+        "documented clarification or correction evidence, not as an unauthorized addition "
+        "to the translation. Review both its claim and its cited sources.\n\n"
         "# Units\n\n" + "\n".join(sections)
     )
     return text, manifest.pages
@@ -259,6 +274,8 @@ def _evidence_map(root: Path, batch_id: str) -> dict[str, tuple[str, str]]:
             target += "\n" + "\n".join(
                 f"{label.source} => {label.target or '[missing]' }" for label in labels
             )
+        if record and record.reader_note:
+            target += "\nReader note: " + record.reader_note.text
         evidence[unit_id] = (unit.source_markdown or unit.source_text, target)
     return evidence
 
@@ -667,10 +684,17 @@ def _require_machine_reviewed(root: Path, batch_id: str) -> None:
         set(audit.get("lenses", []))
     ):
         raise ValueError("External review requires all current internal audit lenses")
-    internal = review_status(root, batch_id)
-    if internal["open_blocking_issues"]:
+    issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)
+    open_internal_blocking = [
+        issue.issue_id
+        for issue in issues
+        if issue.status is IssueStatus.OPEN
+        and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+        and not issue.reviewer.startswith("external:")
+    ]
+    if open_internal_blocking:
         raise ValueError(
-            f"External review is blocked by internal issues: {internal['open_blocking_issues']}"
+            f"External review is blocked by internal issues: {open_internal_blocking}"
         )
     translations = translation_map(root)
     allowed = {
