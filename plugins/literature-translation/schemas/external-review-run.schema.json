@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "ExternalReviewDriver": {
+      "enum": [
+        "claude-code",
+        "antigravity"
+      ],
+      "title": "ExternalReviewDriver",
+      "type": "string"
+    },
+    "ExternalReviewVerdict": {
+      "enum": [
+        "accepted",
+        "changes-requested",
+        "inconclusive"
+      ],
+      "title": "ExternalReviewVerdict",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "batch_id": {
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "reviewer_id": {
+      "title": "Reviewer Id",
+      "type": "string"
+    },
+    "driver": {
+      "$ref": "#/$defs/ExternalReviewDriver"
+    },
+    "role": {
+      "title": "Role",
+      "type": "string"
+    },
+    "requested_model": {
+      "title": "Requested Model",
+      "type": "string"
+    },
+    "actual_model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actual Model"
+    },
+    "actual_model_label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actual Model Label"
+    },
+    "model_verified": {
+      "default": false,
+      "title": "Model Verified",
+      "type": "boolean"
+    },
+    "cli_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cli Version"
+    },
+    "effort": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effort"
+    },
+    "fast_mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fast Mode"
+    },
+    "translation_fingerprint": {
+      "title": "Translation Fingerprint",
+      "type": "string"
+    },
+    "packet_sha256": {
+      "title": "Packet Sha256",
+      "type": "string"
+    },
+    "prompt_version": {
+      "title": "Prompt Version",
+      "type": "string"
+    },
+    "verdict": {
+      "$ref": "#/$defs/ExternalReviewVerdict"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    },
+    "issue_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Issue Ids",
+      "type": "array"
+    },
+    "response_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Path"
+    },
+    "attempts": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Attempts",
+      "type": "integer"
+    },
+    "success": {
+      "default": true,
+      "title": "Success",
+      "type": "boolean"
+    },
+    "reviewed_at": {
+      "title": "Reviewed At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "batch_id",
+    "reviewer_id",
+    "driver",
+    "role",
+    "requested_model",
+    "translation_fingerprint",
+    "packet_sha256",
+    "prompt_version",
+    "verdict",
+    "summary"
+  ],
+  "title": "ExternalReviewRun",
+  "type": "object"
+}

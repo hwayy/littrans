@@ -23,3 +23,7 @@ Use the bundled Python launcher described in `../../references/runtime.md` for e
 4. Write JSONL issues only. Use precise source and target spans, explain the actual defect, and propose a revision only when confident.
 5. Import the issue file with `review import` even when it is empty; this records completion of all three lenses.
 6. Report issue counts and all blocker/major findings. Do not run `translation submit`, resolve findings, or approve the batch.
+
+If the project enables `external_review`, the internal audit remains mandatory and precedes
+the external stage. Follow [external-review.md](references/external-review.md) only after
+machine approval; external reviewers do not replace the three internal lenses.

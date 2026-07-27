@@ -11,6 +11,7 @@ import typer
 from pydantic import BaseModel
 
 from littrans.batching import create_batches, refresh_batch, show_batch
+from littrans.external_review import external_review_status, run_external_review
 from littrans.extractor import apply_layout_overrides, extract_source, inspect_source
 from littrans.migration import migrate_translations
 from littrans.models import IssueStatus
@@ -195,6 +196,24 @@ def review_resolve(
 @review_app.command("status")
 def review_get_status(project: PathArg, batch_id: str) -> None:
     emit(review_status(project, batch_id))
+
+
+@review_app.command("external")
+def review_external(
+    project: PathArg,
+    batch_id: str,
+    reviewer: str | None = typer.Option(None),
+    second_opinion: bool = typer.Option(False),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    """Run one isolated, read-only external translation review."""
+    emit(run_external_review(project, batch_id, reviewer, second_opinion, dry_run))
+
+
+@review_app.command("external-status")
+def review_get_external_status(project: PathArg, batch_id: str) -> None:
+    """Report the current external-review evidence and gate state."""
+    emit(external_review_status(project, batch_id))
 
 
 @app.command()

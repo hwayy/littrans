@@ -34,7 +34,11 @@ from littrans.semantics import (
 from littrans.storage import load_project, plugin_root, read_jsonl
 from littrans.verification import require_verified_extraction
 
-PUBLISHABLE = {ProjectStatus.MACHINE_REVIEWED, ProjectStatus.HUMAN_APPROVED}
+LEGACY_PUBLISHABLE = {
+    ProjectStatus.MACHINE_REVIEWED,
+    ProjectStatus.EXTERNAL_REVIEWED,
+    ProjectStatus.HUMAN_APPROVED,
+}
 PYGMENTS_LANGUAGE_ALIASES = {"xaml": "xml"}
 
 
@@ -248,6 +252,11 @@ def render_project(
     batch_id: str | None = None,
 ) -> dict[str, str]:
     config = load_project(root)
+    publishable = (
+        {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
+        if config.external_review and config.external_review.enabled
+        else LEGACY_PUBLISHABLE
+    )
     if (page_spec is None) == (batch_id is None):
         raise ValueError("Specify exactly one of page_spec or batch_id")
     manifest = load_manifest(root, batch_id) if batch_id else None
@@ -278,7 +287,7 @@ def render_project(
         for unit in units
         if unit.translatable
         and unit.unit_id in translations
-        and translations[unit.unit_id].status not in PUBLISHABLE
+        and translations[unit.unit_id].status not in publishable
     ]
     open_severe: list[str] = []
     selected_ids = {unit.unit_id for unit in units}
@@ -293,7 +302,7 @@ def render_project(
     if not allow_draft and (missing or unapproved or open_severe):
         raise ValueError(
             "Formal rendering is blocked; "
-            f"missing={missing}, not_machine_reviewed={unapproved}, open_severe={open_severe}"
+            f"missing={missing}, not_publishable={unapproved}, open_severe={open_severe}"
         )
 
     output_name = _safe_name(name)
@@ -456,13 +465,59 @@ def render_project(
     )
     if render_errors:
         raise ValueError(f"Rendered output failed structural QA: {render_errors}")
-    return {
+    outputs = {
         "markdown": str(markdown_path),
         "html": str(html_path),
         "quality": str(qa_path),
         "unresolved": str(unresolved_path),
         "render_qa": str(render_qa_path),
     }
+    if config.external_review and config.external_review.enabled and batch_id:
+        external_path = output / f"{output_name}.external-review.md"
+        _write_external_review_summary(external_path, root, batch_id)
+        outputs["external_review"] = str(external_path)
+    return outputs
+
+
+def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> None:
+    from littrans.external_review import external_review_status
+
+    status = external_review_status(root, batch_id)
+    lines = [
+        f"# External review: {batch_id}",
+        "",
+        f"- Verdict: **{status['verdict']}**",
+        f"- Translation fingerprint: `{status['translation_fingerprint']}`",
+        f"- External approval gate: {'PASS' if status['external_approvable'] else 'FAIL'}",
+        "",
+    ]
+    for heading, key in (("Primary review", "primary"), ("Second opinion", "second_opinion")):
+        run = status[key]
+        lines.extend([f"## {heading}", ""])
+        if run is None:
+            lines.extend(["Not required or not run.", ""])
+            continue
+        lines.extend(
+            [
+                f"- Reviewer: `{run['reviewer_id']}`",
+                f"- Driver: `{run['driver']}`",
+                f"- Requested model: `{run['requested_model']}`",
+                f"- Actual model: `{run['actual_model_label'] or run['actual_model'] or 'unverified'}`",
+                f"- Model verified: `{str(run['model_verified']).lower()}`",
+                f"- CLI version: `{run['cli_version'] or 'unknown'}`",
+                f"- Prompt version: `{run['prompt_version']}`",
+                f"- Verdict: **{run['verdict']}**",
+                "",
+                run["summary"],
+                "",
+            ]
+        )
+    lines.extend(["## Open substantive issues", ""])
+    lines.extend(
+        [f"- `{issue_id}`" for issue_id in status["open_substantive_issues"]]
+        or ["None."]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _render_quality_errors(markdown: str, units: list[SourceUnit]) -> list[str]:
@@ -506,7 +561,7 @@ def _write_quality_summary(
         f"- Translated units: {translated}",
         f"- Coverage: {(translated / translatable * 100) if translatable else 100:.1f}%",
         f"- Missing translations: {len(missing)}",
-        f"- Below machine-reviewed: {len(unapproved)}",
+        f"- Below configured release gate: {len(unapproved)}",
         f"- Open blocker/major issues: {len(open_severe)}",
         f"- QA reports: {len(qa_reports)} ({sum(bool(report.get('passed')) for report in qa_reports)} passing)",
         f"- QA errors/warnings: {sum(len(report.get('errors', [])) for report in qa_reports)}/{sum(len(report.get('warnings', [])) for report in qa_reports)}",

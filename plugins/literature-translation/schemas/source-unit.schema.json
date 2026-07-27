@@ -76,6 +76,7 @@
         "reviewed",
         "revised",
         "machine-reviewed",
+        "external-reviewed",
         "human-approved"
       ],
       "title": "ProjectStatus",

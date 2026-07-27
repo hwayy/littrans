@@ -1,5 +1,160 @@
 {
   "$defs": {
+    "ExternalReviewConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "assignment": {
+          "default": "least-used",
+          "title": "Assignment",
+          "type": "string"
+        },
+        "reviewers_per_batch": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Reviewers Per Batch",
+          "type": "integer"
+        },
+        "reviewers": {
+          "items": {
+            "$ref": "#/$defs/ExternalReviewerConfig"
+          },
+          "title": "Reviewers",
+          "type": "array"
+        },
+        "second_opinion": {
+          "$ref": "#/$defs/ExternalSecondOpinionConfig"
+        }
+      },
+      "required": [
+        "reviewers"
+      ],
+      "title": "ExternalReviewConfig",
+      "type": "object"
+    },
+    "ExternalReviewDriver": {
+      "enum": [
+        "claude-code",
+        "antigravity"
+      ],
+      "title": "ExternalReviewDriver",
+      "type": "string"
+    },
+    "ExternalReviewFallback": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "ExternalReviewFallback",
+      "type": "object"
+    },
+    "ExternalReviewerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "driver": {
+          "$ref": "#/$defs/ExternalReviewDriver"
+        },
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        },
+        "fast": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fast"
+        },
+        "fallbacks": {
+          "items": {
+            "$ref": "#/$defs/ExternalReviewFallback"
+          },
+          "title": "Fallbacks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "driver",
+        "command",
+        "model"
+      ],
+      "title": "ExternalReviewerConfig",
+      "type": "object"
+    },
+    "ExternalSecondOpinionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "on-uncertainty",
+          "title": "Mode",
+          "type": "string"
+        },
+        "confidence_below": {
+          "default": 0.9,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence Below",
+          "type": "number"
+        },
+        "severities": {
+          "items": {
+            "$ref": "#/$defs/Severity"
+          },
+          "title": "Severities",
+          "type": "array"
+        }
+      },
+      "title": "ExternalSecondOpinionConfig",
+      "type": "object"
+    },
     "ProjectStatus": {
       "enum": [
         "initialized",
@@ -10,16 +165,27 @@
         "reviewed",
         "revised",
         "machine-reviewed",
+        "external-reviewed",
         "human-approved"
       ],
       "title": "ProjectStatus",
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "suggestion"
+      ],
+      "title": "Severity",
       "type": "string"
     }
   },
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": 2,
+      "default": 3,
       "title": "Schema Version",
       "type": "integer"
     },
@@ -61,6 +227,17 @@
       "default": "private-research-only",
       "title": "Rights Status",
       "type": "string"
+    },
+    "external_review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExternalReviewConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "status": {
       "$ref": "#/$defs/ProjectStatus",

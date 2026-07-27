@@ -64,6 +64,7 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
 def _context_text(
     root: Path, units: list[SourceUnit], before: SourceUnit | None, after: SourceUnit | None
 ) -> str:
+    config = load_project(root)
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
     terms = load_terms(root)
@@ -73,10 +74,19 @@ def _context_text(
     if after:
         adjacent.append(f"Next unit ({after.unit_id}):\n{after.source_text}")
     term_text = yaml.safe_dump({"approved_terms": terms}, allow_unicode=True, sort_keys=False)
+    memory_statuses = (
+        {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
+        if config.external_review and config.external_review.enabled
+        else {
+            ProjectStatus.MACHINE_REVIEWED,
+            ProjectStatus.EXTERNAL_REVIEWED,
+            ProjectStatus.HUMAN_APPROVED,
+        }
+    )
     approved_memory = [
         record
         for record in translation_map(root).values()
-        if record.status in {ProjectStatus.MACHINE_REVIEWED, ProjectStatus.HUMAN_APPROVED}
+        if record.status in memory_statuses
     ][-8:]
     memory_text = (
         "\n".join(f"- {record.unit_id}: {record.target_text}" for record in approved_memory)

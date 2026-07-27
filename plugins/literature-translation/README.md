@@ -3,7 +3,8 @@
 `literature-translation` is a local Codex plugin for controlled, resumable translation of
 English technical books and research papers into Simplified Chinese. Python manages stable
 source units, exact LaTeX, structured tables, code, state, QA, reviews, and rendering. The
-agent performs the language work; the package does not call a model API.
+agent performs the language work. The package does not call a model API directly; projects
+may explicitly configure supported local CLIs for isolated, read-only external review.
 
 ## First use
 
@@ -27,18 +28,22 @@ See `references/runtime.md` for launcher resolution from an installed Skill.
    translations are separate revisioned records.
 4. Run `audit-literature-translation` in an independent context. Reviewers write issue records,
    never the translation.
-5. Run `finalize-literature-translation` to apply the machine-review gate and render Markdown
-   plus responsive bilingual HTML. Human approval is never inferred.
+5. Optionally run configured external reviewers after machine review. Their evidence can grant
+   `external-reviewed`, but never `human-approved`.
+6. Run `finalize-literature-translation` to enforce the configured release gate and render
+   Markdown plus responsive bilingual HTML. Human approval is never inferred.
 
 Project state follows:
 
 ```text
 extracted -> prepared -> draft -> qa-passed -> reviewed -> revised
-          -> machine-reviewed -> human-approved
+          -> machine-reviewed -> external-reviewed -> human-approved
 ```
 
-Only `machine-reviewed` or `human-approved` text may enter translation memory or a formal
-render. Open blocker or major issues stop formal output.
+Legacy projects may use `machine-reviewed` text in translation memory and formal renders.
+Projects with external review enabled require `external-reviewed` or `human-approved`.
+Open blocker or major issues stop formal output; external approval additionally requires no
+open minor issues.
 
 ## Formats and boundaries
 

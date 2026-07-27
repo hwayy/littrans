@@ -8,9 +8,23 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from littrans.batching import create_batches, refresh_batch
+from littrans.external_review import (
+    _packet_text,
+    _parse_antigravity,
+    _parse_claude,
+    _select_reviewer,
+    build_antigravity_command,
+    build_claude_command,
+    external_review_status,
+    external_reviewer_usage,
+)
 from littrans.extractor import apply_layout_overrides, extract_source, inspect_source
 from littrans.migration import migrate_translations
 from littrans.models import (
+    ExternalReviewConfig,
+    ExternalReviewerConfig,
+    ExternalReviewRun,
+    ExternalReviewVerdict,
     IssueStatus,
     IssueType,
     ProjectStatus,
@@ -30,13 +44,22 @@ from littrans.quality import (
     _target_structure_error,
     _token_counts,
     approve_batch,
+    batch_translation_fingerprint,
     import_review,
     resolve_issue,
     review_status,
     run_qa,
 )
 from littrans.rendering import _target_markdown, _unit_html, render_project
-from littrans.storage import read_jsonl, sha256_text, write_jsonl, write_yaml
+from littrans.storage import (
+    append_jsonl,
+    load_project,
+    read_jsonl,
+    save_project,
+    sha256_text,
+    write_jsonl,
+    write_yaml,
+)
 from littrans.translation import submit_translation
 from littrans.verification import verify_extraction
 
@@ -507,3 +530,235 @@ def test_migration_never_carries_approval(prepared_project: Path) -> None:
         record.status is ProjectStatus.DRAFT
         for record in translation_map(target_root).values()
     )
+
+
+def test_external_review_config_validation_and_legacy_compatibility(
+    prepared_project: Path,
+) -> None:
+    assert load_project(prepared_project).external_review is None
+    with pytest.raises(ValueError, match="at least one reviewer"):
+        ExternalReviewConfig(reviewers=[])
+    base = {
+        "id": "reviewer",
+        "driver": "claude-code",
+        "command": "claude",
+        "model": "claude-sonnet-5",
+        "fast": False,
+    }
+    with pytest.raises(ValueError, match="unique"):
+        ExternalReviewConfig(reviewers=[base, base])
+    with pytest.raises(ValueError, match="reviewers.0.driver"):
+        ExternalReviewConfig.model_validate(
+            {"reviewers": [{**base, "driver": "unknown"}]}
+        )
+    with pytest.raises(ValueError, match="must not enable fast mode"):
+        ExternalReviewerConfig.model_validate({**base, "fast": True})
+    with pytest.raises(ValueError, match="cannot set effort"):
+        ExternalReviewerConfig.model_validate(
+            {
+                "id": "agy",
+                "driver": "antigravity",
+                "command": "agy",
+                "model": "gemini-3.6-flash-high",
+                "fallbacks": [{"model": "claude-sonnet-4-6", "effort": "high"}],
+            }
+        )
+
+
+def test_external_driver_commands_preserve_model_constraints(tmp_path: Path) -> None:
+    claude = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    claude_command = build_claude_command(claude, "review")
+    assert claude_command[:5] == [
+        "claude",
+        "-p",
+        "--safe-mode",
+        "--model",
+        "claude-sonnet-5",
+    ]
+    assert claude_command[claude_command.index("--effort") + 1] == "high"
+    assert "--no-session-persistence" in claude_command
+
+    agy = ExternalReviewerConfig(
+        id="agy",
+        driver="antigravity",
+        command="agy",
+        model="claude-sonnet-4-6",
+    )
+    agy_command = build_antigravity_command(agy, "review", tmp_path / "agy.log")
+    assert "--effort" not in agy_command
+    assert agy_command[-2:] == ["--print", "review"]
+
+
+def test_least_used_assignment_counts_primary_batches_not_retries(
+    prepared_project: Path,
+) -> None:
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                fast=False,
+            ),
+            ExternalReviewerConfig(
+                id="agy",
+                driver="antigravity",
+                command="agy",
+                model="gemini-3.6-flash-high",
+            ),
+        ]
+    )
+    save_project(prepared_project, config)
+    base = {
+        "batch_id": "batch-one",
+        "requested_model": "claude-sonnet-5",
+        "actual_model": "claude-sonnet-5",
+        "model_verified": True,
+        "translation_fingerprint": "f" * 64,
+        "packet_sha256": "a" * 64,
+        "prompt_version": "test",
+        "verdict": "accepted",
+        "summary": "accepted",
+    }
+    runs = [
+        ExternalReviewRun(
+            run_id="primary-1",
+            reviewer_id="claude",
+            driver="claude-code",
+            role="primary",
+            **base,
+        ),
+        ExternalReviewRun(
+            run_id="primary-retry",
+            reviewer_id="claude",
+            driver="claude-code",
+            role="primary",
+            **base,
+        ),
+        ExternalReviewRun(
+            run_id="second-1",
+            reviewer_id="agy",
+            driver="antigravity",
+            role="second-opinion",
+            requested_model="gemini-3.6-flash-high",
+            actual_model="Gemini 3.6 Flash (High)",
+            **{key: value for key, value in base.items() if key not in {"requested_model", "actual_model"}},
+        ),
+    ]
+    append_jsonl(prepared_project / "reviews" / "batch-one.external-runs.jsonl", runs)
+    usage = external_reviewer_usage(prepared_project)
+    assert usage["claude"]["assigned_primary_batches"] == 1
+    assert usage["claude"]["successful_calls"] == 2
+    assert usage["agy"]["second_opinion_calls"] == 1
+    assert _select_reviewer(prepared_project, None).id == "agy"
+
+
+def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:
+    result = {"verdict": "accepted", "summary": "No defects.", "issues": []}
+    claude_outer = {
+        "result": json.dumps(result),
+        "modelUsage": {"claude-sonnet-5": {"inputTokens": 1}},
+        "fast_mode_state": "off",
+    }
+    parsed, model, fast = _parse_claude(json.dumps(claude_outer))
+    assert parsed == result
+    assert model == "claude-sonnet-5"
+    assert fast == "off"
+    log = (
+        'Propagating selected model override model="gemini-3.6-flash-high" '
+        'label="Gemini 3.6 Flash (High)"'
+    )
+    parsed, label = _parse_antigravity(
+        "Review complete\n```json\n" + json.dumps(result) + "\n```", log
+    )
+    assert parsed == result
+    assert label == "Gemini 3.6 Flash (High)"
+    with pytest.raises(json.JSONDecodeError):
+        _parse_antigravity('{"verdict": "accepted"', log)
+
+
+def test_external_packet_is_isolated_and_external_gate_is_strict(
+    prepared_project: Path,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="external")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review_input = prepared_project / "reviews" / "historical.jsonl"
+    historical = ReviewIssue(
+        issue_id="historical-r001",
+        batch_id=manifest.batch_id,
+        unit_id=manifest.translatable_unit_ids[0],
+        severity=Severity.SUGGESTION,
+        type=IssueType.STYLE,
+        explanation="SECRET PRIOR REVIEW OPINION",
+        reviewer="test",
+    )
+    write_jsonl(review_input, [historical])
+    import_review(prepared_project, manifest.batch_id, review_input)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(prepared_project, config)
+    packet, _ = _packet_text(prepared_project, manifest.batch_id)
+    assert "SECRET PRIOR REVIEW OPINION" not in packet
+    with pytest.raises(ValueError, match="Formal rendering is blocked"):
+        render_project(
+            prepared_project, None, "before-external", batch_id=manifest.batch_id
+        )
+
+    fingerprint = batch_translation_fingerprint(prepared_project, manifest.batch_id)
+    run = ExternalReviewRun(
+        run_id="accepted-run",
+        batch_id=manifest.batch_id,
+        reviewer_id="claude",
+        driver="claude-code",
+        role="primary",
+        requested_model="claude-sonnet-5",
+        actual_model="claude-sonnet-5",
+        model_verified=True,
+        effort="high",
+        fast_mode="off",
+        translation_fingerprint=fingerprint,
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.ACCEPTED,
+        summary="No substantive defects.",
+    )
+    append_jsonl(
+        prepared_project / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+        [run],
+    )
+    status = external_review_status(prepared_project, manifest.batch_id)
+    assert status["external_approvable"]
+    assert (
+        approve_batch(prepared_project, manifest.batch_id, "external")
+        is ProjectStatus.EXTERNAL_REVIEWED
+    )
+    outputs = render_project(
+        prepared_project, None, "after-external", batch_id=manifest.batch_id
+    )
+    assert Path(outputs["markdown"]).is_file()
+    external_summary = Path(outputs["external_review"])
+    assert external_summary.is_file()
+    assert "External approval gate: PASS" in external_summary.read_text(encoding="utf-8")

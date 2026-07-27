@@ -25,6 +25,7 @@ class ProjectStatus(StrEnum):
     REVIEWED = "reviewed"
     REVISED = "revised"
     MACHINE_REVIEWED = "machine-reviewed"
+    EXTERNAL_REVIEWED = "external-reviewed"
     HUMAN_APPROVED = "human-approved"
 
 
@@ -79,8 +80,90 @@ class IssueStatus(StrEnum):
     WAIVED = "waived"
 
 
+class ExternalReviewDriver(StrEnum):
+    CLAUDE_CODE = "claude-code"
+    ANTIGRAVITY = "antigravity"
+
+
+class ExternalReviewVerdict(StrEnum):
+    ACCEPTED = "accepted"
+    CHANGES_REQUESTED = "changes-requested"
+    INCONCLUSIVE = "inconclusive"
+
+
+class ExternalReviewFallback(StrictModel):
+    model: str
+    effort: str | None = None
+
+
+class ExternalReviewerConfig(StrictModel):
+    id: str
+    driver: ExternalReviewDriver
+    command: str
+    model: str
+    effort: str | None = None
+    fast: bool | None = None
+    fallbacks: list[ExternalReviewFallback] = Field(default_factory=list)
+
+    @field_validator("id", "command", "model")
+    @classmethod
+    def require_nonempty_external_reviewer_values(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("external reviewer values must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def validate_driver_options(self) -> ExternalReviewerConfig:
+        if self.driver is ExternalReviewDriver.ANTIGRAVITY and self.fast is not None:
+            raise ValueError("fast is only supported by the claude-code driver")
+        if self.driver is ExternalReviewDriver.CLAUDE_CODE and self.fast is True:
+            raise ValueError("external Claude Code review must not enable fast mode")
+        for fallback in self.fallbacks:
+            if (
+                self.driver is ExternalReviewDriver.ANTIGRAVITY
+                and fallback.model == "claude-sonnet-4-6"
+                and fallback.effort is not None
+            ):
+                raise ValueError("Antigravity claude-sonnet-4-6 fallback cannot set effort")
+        return self
+
+
+class ExternalSecondOpinionConfig(StrictModel):
+    mode: str = "on-uncertainty"
+    confidence_below: float = Field(default=0.9, ge=0, le=1)
+    severities: list[Severity] = Field(default_factory=lambda: [Severity.BLOCKER, Severity.MAJOR])
+
+    @field_validator("mode")
+    @classmethod
+    def require_supported_second_opinion_mode(cls, value: str) -> str:
+        if value != "on-uncertainty":
+            raise ValueError("second_opinion.mode must be on-uncertainty")
+        return value
+
+
+class ExternalReviewConfig(StrictModel):
+    enabled: bool = True
+    assignment: str = "least-used"
+    reviewers_per_batch: int = Field(default=1, ge=1)
+    reviewers: list[ExternalReviewerConfig]
+    second_opinion: ExternalSecondOpinionConfig = Field(default_factory=ExternalSecondOpinionConfig)
+
+    @model_validator(mode="after")
+    def validate_external_review_config(self) -> ExternalReviewConfig:
+        if self.assignment != "least-used":
+            raise ValueError("external_review.assignment must be least-used")
+        if self.reviewers_per_batch != 1:
+            raise ValueError("external_review.reviewers_per_batch must be 1")
+        if not self.reviewers:
+            raise ValueError("external_review.reviewers must contain at least one reviewer")
+        ids = [reviewer.id for reviewer in self.reviewers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("external reviewer IDs must be unique")
+        return self
+
+
 class ProjectConfig(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     project_id: str
     title: str
     source_path: str
@@ -90,6 +173,7 @@ class ProjectConfig(StrictModel):
     source_language: str = "en"
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
+    external_review: ExternalReviewConfig | None = None
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)
@@ -234,6 +318,39 @@ class ReviewIssue(StrictModel):
     status: IssueStatus = IssueStatus.OPEN
     resolution: str | None = None
     resolved_at: str | None = None
+
+
+class ExternalReviewRun(StrictModel):
+    schema_version: int = 1
+    run_id: str
+    batch_id: str
+    reviewer_id: str
+    driver: ExternalReviewDriver
+    role: str
+    requested_model: str
+    actual_model: str | None = None
+    actual_model_label: str | None = None
+    model_verified: bool = False
+    cli_version: str | None = None
+    effort: str | None = None
+    fast_mode: str | None = None
+    translation_fingerprint: str
+    packet_sha256: str
+    prompt_version: str
+    verdict: ExternalReviewVerdict
+    summary: str
+    issue_ids: list[str] = Field(default_factory=list)
+    response_path: str | None = None
+    attempts: int = Field(default=1, ge=1)
+    success: bool = True
+    reviewed_at: str = Field(default_factory=utc_now)
+
+    @field_validator("role")
+    @classmethod
+    def require_supported_external_role(cls, value: str) -> str:
+        if value not in {"primary", "second-opinion"}:
+            raise ValueError("external review role must be primary or second-opinion")
+        return value
 
 
 class BatchManifest(StrictModel):

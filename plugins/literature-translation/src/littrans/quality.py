@@ -466,6 +466,7 @@ def import_review(
     batch_id: str,
     input_path: Path,
     lenses: list[str] | None = None,
+    preserve_status: bool = False,
 ) -> list[ReviewIssue]:
     manifest = load_manifest(root, batch_id)
     issues = read_jsonl(input_path, ReviewIssue)
@@ -503,14 +504,15 @@ def import_review(
             "total_issue_count": len(merged_issues),
         },
     )
-    with project_write_lock(root):
-        current = translation_map(root)
-        for unit_id in manifest.translatable_unit_ids:
-            current[unit_id] = current[unit_id].model_copy(
-                update={"status": ProjectStatus.REVIEWED}
-            )
-        write_jsonl(root / "translations" / "current.jsonl", current.values())
-        promote_status(root, ProjectStatus.REVIEWED)
+    if not preserve_status:
+        with project_write_lock(root):
+            current = translation_map(root)
+            for unit_id in manifest.translatable_unit_ids:
+                current[unit_id] = current[unit_id].model_copy(
+                    update={"status": ProjectStatus.REVIEWED}
+                )
+            write_jsonl(root / "translations" / "current.jsonl", current.values())
+            promote_status(root, ProjectStatus.REVIEWED)
     return merged_issues
 
 
@@ -564,8 +566,8 @@ def approve_batch(
     level: str,
     confirm_user_approved: bool = False,
 ) -> ProjectStatus:
-    if level not in {"machine", "human"}:
-        raise ValueError("level must be machine or human")
+    if level not in {"machine", "external", "human"}:
+        raise ValueError("level must be machine, external, or human")
     manifest = load_manifest(root, batch_id)
     require_verified_extraction(root, set(manifest.pages))
     qa_path = root / "qa" / f"{batch_id}.json"
@@ -595,10 +597,22 @@ def approve_batch(
         raise ValueError(
             "Human approval requires --confirm-user-approved after explicit user confirmation"
         )
+    if level == "external":
+        from littrans.external_review import external_review_status
 
-    target_status = (
-        ProjectStatus.HUMAN_APPROVED if level == "human" else ProjectStatus.MACHINE_REVIEWED
-    )
+        external = external_review_status(root, batch_id)
+        if not external["external_approvable"]:
+            raise ValueError(
+                "External approval gate is not satisfied: "
+                f"verdict={external['verdict']}, "
+                f"open_substantive_issues={external['open_substantive_issues']}"
+            )
+
+    target_status = {
+        "machine": ProjectStatus.MACHINE_REVIEWED,
+        "external": ProjectStatus.EXTERNAL_REVIEWED,
+        "human": ProjectStatus.HUMAN_APPROVED,
+    }[level]
     with project_write_lock(root):
         current = translation_map(root)
         for unit_id in manifest.translatable_unit_ids:

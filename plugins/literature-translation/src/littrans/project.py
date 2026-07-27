@@ -135,7 +135,11 @@ def project_status(root: Path) -> dict[str, Any]:
     )
     reviewed_count = sum(
         status_counts[status]
-        for status in (ProjectStatus.MACHINE_REVIEWED.value, ProjectStatus.HUMAN_APPROVED.value)
+        for status in (
+            ProjectStatus.MACHINE_REVIEWED.value,
+            ProjectStatus.EXTERNAL_REVIEWED.value,
+            ProjectStatus.HUMAN_APPROVED.value,
+        )
     )
     return {
         "project_id": config.project_id,
@@ -158,6 +162,7 @@ def project_status(root: Path) -> dict[str, Any]:
 def write_schemas(output: Path) -> None:
     from littrans.models import (
         BatchManifest,
+        ExternalReviewRun,
         ProjectConfig,
         ReviewIssue,
         SourceUnit,
@@ -171,6 +176,7 @@ def write_schemas(output: Path) -> None:
         "translation-record.schema.json": TranslationRecord,
         "review-issue.schema.json": ReviewIssue,
         "batch-manifest.schema.json": BatchManifest,
+        "external-review-run.schema.json": ExternalReviewRun,
     }
     for filename, model in models.items():
         (output / filename).write_text(
