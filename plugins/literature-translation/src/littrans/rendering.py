@@ -432,6 +432,8 @@ def render_project(
     environment = Environment(
         loader=FileSystemLoader(plugin_root() / "templates"),
         autoescape=select_autoescape(["html", "xml"]),
+        trim_blocks=True,
+        lstrip_blocks=True,
     )
     template = environment.get_template("bilingual.html.j2")
     html_path.write_text(
