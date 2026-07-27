@@ -99,6 +99,14 @@
       "title": "SemanticStatus",
       "type": "string"
     },
+    "SidebarRole": {
+      "enum": [
+        "title",
+        "body"
+      ],
+      "title": "SidebarRole",
+      "type": "string"
+    },
     "SourceFragment": {
       "additionalProperties": false,
       "properties": {
@@ -254,6 +262,29 @@
       ],
       "default": null,
       "title": "Parent Id"
+    },
+    "sidebar_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sidebar Id"
+    },
+    "sidebar_role": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SidebarRole"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "translatable": {
       "default": true,

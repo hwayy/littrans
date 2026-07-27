@@ -201,8 +201,13 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
                 f"- {label.source} => {label.target or '[missing]'}"
                 for label in (record.figure_labels if record else unit.figure_labels)
             )
+        structure = (
+            f"; sidebar {unit.sidebar_id}, role {unit.sidebar_role}"
+            if unit.sidebar_id and unit.sidebar_role
+            else ""
+        )
         sections.append(
-            f"## Unit {unit_id} (PDF page {unit.page}; {unit.kind})\n\n"
+            f"## Unit {unit_id} (PDF page {unit.page}; {unit.kind}{structure})\n\n"
             f"### Source\n\n{unit.source_markdown or unit.source_text}\n\n"
             f"### Translation\n\n{target}{labels}\n"
         )
@@ -221,6 +226,9 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
         "- Target text stores semantic body text only. The deterministic renderer owns "
         "heading markers, list markers, and Note/Tip/Warning shells and localized labels; "
         "do not report those absent wrappers as omissions.\n"
+        "- Units carrying the same sidebar ID form one visually grouped sidebar. The renderer "
+        "owns the sidebar border, background, title emphasis, and grouping; review the title/body "
+        "roles and the rendered page image rather than expecting those wrappers in target text.\n"
         "- Source-only code and verified equations intentionally have no translation. "
         "Formula wording and units remain in the verified LaTeX.\n"
         "- Only labels listed on units of kind `figure` are translatable figure labels. "

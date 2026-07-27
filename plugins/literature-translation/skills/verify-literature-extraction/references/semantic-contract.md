@@ -10,6 +10,7 @@
 - Code: exact characters and indentation, plus a known language when identifiable.
 - Figure: original visual, translated caption, and translated internal labels or an explicit finding that none exist.
 - Note/Tip/Warning: `note` kind so renderers emit an admonition.
+- Titled sidebar: retain separate heading/body units, assign a shared `sidebar_id`, mark the heading as `sidebar_role: title`, mark every contained unit as `sidebar_role: body`, and verify the entire group visually. Do not flatten a multi-paragraph sidebar into an ordinary heading plus body prose.
 
 ## Override example
 

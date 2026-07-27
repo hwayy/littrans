@@ -43,6 +43,11 @@ class UnitKind(StrEnum):
     BIBLIOGRAPHY = "bibliography"
 
 
+class SidebarRole(StrEnum):
+    TITLE = "title"
+    BODY = "body"
+
+
 class SemanticStatus(StrEnum):
     UNVERIFIED = "unverified"
     AUTO = "auto"
@@ -234,6 +239,8 @@ class SourceUnit(StrictModel):
     source_hash: str
     source_markdown: str | None = None
     parent_id: str | None = None
+    sidebar_id: str | None = None
+    sidebar_role: SidebarRole | None = None
     translatable: bool = True
     render_policy: RenderPolicy = RenderPolicy.INCLUDE
     protected_tokens: list[str] = Field(default_factory=list)
@@ -256,6 +263,20 @@ class SourceUnit(StrictModel):
     def require_omitted_units_to_be_nontranslatable(self) -> SourceUnit:
         if self.render_policy is RenderPolicy.OMIT and self.translatable:
             raise ValueError("omitted units cannot be translatable")
+        if (self.sidebar_id is None) != (self.sidebar_role is None):
+            raise ValueError("sidebar_id and sidebar_role must be set together")
+        if self.sidebar_id is not None and not self.sidebar_id.strip():
+            raise ValueError("sidebar_id must not be empty")
+        if self.sidebar_role is SidebarRole.TITLE and self.kind is not UnitKind.HEADING:
+            raise ValueError("a sidebar title must retain heading semantics")
+        if self.sidebar_role is SidebarRole.BODY and self.kind not in {
+            UnitKind.PARAGRAPH,
+            UnitKind.LIST_ITEM,
+            UnitKind.CODE,
+            UnitKind.TABLE,
+            UnitKind.FIGURE,
+        }:
+            raise ValueError("unsupported sidebar body unit kind")
         return self
 
 

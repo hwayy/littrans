@@ -31,10 +31,16 @@ def _word_count(text: str) -> int:
 
 
 def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
+    sidebar = (
+        f" | sidebar: {unit.sidebar_id}/{unit.sidebar_role}"
+        if unit.sidebar_id and unit.sidebar_role
+        else ""
+    )
     marker = (
         f"<!-- unit: {unit.unit_id} | page: {unit.page} | kind: {unit.kind} | "
         f"translatable: {str(unit.translatable).lower()} | source_hash: {unit.source_hash} | "
-        f"verified: {unit.verification_status} | continues: {str(unit.continues_from_previous).lower()} -->"
+        f"verified: {unit.verification_status} | continues: {str(unit.continues_from_previous).lower()}"
+        f"{sidebar} -->"
     )
     if unit.kind == "code":
         body = fenced_code(unit.source_text, unit.code_language)
@@ -43,6 +49,10 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
         body = f"$$\n{unit.latex or unit.source_text}{number}\n$$"
     elif unit.kind == "table" and unit.table:
         body = table_to_markdown(unit.table)
+    elif unit.sidebar_role == "title":
+        body = f"> [!NOTE]\n> **{unit.source_text}**"
+    elif unit.sidebar_role == "body":
+        body = "\n".join(f"> {line}" for line in unit.source_text.splitlines())
     elif unit.kind == "note":
         body = "> [!NOTE]\n" + "\n".join(
             f"> {line}" for line in unit.source_text.splitlines()

@@ -20,6 +20,7 @@ from littrans.models import (
     RenderPolicy,
     SemanticStatus,
     Severity,
+    SidebarRole,
     SourceFragment,
     SourceUnit,
     TableData,
@@ -896,11 +897,18 @@ def _apply_override(
             "latex",
             "equation_number",
             "code_language",
+            "sidebar_id",
             "continues_from_previous",
             "continued_to_next",
         ):
             if field in override:
                 updates[field] = override[field]
+        if "sidebar_role" in override:
+            updates["sidebar_role"] = (
+                SidebarRole(str(override["sidebar_role"]))
+                if override["sidebar_role"] is not None
+                else None
+            )
         if "table" in override:
             updates["table"] = TableData.model_validate(override["table"])
         if "figure_labels" in override:
@@ -951,18 +959,40 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
         project_root / "translations" / "current.jsonl", TranslationRecord
     )
     translated_ids = {record.unit_id for record in translations}
-    changed_source_ids: set[str] = set()
+    removed_translation_ids: set[str] = set()
+    invalidated_translation_ids: set[str] = set()
+    translation_affecting_fields = (
+        "kind",
+        "source_hash",
+        "source_markdown",
+        "parent_id",
+        "sidebar_id",
+        "sidebar_role",
+        "translatable",
+        "render_policy",
+        "latex",
+        "equation_number",
+        "code_language",
+        "table",
+        "continues_from_previous",
+        "continued_to_next",
+        "figure_labels",
+    )
     updated: list[SourceUnit] = []
     for unit in units:
         revised = _apply_override(unit, overrides)
         if revised is None:
             if unit.unit_id in translated_ids:
-                changed_source_ids.add(unit.unit_id)
+                removed_translation_ids.add(unit.unit_id)
             continue
-        if revised.source_hash != unit.source_hash and unit.unit_id in translated_ids:
-            changed_source_ids.add(unit.unit_id)
-        if unit.translatable and not revised.translatable and unit.unit_id in translated_ids:
-            changed_source_ids.add(unit.unit_id)
+        if unit.unit_id in translated_ids and any(
+            getattr(revised, field) != getattr(unit, field)
+            for field in translation_affecting_fields
+        ):
+            if revised.source_hash != unit.source_hash or not revised.translatable:
+                removed_translation_ids.add(unit.unit_id)
+            else:
+                invalidated_translation_ids.add(unit.unit_id)
         if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
             config = load_project(project_root)
             document = fitz.open(config.source(project_root))
@@ -990,13 +1020,16 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
             project_root / "translations" / "current.jsonl",
             (
                 record.model_copy(update={"status": ProjectStatus.DRAFT})
+                if record.unit_id in invalidated_translation_ids
+                else record
                 for record in translations
-                if record.unit_id not in changed_source_ids
+                if record.unit_id not in removed_translation_ids
             ),
         )
-        config = load_project(project_root)
-        config.status = ProjectStatus.DRAFT
-        save_project(project_root, config)
+        if invalidated_translation_ids or removed_translation_ids:
+            config = load_project(project_root)
+            config.status = ProjectStatus.DRAFT
+            save_project(project_root, config)
     unit_by_id = {unit.unit_id: unit for unit in updated}
     issues_path = project_root / "derived" / "extraction-issues.jsonl"
     issues = read_jsonl(issues_path, ExtractionIssue)

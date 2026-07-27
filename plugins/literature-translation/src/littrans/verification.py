@@ -14,6 +14,7 @@ from littrans.models import (
     IssueStatus,
     SemanticStatus,
     Severity,
+    SidebarRole,
     SourceUnit,
     UnitKind,
 )
@@ -40,7 +41,8 @@ def _coverage(page_text: str, units: list[SourceUnit]) -> float:
 def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for unit in units:
+    sidebar_members: dict[str, list[tuple[int, SourceUnit]]] = {}
+    for index, unit in enumerate(units):
         if unit.unit_id in seen:
             errors.append({"code": "duplicate-unit-id", "unit_id": unit.unit_id})
         seen.add(unit.unit_id)
@@ -81,6 +83,17 @@ def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]
                 errors.append(
                     {"code": "missing-asset", "unit_id": unit.unit_id, "path": asset.path}
                 )
+        if unit.sidebar_id:
+            sidebar_members.setdefault(unit.sidebar_id, []).append((index, unit))
+            if unit.verification_status is not SemanticStatus.VERIFIED:
+                errors.append({"code": "unverified-sidebar", "unit_id": unit.unit_id})
+    for sidebar_id, members in sidebar_members.items():
+        indices = [index for index, _ in members]
+        titles = [unit for _, unit in members if unit.sidebar_role is SidebarRole.TITLE]
+        if len(titles) != 1 or members[0][1].sidebar_role is not SidebarRole.TITLE:
+            errors.append({"code": "invalid-sidebar-title", "sidebar_id": sidebar_id})
+        if indices != list(range(indices[0], indices[-1] + 1)):
+            errors.append({"code": "noncontiguous-sidebar", "sidebar_id": sidebar_id})
     return errors
 
 

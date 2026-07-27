@@ -13,6 +13,13 @@
     header p { margin:0; color:var(--muted); font-size:.9rem; }
     main { width:min(1500px,96vw); margin:1.5rem auto 5rem; }
     article { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border-top:1px solid var(--line); scroll-margin-top:6rem; }
+    article.sidebar { border-left:4px solid var(--accent); border-right:4px solid var(--accent); background:color-mix(in srgb,var(--paper) 88%,var(--accent) 5%); }
+    article.sidebar-start { margin-top:1.5rem; border-top:4px solid var(--accent); border-radius:.35rem .35rem 0 0; }
+    article.sidebar-end { margin-bottom:1.5rem; border-bottom:4px solid var(--accent); border-radius:0 0 .35rem .35rem; }
+    article.sidebar:not(.sidebar-start) { border-top:0; }
+    article.sidebar .meta { padding-top:.18rem; padding-bottom:.18rem; }
+    .sidebar-fragment { display:block; }
+    .sidebar-fragment h3 { margin:.1rem 0 .35rem; font:700 1.08em/1.35 "Segoe UI","Noto Sans SC",sans-serif; letter-spacing:.035em; text-transform:uppercase; }
     .meta { grid-column:1/-1; padding:.35rem .8rem; color:var(--muted); font:12px/1.4 ui-monospace,monospace; overflow-wrap:anywhere; background:color-mix(in srgb,var(--paper) 80%,var(--line)); }
     .source,.target { min-width:0; padding:1rem 1.25rem 1.35rem; font:17px/1.72 Georgia,"Noto Serif SC",serif; overflow-wrap:anywhere; }
     .source p,.target p { margin:.15rem 0; }
@@ -48,7 +55,7 @@
 <main>
 {% for row in rows %}
   {% if not loop.first and row.unit.page - loop.previtem.unit.page > 1 %}<div class="page-gap">选定试译范围：PDF p.{{ loop.previtem.unit.page }} → p.{{ row.unit.page }}</div>{% endif %}
-  <article id="{{ row.unit.unit_id }}">
+  <article id="{{ row.unit.unit_id }}"{% if row.unit.sidebar_id %} class="sidebar{% if row.sidebar_start %} sidebar-start{% endif %}{% if row.sidebar_end %} sidebar-end{% endif %}" data-sidebar-id="{{ row.unit.sidebar_id }}"{% endif %}>
     <div class="meta"><a href="{{ pdf_uri }}#page={{ row.unit.page }}">PDF p.{{ row.unit.page }}{% if row.last_page != row.unit.page %}-{{ row.last_page }}{% endif %}</a> · {{ row.unit.kind }} · {{ row.unit.unit_id }}</div>
     {% if row.assets %}<div class="assets">{% for asset in row.assets %}<img src="{{ asset }}" alt="{{ row.unit.kind }} on PDF page {{ row.unit.page }}">{% endfor %}</div>{% endif %}
     <section class="source">{{ row.source_html | safe }}</section>

@@ -31,6 +31,7 @@ from littrans.models import (
     RenderPolicy,
     ReviewIssue,
     Severity,
+    SidebarRole,
     SourceUnit,
     TranslationRecord,
     UnitKind,
@@ -170,6 +171,78 @@ def test_reviewed_protected_token_override_can_correct_a_source_typo(
     assert updated.protected_tokens == ["CorrectedApiName"]
 
 
+def test_layout_overrides_only_invalidate_affected_translations(
+    prepared_project: Path,
+) -> None:
+    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    affected = next(
+        unit for unit in units if unit.translatable and unit.kind is UnitKind.PARAGRAPH
+    )
+    unaffected = next(
+        unit for unit in units if unit.translatable and unit.unit_id != affected.unit_id
+    )
+    translated_units = [affected, unaffected]
+    records = [
+        TranslationRecord(
+            unit_id=unit.unit_id,
+            target_text=f"译文：{unit.source_text}",
+            source_hash=unit.source_hash,
+            status=ProjectStatus.EXTERNAL_REVIEWED,
+        )
+        for unit in translated_units
+    ]
+    write_jsonl(prepared_project / "translations" / "current.jsonl", records)
+    config = load_project(prepared_project)
+    config.status = ProjectStatus.EXTERNAL_REVIEWED
+    save_project(prepared_project, config)
+
+    untranslated = next(unit for unit in units if not unit.translatable)
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": untranslated.unit_id,
+                    "verified": True,
+                    "reason": "Visually verified a source-only structural unit.",
+                }
+            ]
+        },
+    )
+    apply_layout_overrides(prepared_project)
+    assert load_project(prepared_project).status is ProjectStatus.EXTERNAL_REVIEWED
+    assert all(
+        record.status is ProjectStatus.EXTERNAL_REVIEWED
+        for record in read_jsonl(
+            prepared_project / "translations" / "current.jsonl", TranslationRecord
+        )
+    )
+
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": affected.unit_id,
+                    "kind": "heading",
+                    "verified": True,
+                    "reason": "Visually verified this unit as a heading.",
+                }
+            ]
+        },
+    )
+    apply_layout_overrides(prepared_project)
+    current = {
+        record.unit_id: record
+        for record in read_jsonl(
+            prepared_project / "translations" / "current.jsonl", TranslationRecord
+        )
+    }
+    assert current[affected.unit_id].status is ProjectStatus.DRAFT
+    assert current[unaffected.unit_id].status is ProjectStatus.EXTERNAL_REVIEWED
+    assert load_project(prepared_project).status is ProjectStatus.DRAFT
+
+
 def _submit_identity_translations(root: Path, batch_id: str) -> None:
     manifest_path = root / "batches" / batch_id / "manifest.yaml"
     import yaml
@@ -296,6 +369,40 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
     assert "<strong>Tip</strong>" in _unit_html(tip, tip.source_text)
     assert "<strong>提示</strong>" in _unit_html(tip, "中文提示正文。")
     assert _target_markdown(tip, "中文提示正文。").startswith("> [!TIP]\n")
+
+
+def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
+    title = SourceUnit(
+        unit_id="p0001-u001-sidebar",
+        kind=UnitKind.HEADING,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="DPI SCALING",
+        source_hash=sha256_text("DPI SCALING"),
+        sidebar_id="p0001-sidebar-001",
+        sidebar_role=SidebarRole.TITLE,
+        confidence=1.0,
+    )
+    body = SourceUnit(
+        unit_id="p0001-u002-sidebar",
+        kind=UnitKind.PARAGRAPH,
+        page=1,
+        bbox=(0, 1, 1, 2),
+        source_text="Body paragraph.",
+        source_hash=sha256_text("Body paragraph."),
+        sidebar_id="p0001-sidebar-001",
+        sidebar_role=SidebarRole.BODY,
+        confidence=1.0,
+    )
+    assert _target_markdown(title, "DPI 缩放") == "> [!NOTE]\n> **DPI 缩放**"
+    assert _target_markdown(body, "侧栏正文。") == "> 侧栏正文。"
+    assert 'class="sidebar-fragment sidebar-title"' in _unit_html(title, "DPI 缩放")
+    assert 'class="sidebar-fragment sidebar-body"' in _unit_html(body, "侧栏正文。")
+
+    with pytest.raises(ValueError, match="must be set together"):
+        body.model_copy(update={"sidebar_role": None}).__class__.model_validate(
+            body.model_copy(update={"sidebar_role": None}).model_dump()
+        )
 
 
 def test_ordered_list_marker_is_renderer_owned() -> None:

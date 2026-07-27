@@ -21,6 +21,7 @@ from littrans.models import (
     RenderPolicy,
     ReviewIssue,
     Severity,
+    SidebarRole,
     SourceUnit,
     UnitKind,
 )
@@ -121,6 +122,12 @@ def _coalesce_code_units(
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target or unit.source_text
     safe_text = escape_markdown_prose(text)
+    if unit.sidebar_role is SidebarRole.TITLE:
+        return f"> [!NOTE]\n> **{safe_text}**"
+    if unit.sidebar_role is SidebarRole.BODY:
+        plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
+        inner = _target_markdown(plain_unit, target)
+        return "\n".join(">" if not line else f"> {line}" for line in inner.splitlines())
     if unit.kind is UnitKind.HEADING:
         return f"## {safe_text}"
     if unit.kind is UnitKind.LIST_ITEM:
@@ -175,6 +182,13 @@ def _inline_html(text: str) -> str:
 
 def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -> str:
     text = target if target is not None else (unit.source_markdown or unit.source_text)
+    if unit.sidebar_role is SidebarRole.TITLE:
+        return '<aside class="sidebar-fragment sidebar-title"><h3>' + _inline_html(text) + "</h3></aside>"
+    if unit.sidebar_role is SidebarRole.BODY:
+        plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
+        return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
+            plain_unit, target, target_table
+        ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
         try:
@@ -426,6 +440,15 @@ def render_project(
             )
         previous_page = unit_last_page
         previous_unit = unit
+    for index, row in enumerate(rows):
+        sidebar_id = row["unit"].sidebar_id
+        row["sidebar_start"] = bool(
+            sidebar_id and (index == 0 or rows[index - 1]["unit"].sidebar_id != sidebar_id)
+        )
+        row["sidebar_end"] = bool(
+            sidebar_id
+            and (index == len(rows) - 1 or rows[index + 1]["unit"].sidebar_id != sidebar_id)
+        )
     markdown_text = "\n".join(markdown).rstrip() + "\n"
     markdown_path.write_text(markdown_text, encoding="utf-8")
 
