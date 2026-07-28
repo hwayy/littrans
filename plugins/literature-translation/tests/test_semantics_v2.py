@@ -11,7 +11,9 @@ from littrans.project import initialize_project
 from littrans.rendering import (
     _coalesce_code_units,
     _continuation_separator,
+    _continued_note_markdown,
     _inline_html,
+    _merge_continued_note_html,
 )
 from littrans.semantics import (
     escape_markdown_prose,
@@ -145,3 +147,16 @@ def test_continuation_separator_preserves_english_words_without_spacing_cjk() ->
     assert _continuation_separator("Doing so will", "give you") == " "
     assert _continuation_separator("这样做", "能让你") == ""
     assert _continuation_separator("<p>这样做</p>", "<p>能让你</p>") == ""
+
+
+def test_cross_page_note_continuation_keeps_one_callout() -> None:
+    rendered = "> [!TIP]\n> 下一页的提示正文。"
+    assert _continued_note_markdown(rendered, '<a id="u2"></a>') == (
+        '> <a id="u2"></a>下一页的提示正文。'
+    )
+    left = '<aside class="source-note"><strong>提示</strong><p>第一部分</p></aside>'
+    right = '<aside class="source-note"><strong>提示</strong><p>第二部分</p></aside>'
+    assert _merge_continued_note_html(left, right, '<a id="u2"></a>') == (
+        '<aside class="source-note"><strong>提示</strong><p>'
+        '第一部分<a id="u2"></a>第二部分</p></aside>'
+    )

@@ -63,6 +63,34 @@ def _continuation_separator(left: str, right: str) -> str:
     if _is_cjk_character(left_text[-1]) or _is_cjk_character(right_text[0]):
         return ""
     return " "
+
+
+def _continued_note_markdown(rendered: str, anchor: str) -> str:
+    lines = rendered.splitlines()
+    if lines and (lines[0].startswith("> [!") or lines[0].startswith("> **")):
+        lines = lines[1:]
+    if not lines:
+        return f"> {anchor}"
+    if lines[0].startswith("> "):
+        lines[0] = f"> {anchor}{lines[0][2:]}"
+    else:
+        lines[0] = f"> {anchor}{lines[0]}"
+    return "\n".join(lines)
+
+
+def _merge_continued_note_html(left: str, right: str, anchor: str) -> str | None:
+    if not left.endswith("</p></aside>"):
+        return None
+    match = re.fullmatch(
+        r'<aside class="source-note"><strong>.*?</strong><p>(.*)</p></aside>',
+        right,
+        flags=re.S,
+    )
+    if not match:
+        return None
+    body = match.group(1)
+    separator = _continuation_separator(left, body)
+    return left.removesuffix("</p></aside>") + separator + anchor + body + "</p></aside>"
 PYGMENTS_LANGUAGE_ALIASES = {"xaml": "xml"}
 
 
@@ -423,6 +451,17 @@ def render_project(
         if (
             unit.continues_from_previous
             and previous_unit is not None
+            and previous_unit.kind is UnitKind.NOTE
+            and unit.kind is UnitKind.NOTE
+            and markdown
+        ):
+            while markdown and markdown[-1] == "":
+                markdown.pop()
+            markdown[-1] += "\n" + _continued_note_markdown(rendered, anchor)
+            markdown.append("")
+        elif (
+            unit.continues_from_previous
+            and previous_unit is not None
             and previous_unit.kind is UnitKind.PARAGRAPH
             and markdown
         ):
@@ -461,6 +500,42 @@ def render_project(
             source_html = extra_anchors + source_html
             target_html = extra_anchors + target_html
         if (
+            unit.continues_from_previous
+            and rows
+            and rows[-1]["unit"].kind is UnitKind.NOTE
+            and unit.kind is UnitKind.NOTE
+        ):
+            source_note = _merge_continued_note_html(
+                rows[-1]["source_html"],
+                source_html,
+                f'<a id="{html.escape(unit.unit_id)}"></a>',
+            )
+            target_note = _merge_continued_note_html(
+                rows[-1]["target_html"],
+                target_html,
+                f'<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>',
+            )
+            if source_note is not None and target_note is not None:
+                rows[-1]["source_html"] = source_note
+                rows[-1]["target_html"] = target_note
+                if record and record.reader_note:
+                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["last_page"] = unit_last_page
+            else:
+                rows.append(
+                    {
+                        "unit": unit,
+                        "last_page": unit_last_page,
+                        "source_html": source_html,
+                        "target_html": target_html,
+                        "assets": assets,
+                        "record": record,
+                        "reader_notes": [record.reader_note]
+                        if record and record.reader_note
+                        else [],
+                    }
+                )
+        elif (
             unit.continues_from_previous
             and rows
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
