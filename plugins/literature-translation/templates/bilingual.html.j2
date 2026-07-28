@@ -61,7 +61,7 @@
     <section class="source">{{ row.source_html | safe }}</section>
     <section class="target">
       {{ row.target_html | safe }}
-      {% for note in row.reader_notes %}<aside class="reader-note"><strong>读者注：</strong>{{ note.text | inline_html | safe }}<br><small>{% for source in note.sources %}<a href="{{ source }}">来源 {{ loop.index }}</a>{% if not loop.last %} · {% endif %}{% endfor %} · 访问日期 {{ note.accessed_at or "未记录" }}</small></aside>{% endfor %}
+      {% for note in row.reader_notes %}<aside class="reader-note"><strong>读者注：</strong>{{ note.text | reader_note_text | inline_html | safe }}{% if note.sources or note.accessed_at %}<br><small>{% for source in note.sources %}<a href="{{ source }}">来源 {{ loop.index }}</a>{% if not loop.last %} · {% endif %}{% endfor %}{% if note.sources and note.accessed_at %} · {% endif %}{% if note.accessed_at %}访问日期 {{ note.accessed_at }}{% endif %}</small>{% endif %}</aside>{% endfor %}
     </section>
   </article>
 {% endfor %}

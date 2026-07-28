@@ -231,6 +231,159 @@ def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
     assert updated.sidebar_role is SidebarRole.TITLE
 
 
+def test_layout_override_can_insert_a_verified_unit_idempotently(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "derived").mkdir()
+    (root / "overrides").mkdir()
+    first = SourceUnit(
+        unit_id="p0001-u001-first",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text="Name | Description",
+        source_hash=sha256_text("Name | Description"),
+        confidence=1,
+    )
+    second = SourceUnit(
+        unit_id="p0001-u002-second",
+        kind=UnitKind.NOTE,
+        page=1,
+        bbox=(0, 20, 10, 30),
+        source_text="NOTE A note.",
+        source_hash=sha256_text("NOTE A note."),
+        confidence=1,
+    )
+    write_jsonl(root / "derived" / "units.jsonl", [first, second])
+    inserted_id = "p0001-u001-inserted"
+    write_yaml(
+        root / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": inserted_id,
+                    "insert_after": first.unit_id,
+                    "kind": "paragraph",
+                    "page": 1,
+                    "bbox": [0, 11, 10, 19],
+                    "source_text": "A paragraph recovered from a table region.",
+                    "verified": True,
+                    "reason": "Compared with the source PDF.",
+                }
+            ]
+        },
+    )
+
+    first_pass = apply_layout_overrides(root)
+    second_pass = apply_layout_overrides(root)
+    assert [unit.unit_id for unit in first_pass] == [first.unit_id, inserted_id, second.unit_id]
+    assert [unit.unit_id for unit in second_pass] == [first.unit_id, inserted_id, second.unit_id]
+    inserted = second_pass[1]
+    assert inserted.verification_status.value == "verified"
+    assert inserted.source_hash == sha256_text(inserted.source_text)
+
+
+def test_bbox_selector_is_not_a_bbox_update(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "derived").mkdir()
+    (root / "overrides").mkdir()
+    unit = SourceUnit(
+        unit_id="p0001-u001-box",
+        kind=UnitKind.PARAGRAPH,
+        page=1,
+        bbox=(0, 0, 20, 20),
+        source_text="Body text.",
+        source_hash=sha256_text("Body text."),
+        confidence=1,
+    )
+    write_jsonl(root / "derived" / "units.jsonl", [unit])
+    write_yaml(
+        root / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "bbox": [0, 0, 10, 10],
+                    "verified": True,
+                    "reason": "Select the overlapping source region.",
+                }
+            ]
+        },
+    )
+    assert apply_layout_overrides(root)[0].bbox == unit.bbox
+
+    write_yaml(
+        root / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "set_bbox": [1, 2, 19, 18],
+                    "verified": True,
+                    "reason": "Compared the exact region with the source PDF.",
+                }
+            ]
+        },
+    )
+    assert apply_layout_overrides(root)[0].bbox == (1, 2, 19, 18)
+
+
+def test_unit_specific_override_does_not_match_other_units_by_bbox(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "derived").mkdir()
+    (root / "overrides").mkdir()
+    (root / "translations").mkdir()
+    first = SourceUnit(
+        unit_id="p0001-u001-first",
+        kind=UnitKind.PARAGRAPH,
+        page=1,
+        bbox=(0, 0, 20, 20),
+        source_text="Old text.",
+        source_hash=sha256_text("Old text."),
+        confidence=1,
+    )
+    second = first.model_copy(
+        update={
+            "unit_id": "p0002-u001-second",
+            "page": 2,
+            "source_text": "Other text.",
+            "source_hash": sha256_text("Other text."),
+        }
+    )
+    corrected = "Corrected text."
+    write_jsonl(root / "derived" / "units.jsonl", [first, second])
+    write_jsonl(
+        root / "translations" / "current.jsonl",
+        [
+            TranslationRecord(
+                unit_id=first.unit_id,
+                target_text="修正后的译文。",
+                source_hash=sha256_text(corrected),
+            )
+        ],
+    )
+    write_yaml(
+        root / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": first.unit_id,
+                    "bbox": [0, 0, 20, 20],
+                    "source_text": corrected,
+                    "verified": True,
+                    "reason": "Compared with the source PDF.",
+                }
+            ]
+        },
+    )
+
+    revised = apply_layout_overrides(root)
+    assert revised[0].source_text == corrected
+    assert revised[1].source_text == "Other text."
+    assert read_jsonl(root / "translations" / "current.jsonl", TranslationRecord)
+
+
 def test_generic_and_unit_specific_overrides_compose_in_file_order(
     tmp_path: Path,
 ) -> None:
@@ -450,9 +603,7 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
         record.model_copy(
             update={
                 "reader_note": ReaderNote(
-                    text="The source contains a documented technical error.",
-                    sources=["https://example.com/reference"],
-                    accessed_at="2026-07-28",
+                    text="读者注：The source contains a documented technical error.",
                 )
             }
         )
@@ -474,6 +625,11 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     assert markdown.index(f'<a id="{second.unit_id}"></a>') < markdown.index(
         "> **读者注：**"
     )
+    assert "读者注：** 读者注：" not in markdown
+    assert "> 来源：" not in markdown
+    html = Path(outputs["html"]).read_text(encoding="utf-8")
+    assert "读者注：The source" not in html
+    assert "访问日期 未记录" not in html
 
 
 def test_render_policy_omit_is_persistent_and_excluded_from_batches(
@@ -901,6 +1057,32 @@ def test_batch_refresh_and_review_history_are_safe(prepared_project: Path) -> No
     refreshed = refresh_batch(prepared_project, manifest.batch_id)
     assert unit_id not in refreshed.translatable_unit_ids
     assert unit_id not in translation_map(prepared_project)
+
+
+def test_batch_refresh_includes_new_units_inside_existing_boundaries(
+    prepared_project: Path,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="inserted")[0]
+    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    first_id = manifest.unit_ids[0]
+    first_index = next(index for index, unit in enumerate(units) if unit.unit_id == first_id)
+    anchor = units[first_index]
+    inserted = SourceUnit(
+        unit_id="p0001-u001-recovered",
+        kind=UnitKind.PARAGRAPH,
+        page=anchor.page,
+        bbox=anchor.bbox,
+        source_text="Recovered body text.",
+        source_hash=sha256_text("Recovered body text."),
+        confidence=1,
+        verification_status="verified",
+    )
+    units.insert(first_index + 1, inserted)
+    write_jsonl(prepared_project / "derived" / "units.jsonl", units)
+
+    refreshed = refresh_batch(prepared_project, manifest.batch_id)
+    assert inserted.unit_id in refreshed.unit_ids
+    assert inserted.unit_id in refreshed.translatable_unit_ids
 
 
 def test_migration_never_carries_approval(prepared_project: Path) -> None:

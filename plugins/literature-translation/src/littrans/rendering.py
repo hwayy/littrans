@@ -78,6 +78,23 @@ def _continued_note_markdown(rendered: str, anchor: str) -> str:
     return "\n".join(lines)
 
 
+def _reader_note_text(value: str) -> str:
+    """Normalize note content because the renderer supplies its own label."""
+    return re.sub(r"^\s*(?:读者注|译者注)\s*[:：]\s*", "", value, count=1).strip()
+
+
+def _reader_note_markdown(reader_note: Any) -> list[str]:
+    lines = [f"> **读者注：** {_reader_note_text(reader_note.text)}"]
+    sources = "；".join(reader_note.sources)
+    if sources and reader_note.accessed_at:
+        lines.append(f"> 来源：{sources}（访问日期：{reader_note.accessed_at}）")
+    elif sources:
+        lines.append(f"> 来源：{sources}")
+    elif reader_note.accessed_at:
+        lines.append(f"> 访问日期：{reader_note.accessed_at}")
+    return lines
+
+
 def _merge_continued_note_html(left: str, right: str, anchor: str) -> str | None:
     if not left.endswith("</p></aside>"):
         return None
@@ -491,14 +508,7 @@ def render_project(
         )
         if not unit.continued_to_next and not next_continues_this_unit:
             for reader_note in pending_markdown_reader_notes:
-                sources = "；".join(reader_note.sources)
-                markdown.extend(
-                    [
-                        f"> **读者注：** {reader_note.text}",
-                        f"> 来源：{sources}（访问日期：{reader_note.accessed_at or '未记录'}）",
-                        "",
-                    ]
-                )
+                markdown.extend([*_reader_note_markdown(reader_note), ""])
             pending_markdown_reader_notes.clear()
         assets = (
             [f"../{asset.path.replace('\\', '/')}" for asset in unit.asset_refs]
@@ -597,14 +607,7 @@ def render_project(
         previous_page = unit_last_page
         previous_unit = unit
     for reader_note in pending_markdown_reader_notes:
-        sources = "；".join(reader_note.sources)
-        markdown.extend(
-            [
-                f"> **读者注：** {reader_note.text}",
-                f"> 来源：{sources}（访问日期：{reader_note.accessed_at or '未记录'}）",
-                "",
-            ]
-        )
+        markdown.extend([*_reader_note_markdown(reader_note), ""])
     for index, row in enumerate(rows):
         sidebar_id = row["unit"].sidebar_id
         row["sidebar_start"] = bool(
@@ -624,6 +627,7 @@ def render_project(
         lstrip_blocks=True,
     )
     environment.filters["inline_html"] = _inline_html
+    environment.filters["reader_note_text"] = _reader_note_text
     template = environment.get_template("bilingual.html.j2")
     html_path.write_text(
         template.render(

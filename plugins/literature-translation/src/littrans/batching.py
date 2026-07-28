@@ -231,17 +231,17 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
     missing = [unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map]
     if missing:
         raise ValueError(f"Batch references removed units: {missing}")
+    positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
+    start_index = min(positions[unit_id] for unit_id in manifest.unit_ids)
+    end_index = max(positions[unit_id] for unit_id in manifest.unit_ids)
     group = [
-        unit_map[unit_id]
-        for unit_id in manifest.unit_ids
-        if unit_map[unit_id].render_policy is RenderPolicy.INCLUDE
+        unit
+        for unit in all_units[start_index : end_index + 1]
+        if unit.render_policy is RenderPolicy.INCLUDE
     ]
     if not group:
         raise ValueError("Batch contains no renderable units after applying structural overrides")
-    previous_scope = set(manifest.translatable_unit_ids)
-    refreshed_scope = [
-        unit.unit_id for unit in group if unit.translatable and unit.unit_id in previous_scope
-    ]
+    refreshed_scope = [unit.unit_id for unit in group if unit.translatable]
     revised = manifest.model_copy(
         update={
             "pages": sorted({unit.page for unit in group}),

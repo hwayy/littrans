@@ -922,7 +922,8 @@ def _apply_override(
     for override in overrides:
         if "page" in override and int(override["page"]) != revised.page:
             continue
-        id_matches = override.get("unit_id") == revised.unit_id
+        override_unit_id = override.get("unit_id")
+        id_matches = override_unit_id == revised.unit_id
         bbox_value = override.get("bbox")
         bbox_matches = False
         if isinstance(bbox_value, list) and len(bbox_value) == 4:
@@ -935,7 +936,10 @@ def _apply_override(
             re.search(str(override["text_regex"]), revised.source_text, re.MULTILINE)
         )
         rule_matches = kind_matches and ("text_regex" not in override or text_matches)
-        if not id_matches and not bbox_matches and not rule_matches:
+        if isinstance(override_unit_id, str):
+            if not id_matches:
+                continue
+        elif not bbox_matches and not rule_matches:
             continue
         if override.get("ignore") is True:
             if not str(override.get("reason", "")).strip():
@@ -975,12 +979,23 @@ def _apply_override(
             "latex",
             "equation_number",
             "code_language",
+            "parent_id",
             "sidebar_id",
             "continues_from_previous",
             "continued_to_next",
         ):
             if field in override:
                 updates[field] = override[field]
+        if "set_bbox" in override:
+            value = override["set_bbox"]
+            if not isinstance(value, list) or len(value) != 4:
+                raise ValueError("set_bbox override must contain four values")
+            updates["bbox"] = _bbox(value)
+        if "fragments" in override:
+            updates["fragments"] = [
+                SourceFragment.model_validate(value)
+                for value in (override["fragments"] or [])
+            ]
         if "sidebar_role" in override:
             updates["sidebar_role"] = (
                 SidebarRole(str(override["sidebar_role"]))
@@ -1032,8 +1047,56 @@ def _apply_override(
     return revised
 
 
+def _inserted_unit_from_override(override: dict[str, Any]) -> SourceUnit:
+    """Build a reviewed source unit inserted between two extracted units."""
+    reason = str(override.get("reason", "")).strip()
+    if not reason:
+        raise ValueError("An insert_after override requires a reason")
+    required = ("unit_id", "insert_after", "kind", "page", "bbox", "source_text")
+    missing = [field for field in required if field not in override]
+    if missing:
+        raise ValueError(f"An insert_after override is missing required fields: {missing}")
+    bbox_value = override["bbox"]
+    if not isinstance(bbox_value, list) or len(bbox_value) != 4:
+        raise ValueError("An insert_after override requires a four-value bbox")
+    kind = UnitKind(str(override["kind"]))
+    source_text = (
+        str(override["source_text"]).replace("\r\n", "\n").rstrip()
+        if kind is UnitKind.CODE
+        else normalize_text(str(override["source_text"]))
+    )
+    page = int(override["page"])
+    bbox = _bbox(bbox_value)
+    payload = {
+        field: value
+        for field, value in override.items()
+        if field in SourceUnit.model_fields
+    }
+    payload.update(
+        {
+            "kind": kind,
+            "page": page,
+            "bbox": bbox,
+            "source_text": source_text,
+            "source_hash": sha256_text(source_text),
+            "protected_tokens": override.get(
+                "protected_tokens", protected_tokens(source_text)
+            ),
+            "fragments": override.get("fragments", [{"page": page, "bbox": bbox}]),
+            "confidence": float(override.get("confidence", 1.0)),
+        }
+    )
+    if override.get("verified") is True:
+        payload["verification_status"] = SemanticStatus.VERIFIED
+        if kind is UnitKind.EQUATION or payload.get("source_markdown"):
+            payload["math_status"] = SemanticStatus.VERIFIED
+        if kind is UnitKind.FIGURE:
+            payload["visual_text_status"] = SemanticStatus.VERIFIED
+    return SourceUnit.model_validate(payload)
+
+
 def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
-    """Apply reviewed structural overrides without changing stable unit identities."""
+    """Apply reviewed structural overrides while retaining reviewed unit identities."""
     units_path = project_root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     if not units:
@@ -1044,9 +1107,23 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
     translations = read_jsonl(
         project_root / "translations" / "current.jsonl", TranslationRecord
     )
-    translated_ids = {record.unit_id for record in translations}
+    translation_by_id = {record.unit_id: record for record in translations}
+    translated_ids = set(translation_by_id)
     removed_translation_ids: set[str] = set()
     invalidated_translation_ids: set[str] = set()
+    existing_ids = {unit.unit_id for unit in units}
+    insertions_by_anchor: dict[str, list[dict[str, Any]]] = {}
+    for override in overrides:
+        anchor = override.get("insert_after")
+        if not isinstance(anchor, str):
+            continue
+        inserted_id = override.get("unit_id")
+        if not isinstance(inserted_id, str) or not inserted_id.strip():
+            raise ValueError("An insert_after override requires a unit_id")
+        insertions_by_anchor.setdefault(anchor, []).append(override)
+    missing_anchors = sorted(set(insertions_by_anchor) - existing_ids)
+    if missing_anchors:
+        raise ValueError(f"insert_after references missing units: {missing_anchors}")
     translation_affecting_fields = (
         "kind",
         "source_hash",
@@ -1073,12 +1150,17 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
             if unit.unit_id in translated_ids:
                 removed_translation_ids.add(unit.unit_id)
             continue
-        if unit.unit_id in translated_ids and any(
+        translation_changed = unit.unit_id in translated_ids and any(
             getattr(revised, field) != getattr(unit, field)
             for field in translation_affecting_fields
-        ):
-            if revised.source_hash != unit.source_hash or not revised.translatable:
+        )
+        if translation_changed:
+            record = translation_by_id[unit.unit_id]
+            if not revised.translatable:
                 removed_translation_ids.add(unit.unit_id)
+            elif revised.source_hash != unit.source_hash:
+                if record.source_hash != revised.source_hash:
+                    removed_translation_ids.add(unit.unit_id)
             else:
                 invalidated_translation_ids.add(unit.unit_id)
         if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
@@ -1102,6 +1184,15 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
                 }
             )
         updated.append(revised)
+        for insertion in insertions_by_anchor.get(unit.unit_id, []):
+            inserted_id = str(insertion["unit_id"])
+            if inserted_id in existing_ids:
+                continue
+            inserted = _inserted_unit_from_override(insertion)
+            if inserted.unit_id in {item.unit_id for item in updated}:
+                raise ValueError(f"Duplicate inserted unit_id: {inserted.unit_id}")
+            updated.append(inserted)
+            existing_ids.add(inserted.unit_id)
     write_jsonl(units_path, updated)
     if translations:
         write_jsonl(
