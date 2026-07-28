@@ -14,6 +14,7 @@ from littrans.external_review import (
     _parse_claude,
     _require_machine_reviewed,
     _select_reviewer,
+    _validate_issue_evidence,
     build_antigravity_command,
     build_claude_command,
     external_review_status,
@@ -1117,7 +1118,6 @@ def test_external_issue_does_not_block_second_opinion_gate(
     empty_review.write_text("", encoding="utf-8")
     import_review(prepared_project, manifest.batch_id, empty_review)
     assert approve_batch(prepared_project, manifest.batch_id, "machine")
-
     external_issue = ReviewIssue(
         issue_id="external-major-r001",
         batch_id=manifest.batch_id,
@@ -1138,3 +1138,29 @@ def test_external_issue_does_not_block_second_opinion_gate(
     )
 
     _require_machine_reviewed(prepared_project, manifest.batch_id)
+
+
+def test_external_issue_evidence_accepts_structured_source_and_target_spans() -> None:
+    payload = {
+        "issues": [
+            {
+                "unit_id": "figure-unit",
+                "source_span": "A Button Stack",
+                "target_span": "按钮堆栈",
+            },
+            {
+                "unit_id": "table-unit",
+                "source_span": "Width and Height",
+                "target_span": "Width 和 Height",
+            },
+        ]
+    }
+    evidence = {
+        "figure-unit": ("A Button Stack", "按钮堆栈"),
+        "table-unit": (
+            "Name | Description\nWidth and Height | Explicit dimensions",
+            "名称 | 说明\nWidth 和 Height | 显式尺寸",
+        ),
+    }
+
+    _validate_issue_evidence(payload, evidence)

@@ -189,6 +189,9 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
     for unit_id in manifest.unit_ids:
         unit = units[unit_id]
         record = translations.get(unit_id)
+        source = unit.source_markdown or unit.source_text
+        if unit.table:
+            source += "\n\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else "[NO TRANSLATION: source-only unit]"
         if record and record.target_table:
             target += "\n\n" + "\n".join(
@@ -207,11 +210,16 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
                 "\n\nReader note (separate from translated body):\n"
                 f"{note.text}{sources}{accessed}"
             )
-        labels = ""
+        source_labels = ""
+        target_labels = ""
         if unit.kind is UnitKind.FIGURE and unit.figure_labels:
-            labels = "\nFigure labels:\n" + "\n".join(
-                f"- {label.source} => {label.target or '[missing]'}"
-                for label in (record.figure_labels if record else unit.figure_labels)
+            labels = record.figure_labels if record else unit.figure_labels
+            source_labels = "\n\nFigure label sources:\n" + "\n".join(
+                f"- {label.source}" for label in labels
+            )
+            target_labels = "\nFigure label translations:\n" + "\n".join(
+                f"- {label.target or '[missing]'}"
+                for label in labels
             )
         structure = (
             f"; sidebar {unit.sidebar_id}, role {unit.sidebar_role}"
@@ -222,8 +230,8 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
             structure += f"; callout {unit.callout_kind}"
         sections.append(
             f"## Unit {unit_id} (PDF page {unit.page}; {unit.kind}{structure})\n\n"
-            f"### Source\n\n{unit.source_markdown or unit.source_text}\n\n"
-            f"### Translation\n\n{target}{labels}{reader_note}\n"
+            f"### Source\n\n{source}{source_labels}\n\n"
+            f"### Translation\n\n{target}{target_labels}{reader_note}\n"
         )
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
@@ -266,17 +274,19 @@ def _evidence_map(root: Path, batch_id: str) -> dict[str, tuple[str, str]]:
     for unit_id in manifest.unit_ids:
         unit = units[unit_id]
         record = translations.get(unit_id)
+        source = unit.source_markdown or unit.source_text
+        if unit.table:
+            source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else ""
         if record and record.target_table:
             target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
         if unit.kind is UnitKind.FIGURE and unit.figure_labels:
             labels = record.figure_labels if record else unit.figure_labels
-            target += "\n" + "\n".join(
-                f"{label.source} => {label.target or '[missing]' }" for label in labels
-            )
+            source += "\n" + "\n".join(label.source for label in labels)
+            target += "\n" + "\n".join(label.target or "[missing]" for label in labels)
         if record and record.reader_note:
             target += "\nReader note: " + record.reader_note.text
-        evidence[unit_id] = (unit.source_markdown or unit.source_text, target)
+        evidence[unit_id] = (source, target)
     return evidence
 
 
