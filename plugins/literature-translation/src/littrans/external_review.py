@@ -282,8 +282,12 @@ def _evidence_map(root: Path, batch_id: str) -> dict[str, tuple[str, str]]:
             target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
         if unit.kind is UnitKind.FIGURE and unit.figure_labels:
             labels = record.figure_labels if record else unit.figure_labels
-            source += "\n" + "\n".join(label.source for label in labels)
-            target += "\n" + "\n".join(label.target or "[missing]" for label in labels)
+            source += "\nFigure label sources:\n" + "\n".join(
+                f"- {label.source}" for label in labels
+            )
+            target += "\nFigure label translations:\n" + "\n".join(
+                f"- {label.target or '[missing]'}" for label in labels
+            )
         if record and record.reader_note:
             target += "\nReader note: " + record.reader_note.text
         evidence[unit_id] = (source, target)

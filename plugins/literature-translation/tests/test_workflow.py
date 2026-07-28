@@ -1145,8 +1145,8 @@ def test_external_issue_evidence_accepts_structured_source_and_target_spans() ->
         "issues": [
             {
                 "unit_id": "figure-unit",
-                "source_span": "A Button Stack",
-                "target_span": "按钮堆栈",
+                "source_span": "Figure label sources:\n- A Button Stack",
+                "target_span": "Figure label translations:\n- 按钮堆栈",
             },
             {
                 "unit_id": "table-unit",
@@ -1156,7 +1156,10 @@ def test_external_issue_evidence_accepts_structured_source_and_target_spans() ->
         ]
     }
     evidence = {
-        "figure-unit": ("A Button Stack", "按钮堆栈"),
+        "figure-unit": (
+            "Figure label sources:\n- A Button Stack",
+            "Figure label translations:\n- 按钮堆栈",
+        ),
         "table-unit": (
             "Name | Description\nWidth and Height | Explicit dimensions",
             "名称 | 说明\nWidth 和 Height | 显式尺寸",
