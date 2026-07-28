@@ -420,7 +420,7 @@ def render_project(
     pending_markdown_reader_notes: list[Any] = []
     previous_page: int | None = None
     previous_unit: SourceUnit | None = None
-    for unit in render_units:
+    for unit_index, unit in enumerate(render_units):
         unit_last_page = max((fragment.page for fragment in unit.fragments), default=unit.page)
         if previous_page is not None and unit.page - previous_page > 1:
             markdown.extend(
@@ -478,7 +478,18 @@ def render_project(
         # A reader note attached to any fragment of a continued paragraph or
         # callout belongs after the complete logical unit.  Emitting it here
         # would interrupt the sentence at a physical page boundary.
-        if not unit.continued_to_next:
+        next_unit = (
+            render_units[unit_index + 1]
+            if unit_index + 1 < len(render_units)
+            else None
+        )
+        next_continues_this_unit = bool(
+            next_unit
+            and next_unit.continues_from_previous
+            and next_unit.kind is unit.kind
+            and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE}
+        )
+        if not unit.continued_to_next and not next_continues_this_unit:
             for reader_note in pending_markdown_reader_notes:
                 sources = "；".join(reader_note.sources)
                 markdown.extend(
