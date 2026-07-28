@@ -71,9 +71,15 @@ def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]
             indentation_lines = [
                 re.sub(r"^\s*\d+\s?", "", line) for line in code_lines
             ]
+            significant_lines = [line.strip() for line in indentation_lines if line.strip()]
+            empty_brace_block = (
+                len(significant_lines) >= 3
+                and significant_lines[-2:] == ["{", "}"]
+            )
             if (
                 len(code_lines) > 2
                 and re.search(r"[<{]", unit.source_text)
+                and not empty_brace_block
                 and not any(
                     line.startswith((" ", "\t")) for line in indentation_lines[1:]
                 )
