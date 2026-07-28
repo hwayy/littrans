@@ -41,6 +41,28 @@ LEGACY_PUBLISHABLE = {
     ProjectStatus.EXTERNAL_REVIEWED,
     ProjectStatus.HUMAN_APPROVED,
 }
+
+
+def _is_cjk_character(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        0x3400 <= codepoint <= 0x4DBF
+        or 0x4E00 <= codepoint <= 0x9FFF
+        or 0xF900 <= codepoint <= 0xFAFF
+        or 0x3040 <= codepoint <= 0x30FF
+        or 0xAC00 <= codepoint <= 0xD7AF
+    )
+
+
+def _continuation_separator(left: str, right: str) -> str:
+    """Return a word separator only when a continued fragment needs one."""
+    left_text = re.sub(r"<[^>]+>", "", html.unescape(left)).rstrip()
+    right_text = re.sub(r"<[^>]+>", "", html.unescape(right)).lstrip()
+    if not left_text or not right_text:
+        return ""
+    if _is_cjk_character(left_text[-1]) or _is_cjk_character(right_text[0]):
+        return ""
+    return " "
 PYGMENTS_LANGUAGE_ALIASES = {"xaml": "xml"}
 
 
@@ -406,7 +428,8 @@ def render_project(
         ):
             while markdown and markdown[-1] == "":
                 markdown.pop()
-            markdown[-1] += f" {anchor}{rendered}"
+            separator = _continuation_separator(markdown[-1], rendered)
+            markdown[-1] += f"{separator}{anchor}{rendered}"
             markdown.append("")
         else:
             markdown.extend([anchor, rendered, ""])
@@ -446,13 +469,19 @@ def render_project(
         ):
             inline_source = source_html.removeprefix("<p>").removesuffix("</p>")
             inline_target = target_html.removeprefix("<p>").removesuffix("</p>")
+            source_separator = _continuation_separator(
+                rows[-1]["source_html"], inline_source
+            )
+            target_separator = _continuation_separator(
+                rows[-1]["target_html"], inline_target
+            )
             rows[-1]["source_html"] = (
                 rows[-1]["source_html"].removesuffix("</p>")
-                + f' <a id="{html.escape(unit.unit_id)}"></a>{inline_source}</p>'
+                + f'{source_separator}<a id="{html.escape(unit.unit_id)}"></a>{inline_source}</p>'
             )
             rows[-1]["target_html"] = (
                 rows[-1]["target_html"].removesuffix("</p>")
-                + f' <a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>{inline_target}</p>'
+                + f'{target_separator}<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>{inline_target}</p>'
             )
             if record and record.reader_note:
                 rows[-1]["reader_notes"].append(record.reader_note)

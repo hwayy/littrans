@@ -8,7 +8,11 @@ from reportlab.pdfgen import canvas
 from littrans.extractor import extract_source
 from littrans.models import SourceUnit, TableData, UnitKind
 from littrans.project import initialize_project
-from littrans.rendering import _coalesce_code_units, _inline_html
+from littrans.rendering import (
+    _coalesce_code_units,
+    _continuation_separator,
+    _inline_html,
+)
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
@@ -135,3 +139,9 @@ def test_cross_page_code_fragments_keep_exact_indentation_in_one_fence() -> None
         '<Window\n    xmlns="urn:wpf"\n  <Grid>\n  </Grid>\n</Window>'
     )
     assert grouped[first.unit_id] == [first.unit_id, second.unit_id]
+
+
+def test_continuation_separator_preserves_english_words_without_spacing_cjk() -> None:
+    assert _continuation_separator("Doing so will", "give you") == " "
+    assert _continuation_separator("这样做", "能让你") == ""
+    assert _continuation_separator("<p>这样做</p>", "<p>能让你</p>") == ""
