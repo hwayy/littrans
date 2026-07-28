@@ -411,6 +411,13 @@ def _validate_result(payload: Any) -> dict[str, Any]:
     ExternalReviewVerdict(payload["verdict"])
     if not isinstance(payload["summary"], str) or not isinstance(payload["issues"], list):
         raise ValueError("External result summary/issues have invalid types")
+    summary = payload["summary"].strip()
+    # A syntactically valid verdict is not useful evidence when the reviewer
+    # returns a placeholder such as "test". Require a minimally substantive
+    # summary so these responses enter the existing format-retry path instead
+    # of silently satisfying the external-review gate.
+    if len(summary) < 10 or len(re.findall(r"\w+", summary, re.UNICODE)) < 2:
+        raise ValueError("External result summary is too short to be auditable")
     for item in payload["issues"]:
         if not isinstance(item, dict):
             raise ValueError("Every external issue must be an object")

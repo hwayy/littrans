@@ -1066,6 +1066,20 @@ def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:
     assert label == "Gemini 3.6 Flash (High)"
     with pytest.raises(json.JSONDecodeError):
         _parse_antigravity('{"verdict": "accepted"', log)
+    with pytest.raises(ValueError, match="too short to be auditable"):
+        _parse_claude(
+            json.dumps(
+                {
+                    "structured_output": {
+                        "verdict": "accepted",
+                        "summary": "test",
+                        "issues": [],
+                    },
+                    "modelUsage": {"claude-sonnet-5": {"inputTokens": 1}},
+                    "fast_mode_state": "off",
+                }
+            )
+        )
 
 
 def test_external_packet_is_isolated_and_external_gate_is_strict(
