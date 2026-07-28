@@ -422,6 +422,62 @@ def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
     assert "$$\na = b + 3" in markdown
 
 
+def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
+    prepared_project: Path,
+) -> None:
+    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    paragraphs = [
+        unit
+        for unit in units
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+    ]
+    first, second = paragraphs[:2]
+    revised = []
+    for unit in units:
+        if unit.unit_id == first.unit_id:
+            unit = unit.model_copy(update={"continued_to_next": True})
+        elif unit.unit_id == second.unit_id:
+            unit = unit.model_copy(update={"continues_from_previous": True})
+        revised.append(unit)
+    write_jsonl(prepared_project / "derived" / "units.jsonl", revised)
+
+    manifest = create_batches(
+        prepared_project, "1", max_words=5000, prefix="continued-note"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    current = read_jsonl(
+        prepared_project / "translations" / "current.jsonl", TranslationRecord
+    )
+    current = [
+        record.model_copy(
+            update={
+                "reader_note": ReaderNote(
+                    text="The source contains a documented technical error.",
+                    sources=["https://example.com/reference"],
+                    accessed_at="2026-07-28",
+                )
+            }
+        )
+        if record.unit_id == first.unit_id
+        else record
+        for record in current
+    ]
+    write_jsonl(prepared_project / "translations" / "current.jsonl", current)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "continued-note.input.jsonl"
+    empty_review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    outputs = render_project(
+        prepared_project, None, "continued-note", batch_id=manifest.batch_id
+    )
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    assert markdown.index(f'<a id="{second.unit_id}"></a>') < markdown.index(
+        "> **读者注：**"
+    )
+
+
 def test_render_policy_omit_is_persistent_and_excluded_from_batches(
     prepared_project: Path,
 ) -> None:

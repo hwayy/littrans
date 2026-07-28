@@ -417,6 +417,7 @@ def render_project(
         "",
     ]
     rows: list[dict[str, Any]] = []
+    pending_markdown_reader_notes: list[Any] = []
     previous_page: int | None = None
     previous_unit: SourceUnit | None = None
     for unit in render_units:
@@ -473,14 +474,21 @@ def render_project(
         else:
             markdown.extend([anchor, rendered, ""])
         if record and record.reader_note:
-            sources = "；".join(record.reader_note.sources)
-            markdown.extend(
-                [
-                    f"> **读者注：** {record.reader_note.text}",
-                    f"> 来源：{sources}（访问日期：{record.reader_note.accessed_at or '未记录'}）",
-                    "",
-                ]
-            )
+            pending_markdown_reader_notes.append(record.reader_note)
+        # A reader note attached to any fragment of a continued paragraph or
+        # callout belongs after the complete logical unit.  Emitting it here
+        # would interrupt the sentence at a physical page boundary.
+        if not unit.continued_to_next:
+            for reader_note in pending_markdown_reader_notes:
+                sources = "；".join(reader_note.sources)
+                markdown.extend(
+                    [
+                        f"> **读者注：** {reader_note.text}",
+                        f"> 来源：{sources}（访问日期：{reader_note.accessed_at or '未记录'}）",
+                        "",
+                    ]
+                )
+            pending_markdown_reader_notes.clear()
         assets = (
             [f"../{asset.path.replace('\\', '/')}" for asset in unit.asset_refs]
             if unit.kind is UnitKind.FIGURE
@@ -577,6 +585,15 @@ def render_project(
             )
         previous_page = unit_last_page
         previous_unit = unit
+    for reader_note in pending_markdown_reader_notes:
+        sources = "；".join(reader_note.sources)
+        markdown.extend(
+            [
+                f"> **读者注：** {reader_note.text}",
+                f"> 来源：{sources}（访问日期：{reader_note.accessed_at or '未记录'}）",
+                "",
+            ]
+        )
     for index, row in enumerate(rows):
         sidebar_id = row["unit"].sidebar_id
         row["sidebar_start"] = bool(
