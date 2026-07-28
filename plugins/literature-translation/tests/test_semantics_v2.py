@@ -8,7 +8,7 @@ from reportlab.pdfgen import canvas
 from littrans.extractor import extract_source
 from littrans.models import SourceUnit, TableData, UnitKind
 from littrans.project import initialize_project
-from littrans.rendering import _coalesce_code_units
+from littrans.rendering import _coalesce_code_units, _inline_html
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
@@ -89,6 +89,14 @@ def test_local_table_code_and_literal_tag_markdown() -> None:
     code = fenced_code("<Button>\n  content\n</Button>", "xml")
     assert code.startswith("```xml\n<Button>")
     assert escape_markdown_prose("Use <Button> here") == "Use &lt;Button&gt; here"
+
+
+def test_inline_html_renders_code_spans_and_math_without_allowing_raw_html() -> None:
+    rendered = _inline_html("Use `<Button>` with $a = b + 3$ and `` `literal` ``.")
+    assert "<code>&lt;Button&gt;</code>" in rendered
+    assert '<span class="math inline">' in rendered
+    assert "<code>`literal`</code>" in rendered
+    assert "<Button>" not in rendered
 
 
 def test_embedded_font_control_glyphs_are_normalized() -> None:

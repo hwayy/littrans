@@ -230,6 +230,52 @@ def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
     assert updated.sidebar_role is SidebarRole.TITLE
 
 
+def test_generic_and_unit_specific_overrides_compose_in_file_order(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "derived").mkdir()
+    (root / "overrides").mkdir()
+    unit = SourceUnit(
+        unit_id="p0082-u001-running-header",
+        kind=UnitKind.PARAGRAPH,
+        page=82,
+        bbox=(0, 0, 10, 10),
+        source_text="CHAPTER 2 ■ XAML",
+        source_hash=sha256_text("CHAPTER 2 ■ XAML"),
+        confidence=1,
+        continued_to_next=True,
+    )
+    write_jsonl(root / "derived" / "units.jsonl", [unit])
+    write_yaml(
+        root / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "page": 82,
+                    "current_kind": "paragraph",
+                    "text_regex": r"^CHAPTER 2",
+                    "render_policy": "omit",
+                    "verified": True,
+                    "reason": "Verified running header.",
+                },
+                {
+                    "unit_id": unit.unit_id,
+                    "continued_to_next": False,
+                    "verified": True,
+                    "reason": "Running headers do not continue into body prose.",
+                },
+            ]
+        },
+    )
+
+    updated = apply_layout_overrides(root)[0]
+    assert updated.render_policy is RenderPolicy.OMIT
+    assert updated.translatable is False
+    assert updated.continued_to_next is False
+
+
 def test_layout_overrides_only_invalidate_affected_translations(
     prepared_project: Path,
 ) -> None:

@@ -918,19 +918,21 @@ def _apply_override(
     unit: SourceUnit,
     overrides: list[dict[str, Any]],
 ) -> SourceUnit | None:
+    revised = unit
     for override in overrides:
-        if "page" in override and int(override["page"]) != unit.page:
+        if "page" in override and int(override["page"]) != revised.page:
             continue
-        id_matches = override.get("unit_id") == unit.unit_id
+        id_matches = override.get("unit_id") == revised.unit_id
         bbox_value = override.get("bbox")
         bbox_matches = False
         if isinstance(bbox_value, list) and len(bbox_value) == 4:
-            bbox_matches = _rect_overlap(unit.bbox, _bbox(bbox_value)) > 0.5
+            bbox_matches = _rect_overlap(revised.bbox, _bbox(bbox_value)) > 0.5
         kind_matches = (
-            "current_kind" in override and str(override["current_kind"]) == unit.kind.value
+            "current_kind" in override
+            and str(override["current_kind"]) == revised.kind.value
         )
         text_matches = "text_regex" in override and bool(
-            re.search(str(override["text_regex"]), unit.source_text, re.MULTILINE)
+            re.search(str(override["text_regex"]), revised.source_text, re.MULTILINE)
         )
         rule_matches = kind_matches and ("text_regex" not in override or text_matches)
         if not id_matches and not bbox_matches and not rule_matches:
@@ -953,7 +955,7 @@ def _apply_override(
                 raise ValueError("A source_text override requires a reason")
             corrected = (
                 str(override["source_text"]).replace("\r\n", "\n").rstrip()
-                if updates.get("kind", unit.kind) is UnitKind.CODE
+                if updates.get("kind", revised.kind) is UnitKind.CODE
                 else normalize_text(str(override["source_text"]))
             )
             updates["source_text"] = corrected
@@ -1019,13 +1021,15 @@ def _apply_override(
             if not str(override.get("reason", "")).strip():
                 raise ValueError("A verified semantic override requires a reason")
             updates["verification_status"] = SemanticStatus.VERIFIED
-            if unit.kind is UnitKind.EQUATION or unit.source_markdown:
+            effective_kind = updates.get("kind", revised.kind)
+            effective_markdown = updates.get("source_markdown", revised.source_markdown)
+            if effective_kind is UnitKind.EQUATION or effective_markdown:
                 updates["math_status"] = SemanticStatus.VERIFIED
-            if unit.kind is UnitKind.FIGURE:
+            if effective_kind is UnitKind.FIGURE:
                 updates["visual_text_status"] = SemanticStatus.VERIFIED
         updates["confidence"] = 1.0
-        return unit.model_copy(update=updates)
-    return unit
+        revised = revised.model_copy(update=updates)
+    return revised
 
 
 def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:

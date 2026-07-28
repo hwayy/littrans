@@ -172,7 +172,10 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     return safe_text
 
 
-INLINE_MATH_RE = re.compile(r"\$(?!\$)(.+?)(?<!\\)\$")
+INLINE_TOKEN_RE = re.compile(
+    r"(?P<code>(?<!\\)(?P<fence>`+)(?P<code_text>.+?)(?P=fence))"
+    r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+)
 
 
 def _mathml(latex: str, display: str) -> str:
@@ -185,9 +188,24 @@ def _mathml(latex: str, display: str) -> str:
 def _inline_html(text: str) -> str:
     parts: list[str] = []
     position = 0
-    for match in INLINE_MATH_RE.finditer(text):
+    for match in INLINE_TOKEN_RE.finditer(text):
         parts.append(html.escape(text[position : match.start()]).replace("\n", " "))
-        parts.append('<span class="math inline">' + _mathml(match.group(1), "inline") + "</span>")
+        if match.group("code") is not None:
+            code_text = match.group("code_text").replace("\n", " ")
+            if (
+                len(code_text) >= 2
+                and code_text.startswith(" ")
+                and code_text.endswith(" ")
+                and code_text.strip()
+            ):
+                code_text = code_text[1:-1]
+            parts.append("<code>" + html.escape(code_text) + "</code>")
+        else:
+            parts.append(
+                '<span class="math inline">'
+                + _mathml(match.group("math_text"), "inline")
+                + "</span>"
+            )
         position = match.end()
     parts.append(html.escape(text[position:]).replace("\n", " "))
     return "".join(parts)
@@ -473,6 +491,7 @@ def render_project(
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    environment.filters["inline_html"] = _inline_html
     template = environment.get_template("bilingual.html.j2")
     html_path.write_text(
         template.render(
