@@ -52,7 +52,7 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
     elif unit.kind == "table" and unit.table:
         body = table_to_markdown(unit.table)
     elif unit.sidebar_role == "title":
-        body = f"> [!NOTE]\n> **{unit.source_text}**"
+        body = f"> **{unit.source_text}**"
     elif unit.sidebar_role == "body":
         body = "\n".join(f"> {line}" for line in unit.source_text.splitlines())
     elif unit.kind == "note":

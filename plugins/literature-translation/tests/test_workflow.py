@@ -605,7 +605,7 @@ def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
         sidebar_role=SidebarRole.BODY,
         confidence=1.0,
     )
-    assert _target_markdown(title, "DPI 缩放") == "> [!NOTE]\n> **DPI 缩放**"
+    assert _target_markdown(title, "DPI 缩放") == "> **DPI 缩放**"
     assert _target_markdown(body, "侧栏正文。") == "> 侧栏正文。"
     assert 'class="sidebar-fragment sidebar-title"' in _unit_html(title, "DPI 缩放")
     assert 'class="sidebar-fragment sidebar-body"' in _unit_html(body, "侧栏正文。")

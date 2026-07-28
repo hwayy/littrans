@@ -182,7 +182,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target or unit.source_text
     safe_text = escape_markdown_prose(text)
     if unit.sidebar_role is SidebarRole.TITLE:
-        return f"> [!NOTE]\n> **{safe_text}**"
+        return f"> **{safe_text}**"
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         inner = _target_markdown(plain_unit, target)
