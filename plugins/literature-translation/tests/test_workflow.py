@@ -632,6 +632,61 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     assert "访问日期 未记录" not in html
 
 
+def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None:
+    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    paragraphs = [
+        unit
+        for unit in units
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+    ]
+    first, second = paragraphs[:2]
+    revised = []
+    for unit in units:
+        if unit.unit_id == first.unit_id:
+            unit = unit.model_copy(
+                update={
+                    "kind": UnitKind.LIST_ITEM,
+                    "continued_to_next": True,
+                }
+            )
+        elif unit.unit_id == second.unit_id:
+            unit = unit.model_copy(
+                update={
+                    "kind": UnitKind.LIST_ITEM,
+                    "continues_from_previous": True,
+                }
+            )
+        revised.append(unit)
+    write_jsonl(prepared_project / "derived" / "units.jsonl", revised)
+
+    manifest = create_batches(
+        prepared_project, "1", max_words=5000, prefix="continued-list"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "continued-list.input.jsonl"
+    empty_review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    outputs = render_project(
+        prepared_project, None, "continued-list", batch_id=manifest.batch_id
+    )
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    first_body = first.source_text.lstrip("• ")
+    assert markdown.count(f"- 译文：{first_body}") == 1
+    assert f"\n- 译文：{second.source_text}" not in markdown
+    assert f'<a id="{second.unit_id}"></a>译文：{second.source_text}' in markdown
+    html = Path(outputs["html"]).read_text(encoding="utf-8")
+    assert f"</li></ul><ul><li>{second.source_text}" not in html
+    assert f'<a id="{second.unit_id}"></a>{second.source_text}' in html
+    assert (
+        f'<a href="#{second.unit_id}" aria-label="continued unit"></a>'
+        f"译文：{second.source_text}"
+        in html
+    )
+
+
 def test_render_policy_omit_is_persistent_and_excluded_from_batches(
     prepared_project: Path,
 ) -> None:

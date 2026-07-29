@@ -108,6 +108,36 @@ def _merge_continued_note_html(left: str, right: str, anchor: str) -> str | None
     body = match.group(1)
     separator = _continuation_separator(left, body)
     return left.removesuffix("</p></aside>") + separator + anchor + body + "</p></aside>"
+
+
+def _merge_continued_list_html(left: str, right: str, anchor: str) -> str | None:
+    """Join physical fragments of one logical list item without adding a new marker."""
+    left_match = re.fullmatch(
+        r'(?P<open><(?P<tag>[uo]l)(?: start="\d+")?>)<li>(?P<body>.*)</li></(?P=tag)>',
+        left,
+        flags=re.S,
+    )
+    right_match = re.fullmatch(
+        r'<[uo]l(?: start="\d+")?><li>(?P<body>.*)</li></[uo]l>',
+        right,
+        flags=re.S,
+    )
+    if not left_match or not right_match:
+        return None
+    right_body = right_match.group("body")
+    separator = _continuation_separator(left_match.group("body"), right_body)
+    tag = left_match.group("tag")
+    return (
+        left_match.group("open")
+        + "<li>"
+        + left_match.group("body")
+        + separator
+        + anchor
+        + right_body
+        + f"</li></{tag}>"
+    )
+
+
 PYGMENTS_LANGUAGE_ALIASES = {"xaml": "xml"}
 
 
@@ -480,6 +510,19 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and previous_unit.kind is UnitKind.LIST_ITEM
+            and unit.kind is UnitKind.LIST_ITEM
+            and markdown
+        ):
+            while markdown and markdown[-1] == "":
+                markdown.pop()
+            continued_body = _list_body(rendered)
+            separator = _continuation_separator(markdown[-1], continued_body)
+            markdown[-1] += f"{separator}{anchor}{continued_body}"
+            markdown.append("")
+        elif (
+            unit.continues_from_previous
+            and previous_unit is not None
             and previous_unit.kind is UnitKind.PARAGRAPH
             and markdown
         ):
@@ -504,7 +547,7 @@ def render_project(
             next_unit
             and next_unit.continues_from_previous
             and next_unit.kind is unit.kind
-            and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE}
+            and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
         )
         if not unit.continued_to_next and not next_continues_this_unit:
             for reader_note in pending_markdown_reader_notes:
@@ -547,6 +590,42 @@ def render_project(
             if source_note is not None and target_note is not None:
                 rows[-1]["source_html"] = source_note
                 rows[-1]["target_html"] = target_note
+                if record and record.reader_note:
+                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["last_page"] = unit_last_page
+            else:
+                rows.append(
+                    {
+                        "unit": unit,
+                        "last_page": unit_last_page,
+                        "source_html": source_html,
+                        "target_html": target_html,
+                        "assets": assets,
+                        "record": record,
+                        "reader_notes": [record.reader_note]
+                        if record and record.reader_note
+                        else [],
+                    }
+                )
+        elif (
+            unit.continues_from_previous
+            and rows
+            and rows[-1]["unit"].kind is UnitKind.LIST_ITEM
+            and unit.kind is UnitKind.LIST_ITEM
+        ):
+            source_list = _merge_continued_list_html(
+                rows[-1]["source_html"],
+                source_html,
+                f'<a id="{html.escape(unit.unit_id)}"></a>',
+            )
+            target_list = _merge_continued_list_html(
+                rows[-1]["target_html"],
+                target_html,
+                f'<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>',
+            )
+            if source_list is not None and target_list is not None:
+                rows[-1]["source_html"] = source_list
+                rows[-1]["target_html"] = target_list
                 if record and record.reader_note:
                     rows[-1]["reader_notes"].append(record.reader_note)
                 rows[-1]["last_page"] = unit_last_page
