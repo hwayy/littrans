@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
+import littrans.external_review as external_review
 from littrans.batching import create_batches, refresh_batch
 from littrans.external_review import (
     _packet_text,
@@ -1233,6 +1235,39 @@ def test_external_driver_commands_preserve_model_constraints(tmp_path: Path) -> 
     agy_command = build_antigravity_command(agy, "review", tmp_path / "agy.log")
     assert "--effort" not in agy_command
     assert agy_command[-2:] == ["--print", "review"]
+
+
+def test_external_driver_timeout_becomes_an_auditable_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+
+    def raise_timeout(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(
+            args[0], kwargs.get("timeout", 330), output="partial output"
+        )
+
+    monkeypatch.setattr(external_review.subprocess, "run", raise_timeout)
+
+    with pytest.raises(external_review.ExternalInvocationError) as exc_info:
+        external_review._invoke(reviewer, packet, work_dir, {})
+
+    assert exc_info.value.attempts == 1
+    assert exc_info.value.raw == "partial output"
+    assert "timed out after 330 seconds" in str(exc_info.value)
 
 
 def test_least_used_assignment_counts_primary_batches_not_retries(

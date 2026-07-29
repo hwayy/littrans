@@ -518,16 +518,32 @@ def _invoke(
                 if candidate.driver is ExternalReviewDriver.CLAUDE_CODE
                 else build_antigravity_command(candidate, prompt, log_path)
             )
-            result = subprocess.run(
-                command,
-                cwd=work_dir,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=330,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=330,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout = (
+                    exc.stdout.decode("utf-8", errors="replace")
+                    if isinstance(exc.stdout, bytes)
+                    else (exc.stdout or "")
+                )
+                stderr = (
+                    exc.stderr.decode("utf-8", errors="replace")
+                    if isinstance(exc.stderr, bytes)
+                    else (exc.stderr or "")
+                )
+                last_raw = stdout or stderr
+                errors.append(f"external CLI timed out after {exc.timeout} seconds")
+                log_path.unlink(missing_ok=True)
+                break
             raw = result.stdout or result.stderr
             last_raw = raw
             log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
