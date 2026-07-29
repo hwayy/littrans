@@ -7,13 +7,14 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import fitz
 import yaml
 
 from littrans.batching import load_manifest
 from littrans.models import (
+    ExternalReviewConfig,
     ExternalReviewDriver,
     ExternalReviewerConfig,
     ExternalReviewRun,
@@ -109,7 +110,7 @@ class ExternalInvocationError(RuntimeError):
         self.raw = raw
 
 
-def _review_config(root: Path):
+def _review_config(root: Path) -> ExternalReviewConfig:
     config = load_project(root).external_review
     if config is None or not config.enabled:
         raise ValueError("External review is not enabled for this project")
@@ -472,7 +473,7 @@ def _normalized_model(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").casefold()).replace("thinking", "")
 
 
-def _model_matches(requested: str, actual: str | None) -> bool:
+def _model_matches(requested: str | None, actual: str | None) -> bool:
     requested_norm = _normalized_model(requested)
     actual_norm = _normalized_model(actual)
     return bool(actual_norm and (requested_norm in actual_norm or actual_norm in requested_norm))
@@ -840,7 +841,10 @@ def run_external_review(
                 "executed": False,
             },
         )
-        return json.loads((work_dir / "dry-run.json").read_text(encoding="utf-8"))
+        dry_run_payload = json.loads((work_dir / "dry-run.json").read_text(encoding="utf-8"))
+        if not isinstance(dry_run_payload, dict):
+            raise ValueError("External review dry-run record must be a JSON object")
+        return cast(dict[str, Any], dry_run_payload)
     with tempfile.TemporaryDirectory(prefix=f"littrans-{batch_id}-") as temp_name:
         work_dir = Path(temp_name)
         packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)

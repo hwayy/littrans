@@ -1,0 +1,75 @@
+# LitTrans
+
+LitTrans is a private Git-backed Codex marketplace containing the
+`literature-translation` plugin. The plugin provides a controlled, resumable workflow for
+translating English technical books and research papers into Simplified Chinese.
+
+The implementation lives in [`plugins/literature-translation`](plugins/literature-translation/).
+Source PDFs, extracted assets, translation workspaces, credentials, and generated reading
+editions are intentionally kept outside version control.
+
+## Repository layout
+
+```text
+.agents/plugins/marketplace.json          Codex marketplace catalog
+plugins/literature-translation/           Installable plugin
+plugins/literature-translation/skills/    Translation workflows
+plugins/literature-translation/src/       Deterministic Python tooling
+scripts/                                  Repository validation commands
+```
+
+## Install from the private repository
+
+Configure GitHub authentication on each client with SSH or Git Credential Manager. Do not put
+tokens in this repository or in marketplace configuration.
+
+Track the stable `master` branch:
+
+```powershell
+codex plugin marketplace add git@github.com:hwayy/littrans.git --ref master
+codex plugin add literature-translation@littrans
+```
+
+Use the HTTPS repository URL instead when the client is configured for HTTPS authentication:
+
+```powershell
+codex plugin marketplace add https://github.com/hwayy/littrans.git --ref master
+codex plugin add literature-translation@littrans
+```
+
+Start a new Codex task after installation.
+
+## Update a client
+
+Published plugin changes always receive a new semantic version. Refresh the Git marketplace,
+reinstall the selected plugin version, verify it, and then start a new task:
+
+```powershell
+codex plugin marketplace upgrade littrans
+codex plugin add literature-translation@littrans
+codex plugin list --json
+```
+
+Do not remove an older installed version while a running task still depends on it. Existing
+tasks should finish or reach a durable checkpoint before the client installation is migrated.
+
+## Development and release
+
+Development happens on topic branches. The `master` branch contains stable releases and every
+distributed change increments the version in the plugin manifest, Python package metadata, and
+`littrans.__version__` together.
+
+Run the local release checks from the repository root:
+
+```powershell
+./scripts/check.ps1
+```
+
+See [`RELEASING.md`](RELEASING.md) for the manual release procedure and
+[`CHANGELOG.md`](CHANGELOG.md) for version history.
+
+## Scope and privacy
+
+The plugin is intended for private research reading. It does not call a model API directly and
+does not determine publication rights. Keep copyrighted source material and translated project
+state in separate private workspaces.

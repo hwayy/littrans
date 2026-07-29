@@ -1,10 +1,12 @@
 {
   "name": "literature-translation",
-  "version": "0.2.0+codex.20260719182400",
+  "version": "0.2.1",
   "description": "A controlled, resumable workflow for high-quality literature translation.",
   "author": {
-    "name": "Hwa"
+    "name": "Hwa",
+    "url": "https://github.com/hwayy"
   },
+  "repository": "https://github.com/hwayy/littrans",
   "skills": "./skills/",
   "interface": {
     "displayName": "Literature Translation",

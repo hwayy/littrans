@@ -1,7 +1,7 @@
 {
-  "name": "literature-translation-local",
+  "name": "littrans",
   "interface": {
-    "displayName": "Literature Translation Local"
+    "displayName": "LitTrans"
   },
   "plugins": [
     {

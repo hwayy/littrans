@@ -1,6 +1,6 @@
 # Literature Translation
 
-`literature-translation` is a local Codex plugin for controlled, resumable translation of
+`literature-translation` is a Codex plugin for controlled, resumable translation of
 English technical books and research papers into Simplified Chinese. Python manages stable
 source units, exact LaTeX, structured tables, code, state, QA, reviews, and rendering. The
 agent performs the language work. The package does not call a model API directly; projects
