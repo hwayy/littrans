@@ -11,6 +11,7 @@ from reportlab.pdfgen import canvas
 import littrans.external_review as external_review
 from littrans.batching import create_batches, refresh_batch
 from littrans.external_review import (
+    _evidence_map,
     _packet_text,
     _parse_antigravity,
     _parse_claude,
@@ -66,10 +67,12 @@ from littrans.quality import (
 from littrans.rendering import (
     _continued_sidebar_markdown,
     _merge_continued_sidebar_html,
+    _render_target_text,
     _target_markdown,
     _unit_html,
     render_project,
 )
+from littrans.semantics import normalize_zh_figure_caption
 from littrans.storage import (
     append_jsonl,
     load_project,
@@ -128,6 +131,45 @@ def test_caption_detection_requires_caption_punctuation() -> None:
     assert _is_caption("Figure 4 Velocity profiles")
     assert not _is_caption("Figure 3-2 shows the window that results.")
     assert not _is_caption("Table 3-3 lists the layout properties.")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("图 9-5。使用命令的菜单项", "图 9-5 使用命令的菜单项"),
+        ("图 1-2：WPF 的架构", "图 1-2 WPF 的架构"),
+        ("图 3 - 12   对话框", "图 3-12 对话框"),
+        ("图 4速度曲线", "图 4 速度曲线"),
+        ("表 3-3。布局属性", "表 3-3。布局属性"),
+        ("Figure 3-2. The StackPanel in action", "Figure 3-2. The StackPanel in action"),
+    ],
+)
+def test_chinese_figure_caption_separator_is_normalized(
+    raw: str, expected: str
+) -> None:
+    assert normalize_zh_figure_caption(raw) == expected
+
+
+def test_only_caption_target_views_use_the_chinese_figure_separator() -> None:
+    source = "Figure 11-5. Actions in the Asset Library"
+    caption = SourceUnit(
+        unit_id="p0001-u001-caption",
+        kind=UnitKind.CAPTION,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text=source,
+        source_hash=sha256_text(source),
+        confidence=1,
+    )
+    raw_target = "图 11-5。资源库中的操作"
+    normalized = _render_target_text(caption, raw_target)
+    assert normalized == "图 11-5 资源库中的操作"
+    assert _target_markdown(caption, normalized) == "*图 11-5 资源库中的操作*"
+    assert _unit_html(caption, normalized) == "<figcaption>图 11-5 资源库中的操作</figcaption>"
+    assert _unit_html(caption, source) == f"<figcaption>{source}</figcaption>"
+
+    paragraph = caption.model_copy(update={"kind": UnitKind.PARAGRAPH})
+    assert _render_target_text(paragraph, raw_target) == raw_target
 
 
 @pytest.fixture()
@@ -555,6 +597,45 @@ def _submit_identity_translations(root: Path, batch_id: str) -> None:
     input_path = root / "batches" / batch_id / "agent-output.jsonl"
     write_jsonl(input_path, records)
     submit_translation(root, batch_id, input_path)
+
+
+def test_external_review_packet_normalizes_chinese_figure_captions(
+    prepared_project: Path,
+) -> None:
+    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    target_unit = next(
+        unit
+        for unit in units
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+    )
+    units = [
+        unit.model_copy(update={"kind": UnitKind.CAPTION})
+        if unit.unit_id == target_unit.unit_id
+        else unit
+        for unit in units
+    ]
+    write_jsonl(prepared_project / "derived" / "units.jsonl", units)
+    manifest = create_batches(
+        prepared_project, "1", max_words=5000, prefix="caption-packet"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    current = read_jsonl(
+        prepared_project / "translations" / "current.jsonl", TranslationRecord
+    )
+    current = [
+        record.model_copy(update={"target_text": "图 1-1。合成架构"})
+        if record.unit_id == target_unit.unit_id
+        else record
+        for record in current
+    ]
+    write_jsonl(prepared_project / "translations" / "current.jsonl", current)
+
+    packet, _ = _packet_text(prepared_project, manifest.batch_id)
+    evidence = _evidence_map(prepared_project, manifest.batch_id)
+    assert "图 1-1 合成架构" in packet
+    assert "图 1-1。合成架构" not in packet
+    assert "图 1-1 合成架构" in evidence[target_unit.unit_id][1]
+    assert "renderer owns the separator after the figure number" in packet
 
 
 def test_end_to_end_gate_and_render(prepared_project: Path) -> None:

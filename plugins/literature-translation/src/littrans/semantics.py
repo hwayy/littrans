@@ -22,6 +22,11 @@ MATH_FONT_MARKERS = (
 )
 MATH_SIGNAL_RE = re.compile(r"[=∑∏∫√∂∇±≤≥∞≠≈∝⟨⟩ρτλσνεημχ′·×]")
 TERMINAL_RE = re.compile(r"[.!?。！？:：;；][\"'”’）)\]]*$")
+ZH_FIGURE_CAPTION_RE = re.compile(
+    r"^\s*图\s*(?P<number>\d+(?:\s*[-–—]\s*\d+)*)\s*"
+    r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
+    re.DOTALL,
+)
 
 LATEX_CHARS = {
     "∑": r"\sum ",
@@ -104,6 +109,15 @@ def normalize_prose(text: str) -> str:
     text = re.sub(r"(?<=[A-Za-z])-\s+(?=[a-z])", "", text)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
     return _join_wrapped_lines(line for line in lines if line)
+
+
+def normalize_zh_figure_caption(text: str) -> str:
+    """Use one ASCII space between a Chinese figure number and its title."""
+    match = ZH_FIGURE_CAPTION_RE.match(text)
+    if not match:
+        return text
+    number = re.sub(r"\s+", "", match.group("number"))
+    return f"图 {number} {match.group('title').strip()}"
 
 
 def prose_from_block(block: dict[str, Any]) -> str:

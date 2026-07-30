@@ -30,6 +30,7 @@ from littrans.project import load_terms, translation_map
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
+    normalize_zh_figure_caption,
     table_to_html,
     table_to_markdown,
 )
@@ -167,6 +168,12 @@ def _safe_name(value: str) -> str:
     if not cleaned:
         raise ValueError("Output name must include a letter or digit")
     return cleaned
+
+
+def _render_target_text(unit: SourceUnit, target: str | None) -> str | None:
+    if target is not None and unit.kind is UnitKind.CAPTION:
+        return normalize_zh_figure_caption(target)
+    return target
 
 
 def _asset_markdown(unit: SourceUnit) -> str:
@@ -500,7 +507,7 @@ def render_project(
                 ]
             )
         record = translations.get(unit.unit_id)
-        target = record.target_text if record else None
+        target = _render_target_text(unit, record.target_text if record else None)
         if target is not None:
             bilingual_target = target
         elif not unit.translatable and unit.source_text:
