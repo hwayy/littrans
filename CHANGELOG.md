@@ -3,6 +3,17 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.2.2] - 2026-07-30
+
+### Fixed
+
+- Merged list items that continue across PDF pages into one logical item in Markdown and
+  bilingual HTML renders.
+- Recorded external-review timeouts as failed review runs instead of losing the attempt history.
+- Preserved sidebar context and joined sidebar body fragments across page boundaries.
+- Normalized translated Chinese figure captions consistently during QA, external review, and
+  rendering.
+
 ## [0.2.1] - 2026-07-29
 
 ### Added

@@ -17,10 +17,14 @@ release.
 6. Review `git diff` and confirm that no PDFs, workspaces, generated artifacts, credentials, or
    local environments are tracked.
 7. Merge the release commit into `master` and create an annotated `v<version>` tag.
-8. Push `master` and the tag to `origin`.
-9. On clients without active work, refresh the `littrans` marketplace, reinstall the plugin, and
-   verify the installed version with `codex plugin list --json`.
-10. Start a new Codex task for the updated plugin.
+8. Fast-forward the `stable` branch to that tagged release commit. Never advance `stable` to an
+   untagged development commit.
+9. Push `master`, `stable`, and the tag to `origin`.
+10. On consumer clients without active work, refresh the Git-backed `littrans` marketplace,
+   reinstall the plugin, and verify the installed version with `codex plugin list --json`.
+11. On the primary development client, reinstall from its configured local `littrans` marketplace
+   without refreshing a Git marketplace.
+12. Start a new Codex task for the updated plugin.
 
 ## Compatibility policy
 
@@ -34,6 +38,6 @@ release.
 
 ## Development cachebusters
 
-Local cachebuster versions such as `0.2.1+codex.<timestamp>` may be used temporarily while testing
+Local cachebuster versions such as `0.2.2+codex.<timestamp>` may be used temporarily while testing
 an installed local development build. They are not release versions and must not be committed to
 `master` or tagged. Published releases use the plain semantic version.
