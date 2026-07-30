@@ -63,7 +63,13 @@ from littrans.quality import (
     review_status,
     run_qa,
 )
-from littrans.rendering import _target_markdown, _unit_html, render_project
+from littrans.rendering import (
+    _continued_sidebar_markdown,
+    _merge_continued_sidebar_html,
+    _target_markdown,
+    _unit_html,
+    render_project,
+)
 from littrans.storage import (
     append_jsonl,
     load_project,
@@ -74,7 +80,11 @@ from littrans.storage import (
     write_yaml,
 )
 from littrans.translation import submit_translation
-from littrans.verification import _semantic_errors, verify_extraction
+from littrans.verification import (
+    _semantic_context_units,
+    _semantic_errors,
+    verify_extraction,
+)
 
 
 def make_pdf(path: Path) -> None:
@@ -870,6 +880,28 @@ def test_sidebar_contiguity_ignores_omitted_running_headers(tmp_path: Path) -> N
     assert not any(
         error["code"] == "noncontiguous-sidebar"
         for error in _semantic_errors(tmp_path, [title, running_header, body])
+    )
+
+    context = _semantic_context_units([title, running_header, body], {2})
+    assert context == [title, running_header, body]
+    assert not any(
+        error["code"] == "invalid-sidebar-title"
+        for error in _semantic_errors(tmp_path, context)
+    )
+
+
+def test_continued_sidebar_fragment_removes_duplicate_container_shell() -> None:
+    anchor = '<a id="continued"></a>'
+    assert _continued_sidebar_markdown("> ，可在不同模式之间切换。") == (
+        "，可在不同模式之间切换。"
+    )
+    assert _merge_continued_sidebar_html(
+        '<aside class="sidebar-fragment sidebar-body"><p>某种拆分按钮</p></aside>',
+        '<aside class="sidebar-fragment sidebar-body"><p>，可在不同模式之间切换。</p></aside>',
+        anchor,
+    ) == (
+        '<aside class="sidebar-fragment sidebar-body"><p>某种拆分按钮'
+        f"{anchor}，可在不同模式之间切换。</p></aside>"
     )
 
 

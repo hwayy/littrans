@@ -39,6 +39,31 @@ def _coverage(page_text: str, units: list[SourceUnit]) -> float:
     )
 
 
+def _semantic_context_units(
+    all_units: list[SourceUnit], page_set: set[int]
+) -> list[SourceUnit]:
+    """Include complete sidebars that intersect a selected page range."""
+    selected_indices = {
+        index for index, unit in enumerate(all_units) if unit.page in page_set
+    }
+    sidebar_ids = {
+        all_units[index].sidebar_id
+        for index in selected_indices
+        if all_units[index].sidebar_id is not None
+    }
+    for sidebar_id in sidebar_ids:
+        member_indices = [
+            index
+            for index, unit in enumerate(all_units)
+            if unit.sidebar_id == sidebar_id
+        ]
+        if member_indices:
+            selected_indices.update(
+                range(min(member_indices), max(member_indices) + 1)
+            )
+    return [all_units[index] for index in sorted(selected_indices)]
+
+
 def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -186,13 +211,10 @@ def verify_extraction(root: Path, page_spec: str = "all") -> dict[str, Any]:
     document = fitz.open(config.source(root))
     pages = parse_page_spec(page_spec, document.page_count)
     page_set = set(pages)
-    units = [
-        unit
-        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-        if unit.page in page_set
-    ]
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    units = [unit for unit in all_units if unit.page in page_set]
     by_page = {page: [unit for unit in units if unit.page == page] for page in pages}
-    errors = _semantic_errors(root, units)
+    errors = _semantic_errors(root, _semantic_context_units(all_units, page_set))
     for issue in read_jsonl(root / "derived" / "extraction-issues.jsonl", ExtractionIssue):
         if (
             issue.page in page_set

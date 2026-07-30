@@ -138,6 +138,27 @@ def _merge_continued_list_html(left: str, right: str, anchor: str) -> str | None
     )
 
 
+def _merge_continued_sidebar_html(left: str, right: str, anchor: str) -> str | None:
+    """Join paragraph fragments inside one sidebar without nesting another aside."""
+    if not left.endswith("</p></aside>"):
+        return None
+    match = re.fullmatch(
+        r'<aside class="sidebar-fragment sidebar-body"><p>(.*)</p></aside>',
+        right,
+        flags=re.S,
+    )
+    if match is None:
+        return None
+    body = match.group(1)
+    separator = _continuation_separator(left, body)
+    return left.removesuffix("</p></aside>") + separator + anchor + body + "</p></aside>"
+
+
+def _continued_sidebar_markdown(rendered: str) -> str:
+    """Remove the renderer-owned blockquote prefix from a continued fragment."""
+    return rendered.removeprefix("> ")
+
+
 PYGMENTS_LANGUAGE_ALIASES = {"xaml": "xml"}
 
 
@@ -524,6 +545,21 @@ def render_project(
             unit.continues_from_previous
             and previous_unit is not None
             and previous_unit.kind is UnitKind.PARAGRAPH
+            and unit.kind is UnitKind.PARAGRAPH
+            and previous_unit.sidebar_role is SidebarRole.BODY
+            and unit.sidebar_role is SidebarRole.BODY
+            and markdown
+        ):
+            while markdown and markdown[-1] == "":
+                markdown.pop()
+            continued_body = _continued_sidebar_markdown(rendered)
+            separator = _continuation_separator(markdown[-1], continued_body)
+            markdown[-1] += f"{separator}{anchor}{continued_body}"
+            markdown.append("")
+        elif (
+            unit.continues_from_previous
+            and previous_unit is not None
+            and previous_unit.kind is UnitKind.PARAGRAPH
             and markdown
         ):
             while markdown and markdown[-1] == "":
@@ -626,6 +662,44 @@ def render_project(
             if source_list is not None and target_list is not None:
                 rows[-1]["source_html"] = source_list
                 rows[-1]["target_html"] = target_list
+                if record and record.reader_note:
+                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["last_page"] = unit_last_page
+            else:
+                rows.append(
+                    {
+                        "unit": unit,
+                        "last_page": unit_last_page,
+                        "source_html": source_html,
+                        "target_html": target_html,
+                        "assets": assets,
+                        "record": record,
+                        "reader_notes": [record.reader_note]
+                        if record and record.reader_note
+                        else [],
+                    }
+                )
+        elif (
+            unit.continues_from_previous
+            and rows
+            and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
+            and unit.kind is UnitKind.PARAGRAPH
+            and rows[-1]["unit"].sidebar_role is SidebarRole.BODY
+            and unit.sidebar_role is SidebarRole.BODY
+        ):
+            source_sidebar = _merge_continued_sidebar_html(
+                rows[-1]["source_html"],
+                source_html,
+                f'<a id="{html.escape(unit.unit_id)}"></a>',
+            )
+            target_sidebar = _merge_continued_sidebar_html(
+                rows[-1]["target_html"],
+                target_html,
+                f'<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>',
+            )
+            if source_sidebar is not None and target_sidebar is not None:
+                rows[-1]["source_html"] = source_sidebar
+                rows[-1]["target_html"] = target_sidebar
                 if record and record.reader_note:
                     rows[-1]["reader_notes"].append(record.reader_note)
                 rows[-1]["last_page"] = unit_last_page
