@@ -57,10 +57,19 @@ def _is_cjk_character(character: str) -> bool:
 
 def _continuation_separator(left: str, right: str) -> str:
     """Return a word separator only when a continued fragment needs one."""
-    left_text = re.sub(r"<[^>]+>", "", html.unescape(left)).rstrip()
-    right_text = re.sub(r"<[^>]+>", "", html.unescape(right)).lstrip()
+    left_markup = html.unescape(left).rstrip()
+    right_markup = html.unescape(right).lstrip()
+    left_text = re.sub(r"<[^>]+>", "", left_markup).rstrip()
+    right_text = re.sub(r"<[^>]+>", "", right_markup).lstrip()
     if not left_text or not right_text:
         return ""
+    right_body = re.sub(r"^(?:<a\b[^>]*></a>)*", "", right_markup).lstrip()
+    right_starts_code = right_text.startswith("`") or right_body.startswith("<code")
+    left_ends_code = left_text.endswith("`") or left_markup.endswith("</code>")
+    if (_is_cjk_character(left_text[-1]) and right_starts_code) or (
+        left_ends_code and _is_cjk_character(right_text[0])
+    ):
+        return " "
     if _is_cjk_character(left_text[-1]) or _is_cjk_character(right_text[0]):
         return ""
     return " "

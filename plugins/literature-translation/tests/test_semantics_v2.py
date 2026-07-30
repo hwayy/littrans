@@ -147,6 +147,12 @@ def test_continuation_separator_preserves_english_words_without_spacing_cjk() ->
     assert _continuation_separator("Doing so will", "give you") == " "
     assert _continuation_separator("这样做", "能让你") == ""
     assert _continuation_separator("<p>这样做</p>", "<p>能让你</p>") == ""
+    assert _continuation_separator("因为即使", "`Canvas` 的大小") == " "
+    assert _continuation_separator("使用 `Canvas`", "即可绘制") == " "
+    assert _continuation_separator(
+        "因为即使", '<a id="u2"></a><code>Canvas</code> 的大小'
+    ) == " "
+    assert _continuation_separator("使用 <code>Canvas</code>", "即可绘制") == " "
 
 
 def test_cross_page_note_continuation_keeps_one_callout() -> None:
