@@ -34,7 +34,7 @@ from littrans.quality import (
     batch_translation_fingerprint,
     import_review,
 )
-from littrans.semantics import normalize_zh_figure_caption
+from littrans.semantics import normalize_zh_caption
 from littrans.storage import (
     append_jsonl,
     atomic_write_text,
@@ -196,7 +196,7 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
             source += "\n\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else "[NO TRANSLATION: source-only unit]"
         if record and unit.kind is UnitKind.CAPTION:
-            target = normalize_zh_figure_caption(target)
+            target = normalize_zh_caption(target)
         if record and record.target_table:
             target += "\n\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
@@ -252,9 +252,9 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
         "- Target text stores semantic body text only. The deterministic renderer owns "
         "heading markers, list markers, and Note/Tip/Warning shells and localized labels; "
         "do not report those absent wrappers as omissions.\n"
-        "- For Simplified Chinese figure captions, the renderer owns the separator after "
-        "the figure number and displays exactly one ASCII space instead of source-style "
-        "periods or colons. Review the normalized caption shown in this packet.\n"
+        "- For Simplified Chinese figure and table captions, the renderer owns the separator "
+        "after the number and displays exactly one ASCII space instead of source-style periods "
+        "or colons. Review the normalized caption shown in this packet.\n"
         "- Units carrying the same sidebar ID form one visually grouped sidebar. The renderer "
         "owns the sidebar border, background, title emphasis, and grouping; review the title/body "
         "roles and the rendered page image rather than expecting those wrappers in target text.\n"
@@ -286,7 +286,7 @@ def _evidence_map(root: Path, batch_id: str) -> dict[str, tuple[str, str]]:
             source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else ""
         if record and unit.kind is UnitKind.CAPTION:
-            target = normalize_zh_figure_caption(target)
+            target = normalize_zh_caption(target)
         if record and record.target_table:
             target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
         if unit.kind is UnitKind.FIGURE and unit.figure_labels:

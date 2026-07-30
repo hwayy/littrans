@@ -72,7 +72,11 @@ from littrans.rendering import (
     _unit_html,
     render_project,
 )
-from littrans.semantics import normalize_zh_figure_caption
+from littrans.semantics import (
+    normalize_zh_caption,
+    normalize_zh_figure_caption,
+    normalize_zh_table_caption,
+)
 from littrans.storage import (
     append_jsonl,
     load_project,
@@ -150,7 +154,29 @@ def test_chinese_figure_caption_separator_is_normalized(
     assert normalize_zh_figure_caption(raw) == expected
 
 
-def test_only_caption_target_views_use_the_chinese_figure_separator() -> None:
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("表 12-1。Shape 属性", "表 12-1 Shape 属性"),
+        ("表 3-3：布局属性", "表 3-3 布局属性"),
+        ("表 4 - 2   画刷属性", "表 4-2 画刷属性"),
+        ("表 5值列表", "表 5 值列表"),
+        ("图 3-3。布局示例", "图 3-3。布局示例"),
+        ("Table 3-3. Layout Properties", "Table 3-3. Layout Properties"),
+    ],
+)
+def test_chinese_table_caption_separator_is_normalized(
+    raw: str, expected: str
+) -> None:
+    assert normalize_zh_table_caption(raw) == expected
+
+
+def test_chinese_caption_normalizer_handles_figures_and_tables() -> None:
+    assert normalize_zh_caption("图 1-2。架构") == "图 1-2 架构"
+    assert normalize_zh_caption("表 1-2。属性") == "表 1-2 属性"
+
+
+def test_only_caption_target_views_use_the_chinese_caption_separator() -> None:
     source = "Figure 11-5. Actions in the Asset Library"
     caption = SourceUnit(
         unit_id="p0001-u001-caption",
@@ -167,6 +193,12 @@ def test_only_caption_target_views_use_the_chinese_figure_separator() -> None:
     assert _target_markdown(caption, normalized) == "*图 11-5 资源库中的操作*"
     assert _unit_html(caption, normalized) == "<figcaption>图 11-5 资源库中的操作</figcaption>"
     assert _unit_html(caption, source) == f"<figcaption>{source}</figcaption>"
+
+    table_target = "表 11-5。资源属性"
+    normalized_table = _render_target_text(caption, table_target)
+    assert normalized_table == "表 11-5 资源属性"
+    assert _target_markdown(caption, normalized_table) == "*表 11-5 资源属性*"
+    assert _unit_html(caption, normalized_table) == "<figcaption>表 11-5 资源属性</figcaption>"
 
     paragraph = caption.model_copy(update={"kind": UnitKind.PARAGRAPH})
     assert _render_target_text(paragraph, raw_target) == raw_target
@@ -599,8 +631,17 @@ def _submit_identity_translations(root: Path, batch_id: str) -> None:
     submit_translation(root, batch_id, input_path)
 
 
-def test_external_review_packet_normalizes_chinese_figure_captions(
+@pytest.mark.parametrize(
+    ("raw_target", "normalized_target"),
+    [
+        ("图 1-1。合成架构", "图 1-1 合成架构"),
+        ("表 1-1。合成属性", "表 1-1 合成属性"),
+    ],
+)
+def test_external_review_packet_normalizes_chinese_captions(
     prepared_project: Path,
+    raw_target: str,
+    normalized_target: str,
 ) -> None:
     units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
     target_unit = next(
@@ -623,7 +664,7 @@ def test_external_review_packet_normalizes_chinese_figure_captions(
         prepared_project / "translations" / "current.jsonl", TranslationRecord
     )
     current = [
-        record.model_copy(update={"target_text": "图 1-1。合成架构"})
+        record.model_copy(update={"target_text": raw_target})
         if record.unit_id == target_unit.unit_id
         else record
         for record in current
@@ -632,10 +673,10 @@ def test_external_review_packet_normalizes_chinese_figure_captions(
 
     packet, _ = _packet_text(prepared_project, manifest.batch_id)
     evidence = _evidence_map(prepared_project, manifest.batch_id)
-    assert "图 1-1 合成架构" in packet
-    assert "图 1-1。合成架构" not in packet
-    assert "图 1-1 合成架构" in evidence[target_unit.unit_id][1]
-    assert "renderer owns the separator after the figure number" in packet
+    assert normalized_target in packet
+    assert raw_target not in packet
+    assert normalized_target in evidence[target_unit.unit_id][1]
+    assert "figure and table captions" in packet
 
 
 def test_end_to_end_gate_and_render(prepared_project: Path) -> None:

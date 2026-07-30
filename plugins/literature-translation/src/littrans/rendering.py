@@ -30,7 +30,7 @@ from littrans.project import load_terms, translation_map
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
-    normalize_zh_figure_caption,
+    normalize_zh_caption,
     table_to_html,
     table_to_markdown,
 )
@@ -181,7 +181,7 @@ def _safe_name(value: str) -> str:
 
 def _render_target_text(unit: SourceUnit, target: str | None) -> str | None:
     if target is not None and unit.kind is UnitKind.CAPTION:
-        return normalize_zh_figure_caption(target)
+        return normalize_zh_caption(target)
     return target
 
 

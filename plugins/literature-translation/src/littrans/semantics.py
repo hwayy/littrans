@@ -27,6 +27,11 @@ ZH_FIGURE_CAPTION_RE = re.compile(
     r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
     re.DOTALL,
 )
+ZH_TABLE_CAPTION_RE = re.compile(
+    r"^\s*表\s*(?P<number>\d+(?:\s*[-–—]\s*\d+)*)\s*"
+    r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
+    re.DOTALL,
+)
 
 LATEX_CHARS = {
     "∑": r"\sum ",
@@ -118,6 +123,21 @@ def normalize_zh_figure_caption(text: str) -> str:
         return text
     number = re.sub(r"\s+", "", match.group("number"))
     return f"图 {number} {match.group('title').strip()}"
+
+
+def normalize_zh_table_caption(text: str) -> str:
+    """Use one ASCII space between a Chinese table number and its title."""
+    match = ZH_TABLE_CAPTION_RE.match(text)
+    if not match:
+        return text
+    number = re.sub(r"\s+", "", match.group("number"))
+    return f"表 {number} {match.group('title').strip()}"
+
+
+def normalize_zh_caption(text: str) -> str:
+    """Normalize renderer-owned separators in Chinese figure and table captions."""
+    figure = normalize_zh_figure_caption(text)
+    return normalize_zh_table_caption(figure)
 
 
 def prose_from_block(block: dict[str, Any]) -> str:
