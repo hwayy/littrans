@@ -309,6 +309,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 INLINE_TOKEN_RE = re.compile(
     r"(?P<code>(?<!\\)(?P<fence>`+)(?P<code_text>.+?)(?P=fence))"
     r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+    r"|(?P<emphasis>(?<!\\)(?<!\*)\*(?!\*)(?P<emphasis_text>[^*\n]+?)(?<!\\)\*(?!\*))"
 )
 
 
@@ -334,12 +335,14 @@ def _inline_html(text: str) -> str:
             ):
                 code_text = code_text[1:-1]
             parts.append("<code>" + html.escape(code_text) + "</code>")
-        else:
+        elif match.group("math") is not None:
             parts.append(
                 '<span class="math inline">'
                 + _mathml(match.group("math_text"), "inline")
                 + "</span>"
             )
+        else:
+            parts.append("<em>" + html.escape(match.group("emphasis_text")) + "</em>")
         position = match.end()
     parts.append(html.escape(text[position:]).replace("\n", " "))
     return "".join(parts)

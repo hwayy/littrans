@@ -98,10 +98,13 @@ def test_local_table_code_and_literal_tag_markdown() -> None:
 
 
 def test_inline_html_renders_code_spans_and_math_without_allowing_raw_html() -> None:
-    rendered = _inline_html("Use `<Button>` with $a = b + 3$ and `` `literal` ``.")
+    rendered = _inline_html(
+        "Use `<Button>` with $a = b + 3$, `` `literal` ``, and `F` *value*."
+    )
     assert "<code>&lt;Button&gt;</code>" in rendered
     assert '<span class="math inline">' in rendered
     assert "<code>`literal`</code>" in rendered
+    assert "<code>F</code> <em>value</em>" in rendered
     assert "<Button>" not in rendered
 
 

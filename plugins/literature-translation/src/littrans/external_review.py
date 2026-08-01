@@ -869,7 +869,13 @@ def run_external_review(
         if not isinstance(dry_run_payload, dict):
             raise ValueError("External review dry-run record must be a JSON object")
         return cast(dict[str, Any], dry_run_payload)
-    with tempfile.TemporaryDirectory(prefix=f"littrans-{batch_id}-") as temp_name:
+    # Some Windows reviewer CLIs briefly retain a handle to their working directory
+    # after the parent process exits. Cleanup must not discard an otherwise valid,
+    # fully parsed review result; any still-locked directory remains confined to the
+    # OS temporary root and can be reclaimed after the child releases its handle.
+    with tempfile.TemporaryDirectory(
+        prefix=f"littrans-{batch_id}-", ignore_cleanup_errors=True
+    ) as temp_name:
         work_dir = Path(temp_name)
         packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)
         prompt = prompt_builder(packet_path)
