@@ -129,6 +129,18 @@ def test_scaled_number_normalization_handles_chinese_readable_forms() -> None:
     assert _token_counts(NUMBER_RE, source) == _token_counts(NUMBER_RE, target)
 
 
+@pytest.mark.parametrize(
+    ("source_text", "target_text"),
+    [("2-D drawing", "二维绘图"), ("3-D content", "三维内容")],
+)
+def test_dimension_terms_preserve_numeric_semantics(
+    source_text: str, target_text: str
+) -> None:
+    source = _semantic_comparison_text(source_text)
+    target = _semantic_comparison_text(target_text)
+    assert _token_counts(NUMBER_RE, source) == _token_counts(NUMBER_RE, target)
+
+
 def test_caption_detection_requires_caption_punctuation() -> None:
     assert _is_caption("Figure 3-2. The StackPanel in action")
     assert _is_caption("Table 3-3. Layout Properties")

@@ -115,6 +115,12 @@ def _token_counts(pattern: re.Pattern[str], text: str) -> Counter[str]:
 def _semantic_comparison_text(text: str) -> str:
     """Flatten verified LaTeX without weakening exact-LaTeX preservation checks."""
     value = text.replace("−", "-")
+    value = re.sub(
+        r"\b([23])\s*[-‐‑‒–—]?\s*[Dd]\b",
+        lambda match: f"dimension-{match.group(1)}",
+        value,
+    )
+    value = value.replace("二维", "dimension-2").replace("三维", "dimension-3")
     scale_patterns = (
         (re.compile(r"\b(\d+(?:\.\d+)?)\s+million\b", re.IGNORECASE), Decimal("1000000")),
         (re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*万"), Decimal("10000")),
