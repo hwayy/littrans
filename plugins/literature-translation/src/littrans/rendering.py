@@ -70,6 +70,8 @@ def _continuation_separator(left: str, right: str) -> str:
         left_ends_code and _is_cjk_character(right_text[0])
     ):
         return " "
+    if left_text[-1] in "-‐‑" and right_text[0].isalnum():
+        return ""
     if _is_cjk_character(left_text[-1]) or _is_cjk_character(right_text[0]):
         return ""
     return " "

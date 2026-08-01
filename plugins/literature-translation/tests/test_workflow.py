@@ -29,6 +29,7 @@ from littrans.extractor import (
     apply_layout_overrides,
     extract_source,
     inspect_source,
+    protected_tokens,
 )
 from littrans.migration import migrate_translations
 from littrans.models import (
@@ -65,6 +66,7 @@ from littrans.quality import (
     run_qa,
 )
 from littrans.rendering import (
+    _continuation_separator,
     _continued_sidebar_markdown,
     _merge_continued_sidebar_html,
     _render_target_text,
@@ -147,6 +149,23 @@ def test_caption_detection_requires_caption_punctuation() -> None:
     assert _is_caption("Figure 4 Velocity profiles")
     assert not _is_caption("Figure 3-2 shows the window that results.")
     assert not _is_caption("Table 3-3 lists the layout properties.")
+
+
+def test_protected_urls_exclude_trailing_sentence_punctuation() -> None:
+    text = (
+        "Download it from http://tinyurl.com/8ea7r43. "
+        "See https://example.com/reference, then continue."
+    )
+    tokens = protected_tokens(text)
+    assert "http://tinyurl.com/8ea7r43" in tokens
+    assert "https://example.com/reference" in tokens
+    assert "http://tinyurl.com/8ea7r43." not in tokens
+    assert "https://example.com/reference," not in tokens
+
+
+def test_continuation_separator_does_not_split_hyphenated_urls() -> None:
+    assert _continuation_separator("http://shazzam-", "tool.com") == ""
+    assert _continuation_separator("ordinary", "words") == " "
 
 
 @pytest.mark.parametrize(

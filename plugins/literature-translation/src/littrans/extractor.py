@@ -149,9 +149,14 @@ def protected_tokens(text: str) -> list[str]:
     found: list[str] = []
     for pattern in PROTECTED_PATTERNS:
         found.extend(match.group(0) for match in pattern.finditer(text))
+    found = [
+        token.rstrip(".,;:!?") if token.lower().startswith(("http://", "https://")) else token
+        for token in found
+    ]
     return [
         token
         for token in dict.fromkeys(found)
+        if token
         if token.upper().rstrip(".") not in PROTECTED_STOPWORDS
     ]
 
