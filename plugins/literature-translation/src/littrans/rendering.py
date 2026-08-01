@@ -344,7 +344,11 @@ def _inline_html(text: str) -> str:
                 + "</span>"
             )
         else:
-            parts.append("<em>" + html.escape(match.group("emphasis_text")) + "</em>")
+            # Emphasis may legitimately contain inline code or math. Parse its
+            # body through the same safe inline renderer so Markdown such as
+            # ``*set the `Opacity` property*`` does not leak raw backticks into
+            # bilingual HTML.
+            parts.append("<em>" + _inline_html(match.group("emphasis_text")) + "</em>")
         position = match.end()
     parts.append(html.escape(text[position:]).replace("\n", " "))
     return "".join(parts)

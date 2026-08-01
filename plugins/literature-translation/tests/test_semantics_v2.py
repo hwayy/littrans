@@ -108,6 +108,15 @@ def test_inline_html_renders_code_spans_and_math_without_allowing_raw_html() -> 
     assert "<Button>" not in rendered
 
 
+def test_inline_html_renders_code_and_math_nested_inside_emphasis() -> None:
+    rendered = _inline_html("*设置元素的 `Opacity` 属性和 $x$ 值：*")
+    assert rendered.startswith("<em>")
+    assert "<code>Opacity</code>" in rendered
+    assert '<span class="math inline">' in rendered
+    assert rendered.endswith("</em>")
+    assert "`" not in rendered
+
+
 def test_embedded_font_control_glyphs_are_normalized() -> None:
     assert normalize_prose("\x02 A list item") == "• A list item"
     assert normalize_prose("File \x02 New \x02 Project") == "File → New → Project"
