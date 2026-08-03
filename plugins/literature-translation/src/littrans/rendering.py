@@ -354,14 +354,20 @@ def _inline_html(text: str) -> str:
     return "".join(parts)
 
 
-def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -> str:
+def _unit_html(
+    unit: SourceUnit,
+    target: str | None,
+    target_table: Any = None,
+    *,
+    source_view: bool,
+) -> str:
     text = target if target is not None else (unit.source_markdown or unit.source_text)
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + _inline_html(text) + "</h3></aside>"
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
-            plain_unit, target, target_table
+            plain_unit, target, target_table, source_view=source_view
         ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
@@ -390,7 +396,6 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
         table = target_table or unit.table
         return table_to_html(table, _inline_html) if table else _inline_html(text)
     if unit.kind is UnitKind.NOTE:
-        source_view = target == (unit.source_markdown or unit.source_text)
         variant = _note_variant(unit.source_text, unit.callout_kind)
         source_labels = {
             "note": "Note",
@@ -425,7 +430,6 @@ def _unit_html(unit: SourceUnit, target: str | None, target_table: Any = None) -
     if unit.kind is UnitKind.FOOTNOTE:
         return '<aside class="footnote">' + _inline_html(text) + "</aside>"
     if unit.kind is UnitKind.FIGURE and unit.figure_labels:
-        source_view = target == (unit.source_markdown or unit.source_text)
         labels = "".join(
             f"<li>{_inline_html(label.source if source_view else (label.target or label.source))}</li>"
             for label in unit.figure_labels
@@ -619,11 +623,16 @@ def render_project(
             if unit.kind is UnitKind.FIGURE
             else []
         )
-        source_html = _unit_html(unit, unit.source_markdown or unit.source_text)
+        source_html = _unit_html(
+            unit,
+            unit.source_markdown or unit.source_text,
+            source_view=True,
+        )
         target_html = _unit_html(
             unit,
             bilingual_target,
             record.target_table if record else None,
+            source_view=False,
         )
         if unit.unit_id in grouped_code_ids:
             extra_anchors = "".join(
@@ -631,7 +640,6 @@ def render_project(
                 for unit_id in grouped_code_ids[unit.unit_id][1:]
             )
             source_html = extra_anchors + source_html
-            target_html = extra_anchors + target_html
         if (
             unit.continues_from_previous
             and rows
@@ -807,21 +815,19 @@ def render_project(
     environment.filters["inline_html"] = _inline_html
     environment.filters["reader_note_text"] = _reader_note_text
     template = environment.get_template("bilingual.html.j2")
-    html_path.write_text(
-        template.render(
-            config=config,
-            rows=rows,
-            pages=f"{min(pages)}–{max(pages)}",
-            pdf_uri=config.source(root).as_uri(),
-            allow_draft=allow_draft,
-        ),
-        encoding="utf-8",
+    html_text = template.render(
+        config=config,
+        rows=rows,
+        pages=f"{min(pages)}–{max(pages)}",
+        pdf_uri=config.source(root).as_uri(),
+        allow_draft=allow_draft,
     )
+    html_path.write_text(html_text, encoding="utf-8")
 
     _write_quality_summary(qa_path, root, units, missing, unapproved, open_severe)
     _write_unresolved(unresolved_path, root, selected_ids)
     render_qa_path = output / f"{output_name}.render-qa.json"
-    render_errors = _render_quality_errors(markdown_text, units)
+    render_errors = _render_quality_errors(markdown_text, html_text, units)
     render_qa_path.write_text(
         json.dumps(
             {
@@ -893,7 +899,9 @@ def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> Non
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _render_quality_errors(markdown: str, units: list[SourceUnit]) -> list[str]:
+def _render_quality_errors(
+    markdown: str, rendered_html: str, units: list[SourceUnit]
+) -> list[str]:
     errors: list[str] = []
     if re.search(r"(?m)^-\s+[•▪■●]\s+", markdown):
         errors.append("duplicated-list-marker")
@@ -903,6 +911,11 @@ def _render_quality_errors(markdown: str, units: list[SourceUnit]) -> list[str]:
         anchor = f'<a id="{unit.unit_id}"></a>'
         if markdown.count(anchor) != 1:
             errors.append(f"unit-anchor-count:{unit.unit_id}:{markdown.count(anchor)}")
+    html_ids = re.findall(r'(?<![A-Za-z0-9_-])id="([^"]+)"', rendered_html)
+    for html_id in sorted(set(html_ids)):
+        count = html_ids.count(html_id)
+        if count > 1:
+            errors.append(f"duplicate-html-id:{html_id}:{count}")
     return errors
 
 

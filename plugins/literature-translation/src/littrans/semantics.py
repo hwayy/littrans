@@ -383,8 +383,17 @@ def table_to_markdown(table: TableData) -> str:
         return escape_markdown_prose(value).replace("|", r"\|").replace("\n", "<br>")
 
     rows = table.rows
-    header_count = max(1, table.header_rows)
-    header = [" / ".join(filter(None, (rows[index][col] for index in range(header_count)))) for col in range(table.column_count)]
+    header_count = table.header_rows
+    header = (
+        [
+            " / ".join(
+                filter(None, (rows[index][col] for index in range(header_count)))
+            )
+            for col in range(table.column_count)
+        ]
+        if header_count
+        else [""] * table.column_count
+    )
     body = rows[header_count:]
     lines = ["| " + " | ".join(cell(value) for value in header) + " |"]
     lines.append("| " + " | ".join("---" for _ in header) + " |")
@@ -395,14 +404,22 @@ def table_to_markdown(table: TableData) -> str:
 def table_to_html(
     table: TableData, render_cell: Callable[[str], str] = html.escape
 ) -> str:
-    header_count = max(1, table.header_rows)
-    head = [
-        " / ".join(filter(None, (table.rows[index][col] for index in range(header_count))))
-        for col in range(table.column_count)
-    ]
-    parts = ["<table><thead><tr>"]
-    parts.extend(f"<th>{render_cell(value)}</th>" for value in head)
-    parts.append("</tr></thead><tbody>")
+    header_count = table.header_rows
+    parts = ["<table>"]
+    if header_count:
+        head = [
+            " / ".join(
+                filter(
+                    None,
+                    (table.rows[index][col] for index in range(header_count)),
+                )
+            )
+            for col in range(table.column_count)
+        ]
+        parts.append("<thead><tr>")
+        parts.extend(f"<th>{render_cell(value)}</th>" for value in head)
+        parts.append("</tr></thead>")
+    parts.append("<tbody>")
     for row in table.rows[header_count:]:
         parts.append("<tr>")
         parts.extend(f"<td>{render_cell(value)}</td>" for value in row)

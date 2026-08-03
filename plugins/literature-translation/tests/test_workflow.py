@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -9,8 +11,12 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 import littrans.external_review as external_review
-from littrans.batching import create_batches, refresh_batch
+import littrans.quality as quality_module
+from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.external_review import (
+    PROMPT_VERSION,
+    _antigravity_prompt,
+    _claude_prompt,
     _evidence_map,
     _packet_text,
     _parse_antigravity,
@@ -38,6 +44,7 @@ from littrans.models import (
     ExternalReviewerConfig,
     ExternalReviewRun,
     ExternalReviewVerdict,
+    FigureLabel,
     IssueStatus,
     IssueType,
     ProjectStatus,
@@ -69,6 +76,7 @@ from littrans.rendering import (
     _continuation_separator,
     _continued_sidebar_markdown,
     _merge_continued_sidebar_html,
+    _render_quality_errors,
     _render_target_text,
     _target_markdown,
     _unit_html,
@@ -222,14 +230,20 @@ def test_only_caption_target_views_use_the_chinese_caption_separator() -> None:
     normalized = _render_target_text(caption, raw_target)
     assert normalized == "图 11-5 资源库中的操作"
     assert _target_markdown(caption, normalized) == "*图 11-5 资源库中的操作*"
-    assert _unit_html(caption, normalized) == "<figcaption>图 11-5 资源库中的操作</figcaption>"
-    assert _unit_html(caption, source) == f"<figcaption>{source}</figcaption>"
+    assert _unit_html(caption, normalized, source_view=False) == (
+        "<figcaption>图 11-5 资源库中的操作</figcaption>"
+    )
+    assert _unit_html(caption, source, source_view=True) == (
+        f"<figcaption>{source}</figcaption>"
+    )
 
     table_target = "表 11-5。资源属性"
     normalized_table = _render_target_text(caption, table_target)
     assert normalized_table == "表 11-5 资源属性"
     assert _target_markdown(caption, normalized_table) == "*表 11-5 资源属性*"
-    assert _unit_html(caption, normalized_table) == "<figcaption>表 11-5 资源属性</figcaption>"
+    assert _unit_html(caption, normalized_table, source_view=False) == (
+        "<figcaption>表 11-5 资源属性</figcaption>"
+    )
 
     paragraph = caption.model_copy(update={"kind": UnitKind.PARAGRAPH})
     assert _render_target_text(paragraph, raw_target) == raw_target
@@ -917,8 +931,12 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
         source_hash=sha256_text("■Note Source note body."),
         confidence=1.0,
     )
-    assert "<strong>Note</strong>" in _unit_html(unit, unit.source_text)
-    assert "<strong>注意</strong>" in _unit_html(unit, "中文提示正文。")
+    assert "<strong>Note</strong>" in _unit_html(
+        unit, unit.source_text, source_view=True
+    )
+    assert "<strong>注意</strong>" in _unit_html(
+        unit, "中文提示正文。", source_view=False
+    )
 
     tip = unit.model_copy(
         update={
@@ -926,8 +944,10 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
             "source_hash": sha256_text("■Tip Source tip body."),
         }
     )
-    assert "<strong>Tip</strong>" in _unit_html(tip, tip.source_text)
-    assert "<strong>提示</strong>" in _unit_html(tip, "中文提示正文。")
+    assert "<strong>Tip</strong>" in _unit_html(tip, tip.source_text, source_view=True)
+    assert "<strong>提示</strong>" in _unit_html(
+        tip, "中文提示正文。", source_view=False
+    )
     assert _target_markdown(tip, "中文提示正文。").startswith("> [!TIP]\n")
 
     whats_new = unit.model_copy(
@@ -938,9 +958,11 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
         }
     )
     assert "<strong>What's New</strong>" in _unit_html(
-        whats_new, whats_new.source_text
+        whats_new, whats_new.source_text, source_view=True
     )
-    assert "<strong>新增内容</strong>" in _unit_html(whats_new, "中文新增正文。")
+    assert "<strong>新增内容</strong>" in _unit_html(
+        whats_new, "中文新增正文。", source_view=False
+    )
     assert _target_markdown(whats_new, "中文新增正文。").startswith(
         "> **新增内容**\n"
     )
@@ -956,6 +978,24 @@ def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
             callout_kind=CalloutKind.TIP,
             confidence=1.0,
         )
+
+
+def test_figure_label_view_is_explicit_even_when_body_text_matches() -> None:
+    unit = SourceUnit(
+        unit_id="p0001-u001-figure",
+        kind=UnitKind.FIGURE,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="same body",
+        source_hash=sha256_text("same body"),
+        translatable=False,
+        figure_labels=[FigureLabel(source="Open", target="打开")],
+        confidence=1.0,
+    )
+    source = _unit_html(unit, unit.source_text, source_view=True)
+    target = _unit_html(unit, unit.source_text, source_view=False)
+    assert "<li>Open</li>" in source
+    assert "<li>打开</li>" in target
 
 
 def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
@@ -983,8 +1023,12 @@ def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
     )
     assert _target_markdown(title, "DPI 缩放") == "> **DPI 缩放**"
     assert _target_markdown(body, "侧栏正文。") == "> 侧栏正文。"
-    assert 'class="sidebar-fragment sidebar-title"' in _unit_html(title, "DPI 缩放")
-    assert 'class="sidebar-fragment sidebar-body"' in _unit_html(body, "侧栏正文。")
+    assert 'class="sidebar-fragment sidebar-title"' in _unit_html(
+        title, "DPI 缩放", source_view=False
+    )
+    assert 'class="sidebar-fragment sidebar-body"' in _unit_html(
+        body, "侧栏正文。", source_view=False
+    )
 
     with pytest.raises(ValueError, match="must be set together"):
         body.model_copy(update={"sidebar_role": None}).__class__.model_validate(
@@ -1111,7 +1155,7 @@ def test_ordered_list_marker_is_renderer_owned() -> None:
     assert _comparison_source_text(unit) == "Choose 96 dpi."
     assert _target_markdown(unit, "选择 96 dpi。").startswith("2. 选择 96 dpi。")
     assert '<ol start="2"><li>选择 96 dpi。</li></ol>' == _unit_html(
-        unit, "选择 96 dpi。"
+        unit, "选择 96 dpi。", source_view=False
     )
 
 
@@ -1712,3 +1756,232 @@ def test_external_issue_evidence_accepts_structured_source_and_target_spans() ->
     }
 
     _validate_issue_evidence(payload, evidence)
+
+
+def test_batch_identifiers_reject_path_traversal(prepared_project: Path) -> None:
+    existing = {path.name for path in (prepared_project / "batches").iterdir()}
+    for prefix in ("../escaped", r"..\escaped", "/absolute", r"C:\absolute"):
+        with pytest.raises(ValueError, match="batch ID must match"):
+            create_batches(prepared_project, "1", max_words=300, prefix=prefix)
+    with pytest.raises(ValueError, match="batch ID must match"):
+        create_batches(prepared_project, "1", max_words=300, prefix="x" * 128)
+    assert {path.name for path in (prepared_project / "batches").iterdir()} == existing
+    for batch_id in ("../escaped", r"..\escaped", "/absolute", r"C:\absolute"):
+        with pytest.raises(ValueError, match="batch ID must match"):
+            load_manifest(prepared_project, batch_id)
+
+
+def test_closed_review_issues_require_resolution_evidence(
+    prepared_project: Path,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="evidence")[0]
+    unit_id = manifest.translatable_unit_ids[0]
+    base = {
+        "issue_id": "evidence-r001",
+        "batch_id": manifest.batch_id,
+        "unit_id": unit_id,
+        "severity": Severity.MAJOR,
+        "type": IssueType.TECHNICAL,
+        "explanation": "Synthetic issue",
+        "reviewer": "test",
+    }
+    with pytest.raises(ValueError, match="non-empty resolution"):
+        ReviewIssue(**base, status=IssueStatus.RESOLVED)
+
+    invalid_input = prepared_project / "reviews" / "invalid-closed.jsonl"
+    invalid_input.write_text(
+        json.dumps({**base, "status": "rejected"}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="non-empty resolution"):
+        import_review(prepared_project, manifest.batch_id, invalid_input)
+
+    open_issue = ReviewIssue(**base)
+    valid_input = prepared_project / "reviews" / "open-issue.jsonl"
+    write_jsonl(valid_input, [open_issue])
+    import_review(
+        prepared_project, manifest.batch_id, valid_input, preserve_status=True
+    )
+    with pytest.raises(ValueError, match="must not be empty"):
+        resolve_issue(
+            prepared_project,
+            manifest.batch_id,
+            open_issue.issue_id,
+            IssueStatus.REJECTED,
+            "   ",
+        )
+
+
+def test_external_review_domain_is_project_specific(prepared_project: Path) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        fast=False,
+    )
+    with pytest.raises(ValueError, match="domain_expertise must not be empty"):
+        ExternalReviewConfig(reviewers=[reviewer], domain_expertise="   ")
+
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[reviewer],
+        domain_expertise="WPF, .NET Framework 4.5, C#, and XAML",
+    )
+    save_project(prepared_project, config)
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="domain")[0]
+    packet, _ = _packet_text(prepared_project, manifest.batch_id)
+    assert "# Required subject-matter expertise" in packet
+    assert "WPF, .NET Framework 4.5, C#, and XAML" in packet
+    for prompt in (
+        _claude_prompt(Path("review-packet.md")),
+        _antigravity_prompt(Path("review-packet.md")),
+    ):
+        assert "subject-matter expertise declared in the review packet" in prompt
+        assert ".NET/WPF" not in prompt
+    assert PROMPT_VERSION == "external-review-v3"
+
+
+def test_approval_cannot_stamp_a_revision_with_stale_evidence(
+    prepared_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="race")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "race-empty.jsonl"
+    empty_review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, empty_review)
+
+    current = translation_map(prepared_project)
+    revised_records = [
+        current[unit_id].model_copy(
+            update={"target_text": current[unit_id].target_text + " revised"}
+        )
+        for unit_id in manifest.translatable_unit_ids
+    ]
+    revision_input = prepared_project / "batches" / manifest.batch_id / "revision-race.jsonl"
+    write_jsonl(revision_input, revised_records)
+
+    fingerprint_seen = threading.Event()
+    release_approval = threading.Event()
+    original_fingerprint = quality_module.batch_translation_fingerprint
+
+    def paused_fingerprint(root: Path, batch_id: str) -> str:
+        value = original_fingerprint(root, batch_id)
+        if threading.current_thread().name == "approval-thread":
+            fingerprint_seen.set()
+            if not release_approval.wait(5):
+                raise TimeoutError("test did not release approval")
+        return value
+
+    monkeypatch.setattr(
+        quality_module, "batch_translation_fingerprint", paused_fingerprint
+    )
+    errors: list[BaseException] = []
+
+    def approve() -> None:
+        try:
+            approve_batch(prepared_project, manifest.batch_id, "machine")
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failure
+            errors.append(exc)
+
+    def revise() -> None:
+        try:
+            submit_translation(prepared_project, manifest.batch_id, revision_input)
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failure
+            errors.append(exc)
+
+    approval_thread = threading.Thread(target=approve, name="approval-thread")
+    revision_thread = threading.Thread(target=revise, name="revision-thread")
+    approval_thread.start()
+    assert fingerprint_seen.wait(5)
+    revision_thread.start()
+    time.sleep(0.2)
+    release_approval.set()
+    approval_thread.join(5)
+    revision_thread.join(5)
+    assert not approval_thread.is_alive()
+    assert not revision_thread.is_alive()
+    assert not errors
+    assert {
+        translation_map(prepared_project)[unit_id].status
+        for unit_id in manifest.translatable_unit_ids
+    } == {ProjectStatus.REVISED}
+    with pytest.raises(ValueError, match="QA report is stale"):
+        approve_batch(prepared_project, manifest.batch_id, "machine")
+
+
+def test_grouped_code_secondary_ids_are_unique_in_bilingual_html(
+    prepared_project: Path,
+) -> None:
+    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    candidates = [
+        unit
+        for unit in units
+        if unit.page == 1 and unit.render_policy is RenderPolicy.INCLUDE
+    ][:2]
+    assert len(candidates) == 2
+    replacements: list[SourceUnit] = []
+    for index, unit in enumerate(candidates):
+        source = "first line" if index == 0 else "    second line"
+        replacements.append(
+            SourceUnit.model_validate(
+                {
+                    **unit.model_dump(mode="json"),
+                    "kind": "code",
+                    "source_text": source,
+                    "source_markdown": None,
+                    "source_hash": sha256_text(source),
+                    "translatable": False,
+                    "protected_tokens": [],
+                    "asset_refs": [],
+                    "table": None,
+                    "code_language": "text",
+                    "figure_labels": [],
+                    "sidebar_id": None,
+                    "sidebar_role": None,
+                    "callout_kind": None,
+                    "continues_from_previous": index == 1,
+                    "continued_to_next": index == 0,
+                }
+            )
+        )
+    replacement_map = {unit.unit_id: unit for unit in replacements}
+    write_jsonl(
+        prepared_project / "derived" / "units.jsonl",
+        [replacement_map.get(unit.unit_id, unit) for unit in units],
+    )
+    outputs = render_project(
+        prepared_project,
+        "1",
+        "grouped-code-ids",
+        allow_draft=True,
+    )
+    rendered_html = Path(outputs["html"]).read_text(encoding="utf-8")
+    for unit in replacements:
+        assert rendered_html.count(f'id="{unit.unit_id}"') == 1
+    report = json.loads(Path(outputs["render_qa"]).read_text(encoding="utf-8"))
+    assert report["passed"]
+
+
+def test_render_qa_does_not_treat_data_attributes_as_element_ids() -> None:
+    rendered_html = (
+        '<article id="u1" data-sidebar-id="shared"></article>'
+        '<article id="u2" data-sidebar-id="shared"></article>'
+    )
+    assert _render_quality_errors(
+        '<a id="u1"></a>\n<a id="u2"></a>',
+        rendered_html,
+        [
+            SourceUnit(
+                unit_id=unit_id,
+                kind=UnitKind.PARAGRAPH,
+                page=1,
+                bbox=(0, 0, 1, 1),
+                source_text="source",
+                source_hash=sha256_text("source"),
+                confidence=1.0,
+            )
+            for unit_id in ("u1", "u2")
+        ],
+    ) == []

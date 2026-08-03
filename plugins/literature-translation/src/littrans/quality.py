@@ -530,14 +530,24 @@ def import_review(
 def resolve_issue(
     root: Path, batch_id: str, issue_id: str, status: IssueStatus, resolution: str
 ) -> ReviewIssue:
+    load_manifest(root, batch_id)
+    if status is IssueStatus.OPEN:
+        raise ValueError("Resolved review issue status must not be open")
+    if not resolution.strip():
+        raise ValueError("Review issue resolution must not be empty")
     path = root / "reviews" / f"{batch_id}.issues.jsonl"
     issues = read_jsonl(path, ReviewIssue)
     resolved: ReviewIssue | None = None
     updated: list[ReviewIssue] = []
     for issue in issues:
         if issue.issue_id == issue_id:
-            resolved = issue.model_copy(
-                update={"status": status, "resolution": resolution, "resolved_at": utc_now()}
+            resolved = ReviewIssue.model_validate(
+                {
+                    **issue.model_dump(mode="json"),
+                    "status": status,
+                    "resolution": resolution.strip(),
+                    "resolved_at": utc_now(),
+                }
             )
             updated.append(resolved)
         else:
@@ -549,6 +559,7 @@ def resolve_issue(
 
 
 def review_status(root: Path, batch_id: str) -> dict[str, Any]:
+    load_manifest(root, batch_id)
     issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)
     counts = Counter(f"{issue.severity}:{issue.status}" for issue in issues)
     blocking = [
@@ -579,52 +590,52 @@ def approve_batch(
 ) -> ProjectStatus:
     if level not in {"machine", "external", "human"}:
         raise ValueError("level must be machine, external, or human")
-    manifest = load_manifest(root, batch_id)
-    require_verified_extraction(root, set(manifest.pages))
-    qa_path = root / "qa" / f"{batch_id}.json"
-    if not qa_path.exists():
-        raise ValueError("A passing QA report is required")
-    current_fingerprint = batch_translation_fingerprint(root, batch_id)
-    qa_payload = json.loads(qa_path.read_text(encoding="utf-8"))
-    if not qa_payload.get("passed"):
-        raise ValueError("A passing QA report is required")
-    if qa_payload.get("translation_fingerprint") != current_fingerprint:
-        raise ValueError("The QA report is stale for the current translation revision")
-    status = review_status(root, batch_id)
-    if not status["audit_exists"]:
-        raise ValueError("An imported independent audit is required")
-    audit_payload = json.loads(
-        (root / "reviews" / f"{batch_id}.audit.json").read_text(encoding="utf-8")
-    )
-    if not REQUIRED_AUDIT_LENSES.issubset(set(audit_payload.get("lenses", []))):
-        raise ValueError(
-            "The independent audit must cover fidelity, technical, and Chinese-style lenses"
-        )
-    if audit_payload.get("translation_fingerprint") != current_fingerprint:
-        raise ValueError("The independent audit is stale for the current translation revision")
-    if status["open_blocking_issues"]:
-        raise ValueError(f"Open blocker/major issues remain: {status['open_blocking_issues']}")
-    if level == "human" and not confirm_user_approved:
-        raise ValueError(
-            "Human approval requires --confirm-user-approved after explicit user confirmation"
-        )
-    if level == "external":
-        from littrans.external_review import external_review_status
-
-        external = external_review_status(root, batch_id)
-        if not external["external_approvable"]:
-            raise ValueError(
-                "External approval gate is not satisfied: "
-                f"verdict={external['verdict']}, "
-                f"open_substantive_issues={external['open_substantive_issues']}"
-            )
-
-    target_status = {
-        "machine": ProjectStatus.MACHINE_REVIEWED,
-        "external": ProjectStatus.EXTERNAL_REVIEWED,
-        "human": ProjectStatus.HUMAN_APPROVED,
-    }[level]
     with project_write_lock(root):
+        manifest = load_manifest(root, batch_id)
+        require_verified_extraction(root, set(manifest.pages))
+        qa_path = root / "qa" / f"{batch_id}.json"
+        if not qa_path.exists():
+            raise ValueError("A passing QA report is required")
+        current_fingerprint = batch_translation_fingerprint(root, batch_id)
+        qa_payload = json.loads(qa_path.read_text(encoding="utf-8"))
+        if not qa_payload.get("passed"):
+            raise ValueError("A passing QA report is required")
+        if qa_payload.get("translation_fingerprint") != current_fingerprint:
+            raise ValueError("The QA report is stale for the current translation revision")
+        status = review_status(root, batch_id)
+        if not status["audit_exists"]:
+            raise ValueError("An imported independent audit is required")
+        audit_payload = json.loads(
+            (root / "reviews" / f"{batch_id}.audit.json").read_text(encoding="utf-8")
+        )
+        if not REQUIRED_AUDIT_LENSES.issubset(set(audit_payload.get("lenses", []))):
+            raise ValueError(
+                "The independent audit must cover fidelity, technical, and Chinese-style lenses"
+            )
+        if audit_payload.get("translation_fingerprint") != current_fingerprint:
+            raise ValueError("The independent audit is stale for the current translation revision")
+        if status["open_blocking_issues"]:
+            raise ValueError(f"Open blocker/major issues remain: {status['open_blocking_issues']}")
+        if level == "human" and not confirm_user_approved:
+            raise ValueError(
+                "Human approval requires --confirm-user-approved after explicit user confirmation"
+            )
+        if level == "external":
+            from littrans.external_review import external_review_status
+
+            external = external_review_status(root, batch_id)
+            if not external["external_approvable"]:
+                raise ValueError(
+                    "External approval gate is not satisfied: "
+                    f"verdict={external['verdict']}, "
+                    f"open_substantive_issues={external['open_substantive_issues']}"
+                )
+
+        target_status = {
+            "machine": ProjectStatus.MACHINE_REVIEWED,
+            "external": ProjectStatus.EXTERNAL_REVIEWED,
+            "human": ProjectStatus.HUMAN_APPROVED,
+        }[level]
         current = translation_map(root)
         for unit_id in manifest.translatable_unit_ids:
             current[unit_id] = current[unit_id].model_copy(update={"status": target_status})

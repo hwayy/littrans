@@ -19,6 +19,7 @@ from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
     normalize_prose,
+    table_to_html,
     table_to_markdown,
 )
 
@@ -153,6 +154,25 @@ def test_cross_page_code_fragments_keep_exact_indentation_in_one_fence() -> None
         '<Window\n    xmlns="urn:wpf"\n  <Grid>\n  </Grid>\n</Window>'
     )
     assert grouped[first.unit_id] == [first.unit_id, second.unit_id]
+
+
+def test_headerless_table_keeps_every_row_as_body_data() -> None:
+    table = TableData(
+        rows=[["First", "One"], ["Second", "Two"]],
+        header_rows=0,
+        column_count=2,
+    )
+    markdown = table_to_markdown(table)
+    assert markdown.splitlines() == [
+        "|  |  |",
+        "| --- | --- |",
+        "| First | One |",
+        "| Second | Two |",
+    ]
+    rendered = table_to_html(table)
+    assert "<thead>" not in rendered
+    assert rendered.count("<tr>") == 2
+    assert "<tbody><tr><td>First</td><td>One</td></tr>" in rendered
 
 
 def test_continuation_separator_preserves_english_words_without_spacing_cjk() -> None:

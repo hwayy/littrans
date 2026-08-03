@@ -46,7 +46,7 @@ from littrans.storage import (
 )
 from littrans.verification import require_verified_extraction
 
-PROMPT_VERSION = "external-review-v2"
+PROMPT_VERSION = "external-review-v3"
 RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -180,6 +180,15 @@ def build_antigravity_command(
 
 def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
     manifest = load_manifest(root, batch_id)
+    project = load_project(root)
+    domain_expertise = (
+        project.external_review.domain_expertise
+        if project.external_review and project.external_review.domain_expertise
+        else (
+            "Infer the subject matter and the technical or scholarly expertise required "
+            "from the document brief."
+        )
+    )
     units = {
         unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     }
@@ -245,6 +254,7 @@ def _packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
     text = (
         f"# External review packet: {batch_id}\n\n"
         "This packet is deliberately isolated. It contains no prior review findings.\n\n"
+        f"# Required subject-matter expertise\n\n{domain_expertise}\n\n"
         f"# Document brief\n\n{brief}\n\n"
         f"# Translation style guide\n\n{style}\n\n"
         f"# Approved terminology\n\n```yaml\n{terms}```\n\n"
@@ -338,7 +348,8 @@ def _render_packet(root: Path, packet_dir: Path, text: str, pages: list[int]) ->
 
 def _claude_prompt(packet_path: Path) -> str:
     return f"""<role>
-You are an independent senior bilingual technical-book reviewer specializing in .NET/WPF.
+You are an independent senior English-to-Simplified-Chinese technical and scholarly
+translation reviewer. Apply the subject-matter expertise declared in the review packet.
 </role>
 <materials>
 Read the isolated review packet at {packet_path}. Relevant PDF page images are in the
@@ -368,8 +379,8 @@ JSON schema.
 
 def _antigravity_prompt(packet_path: Path) -> str:
     return f"""# Role
-Act as an independent senior English-to-Simplified-Chinese technical-book reviewer with
-strong .NET/WPF expertise.
+Act as an independent senior English-to-Simplified-Chinese technical and scholarly
+translation reviewer. Apply the subject-matter expertise declared in the review packet.
 
 # Evidence
 Read `{packet_path}` and the PNGs in its adjacent `pages` directory. The packet is

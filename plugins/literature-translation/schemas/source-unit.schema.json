@@ -40,6 +40,17 @@
       "title": "AssetRef",
       "type": "object"
     },
+    "CalloutKind": {
+      "enum": [
+        "note",
+        "tip",
+        "warning",
+        "caution",
+        "whats-new"
+      ],
+      "title": "CalloutKind",
+      "type": "string"
+    },
     "FigureLabel": {
       "additionalProperties": false,
       "properties": {
@@ -279,6 +290,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/SidebarRole"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "callout_kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CalloutKind"
         },
         {
           "type": "null"

@@ -12,6 +12,7 @@ from littrans.models import (
     RenderPolicy,
     SourceUnit,
     TranslationRecord,
+    validate_batch_identifier,
 )
 from littrans.project import load_profile, load_terms, promote_status, translation_map
 from littrans.semantics import fenced_code, table_to_markdown
@@ -29,6 +30,18 @@ from littrans.verification import require_verified_extraction
 
 def _word_count(text: str) -> int:
     return len(text.split())
+
+
+def batch_directory(root: Path, batch_id: str) -> Path:
+    """Return a validated batch directory contained by the project batch root."""
+    validated = validate_batch_identifier(batch_id)
+    batch_root = (root / "batches").resolve()
+    candidate = (batch_root / validated).resolve()
+    try:
+        candidate.relative_to(batch_root)
+    except ValueError as exc:
+        raise ValueError(f"Batch path escapes the project: {batch_id}") from exc
+    return candidate
 
 
 def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
@@ -176,11 +189,13 @@ def create_batches(
     if current:
         groups.append(current)
 
-    base_prefix = prefix or f"p{min(pages):04}-p{max(pages):04}"
+    base_prefix = validate_batch_identifier(
+        prefix or f"p{min(pages):04}-p{max(pages):04}"
+    )
     manifests: list[BatchManifest] = []
     for index, group in enumerate(groups, 1):
         batch_id = f"{base_prefix}-b{index:03}"
-        batch_dir = root / "batches" / batch_id
+        batch_dir = batch_directory(root, batch_id)
         if batch_dir.exists():
             raise FileExistsError(f"Batch already exists: {batch_id}")
         batch_dir.mkdir(parents=True)
@@ -210,12 +225,12 @@ def create_batches(
 
 
 def load_manifest(root: Path, batch_id: str) -> BatchManifest:
-    return BatchManifest.model_validate(read_yaml(root / "batches" / batch_id / "manifest.yaml"))
+    return BatchManifest.model_validate(read_yaml(batch_directory(root, batch_id) / "manifest.yaml"))
 
 
 def show_batch(root: Path, batch_id: str) -> dict[str, object]:
     manifest = load_manifest(root, batch_id)
-    translation = root / "batches" / batch_id / "translation.jsonl"
+    translation = batch_directory(root, batch_id) / "translation.jsonl"
     return {
         **manifest.model_dump(mode="json"),
         "translation_file": str(translation),
@@ -252,7 +267,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
             ),
         }
     )
-    batch_dir = root / "batches" / batch_id
+    batch_dir = batch_directory(root, batch_id)
     start_index = all_units.index(group[0])
     end_index = all_units.index(group[-1])
     before = all_units[start_index - 1] if start_index > 0 else None

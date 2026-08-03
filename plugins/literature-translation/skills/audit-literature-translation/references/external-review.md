@@ -4,6 +4,11 @@ External review is an optional project-specific gate after deterministic QA, all
 audit lenses, issue resolution, and machine approval. Reviewer configuration belongs in
 `project.yaml`; the plugin supplies no default provider or model.
 
+Set the optional `external_review.domain_expertise` string when a project needs an explicit
+subject-matter specialization. The value is included in the isolated review packet and therefore
+covered by its recorded SHA-256. When omitted, reviewers infer the required expertise from the
+document brief. Provider prompts remain domain-neutral.
+
 Run `review external <project> <batch-id>` for least-used assignment, or add `--reviewer <id>`
 to keep a revision with its original reviewer. Add `--dry-run` to inspect the isolated packet,
 prompt, and command without invoking a provider. Use `review external-status` to inspect the

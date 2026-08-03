@@ -10,7 +10,15 @@ import fitz
 import yaml
 from pydantic import BaseModel
 
-from littrans.models import ProjectConfig, ProjectStatus, SourceUnit, TranslationRecord
+from littrans.models import (
+    BatchManifest,
+    ExternalReviewRun,
+    ProjectConfig,
+    ProjectStatus,
+    ReviewIssue,
+    SourceUnit,
+    TranslationRecord,
+)
 from littrans.storage import (
     initialize_project_dirs,
     load_project,
@@ -159,18 +167,8 @@ def project_status(root: Path) -> dict[str, Any]:
     }
 
 
-def write_schemas(output: Path) -> None:
-    from littrans.models import (
-        BatchManifest,
-        ExternalReviewRun,
-        ProjectConfig,
-        ReviewIssue,
-        SourceUnit,
-        TranslationRecord,
-    )
-
-    output.mkdir(parents=True, exist_ok=True)
-    models: dict[str, type[BaseModel]] = {
+def schema_models() -> dict[str, type[BaseModel]]:
+    return {
         "project.schema.json": ProjectConfig,
         "source-unit.schema.json": SourceUnit,
         "translation-record.schema.json": TranslationRecord,
@@ -178,7 +176,27 @@ def write_schemas(output: Path) -> None:
         "batch-manifest.schema.json": BatchManifest,
         "external-review-run.schema.json": ExternalReviewRun,
     }
-    for filename, model in models.items():
+
+
+def schema_mismatches(output: Path) -> list[str]:
+    expected = schema_models()
+    actual_names = {path.name for path in output.glob("*.json")}
+    mismatches = [
+        f"missing:{filename}" for filename in sorted(set(expected) - actual_names)
+    ]
+    mismatches.extend(
+        f"unexpected:{filename}" for filename in sorted(actual_names - set(expected))
+    )
+    for filename, model in expected.items():
+        path = output / filename
+        if path.is_file() and json.loads(path.read_text(encoding="utf-8")) != model.model_json_schema():
+            mismatches.append(f"stale:{filename}")
+    return mismatches
+
+
+def write_schemas(output: Path) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    for filename, model in schema_models().items():
         (output / filename).write_text(
             json.dumps(model.model_json_schema(), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

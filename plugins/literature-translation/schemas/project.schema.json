@@ -28,6 +28,18 @@
         },
         "second_opinion": {
           "$ref": "#/$defs/ExternalSecondOpinionConfig"
+        },
+        "domain_expertise": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Domain Expertise"
         }
       },
       "required": [

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from littrans.batching import load_manifest
+from littrans.batching import batch_directory, load_manifest
 from littrans.models import ProjectStatus, SourceUnit, TranslationRecord
 from littrans.project import promote_status, translation_map
 from littrans.storage import append_jsonl, project_write_lock, read_jsonl, write_jsonl
@@ -39,7 +39,7 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
         current.update({record.unit_id: record for record in normalized})
         write_jsonl(root / "translations" / "current.jsonl", current.values())
         append_jsonl(root / "translations" / "history.jsonl", normalized)
-        write_jsonl(root / "batches" / batch_id / "translation.jsonl", normalized)
+        write_jsonl(batch_directory(root, batch_id) / "translation.jsonl", normalized)
         promote_status(
             root,
             ProjectStatus.REVISED

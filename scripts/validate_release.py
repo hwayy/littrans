@@ -5,6 +5,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from littrans.project import schema_mismatches
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "literature-translation"
@@ -84,8 +86,10 @@ def main() -> None:
     if not skill_files:
         raise ValueError("Plugin contains no skills")
 
-    for schema_path in sorted((PLUGIN_ROOT / "schemas").glob("*.json")):
-        load_json(schema_path)
+    schema_dir = PLUGIN_ROOT / "schemas"
+    mismatches = schema_mismatches(schema_dir)
+    if mismatches:
+        raise ValueError(f"Tracked schemas do not match runtime models: {mismatches}")
 
     print(
         f"Validated {plugin_name} {manifest_version}: "

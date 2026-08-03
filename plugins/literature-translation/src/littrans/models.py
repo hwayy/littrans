@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
+
+
+def validate_batch_identifier(value: str) -> str:
+    if BATCH_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError(
+            "batch ID must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+        )
+    return value
 
 
 def utc_now() -> str:
@@ -160,6 +172,17 @@ class ExternalReviewConfig(StrictModel):
     reviewers_per_batch: int = Field(default=1, ge=1)
     reviewers: list[ExternalReviewerConfig]
     second_opinion: ExternalSecondOpinionConfig = Field(default_factory=ExternalSecondOpinionConfig)
+    domain_expertise: str | None = None
+
+    @field_validator("domain_expertise")
+    @classmethod
+    def require_nonempty_domain_expertise(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("external_review.domain_expertise must not be empty")
+        return normalized
 
     @model_validator(mode="after")
     def validate_external_review_config(self) -> ExternalReviewConfig:
@@ -337,7 +360,7 @@ class GlossaryTerm(StrictModel):
 class ReviewIssue(StrictModel):
     schema_version: int = 1
     issue_id: str
-    batch_id: str
+    batch_id: BatchId
     unit_id: str
     severity: Severity
     type: IssueType
@@ -351,11 +374,20 @@ class ReviewIssue(StrictModel):
     resolution: str | None = None
     resolved_at: str | None = None
 
+    @model_validator(mode="after")
+    def require_resolution_evidence(self) -> ReviewIssue:
+        if self.status is not IssueStatus.OPEN:
+            if self.resolution is None or not self.resolution.strip():
+                raise ValueError("closed review issues require a non-empty resolution")
+            if self.resolved_at is None or not self.resolved_at.strip():
+                raise ValueError("closed review issues require resolved_at")
+        return self
+
 
 class ExternalReviewRun(StrictModel):
     schema_version: int = 1
     run_id: str
-    batch_id: str
+    batch_id: BatchId
     reviewer_id: str
     driver: ExternalReviewDriver
     role: str
@@ -387,14 +419,13 @@ class ExternalReviewRun(StrictModel):
 
 class BatchManifest(StrictModel):
     schema_version: int = 1
-    batch_id: str
+    batch_id: BatchId
     project_id: str
     pages: list[int]
     unit_ids: list[str]
     translatable_unit_ids: list[str]
     source_words: int
     created_at: str = Field(default_factory=utc_now)
-
 
 class QAItem(StrictModel):
     code: str
@@ -405,7 +436,7 @@ class QAItem(StrictModel):
 
 class QAReport(StrictModel):
     schema_version: int = 1
-    batch_id: str
+    batch_id: BatchId
     passed: bool
     translation_fingerprint: str
     errors: list[QAItem] = Field(default_factory=list)
