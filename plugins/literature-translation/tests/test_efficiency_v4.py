@@ -22,9 +22,12 @@ from littrans.models import (
     ExternalReviewerConfig,
     ExternalReviewRun,
     ExternalReviewVerdict,
+    ExtractionIssue,
+    IssueStatus,
     ProjectStatus,
     ReviewScope,
     SemanticStatus,
+    Severity,
     SourceUnit,
     TranslationRecord,
     UnitKind,
@@ -185,30 +188,47 @@ def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> No
 def test_source_rebinding_does_not_create_translation_revision(
     tmp_path: Path,
 ) -> None:
-    root, manifests = _make_project(tmp_path, 1)
-    batch_id = manifests[0].batch_id
-    _submit(root, batch_id)
-    _audit_and_approve(root, batch_id)
+    root, manifests = _make_project(tmp_path)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+    assert all(audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests)
+
+    batch_id = manifests[1].batch_id
     history_path = root / "translations" / "history.jsonl"
     history_before = history_path.read_bytes()
-    project_before = (root / "project.yaml").read_bytes()
     units_path = root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
+    middle_unit_id = load_manifest(root, batch_id).translatable_unit_ids[0]
+    middle_index = next(
+        index for index, unit in enumerate(units) if unit.unit_id == middle_unit_id
+    )
     new_hash = "f" * 64
-    units[0] = units[0].model_copy(update={"source_hash": new_hash})
+    units[middle_index] = units[middle_index].model_copy(
+        update={"source_hash": new_hash}
+    )
     write_jsonl(units_path, units)
-    current = read_jsonl(
-        root / "translations" / "current.jsonl", TranslationRecord
-    )[0]
+    current = {
+        record.unit_id: record
+        for record in read_jsonl(
+            root / "translations" / "current.jsonl", TranslationRecord
+        )
+    }[middle_unit_id]
     input_path = root / "batches" / batch_id / "rebind.jsonl"
     write_jsonl(input_path, [current.model_copy(update={"source_hash": new_hash})])
     returned = submit_translation(root, batch_id, input_path)
     assert returned[0].revision == current.revision
-    assert returned[0].status is ProjectStatus.MACHINE_REVIEWED
+    assert returned[0].status is ProjectStatus.REVISED
     assert returned[0].source_hash == new_hash
     assert history_path.read_bytes() == history_before
-    assert (root / "project.yaml").read_bytes() == project_before
-    assert not audit_coverage(root, batch_id)["complete"]
+    assert load_project(root).status is ProjectStatus.REVISED
+    assert all(
+        not audit_coverage(root, manifest.batch_id)["complete"]
+        for manifest in manifests
+    )
+    with pytest.raises(ValueError, match="not_publishable"):
+        render_project(root, None, "stale-rebound", batch_id=batch_id)
 
 
 def test_revision_invalidates_only_dependency_closure(tmp_path: Path) -> None:
@@ -245,6 +265,37 @@ def test_page_receipts_skip_unchanged_verification(
     monkeypatch.setattr(verification, "_write_visual_report", fail_report)
     require_verified_extraction(root, {1})
     assert receipt_path.read_bytes() == before
+
+
+def test_page_receipt_does_not_hide_new_blocking_issue(tmp_path: Path) -> None:
+    root, _ = _make_project(tmp_path, 1)
+    issues_path = root / "derived" / "extraction-issues.jsonl"
+    issue = ExtractionIssue(
+        issue_id="manual-blocker",
+        page=1,
+        severity=Severity.BLOCKER,
+        code="manual-review-blocker",
+        message="A later manual review found a blocking extraction defect.",
+    )
+    write_jsonl(issues_path, [issue])
+
+    blocked = verify_extraction(root, "1")
+    assert not blocked["passed"]
+    assert blocked["cached_pages"] == []
+    assert {item["code"] for item in blocked["errors"]} == {
+        "open-extraction-issue"
+    }
+    with pytest.raises(ValueError, match="open-extraction-issue"):
+        require_verified_extraction(root, {1})
+
+    write_jsonl(
+        issues_path,
+        [issue.model_copy(update={"status": IssueStatus.RESOLVED})],
+    )
+    refreshed = verify_extraction(root, "1")
+    assert refreshed["passed"]
+    assert refreshed["verified_pages"] == [1]
+    assert verify_extraction(root, "1")["cached_pages"] == [1]
 
 
 def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None:
@@ -374,20 +425,82 @@ def test_v3_migration_preserves_translation_bytes_and_imports_evidence(
 ) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
-    _submit(root, batch_id)
-    assert run_qa(root, batch_id).passed
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(update={"kind": UnitKind.CAPTION})
+    write_jsonl(units_path, units)
+    translation_input = root / "batches" / batch_id / "caption.jsonl"
+    write_jsonl(
+        translation_input,
+        [
+            TranslationRecord(
+                unit_id=units[0].unit_id,
+                target_text="图 1-1。标题",
+                source_hash=units[0].source_hash,
+            )
+        ],
+    )
+    submit_translation(root, batch_id, translation_input)
     empty = root / "reviews" / "legacy-audit.jsonl"
     write_jsonl(empty, [])
     import_review(root, batch_id, empty)
+
+    record = translation_map(root)[units[0].unit_id]
+    source_fields = {
+        "kind",
+        "source_hash",
+        "source_markdown",
+        "sidebar_id",
+        "sidebar_role",
+        "callout_kind",
+        "translatable",
+        "render_policy",
+        "protected_tokens",
+        "latex",
+        "equation_number",
+        "math_status",
+        "table",
+        "code_language",
+        "continues_from_previous",
+        "continued_to_next",
+        "figure_labels",
+        "verification_status",
+    }
+    source_fingerprint = sha256_text(
+        units[0].model_dump_json(include=source_fields, exclude_none=True)
+    )
+    translation_json = record.model_dump_json(
+        include={
+            "target_text",
+            "target_table",
+            "figure_labels",
+            "reader_note",
+            "term_proposals",
+            "uncertainties",
+        },
+        exclude_none=True,
+    )
+    legacy_fingerprint = sha256_text(
+        f"{record.unit_id}|{record.source_hash}|{source_fingerprint}|"
+        f"{record.revision}|{sha256_text(translation_json)}"
+    )
+    assert _legacy_v3_batch_fingerprint(root, batch_id) == legacy_fingerprint
+
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
     qa_path = root / "qa" / f"{batch_id}.json"
-    qa = read_json(qa_path)
-    qa.update({"schema_version": 1, "translation_fingerprint": legacy_fingerprint})
-    qa.pop("qa_context_fingerprint", None)
-    write_json(qa_path, qa)
+    write_json(
+        qa_path,
+        {
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "passed": True,
+            "translation_fingerprint": legacy_fingerprint,
+            "errors": [],
+            "warnings": [],
+        },
+    )
     audit_path = root / "reviews" / f"{batch_id}.audit.json"
     audit = read_json(audit_path)
     audit["translation_fingerprint"] = legacy_fingerprint
@@ -395,15 +508,48 @@ def test_v3_migration_preserves_translation_bytes_and_imports_evidence(
     audit.pop("missing_coverage", None)
     write_json(audit_path, audit)
     (root / "evidence" / "audits" / f"{batch_id}.jsonl").unlink()
+    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+    append_jsonl(
+        runs_path,
+        [
+            ExternalReviewRun(
+                schema_version=1,
+                run_id="legacy-run",
+                batch_id=batch_id,
+                reviewer_id="legacy-reviewer",
+                driver="claude-code",
+                role="primary",
+                requested_model="legacy-model",
+                actual_model="legacy-model",
+                model_verified=True,
+                translation_fingerprint=legacy_fingerprint,
+                packet_sha256="0" * 64,
+                prompt_version="v3",
+                verdict=ExternalReviewVerdict.ACCEPTED,
+                summary="Accepted under the v3 evidence contract.",
+            )
+        ],
+    )
     current_before = (root / "translations" / "current.jsonl").read_bytes()
     history_before = (root / "translations" / "history.jsonl").read_bytes()
-    assert migrate_project_schema(root, 4, dry_run=True)["changed"] is False
+    preview = migrate_project_schema(root, 4, dry_run=True)
+    assert preview["changed"] is False
+    assert preview["importable"] == {
+        "qa": 1,
+        "audit_lenses": 3,
+        "external_runs": 1,
+    }
+    assert preview["pending_recheck"] == {"qa": [], "audit": [], "external": []}
     report = migrate_project_schema(root, 4)
     assert report["source_verification"]["passed"]
     assert load_project(root).schema_version == 4
     assert (root / "translations" / "current.jsonl").read_bytes() == current_before
     assert (root / "translations" / "history.jsonl").read_bytes() == history_before
     assert audit_coverage(root, batch_id)["complete"]
+    migrated_runs = read_jsonl(runs_path, ExternalReviewRun)
+    migrated = next(run for run in migrated_runs if run.run_id == "legacy-run-v4")
+    assert migrated.schema_version == 2
+    assert migrated.base_run_id == "legacy-run"
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

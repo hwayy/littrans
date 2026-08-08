@@ -11,7 +11,6 @@ from littrans.evidence import (
     batch_source_fingerprint,
     batch_structure_fingerprint,
     batch_unit_fingerprints,
-    translation_payload,
 )
 from littrans.extractor import parse_page_spec
 from littrans.models import (
@@ -177,9 +176,20 @@ def _legacy_v3_batch_fingerprint(root: Path, batch_id: str) -> str:
         if record is None:
             material.append(f"{unit_id}|{source_fingerprint}|missing")
         else:
+            translation_json = record.model_dump_json(
+                include={
+                    "target_text",
+                    "target_table",
+                    "figure_labels",
+                    "reader_note",
+                    "term_proposals",
+                    "uncertainties",
+                },
+                exclude_none=True,
+            )
             material.append(
                 f"{unit_id}|{record.source_hash}|{source_fingerprint}|{record.revision}|"
-                f"{sha256_text(json.dumps(translation_payload(record), ensure_ascii=False, separators=(',', ':')))}"
+                f"{sha256_text(translation_json)}"
             )
     return sha256_text("\n".join(material))
 

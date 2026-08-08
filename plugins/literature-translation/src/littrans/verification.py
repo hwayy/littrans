@@ -238,6 +238,15 @@ def verify_extraction(
     document = fitz.open(config.source(root))
     requested_pages = parse_page_spec(page_spec, document.page_count)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    extraction_issues = read_jsonl(
+        root / "derived" / "extraction-issues.jsonl", ExtractionIssue
+    )
+    blocking_issue_pages = {
+        issue.page
+        for issue in extraction_issues
+        if issue.status is IssueStatus.OPEN
+        and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+    }
     cached: dict[int, PageVerificationReceipt] = {}
     expected_keys: dict[int, tuple[str, str, str]] = {}
     for page in requested_pages:
@@ -249,7 +258,7 @@ def verify_extraction(
         )
         expected_keys[page] = (key, unit_fingerprint, asset_fingerprint)
         path = _receipt_path(root, page)
-        if force or not path.is_file():
+        if force or page in blocking_issue_pages or not path.is_file():
             continue
         try:
             receipt = PageVerificationReceipt.model_validate(read_json(path))
@@ -287,7 +296,7 @@ def verify_extraction(
     units = [unit for unit in all_units if unit.page in page_set]
     by_page = {page: [unit for unit in units if unit.page == page] for page in pages}
     errors = _semantic_errors(root, _semantic_context_units(all_units, page_set))
-    for issue in read_jsonl(root / "derived" / "extraction-issues.jsonl", ExtractionIssue):
+    for issue in extraction_issues:
         if (
             issue.page in page_set
             and issue.status is IssueStatus.OPEN

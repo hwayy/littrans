@@ -38,7 +38,11 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             if prior is not None and translations_semantically_equal(prior, record):
                 if prior.source_hash != record.source_hash:
                     binding_update = prior.model_copy(
-                        update={"source_hash": record.source_hash}
+                        update={
+                            "source_hash": record.source_hash,
+                            "status": ProjectStatus.REVISED,
+                            "updated_at": utc_now(),
+                        }
                     )
                     normalized.append(binding_update)
                     rebound.append(binding_update)
@@ -64,14 +68,15 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             append_jsonl(root / "translations" / "history.jsonl", changed)
         batch_records = [current[unit_id] for unit_id in manifest.translatable_unit_ids]
         write_jsonl(batch_directory(root, batch_id) / "translation.jsonl", batch_records)
-        if changed:
+        evidence_changes = [*changed, *rebound]
+        if evidence_changes:
             record_audit_invalidation(
-                root, batch_id, (record.unit_id for record in changed)
+                root, batch_id, (record.unit_id for record in evidence_changes)
             )
             promote_status(
                 root,
                 ProjectStatus.REVISED
-                if any(r.revision > 1 for r in changed)
+                if rebound or any(r.revision > 1 for r in changed)
                 else ProjectStatus.DRAFT,
             )
     return normalized
