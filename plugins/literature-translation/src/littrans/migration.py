@@ -1,15 +1,43 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
 
 from rapidfuzz.fuzz import ratio
 
+from littrans.evidence import (
+    batch_source_fingerprint,
+    batch_structure_fingerprint,
+    batch_unit_fingerprints,
+    translation_payload,
+)
 from littrans.extractor import parse_page_spec
-from littrans.models import ProjectStatus, SourceUnit, TranslationRecord, UnitKind
-from littrans.project import promote_status, translation_map
-from littrans.storage import load_project, project_write_lock, read_jsonl, write_json, write_jsonl
+from littrans.models import (
+    AuditRun,
+    ExternalReviewRun,
+    ExternalReviewVerdict,
+    ProjectStatus,
+    ReviewScope,
+    SourceUnit,
+    TranslationRecord,
+    UnitKind,
+    utc_now,
+)
+from littrans.project import load_terms, promote_status, translation_map
+from littrans.storage import (
+    append_jsonl,
+    initialize_project_dirs,
+    load_project,
+    project_write_lock,
+    read_json,
+    read_jsonl,
+    save_project,
+    sha256_text,
+    write_json,
+    write_jsonl,
+)
 
 
 def _comparable(text: str) -> str:
@@ -103,4 +131,254 @@ def migrate_translations(
         "warning": "All migrated records are drafts; rerun QA and independent audit.",
     }
     write_json(target_root / "translations" / "migration-report.json", report)
+    return report
+
+
+def _legacy_v3_batch_fingerprint(root: Path, batch_id: str) -> str:
+    from littrans.batching import load_manifest
+
+    manifest = load_manifest(root, batch_id)
+    translations = translation_map(root)
+    units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
+    source_fields = {
+        "kind",
+        "source_hash",
+        "source_markdown",
+        "sidebar_id",
+        "sidebar_role",
+        "callout_kind",
+        "translatable",
+        "render_policy",
+        "protected_tokens",
+        "latex",
+        "equation_number",
+        "math_status",
+        "table",
+        "code_language",
+        "continues_from_previous",
+        "continued_to_next",
+        "figure_labels",
+        "verification_status",
+    }
+    material: list[str] = []
+    for unit_id in manifest.unit_ids:
+        unit = units[unit_id]
+        semantic = unit.model_dump_json(
+            include=source_fields, exclude_none=True
+        )
+        source_fingerprint = sha256_text(semantic)
+        if not unit.translatable:
+            material.append(f"{unit_id}|source-only|{source_fingerprint}")
+            continue
+        record = translations.get(unit_id)
+        if record is None:
+            material.append(f"{unit_id}|{source_fingerprint}|missing")
+        else:
+            material.append(
+                f"{unit_id}|{record.source_hash}|{source_fingerprint}|{record.revision}|"
+                f"{sha256_text(json.dumps(translation_payload(record), ensure_ascii=False, separators=(',', ':')))}"
+            )
+    return sha256_text("\n".join(material))
+
+
+def migrate_project_schema(
+    root: Path, to_version: int = 4, dry_run: bool = False
+) -> dict[str, Any]:
+    """Upgrade v3 projects without changing source, translations, issues, or approvals."""
+    if to_version != 4:
+        raise ValueError("Only project schema version 4 is supported")
+    config = load_project(root)
+    if config.schema_version > to_version:
+        raise ValueError(
+            f"Project schema {config.schema_version} is newer than requested {to_version}"
+        )
+    if config.schema_version == to_version:
+        return {
+            "project": str(root),
+            "from": to_version,
+            "to": to_version,
+            "dry_run": dry_run,
+            "changed": False,
+            "message": "Project already uses schema v4.",
+        }
+
+    from littrans.batching import load_manifest
+    from littrans.quality import batch_translation_fingerprint
+
+    batch_ids = sorted(
+        path.name
+        for path in (root / "batches").iterdir()
+        if path.is_dir() and (path / "manifest.yaml").is_file()
+    )
+    candidates: dict[str, dict[str, Any]] = {}
+    stale: dict[str, list[str]] = {"qa": [], "audit": [], "external": []}
+    for batch_id in batch_ids:
+        legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
+        current_fingerprint = batch_translation_fingerprint(root, batch_id)
+        manifest = load_manifest(root, batch_id)
+        item: dict[str, Any] = {
+            "legacy_fingerprint": legacy_fingerprint,
+            "current_fingerprint": current_fingerprint,
+            "unit_fingerprints": batch_unit_fingerprints(root, batch_id),
+            "qa": None,
+            "audit_lenses": [],
+            "external_runs": [],
+            "unit_ids": manifest.unit_ids,
+            "translatable_unit_ids": manifest.translatable_unit_ids,
+        }
+        qa_path = root / "qa" / f"{batch_id}.json"
+        if qa_path.is_file():
+            qa = read_json(qa_path)
+            if qa.get("passed") and qa.get("translation_fingerprint") == legacy_fingerprint:
+                item["qa"] = qa
+            else:
+                stale["qa"].append(batch_id)
+        audit_path = root / "reviews" / f"{batch_id}.audit.json"
+        if audit_path.is_file():
+            audit = read_json(audit_path)
+            if audit.get("translation_fingerprint") == legacy_fingerprint:
+                item["audit_lenses"] = [
+                    lens
+                    for lens in audit.get("lenses", [])
+                    if lens in {"fidelity", "technical", "chinese-style"}
+                ]
+            else:
+                stale["audit"].append(batch_id)
+        runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+        runs = read_jsonl(runs_path, ExternalReviewRun)
+        accepted = [
+            run
+            for run in runs
+            if run.translation_fingerprint == legacy_fingerprint
+            and run.success
+            and run.model_verified
+            and run.verdict is ExternalReviewVerdict.ACCEPTED
+        ]
+        item["external_runs"] = accepted
+        if runs and not accepted:
+            stale["external"].append(batch_id)
+        candidates[batch_id] = item
+
+    report: dict[str, Any] = {
+        "project": str(root),
+        "from": config.schema_version,
+        "to": to_version,
+        "dry_run": dry_run,
+        "changed": not dry_run,
+        "batches": len(batch_ids),
+        "importable": {
+            "qa": sum(item["qa"] is not None for item in candidates.values()),
+            "audit_lenses": sum(
+                len(item["audit_lenses"]) for item in candidates.values()
+            ),
+            "external_runs": sum(
+                len(item["external_runs"]) for item in candidates.values()
+            ),
+        },
+        "pending_recheck": stale,
+    }
+    if dry_run:
+        return report
+
+    with project_write_lock(root):
+        initialize_project_dirs(root)
+        config.schema_version = 4
+        save_project(root, config)
+        for batch_id, item in candidates.items():
+            if item["qa"] is not None:
+                qa = dict(item["qa"])
+                qa["translation_fingerprint"] = item["current_fingerprint"]
+                qa["schema_version"] = 2
+                qa["qa_context_fingerprint"] = sha256_text(
+                    "deterministic-qa-v4|"
+                    + json.dumps(
+                        load_terms(root),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                write_json(root / "qa" / f"{batch_id}.json", qa)
+            audit_runs_path = root / "evidence" / "audits" / f"{batch_id}.jsonl"
+            existing_ids = {
+                run.run_id for run in read_jsonl(audit_runs_path, AuditRun)
+            }
+            for lens in item["audit_lenses"]:
+                run_id = f"migrated-{batch_id}-{lens}"
+                if run_id in existing_ids:
+                    continue
+                append_jsonl(
+                    audit_runs_path,
+                    [
+                        AuditRun(
+                            run_id=run_id,
+                            batch_ids=[batch_id],
+                            reviewer="v3-evidence-migration",
+                            lens=lens,
+                            scope=ReviewScope.FULL,
+                            unit_fingerprints={
+                                unit_id: item["unit_fingerprints"][unit_id]
+                                for unit_id in item["unit_ids"]
+                            },
+                        )
+                    ],
+                )
+            if item["audit_lenses"]:
+                audit_path = root / "reviews" / f"{batch_id}.audit.json"
+                audit = read_json(audit_path)
+                audit["translation_fingerprint"] = item["current_fingerprint"]
+                audit["unit_coverage"] = {
+                    lens: item["unit_ids"]
+                    for lens in item["audit_lenses"]
+                }
+                write_json(audit_path, audit)
+            runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+            for old in item["external_runs"]:
+                migrated_id = f"{old.run_id}-v4"
+                if any(
+                    run.run_id == migrated_id
+                    for run in read_jsonl(runs_path, ExternalReviewRun)
+                ):
+                    continue
+                append_jsonl(
+                    runs_path,
+                    [
+                        old.model_copy(
+                            update={
+                                "schema_version": 2,
+                                "run_id": migrated_id,
+                                "translation_fingerprint": item[
+                                    "current_fingerprint"
+                                ],
+                                "scope": ReviewScope.FULL,
+                                "base_run_id": old.run_id,
+                                "covered_unit_ids": item["unit_ids"],
+                                "unit_fingerprints": item[
+                                    "unit_fingerprints"
+                                ],
+                                "source_fingerprint": batch_source_fingerprint(
+                                    root, batch_id
+                                ),
+                                "structure_fingerprint": batch_structure_fingerprint(
+                                    root, batch_id
+                                ),
+                            }
+                        )
+                    ],
+                )
+
+    # Seed page-level receipts once, after the lossless state migration.
+    from littrans.verification import verify_extraction
+
+    verification = verify_extraction(root, "all", force=True)
+    report["source_verification"] = {
+        "passed": verification["passed"],
+        "verified_pages": verification.get("verified_pages", []),
+        "errors": verification.get("errors", []),
+    }
+    report["migrated_at"] = utc_now()
+    write_json(root / "evidence" / "migration-v3-v4.json", report)
     return report

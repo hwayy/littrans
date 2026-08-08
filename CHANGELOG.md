@@ -3,6 +3,34 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.3.0] - 2026-08-08
+
+### Added
+
+- Added schema-v4 page verification receipts, unit-level audit runs, workflow packet manifests,
+  external-review usage metadata, and a lossless `project migrate --to 4` command.
+- Added three-batch workflow selection and packet generation, review-set import, workflow metrics,
+  exact multi-batch rendering, and the `continue-literature-translation` coordinator skill.
+
+### Changed
+
+- Made translation submission semantic: metadata-only or identical resubmissions no longer create
+  revisions, history entries, status changes, or evidence invalidations.
+- Reused unchanged page verification and audit evidence while invalidating changed units and their
+  continuation, structured-region, adjacency, and seam dependencies precisely.
+- Scoped model packets to relevant approved terms and at most six current approved translation
+  memories, with adjacent examples preferred.
+- Added full-to-incremental external review selection, Claude stdin prompt delivery with file-mode
+  fallback, Antigravity JSON Schema output, and normalized duration/token/cost recording.
+- Kept Claude stdin prompt delivery feature-gated off after the six-batch shadow A/B missed a
+  seeded major technical defect. Production review continues to use file delivery; the other
+  efficiency improvements are unaffected.
+
+### Compatibility
+
+- Preserved all v0.2 commands and project content. Schema-v3 projects require the documented
+  one-time migration; no translation, issue, revision, or approval state is rewritten.
+
 ## [0.2.2] - 2026-07-30
 
 ### Fixed

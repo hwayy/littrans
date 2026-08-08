@@ -13,13 +13,19 @@ from pydantic import BaseModel
 from littrans.batching import create_batches, refresh_batch, show_batch
 from littrans.external_review import external_review_status, run_external_review
 from littrans.extractor import apply_layout_overrides, extract_source, inspect_source
-from littrans.migration import migrate_translations
+from littrans.migration import migrate_project_schema, migrate_translations
 from littrans.models import IssueStatus
 from littrans.project import initialize_project, project_status
 from littrans.quality import approve_batch, import_review, resolve_issue, review_status, run_qa
 from littrans.rendering import render_project
 from littrans.translation import submit_translation
 from littrans.verification import verify_extraction
+from littrans.workflow import (
+    create_workflow_packet,
+    import_review_set,
+    workflow_metrics,
+    workflow_next,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Controlled literature translation tooling.")
 project_app = typer.Typer(no_args_is_help=True)
@@ -28,12 +34,14 @@ batch_app = typer.Typer(no_args_is_help=True)
 translation_app = typer.Typer(no_args_is_help=True)
 qa_app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
+workflow_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(source_app, name="source")
 app.add_typer(batch_app, name="batch")
 app.add_typer(translation_app, name="translation")
 app.add_typer(qa_app, name="qa")
 app.add_typer(review_app, name="review")
+app.add_typer(workflow_app, name="workflow")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -83,6 +91,16 @@ def project_init(
     emit(initialize_project(source, project, profile, title, source_language, target_language))
 
 
+@project_app.command("migrate")
+def project_migrate(
+    project: PathArg,
+    to_version: int = typer.Option(..., "--to"),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    """Losslessly migrate a project evidence ledger to schema v4."""
+    emit(migrate_project_schema(project, to_version, dry_run))
+
+
 @source_app.command("inspect")
 def source_inspect(project: PathArg, pages: str = typer.Option("all")) -> None:
     emit(inspect_source(project, pages))
@@ -105,9 +123,13 @@ def source_apply_overrides(project: PathArg) -> None:
 
 
 @source_app.command("verify")
-def source_verify(project: PathArg, pages: str = typer.Option("all")) -> None:
+def source_verify(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    force: bool = typer.Option(False),
+) -> None:
     """Run structural gates and create a visual extraction report."""
-    emit(verify_extraction(project, pages))
+    emit(verify_extraction(project, pages, force))
 
 
 @batch_app.command("create")
@@ -182,6 +204,13 @@ def review_import(
     )
 
 
+@review_app.command("import-set")
+def review_import_set(
+    project: PathArg, packet_manifest: PathArg, issues_jsonl: PathArg
+) -> None:
+    emit(import_review_set(project, packet_manifest, issues_jsonl))
+
+
 @review_app.command("resolve")
 def review_resolve(
     project: PathArg,
@@ -231,10 +260,52 @@ def render_command(
     project: PathArg,
     pages: str | None = typer.Option(None),
     batch_id: str | None = typer.Option(None),
+    batch_ids: str | None = typer.Option(None),
     name: str = typer.Option(...),
     allow_draft: bool = typer.Option(False),
 ) -> None:
-    emit(render_project(project, pages, name, allow_draft, batch_id))
+    parsed_batch_ids = (
+        [value.strip() for value in batch_ids.split(",") if value.strip()]
+        if batch_ids
+        else None
+    )
+    emit(render_project(project, pages, name, allow_draft, batch_id, parsed_batch_ids))
+
+
+@workflow_app.command("next")
+def workflow_get_next(project: PathArg, limit: int = typer.Option(3)) -> None:
+    emit(workflow_next(project, limit))
+
+
+@workflow_app.command("packet")
+def workflow_create_packet(
+    project: PathArg,
+    stage: str = typer.Option(...),
+    batch_ids: str = typer.Option(...),
+    lens: str | None = typer.Option(None),
+) -> None:
+    emit(
+        create_workflow_packet(
+            project,
+            stage,
+            [value.strip() for value in batch_ids.split(",") if value.strip()],
+            lens,
+        )
+    )
+
+
+@workflow_app.command("metrics")
+def workflow_get_metrics(
+    project: PathArg, batch_ids: str | None = typer.Option(None)
+) -> None:
+    emit(
+        workflow_metrics(
+            project,
+            [value.strip() for value in batch_ids.split(",") if value.strip()]
+            if batch_ids
+            else None,
+        )
+    )
 
 
 @app.command()

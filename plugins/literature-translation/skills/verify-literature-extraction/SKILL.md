@@ -16,7 +16,7 @@ Treat the PDF as authoritative. Do not translate body prose in this skill.
 5. Restore code indentation exactly, set `code_language`, and confirm that literal tags such as `<Button>` are inside code or remain literal prose. Mark Note/Tip/Warning/Caution/“What’s New” blocks as `note` and set the explicit `callout_kind` (`note`, `tip`, `warning`, `caution`, or `whats-new`). For a titled multi-paragraph sidebar, preserve the original heading/paragraph kinds and assign one shared `sidebar_id`, with `sidebar_role: title` on its heading and `sidebar_role: body` on every contained unit.
 6. Join mistaken prose continuations with `continues_from_previous` and `continued_to_next`. Correct dropped, duplicated, hyphenated, or control characters in `source_text` with an explicit reason.
 7. Inspect each figure or screenshot. Add all meaningful internal labels to `figure_labels` with Chinese targets. If no meaningful text exists, record that fact in the override reason.
-8. Write durable changes to `overrides/layout.yaml`, including `verified: true` and a concrete evidence-based reason for each verified semantic unit. Run `source apply-overrides`, then rerun `source verify`.
+8. Write durable changes to `overrides/layout.yaml`, including `verified: true` and a concrete evidence-based reason for each verified semantic unit. Run `source apply-overrides`, then rerun `source verify`. Matching page receipts are reused automatically; use `--force` for a deliberate full recheck.
 9. Finish only when verification passes. Return the visual report path, corrections made, and any true blocker.
 
 ## Integrity rules

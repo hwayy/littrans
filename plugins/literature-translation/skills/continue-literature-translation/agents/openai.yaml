@@ -1,0 +1,4 @@
+interface:
+  display_name: "Continue Literature Translation"
+  short_description: "Coordinate up to three translation batches efficiently"
+  default_prompt: "Use $continue-literature-translation to continue the next eligible literature translation batches."

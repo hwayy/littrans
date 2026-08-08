@@ -116,6 +116,16 @@ class ExternalReviewVerdict(StrEnum):
     INCONCLUSIVE = "inconclusive"
 
 
+class ReviewScope(StrEnum):
+    FULL = "full"
+    INCREMENTAL = "incremental"
+
+
+class PromptDelivery(StrEnum):
+    STDIN = "stdin"
+    FILE = "file"
+
+
 class ExternalReviewFallback(StrictModel):
     model: str
     effort: str | None = None
@@ -199,7 +209,7 @@ class ExternalReviewConfig(StrictModel):
 
 
 class ProjectConfig(StrictModel):
-    schema_version: int = 3
+    schema_version: int = 4
     project_id: str
     title: str
     source_path: str
@@ -385,7 +395,7 @@ class ReviewIssue(StrictModel):
 
 
 class ExternalReviewRun(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     run_id: str
     batch_id: BatchId
     reviewer_id: str
@@ -401,6 +411,16 @@ class ExternalReviewRun(StrictModel):
     translation_fingerprint: str
     packet_sha256: str
     prompt_version: str
+    scope: ReviewScope = ReviewScope.FULL
+    base_run_id: str | None = None
+    covered_unit_ids: list[str] = Field(default_factory=list)
+    unit_fingerprints: dict[str, str] = Field(default_factory=dict)
+    source_fingerprint: str | None = None
+    structure_fingerprint: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    usage: ReviewUsage | None = None
+    cost_usd: float | None = Field(default=None, ge=0)
+    prompt_delivery: PromptDelivery = PromptDelivery.FILE
     verdict: ExternalReviewVerdict
     summary: str
     issue_ids: list[str] = Field(default_factory=list)
@@ -415,6 +435,81 @@ class ExternalReviewRun(StrictModel):
         if value not in {"primary", "second-opinion"}:
             raise ValueError("external review role must be primary or second-opinion")
         return value
+
+
+class ReviewUsage(StrictModel):
+    input_tokens: int = Field(default=0, ge=0)
+    cache_creation_input_tokens: int = Field(default=0, ge=0)
+    cache_read_input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    provider_turns: int = Field(default=0, ge=0)
+
+
+class PageVerificationReceipt(StrictModel):
+    schema_version: int = 1
+    page: int = Field(ge=1)
+    source_sha256: str
+    unit_fingerprint: str
+    asset_fingerprint: str
+    validator_version: str
+    receipt_key: str
+    passed: bool
+    token_coverage: float = Field(ge=0, le=1)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    checked_at: str = Field(default_factory=utc_now)
+
+
+class AuditRun(StrictModel):
+    schema_version: int = 1
+    run_id: str
+    batch_ids: list[BatchId]
+    reviewer: str
+    lens: str
+    scope: ReviewScope = ReviewScope.FULL
+    base_run_id: str | None = None
+    packet_id: str | None = None
+    unit_fingerprints: dict[str, str]
+    issue_ids: list[str] = Field(default_factory=list)
+    reviewed_at: str = Field(default_factory=utc_now)
+
+    @field_validator("lens")
+    @classmethod
+    def require_supported_audit_lens(cls, value: str) -> str:
+        if value not in {"fidelity", "technical", "chinese-style"}:
+            raise ValueError("unsupported audit lens")
+        return value
+
+
+class WorkflowPacketManifest(StrictModel):
+    schema_version: int = 1
+    packet_id: str
+    stage: str
+    batch_ids: list[BatchId] = Field(min_length=1, max_length=3)
+    lens: str | None = None
+    unit_ids: list[str]
+    unit_fingerprints: dict[str, str]
+    files: dict[str, str]
+    total_bytes: int = Field(ge=0)
+    created_at: str = Field(default_factory=utc_now)
+
+    @field_validator("stage")
+    @classmethod
+    def require_supported_packet_stage(cls, value: str) -> str:
+        if value not in {"translate", "audit"}:
+            raise ValueError("workflow packet stage must be translate or audit")
+        return value
+
+    @model_validator(mode="after")
+    def require_audit_lens(self) -> WorkflowPacketManifest:
+        if self.stage == "audit" and self.lens not in {
+            "fidelity",
+            "technical",
+            "chinese-style",
+        }:
+            raise ValueError("audit packets require one supported lens")
+        if self.stage == "translate" and self.lens is not None:
+            raise ValueError("translation packets must not set a lens")
+        return self
 
 
 class BatchManifest(StrictModel):
@@ -435,10 +530,11 @@ class QAItem(StrictModel):
 
 
 class QAReport(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     batch_id: BatchId
     passed: bool
     translation_fingerprint: str
+    qa_context_fingerprint: str | None = None
     errors: list[QAItem] = Field(default_factory=list)
     warnings: list[QAItem] = Field(default_factory=list)
     checked_at: str = Field(default_factory=utc_now)

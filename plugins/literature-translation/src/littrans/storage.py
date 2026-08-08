@@ -27,6 +27,9 @@ PROJECT_DIRS = (
     "translations",
     "reviews",
     "qa",
+    "evidence/pages",
+    "evidence/audits",
+    "packets",
     "output",
     "overrides",
 )

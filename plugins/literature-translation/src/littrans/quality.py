@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from littrans.batching import load_manifest
+from littrans.evidence import (
+    batch_unit_fingerprints,
+)
 from littrans.models import (
+    AuditRun,
     IssueStatus,
     ProjectStatus,
     QAItem,
     QAReport,
     ReviewIssue,
+    ReviewScope,
     Severity,
     SourceUnit,
     UnitKind,
@@ -21,8 +27,10 @@ from littrans.models import (
 )
 from littrans.project import load_terms, promote_status, translation_map
 from littrans.storage import (
+    append_jsonl,
     load_project,
     project_write_lock,
+    read_json,
     read_jsonl,
     sha256_text,
     write_json,
@@ -44,6 +52,23 @@ MATH_OCR_SUSPECT_RE = re.compile(
 )
 BLOCKING_SEVERITIES = {Severity.BLOCKER, Severity.MAJOR}
 REQUIRED_AUDIT_LENSES = {"fidelity", "technical", "chinese-style"}
+STATUS_ORDER = {
+    status: index
+    for index, status in enumerate(
+        (
+            ProjectStatus.INITIALIZED,
+            ProjectStatus.EXTRACTED,
+            ProjectStatus.PREPARED,
+            ProjectStatus.DRAFT,
+            ProjectStatus.REVISED,
+            ProjectStatus.QA_PASSED,
+            ProjectStatus.REVIEWED,
+            ProjectStatus.MACHINE_REVIEWED,
+            ProjectStatus.EXTERNAL_REVIEWED,
+            ProjectStatus.HUMAN_APPROVED,
+        )
+    )
+}
 INLINE_LATEX_RE = re.compile(r"\$(?!\$)(.+?)(?<!\\)\$")
 LATEX_COMMAND_TEXT = {
     "lambda": "λ",
@@ -62,50 +87,10 @@ SUBSCRIPT_TEXT = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋", "01234567
 
 
 def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
-    manifest = load_manifest(root, batch_id)
-    translations = translation_map(root)
-    units = {
-        unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    }
-    material: list[str] = []
-    for unit_id in manifest.unit_ids:
-        unit = units[unit_id]
-        semantic = unit.model_dump_json(
-            include={
-                "kind",
-                "source_hash",
-                "source_markdown",
-                "sidebar_id",
-                "sidebar_role",
-                "callout_kind",
-                "translatable",
-                "render_policy",
-                "protected_tokens",
-                "latex",
-                "equation_number",
-                "math_status",
-                "table",
-                "code_language",
-                "continues_from_previous",
-                "continued_to_next",
-                "figure_labels",
-                "verification_status",
-            },
-            exclude_none=True,
-        )
-        source_fingerprint = sha256_text(semantic)
-        if not unit.translatable:
-            material.append(f"{unit_id}|source-only|{source_fingerprint}")
-            continue
-        record = translations.get(unit_id)
-        if record is None:
-            material.append(f"{unit_id}|{source_fingerprint}|missing")
-        else:
-            material.append(
-                f"{unit_id}|{record.source_hash}|{source_fingerprint}|{record.revision}|"
-                f"{sha256_text(record.model_dump_json(include={'target_text', 'target_table', 'figure_labels', 'reader_note', 'term_proposals', 'uncertainties'}, exclude_none=True))}"
-            )
-    return sha256_text("\n".join(material))
+    fingerprints = batch_unit_fingerprints(root, batch_id)
+    return sha256_text(
+        "\n".join(f"{unit_id}:{fingerprint}" for unit_id, fingerprint in fingerprints.items())
+    )
 
 
 def _token_counts(pattern: re.Pattern[str], text: str) -> Counter[str]:
@@ -214,6 +199,20 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
     errors: list[QAItem] = []
     warnings: list[QAItem] = []
     approved_terms = load_terms(root)
+    fingerprint = batch_translation_fingerprint(root, batch_id)
+    qa_context_fingerprint = sha256_text(
+        "deterministic-qa-v4|"
+        + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    existing_path = root / "qa" / f"{batch_id}.json"
+    if existing_path.is_file():
+        existing = QAReport.model_validate(read_json(existing_path))
+        if (
+            existing.passed
+            and existing.translation_fingerprint == fingerprint
+            and existing.qa_context_fingerprint == qa_context_fingerprint
+        ):
+            return existing
 
     for unit_id in manifest.translatable_unit_ids:
         unit = units[unit_id]
@@ -429,7 +428,8 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
     report = QAReport(
         batch_id=batch_id,
         passed=not errors,
-        translation_fingerprint=batch_translation_fingerprint(root, batch_id),
+        translation_fingerprint=fingerprint,
+        qa_context_fingerprint=qa_context_fingerprint,
         errors=errors,
         warnings=warnings,
     )
@@ -440,11 +440,13 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
         with project_write_lock(root):
             current = translation_map(root)
             for unit_id in manifest.translatable_unit_ids:
-                current[unit_id] = current[unit_id].model_copy(
-                    update={"status": ProjectStatus.QA_PASSED}
-                )
+                if STATUS_ORDER[current[unit_id].status] <= STATUS_ORDER[ProjectStatus.QA_PASSED]:
+                    current[unit_id] = current[unit_id].model_copy(
+                        update={"status": ProjectStatus.QA_PASSED}
+                    )
             write_jsonl(root / "translations" / "current.jsonl", current.values())
-            promote_status(root, ProjectStatus.QA_PASSED)
+            if STATUS_ORDER[load_project(root).status] <= STATUS_ORDER[ProjectStatus.QA_PASSED]:
+                promote_status(root, ProjectStatus.QA_PASSED)
     return report
 
 
@@ -472,12 +474,76 @@ def _write_qa_markdown(path: Path, report: QAReport) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _audit_runs_path(root: Path, batch_id: str) -> Path:
+    return root / "evidence" / "audits" / f"{batch_id}.jsonl"
+
+
+def _audit_runs(root: Path, batch_id: str) -> list[AuditRun]:
+    return read_jsonl(_audit_runs_path(root, batch_id), AuditRun)
+
+
+def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
+    manifest = load_manifest(root, batch_id)
+    current = batch_unit_fingerprints(root, batch_id)
+    expected = set(manifest.unit_ids)
+    coverage: dict[str, set[str]] = {lens: set() for lens in REQUIRED_AUDIT_LENSES}
+    invalidation_path = (
+        root / "evidence" / "audits" / f"{batch_id}.invalidations.json"
+    )
+    invalidated = (
+        read_json(invalidation_path).get("units", {})
+        if invalidation_path.is_file()
+        else {}
+    )
+    if not isinstance(invalidated, dict):
+        invalidated = {}
+    for run in _audit_runs(root, batch_id):
+        if run.lens not in coverage:
+            continue
+        coverage[run.lens].update(
+            unit_id
+            for unit_id, fingerprint in run.unit_fingerprints.items()
+            if unit_id in expected
+            and current.get(unit_id) == fingerprint
+            and run.reviewed_at > str(invalidated.get(unit_id, ""))
+        )
+    missing = {
+        lens: sorted(expected - unit_ids) for lens, unit_ids in coverage.items()
+    }
+    return {
+        "coverage": {lens: sorted(unit_ids) for lens, unit_ids in coverage.items()},
+        "missing": missing,
+        "complete": all(not unit_ids for unit_ids in missing.values()),
+    }
+
+
+def _write_audit_summary(root: Path, batch_id: str, issue_count: int) -> dict[str, Any]:
+    coverage = audit_coverage(root, batch_id)
+    complete_lenses = sorted(
+        lens for lens, missing in coverage["missing"].items() if not missing
+    )
+    payload = {
+        "batch_id": batch_id,
+        "reviewed_at": utc_now(),
+        "translation_fingerprint": batch_translation_fingerprint(root, batch_id),
+        "lenses": complete_lenses,
+        "unit_coverage": coverage["coverage"],
+        "missing_coverage": coverage["missing"],
+        "new_issue_count": issue_count,
+    }
+    write_json(root / "reviews" / f"{batch_id}.audit.json", payload)
+    return payload
+
+
 def import_review(
     root: Path,
     batch_id: str,
     input_path: Path,
     lenses: list[str] | None = None,
     preserve_status: bool = False,
+    covered_unit_ids: list[str] | None = None,
+    reviewer: str | None = None,
+    packet_id: str | None = None,
 ) -> list[ReviewIssue]:
     manifest = load_manifest(root, batch_id)
     issues = read_jsonl(input_path, ReviewIssue)
@@ -496,34 +562,52 @@ def import_review(
     existing.update({issue.issue_id: issue for issue in issues})
     merged_issues = list(existing.values())
     write_jsonl(issue_path, merged_issues)
-    audit_path = root / "reviews" / f"{batch_id}.audit.json"
-    fingerprint = batch_translation_fingerprint(root, batch_id)
-    prior_lenses: set[str] = set()
-    if audit_path.exists():
-        prior_audit = json.loads(audit_path.read_text(encoding="utf-8"))
-        if prior_audit.get("translation_fingerprint") == fingerprint:
-            prior_lenses.update(prior_audit.get("lenses", []))
-    prior_lenses.update(lenses or REQUIRED_AUDIT_LENSES)
-    write_json(
-        audit_path,
-        {
-            "batch_id": batch_id,
-            "reviewed_at": utc_now(),
-            "translation_fingerprint": fingerprint,
-            "lenses": sorted(prior_lenses),
-            "new_issue_count": len(issues),
-            "total_issue_count": len(merged_issues),
-        },
-    )
+    selected_lenses = set(lenses or REQUIRED_AUDIT_LENSES)
+    internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
+    coverage_ids = set(covered_unit_ids or manifest.unit_ids)
+    invalid_coverage = coverage_ids - set(manifest.unit_ids)
+    if invalid_coverage:
+        raise ValueError(f"Audit coverage references invalid units: {sorted(invalid_coverage)}")
+    fingerprints = batch_unit_fingerprints(root, batch_id)
+    runs = _audit_runs(root, batch_id)
+    for lens in sorted(internal_lenses):
+        prior = next((run for run in reversed(runs) if run.lens == lens), None)
+        run = AuditRun(
+            run_id=uuid.uuid4().hex,
+            batch_ids=[batch_id],
+            reviewer=reviewer or (issues[0].reviewer if issues else "independent-auditor"),
+            lens=lens,
+            scope=(
+                ReviewScope.FULL
+                if coverage_ids >= set(manifest.unit_ids)
+                else ReviewScope.INCREMENTAL
+            ),
+            base_run_id=prior.run_id if prior else None,
+            packet_id=packet_id,
+            unit_fingerprints={
+                unit_id: fingerprints[unit_id]
+                for unit_id in manifest.unit_ids
+                if unit_id in coverage_ids
+            },
+            issue_ids=[issue.issue_id for issue in issues],
+        )
+        append_jsonl(_audit_runs_path(root, batch_id), [run])
+        runs.append(run)
+    if internal_lenses or not (root / "reviews" / f"{batch_id}.audit.json").exists():
+        summary = _write_audit_summary(root, batch_id, len(issues))
+        summary["total_issue_count"] = len(merged_issues)
+        write_json(root / "reviews" / f"{batch_id}.audit.json", summary)
     if not preserve_status:
         with project_write_lock(root):
             current = translation_map(root)
             for unit_id in manifest.translatable_unit_ids:
-                current[unit_id] = current[unit_id].model_copy(
-                    update={"status": ProjectStatus.REVIEWED}
-                )
+                if STATUS_ORDER[current[unit_id].status] <= STATUS_ORDER[ProjectStatus.REVIEWED]:
+                    current[unit_id] = current[unit_id].model_copy(
+                        update={"status": ProjectStatus.REVIEWED}
+                    )
             write_jsonl(root / "translations" / "current.jsonl", current.values())
-            promote_status(root, ProjectStatus.REVIEWED)
+            if STATUS_ORDER[load_project(root).status] <= STATUS_ORDER[ProjectStatus.REVIEWED]:
+                promote_status(root, ProjectStatus.REVIEWED)
     return merged_issues
 
 
@@ -568,14 +652,13 @@ def review_status(root: Path, batch_id: str) -> dict[str, Any]:
         if issue.severity in BLOCKING_SEVERITIES and issue.status is IssueStatus.OPEN
     ]
     audit_path = root / "reviews" / f"{batch_id}.audit.json"
-    audit_payload = (
-        json.loads(audit_path.read_text(encoding="utf-8")) if audit_path.exists() else {}
-    )
-    lenses_complete = REQUIRED_AUDIT_LENSES.issubset(set(audit_payload.get("lenses", [])))
+    coverage = audit_coverage(root, batch_id)
+    lenses_complete = coverage["complete"]
     return {
         "batch_id": batch_id,
         "audit_exists": audit_path.exists(),
         "audit_lenses_complete": lenses_complete,
+        "audit_coverage": coverage,
         "counts": dict(sorted(counts.items())),
         "open_blocking_issues": blocking,
         "publishable": not blocking and audit_path.exists() and lenses_complete,
@@ -605,15 +688,12 @@ def approve_batch(
         status = review_status(root, batch_id)
         if not status["audit_exists"]:
             raise ValueError("An imported independent audit is required")
-        audit_payload = json.loads(
-            (root / "reviews" / f"{batch_id}.audit.json").read_text(encoding="utf-8")
-        )
-        if not REQUIRED_AUDIT_LENSES.issubset(set(audit_payload.get("lenses", []))):
+        coverage = audit_coverage(root, batch_id)
+        if not coverage["complete"]:
             raise ValueError(
-                "The independent audit must cover fidelity, technical, and Chinese-style lenses"
+                "The independent audit is stale or incomplete; it must cover fidelity, "
+                "technical, and Chinese-style lenses for every current source unit"
             )
-        if audit_payload.get("translation_fingerprint") != current_fingerprint:
-            raise ValueError("The independent audit is stale for the current translation revision")
         if status["open_blocking_issues"]:
             raise ValueError(f"Open blocker/major issues remain: {status['open_blocking_issues']}")
         if level == "human" and not confirm_user_approved:
@@ -637,8 +717,15 @@ def approve_batch(
             "human": ProjectStatus.HUMAN_APPROVED,
         }[level]
         current = translation_map(root)
+        changed = False
         for unit_id in manifest.translatable_unit_ids:
-            current[unit_id] = current[unit_id].model_copy(update={"status": target_status})
-        write_jsonl(root / "translations" / "current.jsonl", current.values())
-        promote_status(root, target_status)
+            if STATUS_ORDER[current[unit_id].status] < STATUS_ORDER[target_status]:
+                current[unit_id] = current[unit_id].model_copy(
+                    update={"status": target_status}
+                )
+                changed = True
+        if changed:
+            write_jsonl(root / "translations" / "current.jsonl", current.values())
+        if STATUS_ORDER[load_project(root).status] < STATUS_ORDER[target_status]:
+            promote_status(root, target_status)
     return target_status

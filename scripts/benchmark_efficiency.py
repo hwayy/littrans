@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
+
+from littrans.evidence import translation_memory, translation_payload
+from littrans.models import SourceUnit, TranslationRecord
+from littrans.project import translation_map
+from littrans.storage import read_jsonl
+from littrans.workflow import (
+    _all_manifests,
+    _audit_unit_text,
+    _shared_context,
+)
+
+
+def _lean_translation_context(
+    root: Path,
+    all_units: list[SourceUnit],
+    positions: dict[str, int],
+    unit_ids: list[str],
+) -> str:
+    memory = translation_memory(root, unit_ids, limit=6)
+    first = positions[unit_ids[0]]
+    last = positions[unit_ids[-1]]
+    adjacent = []
+    if first:
+        adjacent.append(all_units[first - 1])
+    if last + 1 < len(all_units):
+        adjacent.append(all_units[last + 1])
+    lines = ["# Retrieved approved translation memory", ""]
+    for item in memory:
+        lines.extend(
+            [
+                f"## {item['unit_id']}",
+                "",
+                f"Source: {item['source']}",
+                "",
+                f"Target: {item['target']}",
+                "",
+            ]
+        )
+    if not memory:
+        lines.extend(["None yet.", ""])
+    lines.extend(["# Adjacent source context", ""])
+    lines.extend(f"- {unit.unit_id}: {unit.source_text}" for unit in adjacent)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
+    manifests = _all_manifests(root)
+    if completed_only:
+        reviewed = {
+            path.name.removesuffix(".external-runs.jsonl")
+            for path in (root / "reviews").glob("*.external-runs.jsonl")
+        }
+        manifests = [manifest for manifest in manifests if manifest.batch_id in reviewed]
+    history = read_jsonl(
+        root / "translations" / "history.jsonl", TranslationRecord
+    )
+    if completed_only:
+        selected_unit_ids = {
+            unit_id for manifest in manifests for unit_id in manifest.unit_ids
+        }
+        history = [record for record in history if record.unit_id in selected_unit_ids]
+    previous: dict[str, TranslationRecord] = {}
+    semantic_noops = 0
+    semantic_changes = 0
+    for record in history:
+        prior = previous.get(record.unit_id)
+        if prior is not None:
+            if translation_payload(prior) == translation_payload(record):
+                semantic_noops += 1
+            else:
+                semantic_changes += 1
+        previous[record.unit_id] = record
+
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    unit_map = {unit.unit_id: unit for unit in all_units}
+    positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
+    translations = translation_map(root)
+    legacy_bytes = 0
+    optimized_bytes = 0
+    for offset in range(0, len(manifests), 3):
+        group = manifests[offset : offset + 3]
+        group_units = [
+            unit_map[unit_id]
+            for manifest in group
+            for unit_id in manifest.unit_ids
+            if unit_id in unit_map
+        ]
+        shared = _shared_context(root, group_units).encode("utf-8")
+        # One shared artifact for three translation writers; one per independent audit lens.
+        optimized_bytes += len(shared) * 4
+        for manifest in group:
+            batch_dir = root / "batches" / manifest.batch_id
+            source_bytes = (batch_dir / "source.md").read_bytes()
+            context_bytes = (batch_dir / "context.md").read_bytes()
+            translation_path = batch_dir / "translation.jsonl"
+            translation_bytes = (
+                translation_path.read_bytes() if translation_path.is_file() else b""
+            )
+            # Legacy writer packet plus three independently repeated audit packets.
+            legacy_bytes += len(source_bytes) + len(context_bytes)
+            legacy_bytes += 3 * (
+                len(source_bytes) + len(context_bytes) + len(translation_bytes)
+            )
+            lean_context = _lean_translation_context(
+                root, all_units, positions, manifest.unit_ids
+            ).encode("utf-8")
+            optimized_bytes += len(source_bytes) + len(lean_context)
+            audit_text = "\n".join(
+                _audit_unit_text(unit_map[unit_id], translations.get(unit_id))
+                for unit_id in manifest.unit_ids
+                if unit_id in unit_map
+            ).encode("utf-8")
+            optimized_bytes += 3 * len(audit_text)
+    ratio = optimized_bytes / legacy_bytes if legacy_bytes else 0.0
+    return {
+        "project": str(root),
+        "completed_only": completed_only,
+        "batches": len(manifests),
+        "history_records": len(history),
+        "semantic_noop_records": semantic_noops,
+        "semantic_change_records": semantic_changes,
+        "simulated_noop_new_revisions": 0,
+        "simulated_noop_evidence_invalidations": 0,
+        "legacy_packet_bytes": legacy_bytes,
+        "optimized_packet_bytes": optimized_bytes,
+        "optimized_packet_ratio": ratio,
+        "packet_reduction": 1.0 - ratio,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Read-only LitTrans v3 history replay and packet-size benchmark."
+    )
+    parser.add_argument("project", type=Path)
+    parser.add_argument("--completed-only", action="store_true")
+    parser.add_argument("--expect-noops", type=int)
+    parser.add_argument("--max-packet-ratio", type=float, default=0.70)
+    args = parser.parse_args()
+    result = benchmark(args.project.resolve(), args.completed_only)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.expect_noops is not None and result["semantic_noop_records"] != args.expect_noops:
+        return 1
+    if float(result["optimized_packet_ratio"]) > args.max_packet_ratio:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

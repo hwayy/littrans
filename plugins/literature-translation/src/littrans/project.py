@@ -11,13 +11,16 @@ import yaml
 from pydantic import BaseModel
 
 from littrans.models import (
+    AuditRun,
     BatchManifest,
     ExternalReviewRun,
+    PageVerificationReceipt,
     ProjectConfig,
     ProjectStatus,
     ReviewIssue,
     SourceUnit,
     TranslationRecord,
+    WorkflowPacketManifest,
 )
 from littrans.storage import (
     initialize_project_dirs,
@@ -175,6 +178,9 @@ def schema_models() -> dict[str, type[BaseModel]]:
         "review-issue.schema.json": ReviewIssue,
         "batch-manifest.schema.json": BatchManifest,
         "external-review-run.schema.json": ExternalReviewRun,
+        "page-verification-receipt.schema.json": PageVerificationReceipt,
+        "audit-run.schema.json": AuditRun,
+        "workflow-packet-manifest.schema.json": WorkflowPacketManifest,
     }
 
 

@@ -8,10 +8,12 @@ from typing import Any
 
 import fitz
 
+from littrans.evidence import page_evidence_fingerprints
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     ExtractionIssue,
     IssueStatus,
+    PageVerificationReceipt,
     RenderPolicy,
     SemanticStatus,
     Severity,
@@ -20,9 +22,17 @@ from littrans.models import (
     UnitKind,
 )
 from littrans.semantics import looks_like_continuation, normalize_prose
-from littrans.storage import load_project, read_jsonl, sha256_file, write_json
+from littrans.storage import (
+    load_project,
+    read_json,
+    read_jsonl,
+    sha256_file,
+    sha256_text,
+    write_json,
+)
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u0370-\u03ff]|[\u2200-\u22ff]")
+VERIFIER_VERSION = "source-verifier-v4"
 
 
 def _tokens(text: str) -> Counter[str]:
@@ -204,14 +214,76 @@ def _write_visual_report(
     return str(output)
 
 
-def verify_extraction(root: Path, page_spec: str = "all") -> dict[str, Any]:
+def _receipt_path(root: Path, page: int) -> Path:
+    return root / "evidence" / "pages" / f"page-{page:04}.json"
+
+
+def _receipt_key(
+    source_sha256: str, unit_fingerprint: str, asset_fingerprint: str
+) -> str:
+    return sha256_text(
+        "|".join(
+            (source_sha256, unit_fingerprint, asset_fingerprint, VERIFIER_VERSION)
+        )
+    )
+
+
+def verify_extraction(
+    root: Path, page_spec: str = "all", force: bool = False
+) -> dict[str, Any]:
     config = load_project(root)
-    if sha256_file(config.source(root)) != config.source_sha256:
+    actual_source_sha256 = sha256_file(config.source(root))
+    if actual_source_sha256 != config.source_sha256:
         raise ValueError("Source PDF hash changed after project initialization")
     document = fitz.open(config.source(root))
-    pages = parse_page_spec(page_spec, document.page_count)
-    page_set = set(pages)
+    requested_pages = parse_page_spec(page_spec, document.page_count)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    cached: dict[int, PageVerificationReceipt] = {}
+    expected_keys: dict[int, tuple[str, str, str]] = {}
+    for page in requested_pages:
+        unit_fingerprint, asset_fingerprint = page_evidence_fingerprints(
+            root, page, all_units
+        )
+        key = _receipt_key(
+            actual_source_sha256, unit_fingerprint, asset_fingerprint
+        )
+        expected_keys[page] = (key, unit_fingerprint, asset_fingerprint)
+        path = _receipt_path(root, page)
+        if force or not path.is_file():
+            continue
+        try:
+            receipt = PageVerificationReceipt.model_validate(read_json(path))
+        except (OSError, ValueError):
+            continue
+        if receipt.receipt_key == key and receipt.passed:
+            cached[page] = receipt
+
+    pages = [page for page in requested_pages if page not in cached]
+    if not pages:
+        document.close()
+        payload = {
+            "passed": True,
+            "source_sha256": config.source_sha256,
+            "pages": [
+                {
+                    "page": page,
+                    "unit_count": len(
+                        [unit for unit in all_units if unit.page == page]
+                    ),
+                    "token_coverage": cached[page].token_coverage,
+                    "cached": True,
+                }
+                for page in requested_pages
+            ],
+            "errors": [],
+            "visual_report": str(root / "derived" / "extraction-report.html"),
+            "cached_pages": requested_pages,
+            "verified_pages": [],
+            "validator_version": VERIFIER_VERSION,
+            "instruction": "Page verification receipts match the current PDF, source units, assets, and validator.",
+        }
+        return payload
+    page_set = set(pages)
     units = [unit for unit in all_units if unit.page in page_set]
     by_page = {page: [unit for unit in units if unit.page == page] for page in pages}
     errors = _semantic_errors(root, _semantic_context_units(all_units, page_set))
@@ -329,12 +401,44 @@ def verify_extraction(root: Path, page_spec: str = "all") -> dict[str, Any]:
             }
         )
     report_path = _write_visual_report(root, document, pages, by_page)
+    stale_passed = not errors
+    for page_result in page_results:
+        page = int(page_result["page"])
+        key, unit_fingerprint, asset_fingerprint = expected_keys[page]
+        receipt = PageVerificationReceipt(
+            page=page,
+            source_sha256=actual_source_sha256,
+            unit_fingerprint=unit_fingerprint,
+            asset_fingerprint=asset_fingerprint,
+            validator_version=VERIFIER_VERSION,
+            receipt_key=key,
+            passed=stale_passed,
+            token_coverage=float(page_result["token_coverage"]),
+            errors=errors if not stale_passed else [],
+        )
+        write_json(_receipt_path(root, page), receipt.model_dump(mode="json"))
+    combined_pages = [
+        (
+            {
+                "page": page,
+                "unit_count": len([unit for unit in all_units if unit.page == page]),
+                "token_coverage": cached[page].token_coverage,
+                "cached": True,
+            }
+            if page in cached
+            else next(result for result in page_results if result["page"] == page)
+        )
+        for page in requested_pages
+    ]
     payload = {
         "passed": not errors,
         "source_sha256": config.source_sha256,
-        "pages": page_results,
+        "pages": combined_pages,
         "errors": errors,
         "visual_report": report_path,
+        "cached_pages": sorted(cached),
+        "verified_pages": pages,
+        "validator_version": VERIFIER_VERSION,
         "instruction": "Open the visual report and compare every box with the PDF before marking semantic overrides verified.",
     }
     write_json(root / "derived" / "verification.json", payload)

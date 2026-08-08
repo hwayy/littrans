@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "ReviewScope": {
+      "enum": [
+        "full",
+        "incremental"
+      ],
+      "title": "ReviewScope",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "batch_ids": {
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Batch Ids",
+      "type": "array"
+    },
+    "reviewer": {
+      "title": "Reviewer",
+      "type": "string"
+    },
+    "lens": {
+      "title": "Lens",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/ReviewScope",
+      "default": "full"
+    },
+    "base_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Base Run Id"
+    },
+    "packet_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Packet Id"
+    },
+    "unit_fingerprints": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Unit Fingerprints",
+      "type": "object"
+    },
+    "issue_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Issue Ids",
+      "type": "array"
+    },
+    "reviewed_at": {
+      "title": "Reviewed At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "batch_ids",
+    "reviewer",
+    "lens",
+    "unit_fingerprints"
+  ],
+  "title": "AuditRun",
+  "type": "object"
+}

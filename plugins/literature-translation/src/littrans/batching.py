@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from littrans.evidence import relevant_terms, translation_memory
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     BatchManifest,
@@ -14,7 +15,7 @@ from littrans.models import (
     TranslationRecord,
     validate_batch_identifier,
 )
-from littrans.project import load_profile, load_terms, promote_status, translation_map
+from littrans.project import load_profile, promote_status, translation_map
 from littrans.semantics import fenced_code, table_to_markdown
 from littrans.storage import (
     load_project,
@@ -102,32 +103,23 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
 def _context_text(
     root: Path, units: list[SourceUnit], before: SourceUnit | None, after: SourceUnit | None
 ) -> str:
-    config = load_project(root)
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
-    terms = load_terms(root)
+    terms = relevant_terms(root, units)
     adjacent = []
     if before:
         adjacent.append(f"Previous unit ({before.unit_id}):\n{before.source_text}")
     if after:
         adjacent.append(f"Next unit ({after.unit_id}):\n{after.source_text}")
     term_text = yaml.safe_dump({"approved_terms": terms}, allow_unicode=True, sort_keys=False)
-    memory_statuses = (
-        {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
-        if config.external_review and config.external_review.enabled
-        else {
-            ProjectStatus.MACHINE_REVIEWED,
-            ProjectStatus.EXTERNAL_REVIEWED,
-            ProjectStatus.HUMAN_APPROVED,
-        }
+    approved_memory = translation_memory(
+        root, (unit.unit_id for unit in units), limit=6
     )
-    approved_memory = [
-        record
-        for record in translation_map(root).values()
-        if record.status in memory_statuses
-    ][-8:]
     memory_text = (
-        "\n".join(f"- {record.unit_id}: {record.target_text}" for record in approved_memory)
+        "\n".join(
+            f"- {record['unit_id']}\n  Source: {record['source']}\n  Target: {record['target']}"
+            for record in approved_memory
+        )
         or "None yet."
     )
     return (
@@ -179,8 +171,12 @@ def create_batches(
         unit_words = _word_count(unit.source_text) if unit.translatable else 0
         heading_boundary = unit.kind == "heading" and current and words >= max_words * 0.55
         page_gap = bool(current and unit.page - current[-1].page > 1)
-        word_boundary = words + unit_words > max_words and unit.page != current[-1].page
-        hard_boundary = words + unit_words > max_words * 1.5
+        word_boundary = bool(
+            current
+            and words + unit_words > max_words
+            and unit.page != current[-1].page
+        )
+        hard_boundary = bool(current and words + unit_words > max_words * 1.5)
         if current and (word_boundary or hard_boundary or heading_boundary or page_gap):
             groups.append(current)
             current, words = [], 0

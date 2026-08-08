@@ -33,6 +33,28 @@ See `references/runtime.md` for launcher resolution from an installed Skill.
 6. Run `finalize-literature-translation` to enforce the configured release gate and render
    Markdown plus responsive bilingual HTML. Human approval is never inferred.
 
+For ongoing projects, `continue-literature-translation` coordinates at most three consecutive
+same-stage batches. It shares document context once, keeps one writer per batch and one independent
+reviewer per audit lens, and retains every quality gate.
+
+Claude stdin prompt delivery is implemented but disabled by the v0.3 shadow quality gate.
+Production external review continues to use the file packet path.
+
+Useful v0.3 commands:
+
+```text
+littrans project migrate PROJECT --to 4 --dry-run
+littrans project migrate PROJECT --to 4
+littrans workflow next PROJECT --limit 3
+littrans workflow packet PROJECT --stage translate --batch-ids ID1,ID2,ID3
+littrans workflow packet PROJECT --stage audit --lens fidelity --batch-ids ID1,ID2,ID3
+littrans review import-set PROJECT PACKET-MANIFEST ISSUES.jsonl
+littrans workflow metrics PROJECT --batch-ids ID1,ID2,ID3
+littrans render PROJECT --batch-ids ID1,ID2,ID3 --name chapter-set
+```
+
+See `MIGRATING.md` before opening an existing schema-v3 project with v0.3.
+
 Project state follows:
 
 ```text
@@ -54,6 +76,7 @@ open minor issues.
   caption, and footnote wrappers, and deterministic QA rejects duplicated structural markup.
 - Use `render --batch-id <id>` for a batch-exact artifact. Page rendering remains available
   for intentionally page-scoped collections and can include units from several batches.
+- Use `render --batch-ids <id1,id2,id3>` for an exact consecutive set with cross-batch seam QA.
 - Tables are rectangular local structures and are translated cell by cell.
 - Code retains exact whitespace and gains a language fence/highlighter when known.
 - Figure images remain local; meaningful internal labels are translated alongside them.
