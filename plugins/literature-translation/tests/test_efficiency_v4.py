@@ -445,6 +445,47 @@ def test_source_only_change_requires_current_audit_before_formal_render(
     )
 
 
+def test_formal_render_requires_current_external_review_ledger(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    config.status = ProjectStatus.EXTERNAL_REVIEWED
+    save_project(root, config)
+    current_path = root / "translations" / "current.jsonl"
+    current = [
+        record.model_copy(update={"status": ProjectStatus.EXTERNAL_REVIEWED})
+        for record in read_jsonl(current_path, TranslationRecord)
+    ]
+    write_jsonl(current_path, current)
+
+    assert workflow_next(root)["stage"] == "external-review"
+    with pytest.raises(ValueError, match=f"stale_external=.*{batch_id}"):
+        render_project(root, None, "stale-external", batch_id=batch_id)
+    assert render_project(
+        root,
+        None,
+        "draft-stale-external",
+        allow_draft=True,
+        batch_id=batch_id,
+    )
+
+
 def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id

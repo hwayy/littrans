@@ -511,6 +511,7 @@ def render_project(
     ]
     stale_qa: list[str] = []
     incomplete_audit: list[str] = []
+    stale_external: list[str] = []
     unbatched_units: list[str] = []
     if not allow_draft:
         relevant_manifests = manifests
@@ -539,6 +540,16 @@ def render_project(
             for manifest in relevant_manifests
             if not audit_coverage(root, manifest.batch_id)["complete"]
         ]
+        if config.external_review and config.external_review.enabled:
+            from littrans.external_review import external_review_status
+
+            stale_external = [
+                manifest.batch_id
+                for manifest in relevant_manifests
+                if not external_review_status(root, manifest.batch_id)[
+                    "external_approvable"
+                ]
+            ]
     open_severe: list[str] = []
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):
         for issue in read_jsonl(issue_path, ReviewIssue):
@@ -554,6 +565,7 @@ def render_project(
         or unbatched_units
         or stale_qa
         or incomplete_audit
+        or stale_external
         or open_severe
     ):
         raise ValueError(
@@ -561,6 +573,7 @@ def render_project(
             f"missing={missing}, not_publishable={unapproved}, "
             f"unbatched_units={unbatched_units}, stale_qa={stale_qa}, "
             f"incomplete_audit={incomplete_audit}, "
+            f"stale_external={stale_external}, "
             f"open_severe={open_severe}"
         )
 
