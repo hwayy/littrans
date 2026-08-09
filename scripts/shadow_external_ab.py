@@ -153,7 +153,7 @@ def _normalized_tokens(result: dict[str, Any]) -> int:
 
 def _recall(results: list[dict[str, Any]], severities: set[str]) -> float:
     gold = [
-        issue
+        (result["batch_id"], issue)
         for result in results
         for issue in result["gold"]
         if issue["severity"] in severities
@@ -161,11 +161,28 @@ def _recall(results: list[dict[str, Any]], severities: set[str]) -> float:
     if not gold:
         return 1.0
     found = {
-        (issue["unit_id"], issue["type"])
+        (
+            result["batch_id"],
+            issue["unit_id"],
+            issue["type"],
+            issue["severity"],
+        )
         for result in results
         for issue in result["issues"]
     }
-    return sum((issue["unit_id"], issue["type"]) in found for issue in gold) / len(gold)
+    return (
+        sum(
+            (
+                batch_id,
+                issue["unit_id"],
+                issue["type"],
+                issue["severity"],
+            )
+            in found
+            for batch_id, issue in gold
+        )
+        / len(gold)
+    )
 
 
 def run_ab(

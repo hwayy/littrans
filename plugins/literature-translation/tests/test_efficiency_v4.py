@@ -195,6 +195,43 @@ def test_shadow_defect_snapshot_requires_unambiguous_history_match(
     ]
 
 
+def test_shadow_recall_requires_batch_and_severity_match() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    recall = namespace["_recall"]
+    gold = {
+        "unit_id": "shared-unit",
+        "type": IssueType.MEANING.value,
+        "severity": Severity.MAJOR.value,
+    }
+    downgraded = {
+        "unit_id": gold["unit_id"],
+        "type": gold["type"],
+        "severity": Severity.SUGGESTION.value,
+    }
+    exact = {**downgraded, "severity": Severity.MAJOR.value}
+
+    assert recall(
+        [
+            {
+                "batch_id": "gold-batch",
+                "gold": [gold],
+                "issues": [downgraded],
+            },
+            {
+                "batch_id": "different-batch",
+                "gold": [],
+                "issues": [exact],
+            },
+        ],
+        {Severity.BLOCKER.value, Severity.MAJOR.value},
+    ) == 0.0
+    assert recall(
+        [{"batch_id": "gold-batch", "gold": [gold], "issues": [exact]}],
+        {Severity.BLOCKER.value, Severity.MAJOR.value},
+    ) == 1.0
+
+
 def _make_project(
     tmp_path: Path, pages: int = 3, max_words: int = 100
 ) -> tuple[Path, list[object]]:
