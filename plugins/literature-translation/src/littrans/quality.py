@@ -11,6 +11,7 @@ from typing import Any
 from littrans.batching import load_manifest
 from littrans.evidence import (
     batch_unit_fingerprints,
+    source_representation_text,
 )
 from littrans.models import (
     PROJECT_SCHEMA_VERSION,
@@ -265,6 +266,10 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
             )
+        if record.figure_labels:
+            effective_target += "\n" + "\n".join(
+                label.target or "" for label in record.figure_labels
+            )
         semantic_source = _semantic_comparison_text(_comparison_source_text(unit))
         semantic_target = _semantic_comparison_text(effective_target)
         if not effective_target.strip():
@@ -309,7 +314,9 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
                             unit_id=unit_id,
                         )
                     )
-        source_folded = _without_quoted_titles(unit.source_text).casefold()
+        source_folded = _without_quoted_titles(
+            source_representation_text(unit)
+        ).casefold()
         for term in approved_terms:
             source_term = str(term.get("source", ""))
             target_term = str(term.get("target", ""))

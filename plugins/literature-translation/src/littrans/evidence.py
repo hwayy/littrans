@@ -345,9 +345,22 @@ def page_evidence_fingerprints(
     return unit_fingerprint, sha256_text("\n".join(sorted(assets)))
 
 
+def source_representation_text(unit: SourceUnit) -> str:
+    """Return every source representation whose content is translated or reviewed."""
+    parts = [unit.source_text]
+    if unit.source_markdown and unit.source_markdown != unit.source_text:
+        parts.append(unit.source_markdown)
+    if unit.table:
+        parts.extend(cell for row in unit.table.rows for cell in row)
+    parts.extend(label.source for label in unit.figure_labels)
+    return "\n".join(part for part in parts if part)
+
+
 def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
     selected = list(units)
-    source = "\n".join(unit.source_text for unit in selected).casefold()
+    source = "\n".join(
+        source_representation_text(unit) for unit in selected
+    ).casefold()
     pages = {unit.page for unit in selected}
     parents = {unit.parent_id for unit in selected if unit.parent_id}
     matches: list[dict[str, Any]] = []

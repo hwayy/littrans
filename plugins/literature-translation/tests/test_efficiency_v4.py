@@ -18,6 +18,7 @@ from littrans.evidence import (
     batch_unit_fingerprints,
     dependency_closure,
     page_evidence_units,
+    relevant_terms,
     translation_memory,
 )
 from littrans.external_review import _primary_review_scope, external_review_status
@@ -33,6 +34,7 @@ from littrans.models import (
     ExternalReviewRun,
     ExternalReviewVerdict,
     ExtractionIssue,
+    FigureLabel,
     IssueStatus,
     IssueType,
     PageVerificationReceipt,
@@ -46,6 +48,7 @@ from littrans.models import (
     Severity,
     SidebarRole,
     SourceUnit,
+    TableData,
     TranslationRecord,
     UnitKind,
     WorkflowPacketManifest,
@@ -442,6 +445,99 @@ def test_glossary_change_invalidates_qa_workflow_approval_and_render(
     report = run_qa(root, batch_id)
     assert not report.passed
     assert {item.code for item in report.errors} == {"approved-term-missing"}
+
+
+def test_structured_source_representations_select_and_enforce_terms(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=3, max_words=700)
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    for index, unit in enumerate(units):
+        plain_source = unit.source_text.replace("architecture", "system")
+        units[index] = unit.model_copy(
+            update={
+                "source_text": plain_source,
+                "source_hash": sha256_text(plain_source),
+            }
+        )
+    units[0] = units[0].model_copy(update={"source_markdown": "Architecture"})
+    units[1] = units[1].model_copy(
+        update={
+            "kind": UnitKind.TABLE,
+            "table": TableData(
+                rows=[["Architecture", "Value"]],
+                header_rows=1,
+                column_count=2,
+            ),
+        }
+    )
+    units[2] = units[2].model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "figure_labels": [
+                FigureLabel(source="Architecture", target="旧标签")
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, units)
+    assert all("architecture" not in unit.source_text.casefold() for unit in units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+    write_yaml(
+        root / "glossary" / "approved.yaml",
+        {
+            "terms": [
+                {
+                    "source": "architecture",
+                    "target": "架构",
+                    "forbidden": ["体系结构"],
+                }
+            ]
+        },
+    )
+    selected_terms = relevant_terms(root, units)
+    assert [term["source"] for term in selected_terms] == ["architecture"]
+    records = [
+        TranslationRecord(
+            unit_id=units[0].unit_id,
+            target_text="结构说明",
+            source_hash=units[0].source_hash,
+        ),
+        TranslationRecord(
+            unit_id=units[1].unit_id,
+            target_text="结构化表格",
+            target_table=TableData(
+                rows=[["结构", "值"]],
+                header_rows=1,
+                column_count=2,
+            ),
+            source_hash=units[1].source_hash,
+        ),
+        TranslationRecord(
+            unit_id=units[2].unit_id,
+            target_text="结构图",
+            figure_labels=[
+                FigureLabel(source="Architecture", target="体系结构")
+            ],
+            source_hash=units[2].source_hash,
+        ),
+    ]
+    input_path = root / "batches" / manifest.batch_id / "structured-terms.jsonl"
+    write_jsonl(input_path, records)
+    submit_translation(root, manifest.batch_id, input_path)
+
+    report = run_qa(root, manifest.batch_id)
+    missing_units = {
+        item.unit_id for item in report.errors if item.code == "approved-term-missing"
+    }
+    forbidden_units = {
+        item.unit_id for item in report.errors if item.code == "forbidden-term"
+    }
+    assert missing_units == set(manifest.unit_ids)
+    assert forbidden_units == {units[2].unit_id}
 
 
 def test_source_only_change_requires_current_audit_before_formal_render(
