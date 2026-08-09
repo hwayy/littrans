@@ -125,6 +125,7 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
         raise ValueError("workflow next limit must be between 1 and 3")
     manifests = _all_manifests(root)
     units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    unit_map = {unit.unit_id: unit for unit in units}
     manifest_unit_ids = {
         unit_id for manifest in manifests for unit_id in manifest.unit_ids
     }
@@ -139,6 +140,21 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
             "Workflow manifests do not cover current renderable source units; "
             "refresh or create batches before continuing: "
             f"unbatched_units={unbatched_units}"
+        )
+    stale_translatability = [
+        manifest.batch_id
+        for manifest in manifests
+        if manifest.translatable_unit_ids
+        != [
+            unit_id
+            for unit_id in manifest.unit_ids
+            if unit_id in unit_map and unit_map[unit_id].translatable
+        ]
+    ]
+    if stale_translatability:
+        raise ValueError(
+            "Workflow manifests have stale translatable-unit scope; refresh the "
+            f"affected batches before continuing: batch_ids={stale_translatability}"
         )
     stages = [(manifest.batch_id, _batch_stage(root, manifest.batch_id)) for manifest in manifests]
     start = next((index for index, (_, stage) in enumerate(stages) if stage != "complete"), None)

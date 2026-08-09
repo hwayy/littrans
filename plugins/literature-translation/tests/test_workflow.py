@@ -58,6 +58,7 @@ from littrans.models import (
     ReaderNote,
     RenderPolicy,
     ReviewIssue,
+    ReviewScope,
     Severity,
     SidebarRole,
     SourceUnit,
@@ -1865,6 +1866,12 @@ def test_external_packet_is_isolated_and_external_gate_is_strict(
         ),
         structure_fingerprint=batch_structure_fingerprint(
             prepared_project, manifest.batch_id
+        ),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            prepared_project,
+            manifest.batch_id,
+            list(manifest.unit_ids),
+            ReviewScope.FULL,
         ),
     )
     append_jsonl(

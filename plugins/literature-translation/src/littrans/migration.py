@@ -194,10 +194,15 @@ def _legacy_v3_batch_fingerprint(root: Path, batch_id: str) -> str:
 
 
 def _migratable_v3_external_chain(
-    runs: list[ExternalReviewRun], legacy_fingerprint: str
+    runs: list[ExternalReviewRun],
+    legacy_fingerprint: str,
+    packet_sha256: str | None = None,
 ) -> tuple[list[ExternalReviewRun], bool]:
     matching = [
-        run for run in runs if run.translation_fingerprint == legacy_fingerprint
+        run
+        for run in runs
+        if run.translation_fingerprint == legacy_fingerprint
+        and (packet_sha256 is None or run.packet_sha256 == packet_sha256)
     ]
     primary_index = next(
         (
@@ -268,6 +273,10 @@ def migrate_project_schema(
         )
 
     from littrans.batching import load_manifest
+    from littrans.external_review import (
+        _external_review_context_fingerprint,
+        _packet_text,
+    )
     from littrans.quality import (
         batch_translation_fingerprint,
         current_qa_context_fingerprint,
@@ -294,6 +303,7 @@ def migrate_project_schema(
             "audit_lenses": [],
             "audit_context_verified": False,
             "external_runs": [],
+            "external_context_fingerprint": None,
             "unit_ids": manifest.unit_ids,
             "translatable_unit_ids": manifest.translatable_unit_ids,
         }
@@ -324,10 +334,21 @@ def migrate_project_schema(
                 stale["audit"].append(batch_id)
         runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
         runs = read_jsonl(runs_path, ExternalReviewRun)
+        packet_text, _ = _packet_text(root, batch_id)
+        packet_sha256 = sha256_text(packet_text)
         external_chain, external_stale = _migratable_v3_external_chain(
-            runs, legacy_fingerprint
+            runs, legacy_fingerprint, packet_sha256
         )
         item["external_runs"] = external_chain
+        if external_chain:
+            item["external_context_fingerprint"] = (
+                _external_review_context_fingerprint(
+                    root,
+                    batch_id,
+                    list(manifest.unit_ids),
+                    ReviewScope.FULL,
+                )
+            )
         if external_stale:
             stale["external"].append(batch_id)
         candidates[batch_id] = item
@@ -451,6 +472,9 @@ def migrate_project_schema(
                                 "structure_fingerprint": batch_structure_fingerprint(
                                     root, batch_id
                                 ),
+                                "context_fingerprint": item[
+                                    "external_context_fingerprint"
+                                ],
                             }
                         )
                     ],

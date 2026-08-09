@@ -229,6 +229,15 @@ def run_ab(
                 "gold": gold,
             }
         )
+    severe_gold_count = sum(
+        issue["severity"] in {Severity.BLOCKER.value, Severity.MAJOR.value}
+        for sample in samples
+        for issue in sample["gold"]
+    )
+    if severe_gold_count == 0:
+        raise ValueError(
+            "Shadow A/B requires at least one reconstructable blocker/major gold defect"
+        )
 
     results: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="littrans-shadow-ab-") as temp_name:
@@ -357,6 +366,7 @@ def run_ab(
         "calls": len(results),
         "results": results,
         "quality": {
+            "blocker_major_gold_defects": severe_gold_count,
             "optimized_blocker_major_recall": optimized_severe,
             "legacy_minor_recall": legacy_minor,
             "optimized_minor_recall": optimized_minor,

@@ -146,6 +146,21 @@ def test_shadow_ab_forces_distinct_delivery_arms(
     monkeypatch.setitem(globals_, "_require_machine_reviewed", lambda *args: None)
     monkeypatch.setitem(globals_, "_batch_stage", lambda *args: "complete")
     monkeypatch.setitem(
+        globals_,
+        "_defect_snapshot",
+        lambda *args: (
+            {},
+            [
+                {
+                    "issue_id": "seed-major",
+                    "unit_id": "u001",
+                    "severity": Severity.MAJOR.value,
+                    "type": IssueType.MEANING.value,
+                }
+            ],
+        ),
+    )
+    monkeypatch.setitem(
         globals_, "_packet_text", lambda *args, **kwargs: ("packet", [1])
     )
     monkeypatch.setitem(
@@ -154,7 +169,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
     monkeypatch.setitem(globals_, "_evidence_map", lambda *args, **kwargs: {})
     monkeypatch.setitem(globals_, "_invoke", invoke)
 
-    result = run_ab(tmp_path, ["batch"], set(), reviewer.id)
+    result = run_ab(tmp_path, ["batch"], {"batch"}, reviewer.id)
 
     assert deliveries == [PromptDelivery.FILE, PromptDelivery.STDIN]
     assert result["delivery_protocol_passed"] is True
@@ -254,6 +269,60 @@ def test_shadow_ab_validates_clean_baselines_before_provider_calls(
 
     assert validated == batch_ids
     assert stages == batch_ids
+    assert not provider_called
+
+
+def test_shadow_ab_rejects_vacuous_severe_recall_before_provider_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    reviewer = ExternalReviewerConfig(
+        id="shadow",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        fast=False,
+    )
+    run_ab = namespace["run_ab"]
+    globals_ = run_ab.__globals__
+    batch_ids = [f"batch-{index}" for index in range(6)]
+    defect_ids = set(batch_ids[:3])
+    provider_called = False
+
+    def minor_snapshot(
+        _root: Path, batch_id: str
+    ) -> tuple[dict[str, TranslationRecord], list[dict[str, str]]]:
+        return {}, [
+            {
+                "issue_id": f"{batch_id}-minor",
+                "unit_id": "u001",
+                "severity": Severity.MINOR.value,
+                "type": IssueType.MEANING.value,
+            }
+        ]
+
+    def forbidden_invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setitem(
+        globals_,
+        "load_project",
+        lambda root: SimpleNamespace(
+            external_review=ExternalReviewConfig(reviewers=[reviewer])
+        ),
+    )
+    monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
+    monkeypatch.setitem(globals_, "_require_machine_reviewed", lambda *args: None)
+    monkeypatch.setitem(globals_, "_batch_stage", lambda *args: "complete")
+    monkeypatch.setitem(globals_, "_defect_snapshot", minor_snapshot)
+    monkeypatch.setitem(globals_, "_invoke", forbidden_invoke)
+
+    with pytest.raises(ValueError, match="blocker/major gold defect"):
+        run_ab(tmp_path, batch_ids, defect_ids, reviewer.id)
+
     assert not provider_called
 
 
@@ -1515,6 +1584,33 @@ def test_workflow_rejects_completion_with_an_unbatched_interior_unit(
     assert workflow_next(root)["stage"] == "qa"
 
 
+def test_workflow_requires_refresh_when_unit_becomes_translatable(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
+        update={"translatable": False}
+    )
+    write_jsonl(units_path, [unit])
+    assert verify_extraction(root, "all", force=True)["passed"]
+    refreshed = refresh_batch(root, batch_id)
+    assert refreshed.translatable_unit_ids == []
+    _audit_and_approve(root, batch_id)
+    assert workflow_next(root)["stage"] == "complete"
+
+    write_jsonl(units_path, [unit.model_copy(update={"translatable": True})])
+    assert verify_extraction(root, "all", force=True)["passed"]
+
+    with pytest.raises(ValueError, match="stale translatable-unit scope"):
+        workflow_next(root)
+
+    refreshed = refresh_batch(root, batch_id)
+    assert refreshed.translatable_unit_ids == [unit.unit_id]
+    assert workflow_next(root)["stage"] == "translate"
+
+
 def test_external_review_does_not_reuse_approval_after_glossary_change(
     tmp_path: Path,
 ) -> None:
@@ -1556,6 +1652,12 @@ def test_external_review_does_not_reuse_approval_after_glossary_change(
         unit_fingerprints=batch_unit_fingerprints(root, batch_id),
         source_fingerprint=batch_source_fingerprint(root, batch_id),
         structure_fingerprint=batch_structure_fingerprint(root, batch_id),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            root,
+            batch_id,
+            list(manifests[0].unit_ids),
+            ReviewScope.FULL,
+        ),
     )
     runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
     append_jsonl(runs_path, [accepted])
@@ -1569,6 +1671,78 @@ def test_external_review_does_not_reuse_approval_after_glossary_change(
     with pytest.raises(ValueError, match="passing, current deterministic QA"):
         external_review.run_external_review(root, batch_id)
     assert read_jsonl(runs_path, ExternalReviewRun) == [accepted]
+
+
+def test_external_review_context_change_requires_a_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    config = load_project(root)
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    save_project(root, config)
+    calls = 0
+
+    def invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal calls
+        calls += 1
+        return (
+            {"verdict": "accepted", "summary": "No defects.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=1),
+            0.01,
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", invoke)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+
+    assert external_review.run_external_review(root, batch_id)[
+        "external_approvable"
+    ]
+    first_run = read_jsonl(
+        root / "reviews" / f"{batch_id}.external-runs.jsonl",
+        ExternalReviewRun,
+    )[-1]
+    assert first_run.context_fingerprint
+
+    style_path = root / "context" / "style-guide.md"
+    atomic_write_text(
+        style_path,
+        style_path.read_text(encoding="utf-8").rstrip()
+        + "\n\n- Newly mandatory external-review instruction.\n",
+    )
+    empty = root / "reviews" / "context-refresh.jsonl"
+    write_jsonl(empty, [])
+    import_review(root, batch_id, empty)
+
+    assert not external_review_status(root, batch_id)["external_approvable"]
+    assert external_review.run_external_review(root, batch_id)[
+        "external_approvable"
+    ]
+    runs = read_jsonl(
+        root / "reviews" / f"{batch_id}.external-runs.jsonl",
+        ExternalReviewRun,
+    )
+    assert calls == 2
+    assert len(runs) == 2
+    assert runs[0].context_fingerprint != runs[1].context_fingerprint
 
 
 def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> None:
@@ -2776,6 +2950,12 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
         unit_fingerprints=snapshot,
         source_fingerprint=batch_source_fingerprint(root, manifest.batch_id),
         structure_fingerprint=batch_structure_fingerprint(root, manifest.batch_id),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            root,
+            manifest.batch_id,
+            list(snapshot),
+            ReviewScope.FULL,
+        ),
     )
     append_jsonl(root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl", [run])
     records[2] = records[2].model_copy(update={"target_text": "局部技术修订", "revision": 2})
@@ -2851,6 +3031,12 @@ def test_incremental_external_review_rejects_inconclusive_base_chain(
         unit_fingerprints=snapshot,
         source_fingerprint=batch_source_fingerprint(root, manifest.batch_id),
         structure_fingerprint=batch_structure_fingerprint(root, manifest.batch_id),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            root,
+            manifest.batch_id,
+            list(snapshot),
+            ReviewScope.FULL,
+        ),
     )
     second = primary.model_copy(
         update={
@@ -2888,6 +3074,14 @@ def test_incremental_external_review_rejects_inconclusive_base_chain(
             "issue_ids": [],
             "covered_unit_ids": [changed_id],
             "unit_fingerprints": current_snapshot,
+            "context_fingerprint": (
+                external_review._external_review_context_fingerprint(
+                    root,
+                    manifest.batch_id,
+                    [changed_id],
+                    ReviewScope.INCREMENTAL,
+                )
+            ),
         }
     )
     append_jsonl(
@@ -2954,6 +3148,12 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
         unit_fingerprints=snapshot,
         source_fingerprint=batch_source_fingerprint(root, middle.batch_id),
         structure_fingerprint=batch_structure_fingerprint(root, middle.batch_id),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            root,
+            middle.batch_id,
+            list(snapshot),
+            ReviewScope.FULL,
+        ),
     )
     append_jsonl(
         root / "reviews" / f"{middle.batch_id}.external-runs.jsonl", [base]
@@ -3053,6 +3253,12 @@ def test_external_status_does_not_reuse_an_old_second_opinion(
         reviewer="external:claude",
     )
     write_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", [suggestion])
+    context_fingerprint = external_review._external_review_context_fingerprint(
+        root,
+        batch_id,
+        list(manifests[0].unit_ids),
+        ReviewScope.FULL,
+    )
 
     def run(
         run_id: str,
@@ -3077,6 +3283,7 @@ def test_external_status_does_not_reuse_an_old_second_opinion(
             verdict=ExternalReviewVerdict.ACCEPTED,
             summary="No substantive defects found.",
             issue_ids=issue_ids or [],
+            context_fingerprint=context_fingerprint,
         )
 
     append_jsonl(
@@ -3213,6 +3420,9 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     write_json(audit_path, audit)
     (root / "evidence" / "audits" / f"{batch_id}.jsonl").unlink()
     runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+    legacy_packet_sha256 = sha256_text(
+        external_review._packet_text(root, batch_id)[0]
+    )
     append_jsonl(
         runs_path,
         [
@@ -3227,7 +3437,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
                 actual_model="legacy-model",
                 model_verified=True,
                 translation_fingerprint=legacy_fingerprint,
-                packet_sha256="0" * 64,
+                packet_sha256=legacy_packet_sha256,
                 prompt_version="v3",
                 verdict=ExternalReviewVerdict.ACCEPTED,
                 summary="Accepted under the v3 evidence contract.",
@@ -3243,7 +3453,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
                 actual_model="legacy-second-model",
                 model_verified=True,
                 translation_fingerprint=legacy_fingerprint,
-                packet_sha256="1" * 64,
+                packet_sha256=legacy_packet_sha256,
                 prompt_version="v3",
                 verdict=ExternalReviewVerdict.ACCEPTED,
                 summary="Second opinion accepted under the v3 evidence contract.",

@@ -233,6 +233,18 @@
       "default": null,
       "title": "Structure Fingerprint"
     },
+    "context_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Fingerprint"
+    },
     "duration_seconds": {
       "anyOf": [
         {

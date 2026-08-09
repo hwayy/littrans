@@ -418,6 +418,7 @@ class ExternalReviewRun(StrictModel):
     unit_fingerprints: dict[str, str] = Field(default_factory=dict)
     source_fingerprint: str | None = None
     structure_fingerprint: str | None = None
+    context_fingerprint: str | None = None
     duration_seconds: float | None = Field(default=None, ge=0)
     usage: ReviewUsage | None = None
     cost_usd: float | None = Field(default=None, ge=0)

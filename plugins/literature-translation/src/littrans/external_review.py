@@ -15,6 +15,7 @@ import yaml
 
 from littrans.batching import load_manifest
 from littrans.evidence import (
+    audit_context_fingerprint,
     batch_source_fingerprint,
     batch_structure_fingerprint,
     batch_unit_fingerprints,
@@ -236,6 +237,61 @@ def _outer_seam_context_ids(
     ]
 
 
+def _domain_expertise(root: Path) -> str:
+    project = load_project(root)
+    if project.external_review and project.external_review.domain_expertise:
+        return project.external_review.domain_expertise
+    return (
+        "Infer the subject matter and the technical or scholarly expertise required "
+        "from the document brief."
+    )
+
+
+def _external_review_context_fingerprint(
+    root: Path,
+    batch_id: str,
+    covered_unit_ids: list[str],
+    scope: ReviewScope,
+) -> str:
+    manifest = load_manifest(root, batch_id)
+    covered = list(covered_unit_ids or manifest.unit_ids)
+    read_only = (
+        _outer_seam_context_ids(root, batch_id, covered)
+        if scope is ReviewScope.INCREMENTAL
+        else []
+    )
+    selected_ids = set(covered) | set(read_only)
+    selected_units = [
+        unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        if unit.unit_id in selected_ids
+    ]
+    return sha256_text(
+        "external-review-context-v1|"
+        + PROMPT_VERSION
+        + "|"
+        + _domain_expertise(root)
+        + "|"
+        + audit_context_fingerprint(root, selected_units)
+    )
+
+
+def _external_review_context_is_current(
+    root: Path, run: ExternalReviewRun
+) -> bool:
+    if not run.context_fingerprint:
+        return False
+    try:
+        return run.context_fingerprint == _external_review_context_fingerprint(
+            root,
+            run.batch_id,
+            run.covered_unit_ids,
+            run.scope,
+        )
+    except (KeyError, OSError, ValueError):
+        return False
+
+
 def _packet_text(
     root: Path,
     batch_id: str,
@@ -245,15 +301,7 @@ def _packet_text(
     read_only_context_ids: list[str] | None = None,
 ) -> tuple[str, list[int]]:
     manifest = load_manifest(root, batch_id)
-    project = load_project(root)
-    domain_expertise = (
-        project.external_review.domain_expertise
-        if project.external_review and project.external_review.domain_expertise
-        else (
-            "Infer the subject matter and the technical or scholarly expertise required "
-            "from the document brief."
-        )
-    )
+    domain_expertise = _domain_expertise(root)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     units = {unit.unit_id: unit for unit in all_units}
     translations = translation_map(root)
@@ -955,6 +1003,7 @@ def _primary_chain_approvable(
         or not primary.model_verified
         or primary.verdict is not ExternalReviewVerdict.ACCEPTED
         or not primary.unit_fingerprints
+        or not _external_review_context_is_current(root, primary)
     ):
         return False
     if _needs_second_opinion(root, primary):
@@ -972,6 +1021,7 @@ def _primary_chain_approvable(
             or not second.success
             or not second.model_verified
             or second.verdict is not primary.verdict
+            or not _external_review_context_is_current(root, second)
         ):
             return False
     if primary.scope is ReviewScope.INCREMENTAL:
@@ -1045,6 +1095,7 @@ def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
         run
         for run in all_runs
         if run.translation_fingerprint == fingerprint
+        and _external_review_context_is_current(root, run)
     ]
     primary = next((run for run in reversed(runs) if run.role == "primary"), None)
     second = next(
@@ -1152,6 +1203,7 @@ def run_external_review(
         run
         for run in read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
         if run.translation_fingerprint == fingerprint
+        and _external_review_context_is_current(root, run)
     ]
     latest_primary = next(
         (run for run in reversed(primary_runs) if run.role == "primary"), None
@@ -1187,6 +1239,9 @@ def run_external_review(
     current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
     source_fingerprint = batch_source_fingerprint(root, batch_id)
     structure_fingerprint = batch_structure_fingerprint(root, batch_id)
+    context_fingerprint = _external_review_context_fingerprint(
+        root, batch_id, covered_unit_ids, scope
+    )
     prompt_builder = (
         _claude_prompt
         if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
@@ -1220,6 +1275,7 @@ def run_external_review(
                 "covered_unit_ids": covered_unit_ids,
                 "read_only_context_unit_ids": read_only_context_ids,
                 "packet_sha256": sha256_text(packet_text),
+                "context_fingerprint": context_fingerprint,
                 "packet_path": str(packet_path),
                 "prompt": prompt,
                 "command": command,
@@ -1293,6 +1349,7 @@ def run_external_review(
                 unit_fingerprints=current_unit_fingerprints,
                 source_fingerprint=source_fingerprint,
                 structure_fingerprint=structure_fingerprint,
+                context_fingerprint=context_fingerprint,
                 prompt_delivery=exc.prompt_delivery,
                 usage=exc.usage,
                 cost_usd=exc.cost_usd,
@@ -1352,6 +1409,7 @@ def run_external_review(
         unit_fingerprints=current_unit_fingerprints,
         source_fingerprint=source_fingerprint,
         structure_fingerprint=structure_fingerprint,
+        context_fingerprint=context_fingerprint,
         duration_seconds=duration_seconds,
         usage=usage,
         cost_usd=cost_usd,
