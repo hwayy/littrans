@@ -142,6 +142,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
             external_review=ExternalReviewConfig(reviewers=[reviewer])
         ),
     )
+    monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
     monkeypatch.setitem(
         globals_, "_packet_text", lambda *args, **kwargs: ("packet", [1])
     )
@@ -155,6 +156,52 @@ def test_shadow_ab_forces_distinct_delivery_arms(
 
     assert deliveries == [PromptDelivery.FILE, PromptDelivery.STDIN]
     assert result["delivery_protocol_passed"] is True
+
+
+def test_shadow_ab_validates_all_batches_before_provider_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    reviewer = ExternalReviewerConfig(
+        id="shadow",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        fast=False,
+    )
+    run_ab = namespace["run_ab"]
+    globals_ = run_ab.__globals__
+    batch_ids = ["clean-1", "clean-2", "clean-3", "clean-4", "clean-5", "missing"]
+    validated: list[str] = []
+    provider_called = False
+
+    def load_manifest(_root: Path, batch_id: str) -> SimpleNamespace:
+        validated.append(batch_id)
+        if batch_id == "missing":
+            raise ValueError("Unknown batch ID: missing")
+        return SimpleNamespace(batch_id=batch_id)
+
+    def forbidden_invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setitem(
+        globals_,
+        "load_project",
+        lambda root: SimpleNamespace(
+            external_review=ExternalReviewConfig(reviewers=[reviewer])
+        ),
+    )
+    monkeypatch.setitem(globals_, "load_manifest", load_manifest)
+    monkeypatch.setitem(globals_, "_invoke", forbidden_invoke)
+
+    with pytest.raises(ValueError, match="Unknown batch ID: missing"):
+        run_ab(tmp_path, batch_ids, set(), reviewer.id)
+
+    assert validated == batch_ids
+    assert not provider_called
 
 
 def test_shadow_defect_snapshot_requires_unambiguous_history_match(
@@ -928,6 +975,56 @@ def test_qa_uses_rendered_source_figure_label_fallback(tmp_path: Path) -> None:
         for item in report.errors
         if item.code in {"approved-term-missing", "forbidden-term"}
     }
+    packet_text, _ = external_review._packet_text(root, manifest.batch_id)
+    assert "Figure label sources:\n- Architecture" in packet_text
+    assert "Figure label translations:\n- 架构" in packet_text
+    evidence_source, evidence_target = external_review._evidence_map(
+        root, manifest.batch_id
+    )[unit.unit_id]
+    assert "Figure label sources:\n- Architecture" in evidence_source
+    assert "Figure label translations:\n- 架构" in evidence_target
+
+
+def test_figure_label_overrides_require_complete_source_mapping(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "figure_labels": [
+                FigureLabel(source="Open", target="打开"),
+                FigureLabel(source="Close", target="关闭"),
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    assert verify_extraction(root, "all", force=True)["passed"]
+    refresh_batch(root, manifest.batch_id)
+    partial = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="控件状态图。",
+        figure_labels=[FigureLabel(source="Open", target="打开")],
+        source_hash=unit.source_hash,
+    )
+    input_path = root / "batches" / manifest.batch_id / "partial-labels.jsonl"
+    write_jsonl(input_path, [partial])
+
+    with pytest.raises(ValueError, match="Figure label mapping mismatch"):
+        submit_translation(root, manifest.batch_id, input_path)
+
+    write_jsonl(root / "translations" / "current.jsonl", [partial])
+    report = run_qa(root, manifest.batch_id)
+    assert not report.passed
+    assert [item.code for item in report.errors].count(
+        "figure-label-mapping-mismatch"
+    ) == 1
+    with pytest.raises(ValueError, match="Figure label mapping mismatch"):
+        render_project(root, "1", "partial-labels", allow_draft=True)
 
 
 def test_source_only_change_requires_current_audit_before_formal_render(

@@ -20,6 +20,7 @@ from littrans.evidence import (
     batch_unit_fingerprints,
     changed_units,
     dependency_closure,
+    effective_figure_labels,
     relevant_terms,
 )
 from littrans.models import (
@@ -310,10 +311,10 @@ def _packet_text(
             )
         source_labels = ""
         target_labels = ""
-        if unit.kind is UnitKind.FIGURE and unit.figure_labels:
-            labels = record.figure_labels if record else unit.figure_labels
+        labels = effective_figure_labels(unit, record)
+        if unit.kind is UnitKind.FIGURE and labels:
             source_labels = "\n\nFigure label sources:\n" + "\n".join(
-                f"- {label.source}" for label in labels
+                f"- {label.source}" for label in unit.figure_labels
             )
             target_labels = "\nFigure label translations:\n" + "\n".join(
                 f"- {label.target or '[missing]'}"
@@ -412,10 +413,10 @@ def _evidence_map(
             target = normalize_zh_caption(target)
         if record and record.target_table:
             target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
-        if unit.kind is UnitKind.FIGURE and unit.figure_labels:
-            labels = record.figure_labels if record else unit.figure_labels
+        labels = effective_figure_labels(unit, record)
+        if unit.kind is UnitKind.FIGURE and labels:
             source += "\nFigure label sources:\n" + "\n".join(
-                f"- {label.source}" for label in labels
+                f"- {label.source}" for label in unit.figure_labels
             )
             target += "\nFigure label translations:\n" + "\n".join(
                 f"- {label.target or '[missing]'}" for label in labels

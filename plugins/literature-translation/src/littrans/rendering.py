@@ -14,6 +14,7 @@ from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from littrans.batching import load_manifest
+from littrans.evidence import effective_figure_labels
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     CalloutKind,
@@ -619,9 +620,10 @@ def render_project(
         render_unit = unit
         if unit.kind is UnitKind.TABLE and record and record.target_table:
             render_unit = unit.model_copy(update={"table": record.target_table})
-        if unit.kind is UnitKind.FIGURE and record and record.figure_labels:
+        rendered_figure_labels = effective_figure_labels(unit, record)
+        if rendered_figure_labels:
             render_unit = unit.model_copy(
-                update={"figure_labels": record.figure_labels}
+                update={"figure_labels": rendered_figure_labels}
             )
         rendered = _target_markdown(render_unit, target)
         anchor = "".join(

@@ -13,6 +13,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import (
     audit_context_fingerprint,
     batch_unit_fingerprints,
+    effective_figure_labels,
     source_representation_text,
 )
 from littrans.models import (
@@ -101,7 +102,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v4|"
+        "deterministic-qa-v4.1-figure-label-map|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -269,7 +270,18 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
             )
-        rendered_figure_labels = record.figure_labels or unit.figure_labels
+        try:
+            rendered_figure_labels = effective_figure_labels(unit, record)
+        except ValueError as exc:
+            errors.append(
+                QAItem(
+                    code="figure-label-mapping-mismatch",
+                    severity="error",
+                    message=str(exc),
+                    unit_id=unit_id,
+                )
+            )
+            rendered_figure_labels = unit.figure_labels
         if rendered_figure_labels:
             effective_target += "\n" + "\n".join(
                 label.target or "" for label in rendered_figure_labels

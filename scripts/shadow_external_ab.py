@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
+from littrans.batching import load_manifest
 from littrans.evidence import effective_translation_payload, translation_payload
 from littrans.external_review import (
     _evidence_map,
@@ -201,6 +202,8 @@ def run_ab(
         raise ValueError(f"Unknown reviewer: {reviewer_id}")
     if reviewer.driver is not ExternalReviewDriver.CLAUDE_CODE:
         raise ValueError("The paired efficiency gate requires a Claude Code reviewer")
+    for batch_id in batch_ids:
+        load_manifest(root, batch_id)
     samples: list[dict[str, Any]] = []
     for batch_id in batch_ids:
         overrides, gold = (

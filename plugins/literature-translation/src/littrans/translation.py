@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from littrans.batching import batch_directory, load_manifest
-from littrans.evidence import record_audit_invalidation, translations_semantically_equal
+from littrans.evidence import (
+    effective_figure_labels,
+    record_audit_invalidation,
+    translations_semantically_equal,
+)
 from littrans.models import ProjectStatus, SourceUnit, TranslationRecord, utc_now
 from littrans.project import promote_status, translation_map
 from littrans.storage import (
@@ -41,6 +45,7 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             unit = units[record.unit_id]
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")
+            effective_figure_labels(unit, record)
             prior = current.get(record.unit_id)
             if prior is not None and translations_semantically_equal(
                 unit, prior, record

@@ -10,6 +10,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import (
     audit_context_text,
     dependency_closure,
+    effective_figure_labels,
     translation_memory,
     translation_unit_fingerprint,
     translations_semantically_equal,
@@ -195,9 +196,7 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     target = record.target_text if record else "[source-only]"
     if record and record.target_table:
         target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
-    rendered_figure_labels = (
-        record.figure_labels if record and record.figure_labels else unit.figure_labels
-    )
+    rendered_figure_labels = effective_figure_labels(unit, record)
     if rendered_figure_labels:
         target += "\n\nFigure label translations:\n" + "\n".join(
             f"- {label.source}: {label.target or '[missing]'}"

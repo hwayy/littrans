@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from littrans.models import (
+    FigureLabel,
     ProjectStatus,
     SourceUnit,
     TranslationRecord,
@@ -91,6 +92,22 @@ def translation_payload(record: TranslationRecord) -> dict[str, Any]:
     return record.model_dump(
         mode="json", include=TRANSLATION_PAYLOAD_FIELDS, exclude_none=True
     )
+
+
+def effective_figure_labels(
+    unit: SourceUnit, record: TranslationRecord | None
+) -> list[FigureLabel]:
+    """Return the renderer-visible labels after validating any record override."""
+    if record is None or not record.figure_labels:
+        return unit.figure_labels
+    expected = [label.source for label in unit.figure_labels]
+    supplied = [label.source for label in record.figure_labels]
+    if unit.kind is not UnitKind.FIGURE or supplied != expected:
+        raise ValueError(
+            f"Figure label mapping mismatch for {unit.unit_id}; "
+            f"expected={expected}, supplied={supplied}"
+        )
+    return record.figure_labels
 
 
 def effective_translation_payload(
