@@ -48,6 +48,7 @@ from littrans.models import (
     IssueStatus,
     IssueType,
     ProjectStatus,
+    PromptDelivery,
     ReaderNote,
     RenderPolicy,
     ReviewIssue,
@@ -1496,7 +1497,18 @@ def test_external_driver_timeout_becomes_an_auditable_failure(
 
     assert exc_info.value.attempts == 1
     assert exc_info.value.raw == "partial output"
+    assert exc_info.value.prompt_delivery is PromptDelivery.FILE
     assert "timed out after 330 seconds" in str(exc_info.value)
+
+    with pytest.raises(external_review.ExternalInvocationError) as stdin_exc:
+        external_review._invoke(
+            reviewer,
+            packet,
+            work_dir,
+            {},
+            forced_delivery=PromptDelivery.STDIN,
+        )
+    assert stdin_exc.value.prompt_delivery is PromptDelivery.STDIN
 
 
 def test_least_used_assignment_counts_primary_batches_not_retries(

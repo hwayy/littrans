@@ -219,18 +219,20 @@ def dependency_closure(
         unit.unit_id for unit in units if unit.sidebar_id in sidebar_ids
     )
 
-    # Include both sides of every affected batch seam.
+    # Include both sides only for batch seams reached by the dependency closure.
     for batch_id in batch_ids:
         manifest = load_manifest(root, batch_id)
-        if not set(manifest.unit_ids) & selected:
-            continue
-        for seam_id in (manifest.unit_ids[0], manifest.unit_ids[-1]):
+        for seam_id, outside_offset in (
+            (manifest.unit_ids[0], -1),
+            (manifest.unit_ids[-1], 1),
+        ):
+            if seam_id not in selected:
+                continue
             index = positions[seam_id]
             selected.add(seam_id)
-            if index:
-                selected.add(units[index - 1].unit_id)
-            if index + 1 < len(units):
-                selected.add(units[index + 1].unit_id)
+            outside_index = index + outside_offset
+            if 0 <= outside_index < len(units):
+                selected.add(units[outside_index].unit_id)
     return [unit.unit_id for unit in units if unit.unit_id in selected]
 
 
@@ -268,9 +270,8 @@ def record_audit_invalidation(
     return invalidated
 
 
-def page_evidence_fingerprints(
-    root: Path, page: int, units: list[SourceUnit]
-) -> tuple[str, str]:
+def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
+    """Return the source units that determine one page's verification receipt."""
     selected_indices = {index for index, unit in enumerate(units) if unit.page == page}
     sidebar_ids = {
         units[index].sidebar_id
@@ -292,7 +293,13 @@ def page_evidence_fingerprints(
         ):
             right += 1
             selected_indices.add(right)
-    page_units = [units[index] for index in sorted(selected_indices)]
+    return [units[index] for index in sorted(selected_indices)]
+
+
+def page_evidence_fingerprints(
+    root: Path, page: int, units: list[SourceUnit]
+) -> tuple[str, str]:
+    page_units = page_evidence_units(page, units)
     unit_fingerprint = sha256_text(
         "\n".join(
             f"{unit.unit_id}:{source_unit_fingerprint(unit)}" for unit in page_units

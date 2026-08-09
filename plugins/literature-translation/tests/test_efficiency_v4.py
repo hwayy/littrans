@@ -13,6 +13,7 @@ from littrans.evidence import (
     batch_source_fingerprint,
     batch_structure_fingerprint,
     batch_unit_fingerprints,
+    dependency_closure,
     translation_memory,
 )
 from littrans.external_review import _primary_review_scope
@@ -24,10 +25,13 @@ from littrans.models import (
     ExternalReviewVerdict,
     ExtractionIssue,
     IssueStatus,
+    PageVerificationReceipt,
     ProjectStatus,
+    PromptDelivery,
     ReviewScope,
     SemanticStatus,
     Severity,
+    SidebarRole,
     SourceUnit,
     TranslationRecord,
     UnitKind,
@@ -55,7 +59,9 @@ def test_claude_stdin_delivery_remains_shadow_gated() -> None:
     assert external_review.CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED is False
 
 
-def _make_project(tmp_path: Path, pages: int = 3) -> tuple[Path, list[object]]:
+def _make_project(
+    tmp_path: Path, pages: int = 3, max_words: int = 100
+) -> tuple[Path, list[object]]:
     pdf = tmp_path / "source.pdf"
     drawing = canvas.Canvas(str(pdf), pagesize=letter)
     units: list[SourceUnit] = []
@@ -84,8 +90,7 @@ def _make_project(tmp_path: Path, pages: int = 3) -> tuple[Path, list[object]]:
     initialize_project(pdf, root, "technical-book", "Efficiency Fixture")
     write_jsonl(root / "derived" / "units.jsonl", units)
     assert verify_extraction(root, "all", force=True)["passed"]
-    manifests = create_batches(root, "all", max_words=100, prefix="v4")
-    assert len(manifests) == pages
+    manifests = create_batches(root, "all", max_words=max_words, prefix="v4")
     return root, manifests
 
 
@@ -114,6 +119,47 @@ def _audit_and_approve(root: Path, batch_id: str) -> None:
     write_jsonl(empty, [])
     import_review(root, batch_id, empty)
     assert approve_batch(root, batch_id, "machine") is ProjectStatus.MACHINE_REVIEWED
+
+
+def test_failed_external_review_records_actual_prompt_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+
+    dry_run = external_review.run_external_review(root, batch_id, dry_run=True)
+    assert dry_run["prompt_delivery"] == PromptDelivery.FILE
+
+    def fail_invoke(*args: object, **kwargs: object) -> None:
+        raise external_review.ExternalInvocationError(
+            "External reviewer failed", 1, "partial output", PromptDelivery.FILE
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", fail_invoke)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+    status = external_review.run_external_review(root, batch_id)
+    runs = read_jsonl(
+        root / "reviews" / f"{batch_id}.external-runs.jsonl", ExternalReviewRun
+    )
+    assert not status["external_approvable"]
+    assert runs[-1].prompt_delivery is PromptDelivery.FILE
+    assert not runs[-1].success
 
 
 def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
@@ -250,6 +296,30 @@ def test_revision_invalidates_only_dependency_closure(tmp_path: Path) -> None:
     assert all(not audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests)
 
 
+def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=11, max_words=700)
+    assert [len(manifest.unit_ids) for manifest in manifests] == [5, 5, 1]
+    middle = manifests[1]
+
+    assert dependency_closure(root, [middle.batch_id], ["u008"]) == [
+        "u007",
+        "u008",
+        "u009",
+    ]
+    assert dependency_closure(root, [middle.batch_id], ["u007"]) == [
+        "u005",
+        "u006",
+        "u007",
+        "u008",
+    ]
+    assert dependency_closure(root, [middle.batch_id], ["u009"]) == [
+        "u008",
+        "u009",
+        "u010",
+        "u011",
+    ]
+
+
 def test_page_receipts_skip_unchanged_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -296,6 +366,64 @@ def test_page_receipt_does_not_hide_new_blocking_issue(tmp_path: Path) -> None:
     assert refreshed["passed"]
     assert refreshed["verified_pages"] == [1]
     assert verify_extraction(root, "1")["cached_pages"] == [1]
+
+
+def test_partial_verification_failure_preserves_clean_page_receipt(
+    tmp_path: Path,
+) -> None:
+    root, _ = _make_project(tmp_path, 2)
+    issue = ExtractionIssue(
+        issue_id="page-one-blocker",
+        page=1,
+        severity=Severity.BLOCKER,
+        code="page-one-defect",
+        message="Only the first page is defective.",
+    )
+    write_jsonl(root / "derived" / "extraction-issues.jsonl", [issue])
+
+    result = verify_extraction(root, "all", force=True)
+    failed_receipt = PageVerificationReceipt.model_validate(
+        read_json(root / "evidence" / "pages" / "page-0001.json")
+    )
+    clean_receipt = PageVerificationReceipt.model_validate(
+        read_json(root / "evidence" / "pages" / "page-0002.json")
+    )
+    assert not result["passed"]
+    assert not failed_receipt.passed
+    assert {error["code"] for error in failed_receipt.errors} == {
+        "open-extraction-issue"
+    }
+    assert clean_receipt.passed
+    assert clean_receipt.errors == []
+    assert verify_extraction(root, "2")["cached_pages"] == [2]
+
+
+def test_sidebar_error_is_scoped_to_dependent_page_receipts(tmp_path: Path) -> None:
+    root, _ = _make_project(tmp_path, 3)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    for index in (0, 1):
+        units[index] = units[index].model_copy(
+            update={"sidebar_id": "cross-page", "sidebar_role": SidebarRole.BODY}
+        )
+    write_jsonl(units_path, units)
+
+    result = verify_extraction(root, "all", force=True)
+    receipts = [
+        PageVerificationReceipt.model_validate(
+            read_json(root / "evidence" / "pages" / f"page-{page:04}.json")
+        )
+        for page in (1, 2, 3)
+    ]
+    assert not result["passed"]
+    assert all(not receipt.passed for receipt in receipts[:2])
+    assert all(
+        {error["code"] for error in receipt.errors} == {"invalid-sidebar-title"}
+        for receipt in receipts[:2]
+    )
+    assert receipts[2].passed
+    assert receipts[2].errors == []
+    assert verify_extraction(root, "3")["cached_pages"] == [3]
 
 
 def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None:

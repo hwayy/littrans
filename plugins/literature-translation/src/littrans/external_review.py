@@ -122,10 +122,17 @@ RESULT_SCHEMA: dict[str, Any] = {
 
 
 class ExternalInvocationError(RuntimeError):
-    def __init__(self, message: str, attempts: int, raw: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        attempts: int,
+        raw: str = "",
+        prompt_delivery: PromptDelivery = PromptDelivery.FILE,
+    ) -> None:
         super().__init__(message)
         self.attempts = attempts
         self.raw = raw
+        self.prompt_delivery = prompt_delivery
 
 
 def _review_config(root: Path) -> ExternalReviewConfig:
@@ -611,6 +618,7 @@ def _invoke(
     errors: list[str] = []
     attempts = 0
     last_raw = ""
+    last_delivery = forced_delivery or PromptDelivery.FILE
     started = time.perf_counter()
     for model, effort in candidates:
         candidate = reviewer.model_copy(update={"model": model, "effort": effort})
@@ -627,6 +635,7 @@ def _invoke(
             )
         )
         for delivery in deliveries:
+            last_delivery = delivery
             prompt = (
                 (file_prompt or _claude_prompt(packet_path))
                 if candidate.driver is ExternalReviewDriver.CLAUDE_CODE
@@ -671,6 +680,7 @@ def _invoke(
                         f"External reviewer failed: external CLI timed out after {exc.timeout} seconds",
                         attempts,
                         last_raw,
+                        delivery,
                     ) from None
                 raw = result.stdout or result.stderr
                 last_raw = raw
@@ -736,7 +746,10 @@ def _invoke(
                 finally:
                     log_path.unlink(missing_ok=True)
     raise ExternalInvocationError(
-        "External reviewer failed: " + " | ".join(errors), attempts, last_raw
+        "External reviewer failed: " + " | ".join(errors),
+        attempts,
+        last_raw,
+        last_delivery,
     )
 
 
@@ -1062,11 +1075,7 @@ def run_external_review(
                 "prompt": prompt,
                 "command": command,
                 "executed": False,
-                "prompt_delivery": (
-                    PromptDelivery.STDIN
-                    if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
-                    else PromptDelivery.FILE
-                ),
+                "prompt_delivery": PromptDelivery.FILE,
             },
         )
         dry_run_payload = json.loads((work_dir / "dry-run.json").read_text(encoding="utf-8"))
@@ -1128,11 +1137,7 @@ def run_external_review(
                 unit_fingerprints=current_unit_fingerprints,
                 source_fingerprint=source_fingerprint,
                 structure_fingerprint=structure_fingerprint,
-                prompt_delivery=(
-                    PromptDelivery.STDIN
-                    if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
-                    else PromptDelivery.FILE
-                ),
+                prompt_delivery=exc.prompt_delivery,
                 verdict=ExternalReviewVerdict.INCONCLUSIVE,
                 summary=str(exc),
                 response_path=str(raw_path.relative_to(root)).replace("\\", "/"),

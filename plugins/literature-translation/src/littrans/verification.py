@@ -8,7 +8,7 @@ from typing import Any
 
 import fitz
 
-from littrans.evidence import page_evidence_fingerprints
+from littrans.evidence import page_evidence_fingerprints, page_evidence_units
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     ExtractionIssue,
@@ -218,6 +218,43 @@ def _receipt_path(root: Path, page: int) -> Path:
     return root / "evidence" / "pages" / f"page-{page:04}.json"
 
 
+def _error_pages(
+    error: dict[str, Any], page_dependencies: dict[int, list[SourceUnit]]
+) -> set[int]:
+    """Return receipt pages affected by an anchored verification error."""
+    affected: set[int] = set()
+    anchored = False
+    page = error.get("page")
+    if isinstance(page, int):
+        anchored = True
+        if page in page_dependencies:
+            affected.add(page)
+
+    unit_ids = {
+        value
+        for key, value in error.items()
+        if key.endswith("unit_id") and isinstance(value, str) and value
+    }
+    if unit_ids:
+        anchored = True
+        affected.update(
+            receipt_page
+            for receipt_page, dependencies in page_dependencies.items()
+            if any(unit.unit_id in unit_ids for unit in dependencies)
+        )
+
+    sidebar_id = error.get("sidebar_id")
+    if isinstance(sidebar_id, str) and sidebar_id:
+        anchored = True
+        affected.update(
+            receipt_page
+            for receipt_page, dependencies in page_dependencies.items()
+            if any(unit.sidebar_id == sidebar_id for unit in dependencies)
+        )
+
+    return affected if anchored else set(page_dependencies)
+
+
 def _receipt_key(
     source_sha256: str, unit_fingerprint: str, asset_fingerprint: str
 ) -> str:
@@ -241,12 +278,21 @@ def verify_extraction(
     extraction_issues = read_jsonl(
         root / "derived" / "extraction-issues.jsonl", ExtractionIssue
     )
-    blocking_issue_pages = {
-        issue.page
+    page_dependencies = {
+        page: page_evidence_units(page, all_units) for page in requested_pages
+    }
+    blocking_issue_errors = [
+        {
+            "page": issue.page,
+            "unit_id": issue.unit_id,
+        }
         for issue in extraction_issues
         if issue.status is IssueStatus.OPEN
         and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
-    }
+    ]
+    blocking_issue_pages: set[int] = set()
+    for error in blocking_issue_errors:
+        blocking_issue_pages.update(_error_pages(error, page_dependencies))
     cached: dict[int, PageVerificationReceipt] = {}
     expected_keys: dict[int, tuple[str, str, str]] = {}
     for page in requested_pages:
@@ -410,9 +456,14 @@ def verify_extraction(
             }
         )
     report_path = _write_visual_report(root, document, pages, by_page)
-    stale_passed = not errors
+    error_page_sets = [
+        (error, _error_pages(error, page_dependencies)) for error in errors
+    ]
     for page_result in page_results:
         page = int(page_result["page"])
+        page_errors = [
+            error for error, affected_pages in error_page_sets if page in affected_pages
+        ]
         key, unit_fingerprint, asset_fingerprint = expected_keys[page]
         receipt = PageVerificationReceipt(
             page=page,
@@ -421,9 +472,9 @@ def verify_extraction(
             asset_fingerprint=asset_fingerprint,
             validator_version=VERIFIER_VERSION,
             receipt_key=key,
-            passed=stale_passed,
+            passed=not page_errors,
             token_coverage=float(page_result["token_coverage"]),
-            errors=errors if not stale_passed else [],
+            errors=page_errors,
         )
         write_json(_receipt_path(root, page), receipt.model_dump(mode="json"))
     combined_pages = [
