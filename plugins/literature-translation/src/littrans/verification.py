@@ -281,6 +281,11 @@ def verify_extraction(
     page_dependencies = {
         page: page_evidence_units(page, all_units) for page in requested_pages
     }
+    semantic_errors = [
+        error
+        for error in _semantic_errors(root, all_units)
+        if _error_pages(error, page_dependencies)
+    ]
     blocking_issue_errors = [
         {
             "page": issue.page,
@@ -317,7 +322,7 @@ def verify_extraction(
     if not pages:
         document.close()
         payload = {
-            "passed": True,
+            "passed": not semantic_errors,
             "source_sha256": config.source_sha256,
             "pages": [
                 {
@@ -330,23 +335,19 @@ def verify_extraction(
                 }
                 for page in requested_pages
             ],
-            "errors": [],
+            "errors": semantic_errors,
             "visual_report": str(root / "derived" / "extraction-report.html"),
             "cached_pages": requested_pages,
             "verified_pages": [],
             "validator_version": VERIFIER_VERSION,
-            "instruction": "Page verification receipts match the current PDF, source units, assets, and validator.",
+            "instruction": "Cached page receipts match the current PDF and validator; project-wide semantic checks must also pass.",
         }
         write_json(root / "derived" / "verification.json", payload)
         return payload
     page_set = set(pages)
     units = [unit for unit in all_units if unit.page in page_set]
     by_page = {page: [unit for unit in units if unit.page == page] for page in pages}
-    errors = [
-        error
-        for error in _semantic_errors(root, all_units)
-        if _error_pages(error, page_dependencies)
-    ]
+    errors = list(semantic_errors)
     for issue in extraction_issues:
         if issue.status is not IssueStatus.OPEN or issue.severity not in {
             Severity.BLOCKER,

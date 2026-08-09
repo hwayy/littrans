@@ -10,7 +10,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from littrans import external_review
-from littrans.batching import create_batches, load_manifest
+from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
     batch_source_fingerprint,
     batch_structure_fingerprint,
@@ -343,6 +343,47 @@ def test_glossary_change_invalidates_qa_workflow_approval_and_render(
     report = run_qa(root, batch_id)
     assert not report.passed
     assert {item.code for item in report.errors} == {"approved-term-missing"}
+
+
+def test_source_only_change_requires_current_audit_before_formal_render(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=700)
+    assert len(manifests) == 1
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[1] = units[1].model_copy(
+        update={
+            "kind": UnitKind.CODE,
+            "translatable": False,
+            "code_language": "python",
+        }
+    )
+    write_jsonl(units_path, units)
+    refreshed = refresh_batch(root, batch_id)
+    assert units[1].unit_id not in refreshed.translatable_unit_ids
+    assert verify_extraction(root, "all", force=True)["passed"]
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    assert render_project(root, None, "before-source-only-change", batch_id=batch_id)
+
+    units[1] = units[1].model_copy(update={"code_language": "javascript"})
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "2")["passed"]
+    assert run_qa(root, batch_id).passed
+    assert not audit_coverage(root, batch_id)["complete"]
+    assert workflow_next(root)["stage"] == "audit"
+
+    with pytest.raises(ValueError, match=f"incomplete_audit=.*{batch_id}"):
+        render_project(root, None, "stale-source-only-audit", batch_id=batch_id)
+    assert render_project(
+        root,
+        None,
+        "draft-source-only-audit",
+        allow_draft=True,
+        batch_id=batch_id,
+    )
 
 
 def test_external_review_does_not_reuse_approval_after_glossary_change(
@@ -695,6 +736,38 @@ def test_cached_pages_remain_in_requested_global_semantic_checks(
     assert {error["code"] for error in failed_receipt.errors} == {
         "duplicate-unit-id"
     }
+
+
+def test_fully_cached_page_still_runs_project_global_semantic_checks(
+    tmp_path: Path,
+) -> None:
+    root, _ = _make_project(tmp_path, 2)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    original_second_id = units[1].unit_id
+    units[1] = units[1].model_copy(update={"unit_id": units[0].unit_id})
+    write_jsonl(units_path, units)
+
+    result = verify_extraction(root, "1")
+
+    assert not result["passed"]
+    assert result["cached_pages"] == [1]
+    assert result["verified_pages"] == []
+    assert {error["code"] for error in result["errors"]} == {
+        "duplicate-unit-id"
+    }
+    with pytest.raises(ValueError, match="duplicate-unit-id"):
+        require_verified_extraction(root, {1})
+    receipt = PageVerificationReceipt.model_validate(
+        read_json(root / "evidence" / "pages" / "page-0001.json")
+    )
+    assert receipt.passed
+
+    units[1] = units[1].model_copy(update={"unit_id": original_second_id})
+    write_jsonl(units_path, units)
+    recovered = verify_extraction(root, "1")
+    assert recovered["passed"]
+    assert recovered["cached_pages"] == [1]
 
 
 def test_page_receipt_does_not_hide_new_blocking_issue(tmp_path: Path) -> None:
@@ -1384,6 +1457,7 @@ def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path)
     for manifest in manifests:
         _submit(root, manifest.batch_id)
+    for manifest in manifests:
         _audit_and_approve(root, manifest.batch_id)
     batch_ids = [manifest.batch_id for manifest in manifests]
     outputs = render_project(

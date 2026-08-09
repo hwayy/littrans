@@ -27,7 +27,7 @@ from littrans.models import (
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
-from littrans.quality import qa_report_is_current
+from littrans.quality import audit_coverage, qa_report_is_current
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
@@ -510,6 +510,7 @@ def render_project(
         and translations[unit.unit_id].status not in publishable
     ]
     stale_qa: list[str] = []
+    incomplete_audit: list[str] = []
     if not allow_draft:
         relevant_manifests = manifests
         if not relevant_manifests:
@@ -519,12 +520,17 @@ def render_project(
                 if path.is_dir()
                 and (path / "manifest.yaml").is_file()
                 for manifest in [load_manifest(root, path.name)]
-                if selected_ids & set(manifest.translatable_unit_ids)
+                if selected_ids & set(manifest.unit_ids)
             ]
         stale_qa = [
             manifest.batch_id
             for manifest in relevant_manifests
             if not qa_report_is_current(root, manifest.batch_id)
+        ]
+        incomplete_audit = [
+            manifest.batch_id
+            for manifest in relevant_manifests
+            if not audit_coverage(root, manifest.batch_id)["complete"]
         ]
     open_severe: list[str] = []
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):
@@ -535,11 +541,14 @@ def render_project(
                 and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
             ):
                 open_severe.append(issue.issue_id)
-    if not allow_draft and (missing or unapproved or stale_qa or open_severe):
+    if not allow_draft and (
+        missing or unapproved or stale_qa or incomplete_audit or open_severe
+    ):
         raise ValueError(
             "Formal rendering is blocked; "
             f"missing={missing}, not_publishable={unapproved}, "
-            f"stale_qa={stale_qa}, open_severe={open_severe}"
+            f"stale_qa={stale_qa}, incomplete_audit={incomplete_audit}, "
+            f"open_severe={open_severe}"
         )
 
     output_name = _safe_name(name)
