@@ -25,9 +25,11 @@ from littrans.models import (
     ExternalReviewVerdict,
     ExtractionIssue,
     IssueStatus,
+    IssueType,
     PageVerificationReceipt,
     ProjectStatus,
     PromptDelivery,
+    ReviewIssue,
     ReviewScope,
     SemanticStatus,
     Severity,
@@ -199,6 +201,42 @@ def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
         "audit": (root / "reviews" / f"{batch_id}.audit.json").read_bytes(),
         "runs": (root / "evidence" / "audits" / f"{batch_id}.jsonl").read_bytes(),
     }
+
+
+def test_new_blocking_audit_reopens_approved_batch(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    assert (
+        approve_batch(root, batch_id, "human", confirm_user_approved=True)
+        is ProjectStatus.HUMAN_APPROVED
+    )
+    assert workflow_next(root)["stage"] == "complete"
+    issue = ReviewIssue(
+        issue_id="late-major",
+        batch_id=batch_id,
+        unit_id=load_manifest(root, batch_id).translatable_unit_ids[0],
+        severity=Severity.MAJOR,
+        type=IssueType.MEANING,
+        explanation="A later independent audit found a substantive defect.",
+        reviewer="late-independent-auditor",
+    )
+    issue_path = root / "reviews" / "late-major.jsonl"
+    write_jsonl(issue_path, [issue])
+
+    import_review(root, batch_id, issue_path)
+
+    assert {
+        translation_map(root)[unit_id].status
+        for unit_id in load_manifest(root, batch_id).translatable_unit_ids
+    } == {ProjectStatus.REVIEWED}
+    assert load_project(root).status is ProjectStatus.REVIEWED
+    assert workflow_next(root)["stage"] == "machine-approve"
+    with pytest.raises(ValueError, match="Open blocker/major issues remain"):
+        approve_batch(root, batch_id, "machine")
+    with pytest.raises(ValueError, match="open_severe=.*late-major"):
+        render_project(root, None, "late-major", batch_id=batch_id)
 
 
 def test_glossary_change_invalidates_qa_workflow_approval_and_render(
@@ -692,6 +730,77 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
     records[3] = records[3].model_copy(update={"target_text": "第二处技术修订", "revision": 2})
     write_jsonl(root / "translations" / "current.jsonl", records)
     assert _primary_review_scope(root, manifest.batch_id, None)[0] is ReviewScope.FULL
+
+
+def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=11, max_words=700)
+    assert [len(manifest.unit_ids) for manifest in manifests] == [5, 5, 1]
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    middle = manifests[1]
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    snapshot = batch_unit_fingerprints(root, middle.batch_id)
+    base = ExternalReviewRun(
+        run_id="outer-seam-base",
+        batch_id=middle.batch_id,
+        reviewer_id="claude",
+        driver="claude-code",
+        role="primary",
+        requested_model="claude-sonnet-5",
+        actual_model="claude-sonnet-5",
+        model_verified=True,
+        translation_fingerprint="legacy",
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.ACCEPTED,
+        summary="No substantive defects.",
+        covered_unit_ids=list(snapshot),
+        unit_fingerprints=snapshot,
+        source_fingerprint=batch_source_fingerprint(root, middle.batch_id),
+        structure_fingerprint=batch_structure_fingerprint(root, middle.batch_id),
+    )
+    append_jsonl(
+        root / "reviews" / f"{middle.batch_id}.external-runs.jsonl", [base]
+    )
+    current = translation_map(root)
+    first_id = middle.translatable_unit_ids[0]
+    current[first_id] = current[first_id].model_copy(
+        update={"target_text": "批次边界修订", "revision": 2}
+    )
+    write_jsonl(root / "translations" / "current.jsonl", current.values())
+
+    scope, _, covered, _ = _primary_review_scope(root, middle.batch_id, None)
+    assert scope is ReviewScope.INCREMENTAL
+    outside_id = manifests[0].unit_ids[-1]
+    context_ids = external_review._outer_seam_context_ids(
+        root, middle.batch_id, covered
+    )
+    assert context_ids == [outside_id]
+    assert outside_id not in covered
+    packet, pages = external_review._packet_text(
+        root,
+        middle.batch_id,
+        covered,
+        read_only_context_ids=context_ids,
+    )
+    assert f"## Unit {outside_id} [READ-ONLY SEAM CONTEXT]" in packet
+    assert "do not report issues against them" in packet
+    assert pages == [5, 6, 7]
 
 
 def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(

@@ -618,15 +618,26 @@ def import_review(
         summary["total_issue_count"] = len(merged_issues)
         write_json(root / "reviews" / f"{batch_id}.audit.json", summary)
     if not preserve_status:
+        has_open_blocking = any(
+            issue.status is IssueStatus.OPEN
+            and issue.severity in BLOCKING_SEVERITIES
+            for issue in merged_issues
+        )
         with project_write_lock(root):
             current = translation_map(root)
             for unit_id in manifest.translatable_unit_ids:
-                if STATUS_ORDER[current[unit_id].status] <= STATUS_ORDER[ProjectStatus.REVIEWED]:
+                if has_open_blocking or (
+                    STATUS_ORDER[current[unit_id].status]
+                    <= STATUS_ORDER[ProjectStatus.REVIEWED]
+                ):
                     current[unit_id] = current[unit_id].model_copy(
                         update={"status": ProjectStatus.REVIEWED}
                     )
             write_jsonl(root / "translations" / "current.jsonl", current.values())
-            if STATUS_ORDER[load_project(root).status] <= STATUS_ORDER[ProjectStatus.REVIEWED]:
+            if has_open_blocking or (
+                STATUS_ORDER[load_project(root).status]
+                <= STATUS_ORDER[ProjectStatus.REVIEWED]
+            ):
                 promote_status(root, ProjectStatus.REVIEWED)
     return merged_issues
 

@@ -208,12 +208,32 @@ def build_antigravity_command(
     return command
 
 
+def _outer_seam_context_ids(
+    root: Path, batch_id: str, covered_unit_ids: list[str]
+) -> list[str]:
+    manifest = load_manifest(root, batch_id)
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
+    covered = set(covered_unit_ids)
+    context: list[str] = []
+    first_id = manifest.unit_ids[0]
+    last_id = manifest.unit_ids[-1]
+    first = positions[first_id]
+    last = positions[last_id]
+    if first_id in covered and first > 0:
+        context.append(all_units[first - 1].unit_id)
+    if last_id in covered and last + 1 < len(all_units):
+        context.append(all_units[last + 1].unit_id)
+    return context
+
+
 def _packet_text(
     root: Path,
     batch_id: str,
     covered_unit_ids: list[str] | None = None,
     translation_overrides: dict[str, TranslationRecord] | None = None,
     compact: bool = True,
+    read_only_context_ids: list[str] | None = None,
 ) -> tuple[str, list[int]]:
     manifest = load_manifest(root, batch_id)
     project = load_project(root)
@@ -225,21 +245,34 @@ def _packet_text(
             "from the document brief."
         )
     )
-    units = {
-        unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    }
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    units = {unit.unit_id: unit for unit in all_units}
     translations = translation_map(root)
     if translation_overrides:
         translations.update(translation_overrides)
-    missing = [unit_id for unit_id in manifest.unit_ids if unit_id not in units]
+    context_ids = set(read_only_context_ids or []) - set(manifest.unit_ids)
+    missing = [
+        unit_id
+        for unit_id in [*manifest.unit_ids, *context_ids]
+        if unit_id not in units
+    ]
     if missing:
-        raise ValueError(f"Batch references missing source units: {missing}")
+        raise ValueError(f"Review packet references missing source units: {missing}")
     selected_ids = set(covered_unit_ids or manifest.unit_ids)
-    selected_units = [units[unit_id] for unit_id in manifest.unit_ids if unit_id in selected_ids]
+    packet_ids = [
+        unit.unit_id
+        for unit in all_units
+        if (
+            unit.unit_id in context_ids
+            or (
+                unit.unit_id in selected_ids
+                and unit.unit_id in set(manifest.unit_ids)
+            )
+        )
+    ]
+    selected_units = [units[unit_id] for unit_id in packet_ids]
     sections: list[str] = []
-    for unit_id in manifest.unit_ids:
-        if unit_id not in selected_ids:
-            continue
+    for unit_id in packet_ids:
         unit = units[unit_id]
         record = translations.get(unit_id)
         source = unit.source_markdown or unit.source_text
@@ -283,8 +316,10 @@ def _packet_text(
         )
         if unit.callout_kind:
             structure += f"; callout {unit.callout_kind}"
+        context_label = " [READ-ONLY SEAM CONTEXT]" if unit_id in context_ids else ""
         sections.append(
-            f"## Unit {unit_id} (PDF page {unit.page}; {unit.kind}{structure})\n\n"
+            f"## Unit {unit_id}{context_label} "
+            f"(PDF page {unit.page}; {unit.kind}{structure})\n\n"
             f"### Source\n\n{source}{source_labels}\n\n"
             f"### Translation\n\n{target}{target_labels}{reader_note}\n"
         )
@@ -324,7 +359,15 @@ def _packet_text(
         "- A `Reader note` is deliberately separate from the translated body. Treat it as "
         "documented clarification or correction evidence, not as an unauthorized addition "
         "to the translation. Review both its claim and its cited sources.\n\n"
-        "# Units\n\n" + "\n".join(sections)
+        + (
+            "- Units marked `READ-ONLY SEAM CONTEXT` are outside this batch. Use "
+            "them only to inspect cross-batch continuity; do not report issues against "
+            "them or count them as covered batch units.\n\n"
+            if context_ids
+            else ""
+        )
+        + "# Units\n\n"
+        + "\n".join(sections)
     )
     return text, sorted({unit.page for unit in selected_units})
 
@@ -1034,7 +1077,17 @@ def run_external_review(
         selected_reviewer_id,
         latest_primary.reviewer_id if second_opinion and latest_primary else None,
     )
-    packet_text, pages = _packet_text(root, batch_id, covered_unit_ids)
+    read_only_context_ids = (
+        _outer_seam_context_ids(root, batch_id, covered_unit_ids)
+        if scope is ReviewScope.INCREMENTAL
+        else []
+    )
+    packet_text, pages = _packet_text(
+        root,
+        batch_id,
+        covered_unit_ids,
+        read_only_context_ids=read_only_context_ids,
+    )
     current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
     source_fingerprint = batch_source_fingerprint(root, batch_id)
     structure_fingerprint = batch_structure_fingerprint(root, batch_id)
@@ -1069,6 +1122,7 @@ def run_external_review(
                 "scope": scope,
                 "base_run_id": base_run.run_id if base_run else None,
                 "covered_unit_ids": covered_unit_ids,
+                "read_only_context_unit_ids": read_only_context_ids,
                 "packet_sha256": sha256_text(packet_text),
                 "packet_path": str(packet_path),
                 "prompt": prompt,
