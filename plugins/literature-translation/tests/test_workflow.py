@@ -12,6 +12,7 @@ from reportlab.pdfgen import canvas
 
 import littrans.external_review as external_review
 import littrans.quality as quality_module
+import littrans.storage as storage_module
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
     batch_source_fingerprint,
@@ -137,6 +138,29 @@ def make_pdf(path: Path) -> None:
         pdf.drawString(72, 30, f"Page {page}")
         pdf.showPage()
     pdf.save()
+
+
+def test_atomic_write_retries_transient_permission_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "atomic.txt"
+    real_replace = storage_module.os.replace
+    attempts = 0
+
+    def flaky_replace(source: str | Path, destination: str | Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("temporarily locked")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(storage_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(storage_module.time, "sleep", lambda seconds: None)
+
+    storage_module.atomic_write_text(path, "durable\n")
+
+    assert attempts == 3
+    assert path.read_text(encoding="utf-8") == "durable\n"
 
 
 def test_scaled_number_normalization_handles_chinese_readable_forms() -> None:
@@ -1503,6 +1527,7 @@ def test_external_driver_timeout_becomes_an_auditable_failure(
     assert exc_info.value.attempts == 1
     assert exc_info.value.raw == "partial output"
     assert exc_info.value.prompt_delivery is PromptDelivery.FILE
+    assert exc_info.value.duration_seconds >= 0
     assert "timed out after 330 seconds" in str(exc_info.value)
 
     with pytest.raises(external_review.ExternalInvocationError) as stdin_exc:

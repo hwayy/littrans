@@ -53,7 +53,14 @@ def atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-        os.replace(temp_name, path)
+        for attempt in range(7):
+            try:
+                os.replace(temp_name, path)
+                break
+            except PermissionError:
+                if attempt == 6:
+                    raise
+                time.sleep(0.02 * (2**attempt))
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)

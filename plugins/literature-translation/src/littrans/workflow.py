@@ -191,6 +191,47 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     )
 
 
+def _audit_read_only_context(
+    units: list[SourceUnit], translations: dict[str, TranslationRecord]
+) -> str:
+    return (
+        "# Read-only semantic seam context\n\n"
+        "These units are outside the requested batch set. Use them to inspect "
+        "continuations and cross-batch seams, but do not treat them as reviewed "
+        "coverage for this packet.\n\n"
+        + "\n".join(
+            _audit_unit_text(unit, translations.get(unit.unit_id)) for unit in units
+        )
+    )
+
+
+def _audit_packet_text(
+    batch_id: str,
+    lens: str,
+    units: list[SourceUnit],
+    translations: dict[str, TranslationRecord],
+    has_read_only_context: bool,
+) -> str:
+    focus = {
+        "fidelity": "Check fidelity, omissions, additions, references, numbers, and evidence.",
+        "technical": "Check terminology, code, tables, formulas, figures, and technical correctness.",
+        "chinese-style": "Check precise, idiomatic Simplified Chinese without changing meaning.",
+    }[lens]
+    return (
+        f"# Independent {lens} audit: {batch_id}\n\n{focus}\n\n"
+        "Do not read prior issues. Return ReviewIssue JSONL only; an empty file means no issues.\n\n"
+        + (
+            "Consult read-only-context.md for semantic seam context. Its units "
+            "are outside this packet's review coverage.\n\n"
+            if has_read_only_context
+            else ""
+        )
+        + "\n".join(
+            _audit_unit_text(unit, translations.get(unit.unit_id)) for unit in units
+        )
+    )
+
+
 def create_workflow_packet(
     root: Path,
     stage: str,
@@ -238,17 +279,10 @@ def create_workflow_packet(
         ]
         if context_units:
             read_only_context_path = packet_dir / "read-only-context.md"
-            context_body = (
-                "# Read-only semantic seam context\n\n"
-                "These units are outside the requested batch set. Use them to inspect "
-                "continuations and cross-batch seams, but do not treat them as reviewed "
-                "coverage for this packet.\n\n"
-                + "\n".join(
-                    _audit_unit_text(unit, translations.get(unit.unit_id))
-                    for unit in context_units
-                )
+            atomic_write_text(
+                read_only_context_path,
+                _audit_read_only_context(context_units, translations),
             )
-            atomic_write_text(read_only_context_path, context_body)
             files["audit:read-only-context"] = str(
                 read_only_context_path.relative_to(root)
             ).replace("\\", "/")
@@ -300,23 +334,16 @@ def create_workflow_packet(
             ).replace("\\", "/")
         else:
             audit_path = packet_dir / f"{manifest.batch_id}.audit.md"
-            focus = {
-                "fidelity": "Check fidelity, omissions, additions, references, numbers, and evidence.",
-                "technical": "Check terminology, code, tables, formulas, figures, and technical correctness.",
-                "chinese-style": "Check precise, idiomatic Simplified Chinese without changing meaning.",
-            }[lens or "fidelity"]
-            body = (
-                f"# Independent {lens} audit: {manifest.batch_id}\n\n{focus}\n\n"
-                "Do not read prior issues. Return ReviewIssue JSONL only; an empty file means no issues.\n\n"
-                + (
-                    "Consult read-only-context.md for semantic seam context. Its units "
-                    "are outside this packet's review coverage.\n\n"
-                    if read_only_context_path is not None
-                    else ""
-                )
-                + "\n".join(_audit_unit_text(unit, translations.get(unit.unit_id)) for unit in batch_units)
+            atomic_write_text(
+                audit_path,
+                _audit_packet_text(
+                    manifest.batch_id,
+                    lens or "fidelity",
+                    batch_units,
+                    translations,
+                    read_only_context_path is not None,
+                ),
             )
-            atomic_write_text(audit_path, body)
             files[f"{manifest.batch_id}:audit"] = str(
                 audit_path.relative_to(root)
             ).replace("\\", "/")

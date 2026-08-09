@@ -301,6 +301,7 @@ def test_completed_benchmark_does_not_group_across_incomplete_batches(
     _audit_and_approve(root, first.batch_id)
     _audit_and_approve(root, last.batch_id)
     original_shared_context = benchmark.__globals__["_shared_context"]
+    original_read_only_context = benchmark.__globals__["_audit_read_only_context"]
     shared_groups: list[list[str]] = []
 
     def capture_shared_context(project_root: Path, units: list[SourceUnit]) -> str:
@@ -312,12 +313,28 @@ def test_completed_benchmark_does_not_group_across_incomplete_batches(
     )
 
     result = benchmark(root, completed_only=True)
+    base_shared_groups = list(shared_groups)
+    marker = "x" * 101
+
+    def enlarge_read_only_context(
+        units: list[SourceUnit], translations: dict[str, TranslationRecord]
+    ) -> str:
+        return original_read_only_context(units, translations) + marker
+
+    monkeypatch.setitem(
+        benchmark.__globals__, "_audit_read_only_context", enlarge_read_only_context
+    )
+    enlarged = benchmark(root, completed_only=True)
 
     assert result["batches"] == 2
-    assert shared_groups == [list(first.unit_ids), list(last.unit_ids)]
-    assert not set(middle.unit_ids) & {
-        unit_id for group in shared_groups for unit_id in group
-    }
+    assert base_shared_groups[::2] == [list(first.unit_ids), list(last.unit_ids)]
+    assert all(
+        not (set(first.unit_ids) & set(group) and set(last.unit_ids) & set(group))
+        for group in base_shared_groups
+    )
+    assert enlarged["optimized_packet_bytes"] - result["optimized_packet_bytes"] == (
+        len(marker.encode("utf-8")) * 3 * 2
+    )
 
 
 def test_workflow_metrics_rejects_unknown_batch_ids(tmp_path: Path) -> None:
@@ -464,7 +481,11 @@ def test_failed_external_review_records_actual_prompt_delivery(
 
     def fail_invoke(*args: object, **kwargs: object) -> None:
         raise external_review.ExternalInvocationError(
-            "External reviewer failed", 1, "partial output", PromptDelivery.FILE
+            "External reviewer failed",
+            1,
+            "partial output",
+            PromptDelivery.FILE,
+            duration_seconds=12.5,
         )
 
     monkeypatch.setattr(external_review, "_invoke", fail_invoke)
@@ -475,6 +496,7 @@ def test_failed_external_review_records_actual_prompt_delivery(
     )
     assert not status["external_approvable"]
     assert runs[-1].prompt_delivery is PromptDelivery.FILE
+    assert runs[-1].duration_seconds == 12.5
     assert not runs[-1].success
 
 

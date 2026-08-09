@@ -132,6 +132,7 @@ class ExternalInvocationError(RuntimeError):
         prompt_delivery: PromptDelivery = PromptDelivery.FILE,
         usage: ReviewUsage | None = None,
         cost_usd: float | None = None,
+        duration_seconds: float = 0.0,
     ) -> None:
         super().__init__(message)
         self.attempts = attempts
@@ -139,6 +140,7 @@ class ExternalInvocationError(RuntimeError):
         self.prompt_delivery = prompt_delivery
         self.usage = usage or ReviewUsage()
         self.cost_usd = cost_usd
+        self.duration_seconds = duration_seconds
 
 
 def _review_config(root: Path) -> ExternalReviewConfig:
@@ -818,6 +820,7 @@ def _invoke(
         last_delivery,
         ReviewUsage.model_validate(usage_totals),
         total_cost_usd if has_cost else None,
+        time.perf_counter() - started,
     )
 
 
@@ -1284,6 +1287,7 @@ def run_external_review(
                 prompt_delivery=exc.prompt_delivery,
                 usage=exc.usage,
                 cost_usd=exc.cost_usd,
+                duration_seconds=exc.duration_seconds,
                 verdict=ExternalReviewVerdict.INCONCLUSIVE,
                 summary=str(exc),
                 response_path=str(raw_path.relative_to(root)).replace("\\", "/"),

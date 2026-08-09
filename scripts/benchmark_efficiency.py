@@ -10,13 +10,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from littrans.evidence import translation_memory, translations_semantically_equal
+from littrans.evidence import (
+    dependency_closure,
+    translation_memory,
+    translations_semantically_equal,
+)
 from littrans.models import SourceUnit, TranslationRecord
 from littrans.project import translation_map
 from littrans.storage import read_jsonl
 from littrans.workflow import (
     _all_manifests,
-    _audit_unit_text,
+    _audit_packet_text,
+    _audit_read_only_context,
     _batch_stage,
     _shared_context,
 )
@@ -122,9 +127,44 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
             for unit_id in manifest.unit_ids
             if unit_id in unit_map
         ]
-        shared = _shared_context(root, group_units).encode("utf-8")
-        # One shared artifact for three translation writers; one per independent audit lens.
-        optimized_bytes += len(shared) * 4
+        optimized_bytes += len(_shared_context(root, group_units).encode("utf-8"))
+        requested_ids = [
+            unit_id for manifest in group for unit_id in manifest.unit_ids
+        ]
+        requested_set = set(requested_ids)
+        audit_ids = dependency_closure(
+            root,
+            [manifest.batch_id for manifest in group],
+            requested_set,
+        )
+        audit_id_set = set(audit_ids)
+        audit_units = [unit_map[unit_id] for unit_id in audit_ids if unit_id in unit_map]
+        audit_shared = _shared_context(root, audit_units).encode("utf-8")
+        read_only_units = [
+            unit for unit in audit_units if unit.unit_id not in requested_set
+        ]
+        read_only_context = (
+            _audit_read_only_context(read_only_units, translations).encode("utf-8")
+            if read_only_units
+            else b""
+        )
+        for lens in ("fidelity", "technical", "chinese-style"):
+            optimized_bytes += len(audit_shared) + len(read_only_context)
+            for manifest in group:
+                batch_units = [
+                    unit_map[unit_id]
+                    for unit_id in manifest.unit_ids
+                    if unit_id in unit_map and unit_id in audit_id_set
+                ]
+                optimized_bytes += len(
+                    _audit_packet_text(
+                        manifest.batch_id,
+                        lens,
+                        batch_units,
+                        translations,
+                        bool(read_only_units),
+                    ).encode("utf-8")
+                )
         for manifest in group:
             batch_dir = root / "batches" / manifest.batch_id
             source_bytes = (batch_dir / "source.md").read_bytes()
@@ -142,12 +182,6 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
                 root, all_units, positions, manifest.unit_ids
             ).encode("utf-8")
             optimized_bytes += len(source_bytes) + len(lean_context)
-            audit_text = "\n".join(
-                _audit_unit_text(unit_map[unit_id], translations.get(unit_id))
-                for unit_id in manifest.unit_ids
-                if unit_id in unit_map
-            ).encode("utf-8")
-            optimized_bytes += 3 * len(audit_text)
     ratio = optimized_bytes / legacy_bytes if legacy_bytes else 0.0
     return {
         "project": str(root),
