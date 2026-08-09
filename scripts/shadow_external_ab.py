@@ -20,6 +20,7 @@ from littrans.external_review import (
     _invoke,
     _packet_text,
     _render_packet,
+    _require_machine_reviewed,
 )
 from littrans.models import (
     ExternalReviewDriver,
@@ -32,6 +33,7 @@ from littrans.models import (
 )
 from littrans.project import translation_map
 from littrans.storage import load_project, read_jsonl
+from littrans.workflow import _batch_stage
 
 
 def _legacy_prompt(packet_path: Path) -> str:
@@ -204,6 +206,14 @@ def run_ab(
         raise ValueError("The paired efficiency gate requires a Claude Code reviewer")
     for batch_id in batch_ids:
         load_manifest(root, batch_id)
+    for batch_id in batch_ids:
+        _require_machine_reviewed(root, batch_id)
+        stage = _batch_stage(root, batch_id)
+        if stage != "complete":
+            raise ValueError(
+                "Shadow A/B requires completed accepted baselines; "
+                f"{batch_id} is at workflow stage {stage}"
+            )
     samples: list[dict[str, Any]] = []
     for batch_id in batch_ids:
         overrides, gold = (

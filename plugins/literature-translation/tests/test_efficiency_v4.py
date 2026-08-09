@@ -143,6 +143,8 @@ def test_shadow_ab_forces_distinct_delivery_arms(
         ),
     )
     monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
+    monkeypatch.setitem(globals_, "_require_machine_reviewed", lambda *args: None)
+    monkeypatch.setitem(globals_, "_batch_stage", lambda *args: "complete")
     monkeypatch.setitem(
         globals_, "_packet_text", lambda *args, **kwargs: ("packet", [1])
     )
@@ -201,6 +203,57 @@ def test_shadow_ab_validates_all_batches_before_provider_calls(
         run_ab(tmp_path, batch_ids, set(), reviewer.id)
 
     assert validated == batch_ids
+    assert not provider_called
+
+
+def test_shadow_ab_validates_clean_baselines_before_provider_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    reviewer = ExternalReviewerConfig(
+        id="shadow",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        fast=False,
+    )
+    run_ab = namespace["run_ab"]
+    globals_ = run_ab.__globals__
+    batch_ids = ["clean-1", "clean-2", "clean-3", "clean-4", "clean-5", "draft"]
+    validated: list[str] = []
+    stages: list[str] = []
+    provider_called = False
+
+    def require_clean(_root: Path, batch_id: str) -> None:
+        validated.append(batch_id)
+
+    def batch_stage(_root: Path, batch_id: str) -> str:
+        stages.append(batch_id)
+        return "external-review" if batch_id == "draft" else "complete"
+
+    def forbidden_invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setitem(
+        globals_,
+        "load_project",
+        lambda root: SimpleNamespace(
+            external_review=ExternalReviewConfig(reviewers=[reviewer])
+        ),
+    )
+    monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
+    monkeypatch.setitem(globals_, "_require_machine_reviewed", require_clean)
+    monkeypatch.setitem(globals_, "_batch_stage", batch_stage)
+    monkeypatch.setitem(globals_, "_invoke", forbidden_invoke)
+
+    with pytest.raises(ValueError, match="draft is at workflow stage external-review"):
+        run_ab(tmp_path, batch_ids, set(), reviewer.id)
+
+    assert validated == batch_ids
+    assert stages == batch_ids
     assert not provider_called
 
 
