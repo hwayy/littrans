@@ -89,6 +89,8 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
             for manifest in manifests
             if _batch_stage(root, manifest.batch_id) == "complete"
         ]
+    if not manifests:
+        raise ValueError("Efficiency benchmark requires at least one selected batch")
     packet_groups = _consecutive_packet_groups(
         all_manifests, {manifest.batch_id for manifest in manifests}
     )
@@ -182,7 +184,9 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
                 root, all_units, positions, manifest.unit_ids
             ).encode("utf-8")
             optimized_bytes += len(source_bytes) + len(lean_context)
-    ratio = optimized_bytes / legacy_bytes if legacy_bytes else 0.0
+    if legacy_bytes <= 0:
+        raise ValueError("Efficiency benchmark requires non-zero legacy baseline bytes")
+    ratio = optimized_bytes / legacy_bytes
     return {
         "project": str(root),
         "completed_only": completed_only,

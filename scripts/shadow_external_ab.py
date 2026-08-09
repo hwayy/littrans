@@ -371,8 +371,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     batch_ids = [value.strip() for value in args.batch_ids.split(",") if value.strip()]
-    if len(batch_ids) != 6:
-        raise ValueError("shadow A/B requires exactly six batch IDs")
+    if len(batch_ids) != 6 or len(set(batch_ids)) != 6:
+        raise ValueError("shadow A/B requires exactly six distinct batch IDs")
     defect_batch_ids = {
         value.strip()
         for value in args.defect_batch_ids.split(",")

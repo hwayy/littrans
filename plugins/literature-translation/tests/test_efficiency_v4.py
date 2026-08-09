@@ -288,6 +288,16 @@ def test_completed_benchmark_uses_effective_workflow_gates(tmp_path: Path) -> No
     assert result["history_records"] == len(expected_history) == 2
 
 
+def test_completed_benchmark_rejects_an_empty_population(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, _ = _make_project(tmp_path, pages=1)
+
+    with pytest.raises(ValueError, match="at least one selected batch"):
+        benchmark(root, completed_only=True)
+
+
 def test_completed_benchmark_does_not_group_across_incomplete_batches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -335,6 +345,42 @@ def test_completed_benchmark_does_not_group_across_incomplete_batches(
     assert enlarged["optimized_packet_bytes"] - result["optimized_packet_bytes"] == (
         len(marker.encode("utf-8")) * 3 * 2
     )
+
+
+def test_shadow_cli_rejects_duplicate_batch_samples_before_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    main = namespace["main"]
+    called = False
+
+    def forbidden_run(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setitem(main.__globals__, "run_ab", forbidden_run)
+    monkeypatch.setattr(
+        main.__globals__["sys"],
+        "argv",
+        [
+            "shadow_external_ab.py",
+            str(tmp_path),
+            "--batch-ids",
+            "b1,b2,b3,b4,b5,b5",
+            "--defect-batch-ids",
+            "b1,b2,b3",
+            "--reviewer",
+            "claude",
+            "--output",
+            str(tmp_path / "result.json"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="six distinct batch IDs"):
+        main()
+    assert not called
 
 
 def test_workflow_metrics_rejects_unknown_batch_ids(tmp_path: Path) -> None:
