@@ -2281,6 +2281,52 @@ def test_review_import_preserves_explicitly_empty_lenses(tmp_path: Path) -> None
     assert all(not unit_ids for unit_ids in coverage["coverage"].values())
 
 
+def test_review_import_rejects_conflicting_existing_issue_id(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    unit_id = manifests[0].unit_ids[0]
+    _submit(root, batch_id)
+    assert run_qa(root, batch_id).passed
+    blocker = ReviewIssue(
+        issue_id="shared-audit-r001",
+        batch_id=batch_id,
+        unit_id=unit_id,
+        severity=Severity.BLOCKER,
+        type=IssueType.MEANING,
+        explanation="The fidelity reviewer found a blocking omission.",
+        reviewer="independent-fidelity-auditor",
+    )
+    blocker_path = root / "reviews" / "fidelity-blocker.jsonl"
+    write_jsonl(blocker_path, [blocker])
+    import_review(root, batch_id, blocker_path, lenses=["fidelity"])
+    import_review(root, batch_id, blocker_path, lenses=["fidelity"])
+    conflicting = blocker.model_copy(
+        update={
+            "severity": Severity.SUGGESTION,
+            "explanation": "A different lens reused the same identifier.",
+            "reviewer": "independent-technical-auditor",
+        }
+    )
+    conflicting_path = root / "reviews" / "technical-collision.jsonl"
+    write_jsonl(conflicting_path, [conflicting])
+
+    with pytest.raises(
+        ValueError,
+        match="already exist with different content.*shared-audit-r001",
+    ):
+        import_review(root, batch_id, conflicting_path, lenses=["technical"])
+
+    ledger = read_jsonl(
+        root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
+    )
+    assert ledger == [blocker]
+    assert audit_coverage(root, batch_id)["missing"]["technical"] == [
+        unit_id
+    ]
+
+
 def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     tmp_path: Path,
 ) -> None:

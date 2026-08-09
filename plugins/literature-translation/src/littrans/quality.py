@@ -672,6 +672,16 @@ def import_review(
         existing = {
             issue.issue_id: issue for issue in read_jsonl(issue_path, ReviewIssue)
         }
+        conflicting_issue_ids = sorted(
+            issue.issue_id
+            for issue in issues
+            if issue.issue_id in existing and existing[issue.issue_id] != issue
+        )
+        if conflicting_issue_ids:
+            raise ValueError(
+                "Review issue IDs already exist with different content: "
+                f"{conflicting_issue_ids}"
+            )
         existing.update({issue.issue_id: issue for issue in issues})
         merged_issues = list(existing.values())
         write_jsonl(issue_path, merged_issues)
