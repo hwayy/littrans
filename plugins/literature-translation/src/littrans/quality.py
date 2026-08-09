@@ -93,6 +93,29 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
     )
 
 
+def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
+    return sha256_text(
+        "deterministic-qa-v4|"
+        + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def current_qa_context_fingerprint(root: Path) -> str:
+    return _qa_context_fingerprint(load_terms(root))
+
+
+def qa_report_is_current(root: Path, batch_id: str) -> bool:
+    path = root / "qa" / f"{batch_id}.json"
+    if not path.is_file():
+        return False
+    report = QAReport.model_validate(read_json(path))
+    return bool(
+        report.passed
+        and report.translation_fingerprint == batch_translation_fingerprint(root, batch_id)
+        and report.qa_context_fingerprint == current_qa_context_fingerprint(root)
+    )
+
+
 def _token_counts(pattern: re.Pattern[str], text: str) -> Counter[str]:
     return Counter(match.group(0).replace(" ", "") for match in pattern.finditer(text))
 
@@ -200,10 +223,7 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
     warnings: list[QAItem] = []
     approved_terms = load_terms(root)
     fingerprint = batch_translation_fingerprint(root, batch_id)
-    qa_context_fingerprint = sha256_text(
-        "deterministic-qa-v4|"
-        + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    )
+    qa_context_fingerprint = _qa_context_fingerprint(approved_terms)
     existing_path = root / "qa" / f"{batch_id}.json"
     if existing_path.is_file():
         existing = QAReport.model_validate(read_json(existing_path))
@@ -685,6 +705,8 @@ def approve_batch(
             raise ValueError("A passing QA report is required")
         if qa_payload.get("translation_fingerprint") != current_fingerprint:
             raise ValueError("The QA report is stale for the current translation revision")
+        if qa_payload.get("qa_context_fingerprint") != current_qa_context_fingerprint(root):
+            raise ValueError("The QA report is stale for the current approved terminology")
         status = review_status(root, batch_id)
         if not status["audit_exists"]:
             raise ValueError("An imported independent audit is required")

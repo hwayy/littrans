@@ -52,7 +52,7 @@ from littrans.storage import (
 )
 from littrans.translation import submit_translation
 from littrans.verification import require_verified_extraction, verify_extraction
-from littrans.workflow import create_workflow_packet, import_review_set
+from littrans.workflow import create_workflow_packet, import_review_set, workflow_next
 
 
 def test_claude_stdin_delivery_remains_shadow_gated() -> None:
@@ -199,6 +199,38 @@ def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
         "audit": (root / "reviews" / f"{batch_id}.audit.json").read_bytes(),
         "runs": (root / "evidence" / "audits" / f"{batch_id}.jsonl").read_bytes(),
     }
+
+
+def test_glossary_change_invalidates_qa_workflow_approval_and_render(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    assert workflow_next(root)["stage"] == "complete"
+
+    write_yaml(
+        root / "glossary" / "approved.yaml",
+        {
+            "terms": [
+                {
+                    "source": "architecture",
+                    "target": "架构",
+                    "forbidden": ["体系结构"],
+                }
+            ]
+        },
+    )
+
+    assert workflow_next(root)["stage"] == "qa"
+    with pytest.raises(ValueError, match="stale for the current approved terminology"):
+        approve_batch(root, batch_id, "machine")
+    with pytest.raises(ValueError, match="stale_qa"):
+        render_project(root, None, "stale-glossary", batch_id=batch_id)
+    report = run_qa(root, batch_id)
+    assert not report.passed
+    assert {item.code for item in report.errors} == {"approved-term-missing"}
 
 
 def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> None:
@@ -548,7 +580,7 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
     assert _primary_review_scope(root, manifest.batch_id, None)[0] is ReviewScope.FULL
 
 
-def test_v3_migration_preserves_translation_bytes_and_imports_evidence(
+def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     tmp_path: Path,
 ) -> None:
     root, manifests = _make_project(tmp_path, 1)
@@ -629,6 +661,10 @@ def test_v3_migration_preserves_translation_bytes_and_imports_evidence(
             "warnings": [],
         },
     )
+    write_yaml(
+        root / "glossary" / "approved.yaml",
+        {"terms": [{"source": "architecture", "target": "架构"}]},
+    )
     audit_path = root / "reviews" / f"{batch_id}.audit.json"
     audit = read_json(audit_path)
     audit["translation_fingerprint"] = legacy_fingerprint
@@ -663,16 +699,26 @@ def test_v3_migration_preserves_translation_bytes_and_imports_evidence(
     preview = migrate_project_schema(root, 4, dry_run=True)
     assert preview["changed"] is False
     assert preview["importable"] == {
-        "qa": 1,
+        "qa": 0,
         "audit_lenses": 3,
         "external_runs": 1,
     }
-    assert preview["pending_recheck"] == {"qa": [], "audit": [], "external": []}
+    assert preview["pending_recheck"] == {
+        "qa": [batch_id],
+        "audit": [],
+        "external": [],
+    }
     report = migrate_project_schema(root, 4)
     assert report["source_verification"]["passed"]
     assert load_project(root).schema_version == 4
     assert (root / "translations" / "current.jsonl").read_bytes() == current_before
     assert (root / "translations" / "history.jsonl").read_bytes() == history_before
+    migrated_qa = read_json(qa_path)
+    assert "qa_context_fingerprint" not in migrated_qa
+    assert workflow_next(root)["stage"] == "qa"
+    rerun = run_qa(root, batch_id)
+    assert not rerun.passed
+    assert {item.code for item in rerun.errors} == {"approved-term-missing"}
     assert audit_coverage(root, batch_id)["complete"]
     migrated_runs = read_jsonl(runs_path, ExternalReviewRun)
     migrated = next(run for run in migrated_runs if run.run_id == "legacy-run-v4")

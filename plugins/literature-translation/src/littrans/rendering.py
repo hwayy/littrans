@@ -27,6 +27,7 @@ from littrans.models import (
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
+from littrans.quality import qa_report_is_current
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
@@ -497,6 +498,7 @@ def render_project(
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
     render_units, grouped_code_ids = _coalesce_code_units(units)
     translations = translation_map(root)
+    selected_ids = {unit.unit_id for unit in units}
     missing = [
         unit.unit_id for unit in units if unit.translatable and unit.unit_id not in translations
     ]
@@ -507,8 +509,24 @@ def render_project(
         and unit.unit_id in translations
         and translations[unit.unit_id].status not in publishable
     ]
+    stale_qa: list[str] = []
+    if not allow_draft:
+        relevant_manifests = manifests
+        if not relevant_manifests:
+            relevant_manifests = [
+                manifest
+                for path in (root / "batches").iterdir()
+                if path.is_dir()
+                and (path / "manifest.yaml").is_file()
+                for manifest in [load_manifest(root, path.name)]
+                if selected_ids & set(manifest.translatable_unit_ids)
+            ]
+        stale_qa = [
+            manifest.batch_id
+            for manifest in relevant_manifests
+            if not qa_report_is_current(root, manifest.batch_id)
+        ]
     open_severe: list[str] = []
-    selected_ids = {unit.unit_id for unit in units}
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):
         for issue in read_jsonl(issue_path, ReviewIssue):
             if (
@@ -517,10 +535,11 @@ def render_project(
                 and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
             ):
                 open_severe.append(issue.issue_id)
-    if not allow_draft and (missing or unapproved or open_severe):
+    if not allow_draft and (missing or unapproved or stale_qa or open_severe):
         raise ValueError(
             "Formal rendering is blocked; "
-            f"missing={missing}, not_publishable={unapproved}, open_severe={open_severe}"
+            f"missing={missing}, not_publishable={unapproved}, "
+            f"stale_qa={stale_qa}, open_severe={open_severe}"
         )
 
     output_name = _safe_name(name)

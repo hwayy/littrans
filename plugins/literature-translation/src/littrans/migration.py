@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -24,7 +23,7 @@ from littrans.models import (
     UnitKind,
     utc_now,
 )
-from littrans.project import load_terms, promote_status, translation_map
+from littrans.project import promote_status, translation_map
 from littrans.storage import (
     append_jsonl,
     initialize_project_dirs,
@@ -216,7 +215,10 @@ def migrate_project_schema(
         }
 
     from littrans.batching import load_manifest
-    from littrans.quality import batch_translation_fingerprint
+    from littrans.quality import (
+        batch_translation_fingerprint,
+        current_qa_context_fingerprint,
+    )
 
     batch_ids = sorted(
         path.name
@@ -225,6 +227,7 @@ def migrate_project_schema(
     )
     candidates: dict[str, dict[str, Any]] = {}
     stale: dict[str, list[str]] = {"qa": [], "audit": [], "external": []}
+    current_qa_context = current_qa_context_fingerprint(root)
     for batch_id in batch_ids:
         legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
         current_fingerprint = batch_translation_fingerprint(root, batch_id)
@@ -234,6 +237,7 @@ def migrate_project_schema(
             "current_fingerprint": current_fingerprint,
             "unit_fingerprints": batch_unit_fingerprints(root, batch_id),
             "qa": None,
+            "qa_context_verified": False,
             "audit_lenses": [],
             "external_runs": [],
             "unit_ids": manifest.unit_ids,
@@ -244,6 +248,11 @@ def migrate_project_schema(
             qa = read_json(qa_path)
             if qa.get("passed") and qa.get("translation_fingerprint") == legacy_fingerprint:
                 item["qa"] = qa
+                item["qa_context_verified"] = (
+                    qa.get("qa_context_fingerprint") == current_qa_context
+                )
+                if not item["qa_context_verified"]:
+                    stale["qa"].append(batch_id)
             else:
                 stale["qa"].append(batch_id)
         audit_path = root / "reviews" / f"{batch_id}.audit.json"
@@ -280,7 +289,10 @@ def migrate_project_schema(
         "changed": not dry_run,
         "batches": len(batch_ids),
         "importable": {
-            "qa": sum(item["qa"] is not None for item in candidates.values()),
+            "qa": sum(
+                item["qa"] is not None and item["qa_context_verified"]
+                for item in candidates.values()
+            ),
             "audit_lenses": sum(
                 len(item["audit_lenses"]) for item in candidates.values()
             ),
@@ -302,15 +314,10 @@ def migrate_project_schema(
                 qa = dict(item["qa"])
                 qa["translation_fingerprint"] = item["current_fingerprint"]
                 qa["schema_version"] = 2
-                qa["qa_context_fingerprint"] = sha256_text(
-                    "deterministic-qa-v4|"
-                    + json.dumps(
-                        load_terms(root),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                )
+                if item["qa_context_verified"]:
+                    qa["qa_context_fingerprint"] = current_qa_context
+                else:
+                    qa.pop("qa_context_fingerprint", None)
                 write_json(root / "qa" / f"{batch_id}.json", qa)
             audit_runs_path = root / "evidence" / "audits" / f"{batch_id}.jsonl"
             existing_ids = {

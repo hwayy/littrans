@@ -29,8 +29,8 @@ from littrans.project import translation_map
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     audit_coverage,
-    batch_translation_fingerprint,
     import_review,
+    qa_report_is_current,
 )
 from littrans.storage import (
     atomic_write_text,
@@ -64,13 +64,7 @@ def _batch_stage(root: Path, batch_id: str) -> str:
     translations = translation_map(root)
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
         return "translate"
-    qa_path = root / "qa" / f"{batch_id}.json"
-    if not qa_path.is_file():
-        return "qa"
-    qa = read_json(qa_path)
-    if not qa.get("passed") or qa.get("translation_fingerprint") != batch_translation_fingerprint(
-        root, batch_id
-    ):
+    if not qa_report_is_current(root, batch_id):
         return "qa"
     if not audit_coverage(root, batch_id)["complete"]:
         return "audit"
