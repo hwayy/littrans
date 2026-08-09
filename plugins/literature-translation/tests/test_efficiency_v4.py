@@ -3546,7 +3546,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     write_json(audit_path, audit)
     (root / "evidence" / "audits" / f"{batch_id}.jsonl").unlink()
     runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
-    legacy_packet = external_review._packet_text(root, batch_id, compact=False)[0]
+    legacy_packet = external_review._legacy_v3_packet_text(root, batch_id)[0]
     compact_packet = external_review._packet_text(root, batch_id)[0]
     assert "quantum chromodynamics" in legacy_packet
     assert "quantum chromodynamics" not in compact_packet
@@ -3624,6 +3624,93 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
         if run.run_id == "legacy-second-opinion-v4"
     )
     assert migrated_second.base_run_id == migrated.run_id
+
+
+@pytest.mark.parametrize(
+    "record_labels",
+    [
+        [],
+        [FigureLabel(source="Open", target="开启")],
+    ],
+    ids=["empty-record-labels", "partial-record-labels"],
+)
+def test_v3_migration_reconstructs_legacy_figure_label_packets(
+    tmp_path: Path,
+    record_labels: list[FigureLabel],
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "figure_labels": [
+                FigureLabel(source="Open", target="打开"),
+                FigureLabel(source="Close", target="关闭"),
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    assert verify_extraction(root, "all", force=True)["passed"]
+    refresh_batch(root, batch_id)
+    record = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="控件状态图。",
+        figure_labels=record_labels,
+        source_hash=unit.source_hash,
+    )
+    write_jsonl(root / "translations" / "current.jsonl", [record])
+    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
+    legacy_packet = external_review._legacy_v3_packet_text(root, batch_id)[0]
+    assert "Figure label sources:" in legacy_packet
+    assert ("Figure label sources:\n- Open" in legacy_packet) is bool(
+        record_labels
+    )
+    assert "- Close" not in legacy_packet
+    if record_labels:
+        with pytest.raises(ValueError, match="Figure label mapping mismatch"):
+            external_review._packet_text(root, batch_id, compact=False)
+    else:
+        current_packet = external_review._packet_text(
+            root, batch_id, compact=False
+        )[0]
+        assert "Figure label sources:\n- Open\n- Close" in current_packet
+
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+    append_jsonl(
+        runs_path,
+        [
+            ExternalReviewRun(
+                schema_version=1,
+                run_id="legacy-figure-run",
+                batch_id=batch_id,
+                reviewer_id="legacy-reviewer",
+                driver="claude-code",
+                role="primary",
+                requested_model="legacy-model",
+                actual_model="legacy-model",
+                model_verified=True,
+                translation_fingerprint=legacy_fingerprint,
+                packet_sha256=sha256_text(legacy_packet),
+                prompt_version="v3",
+                verdict=ExternalReviewVerdict.ACCEPTED,
+                summary="Accepted under the v3 figure-label contract.",
+            )
+        ],
+    )
+
+    report = migrate_project_schema(root, 4)
+
+    assert report["importable"]["external_runs"] == 1
+    assert report["pending_recheck"]["external"] == []
+    migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
+    assert migrated.run_id == "legacy-figure-run-v4"
+    assert migrated.context_fingerprint
 
 
 def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> None:

@@ -275,7 +275,7 @@ def migrate_project_schema(
     from littrans.batching import load_manifest
     from littrans.external_review import (
         _external_review_context_fingerprint,
-        _packet_text,
+        _legacy_v3_packet_text,
     )
     from littrans.quality import (
         batch_translation_fingerprint,
@@ -334,7 +334,7 @@ def migrate_project_schema(
                 stale["audit"].append(batch_id)
         runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
         runs = read_jsonl(runs_path, ExternalReviewRun)
-        packet_text, _ = _packet_text(root, batch_id, compact=False)
+        packet_text, _ = _legacy_v3_packet_text(root, batch_id)
         packet_sha256 = sha256_text(packet_text)
         external_chain, external_stale = _migratable_v3_external_chain(
             runs, legacy_fingerprint, packet_sha256

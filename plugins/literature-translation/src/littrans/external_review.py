@@ -308,6 +308,7 @@ def _packet_text(
     translation_overrides: dict[str, TranslationRecord] | None = None,
     compact: bool = True,
     read_only_context_ids: list[str] | None = None,
+    _legacy_v3: bool = False,
 ) -> tuple[str, list[int]]:
     manifest = load_manifest(root, batch_id)
     domain_expertise = _domain_expertise(root)
@@ -327,17 +328,21 @@ def _packet_text(
     selected_ids = set(
         manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
     )
-    packet_ids = [
-        unit.unit_id
-        for unit in all_units
-        if (
-            unit.unit_id in context_ids
-            or (
-                unit.unit_id in selected_ids
-                and unit.unit_id in set(manifest.unit_ids)
+    packet_ids = (
+        list(manifest.unit_ids)
+        if _legacy_v3
+        else [
+            unit.unit_id
+            for unit in all_units
+            if (
+                unit.unit_id in context_ids
+                or (
+                    unit.unit_id in selected_ids
+                    and unit.unit_id in set(manifest.unit_ids)
+                )
             )
-        )
-    ]
+        ]
+    )
     selected_units = [units[unit_id] for unit_id in packet_ids]
     sections: list[str] = []
     for unit_id in packet_ids:
@@ -368,8 +373,17 @@ def _packet_text(
             )
         source_labels = ""
         target_labels = ""
-        labels = effective_figure_labels(unit, record)
-        if unit.kind is UnitKind.FIGURE and labels:
+        labels = (
+            record.figure_labels if record else unit.figure_labels
+        ) if _legacy_v3 else effective_figure_labels(unit, record)
+        if _legacy_v3 and unit.kind is UnitKind.FIGURE and unit.figure_labels:
+            source_labels = "\n\nFigure label sources:\n" + "\n".join(
+                f"- {label.source}" for label in labels
+            )
+            target_labels = "\nFigure label translations:\n" + "\n".join(
+                f"- {label.target or '[missing]'}" for label in labels
+            )
+        elif unit.kind is UnitKind.FIGURE and labels:
             source_labels = "\n\nFigure label sources:\n" + "\n".join(
                 f"- {label.source}" for label in unit.figure_labels
             )
@@ -396,7 +410,9 @@ def _packet_text(
     terms = yaml.safe_dump(
         {
             "approved_terms": (
-                relevant_terms(root, selected_units) if compact else load_terms(root)
+                relevant_terms(root, selected_units)
+                if compact and not _legacy_v3
+                else load_terms(root)
             )
         },
         allow_unicode=True,
@@ -437,7 +453,17 @@ def _packet_text(
         + "# Units\n\n"
         + "\n".join(sections)
     )
-    return text, sorted({unit.page for unit in selected_units})
+    return (
+        text,
+        list(manifest.pages)
+        if _legacy_v3
+        else sorted({unit.page for unit in selected_units}),
+    )
+
+
+def _legacy_v3_packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
+    """Reconstruct the full packet bytes produced by schema-v3 review runs."""
+    return _packet_text(root, batch_id, compact=False, _legacy_v3=True)
 
 
 def _evidence_map(
