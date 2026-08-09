@@ -348,10 +348,12 @@ def migrate_project_schema(
     if dry_run:
         return report
 
+    # Seed page-level receipts while the migration lock is held. The private
+    # legacy-schema bypass keeps the v4 marker as the final commit point.
+    from littrans.verification import verify_extraction
+
     with project_write_lock(root):
         initialize_project_dirs(root)
-        config.schema_version = 4
-        save_project(root, config)
         for batch_id, item in candidates.items():
             if item["qa"] is not None:
                 qa = dict(item["qa"])
@@ -437,16 +439,16 @@ def migrate_project_schema(
                         )
                     ],
                 )
-
-    # Seed page-level receipts once, after the lossless state migration.
-    from littrans.verification import verify_extraction
-
-    verification = verify_extraction(root, "all", force=True)
-    report["source_verification"] = {
-        "passed": verification["passed"],
-        "verified_pages": verification.get("verified_pages", []),
-        "errors": verification.get("errors", []),
-    }
-    report["migrated_at"] = utc_now()
-    write_json(root / "evidence" / "migration-v3-v4.json", report)
+        verification = verify_extraction(
+            root, "all", force=True, _allow_legacy_schema=True
+        )
+        report["source_verification"] = {
+            "passed": verification["passed"],
+            "verified_pages": verification.get("verified_pages", []),
+            "errors": verification.get("errors", []),
+        }
+        report["migrated_at"] = utc_now()
+        write_json(root / "evidence" / "migration-v3-v4.json", report)
+        config.schema_version = 4
+        save_project(root, config)
     return report

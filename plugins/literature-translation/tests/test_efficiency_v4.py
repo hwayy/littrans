@@ -139,6 +139,59 @@ def test_shadow_ab_forces_distinct_delivery_arms(
     assert result["delivery_protocol_passed"] is True
 
 
+def test_shadow_defect_snapshot_requires_unambiguous_history_match(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    defect_snapshot = namespace["_defect_snapshot"]
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _submit(root, batch_id, suffix="第一次修订")
+    _submit(root, batch_id, suffix="第二次修订")
+    unit_id = manifests[0].translatable_unit_ids[0]
+    issues_path = root / "reviews" / f"{batch_id}.issues.jsonl"
+    issue = ReviewIssue(
+        issue_id="ambiguous-history",
+        batch_id=batch_id,
+        unit_id=unit_id,
+        severity=Severity.MAJOR,
+        type=IssueType.MEANING,
+        explanation="A resolved historical defect.",
+        reviewer="historical-auditor",
+        status=IssueStatus.RESOLVED,
+        resolution="Corrected in the current translation.",
+        resolved_at="2026-01-01T00:00:00+00:00",
+    )
+
+    write_jsonl(issues_path, [issue])
+    with pytest.raises(ValueError, match="No reconstructable historical defect"):
+        defect_snapshot(root, batch_id)
+
+    write_jsonl(
+        issues_path,
+        [issue.model_copy(update={"target_span": "不存在的历史片段"})],
+    )
+    with pytest.raises(ValueError, match="No reconstructable historical defect"):
+        defect_snapshot(root, batch_id)
+
+    write_jsonl(
+        issues_path,
+        [issue.model_copy(update={"target_span": "第一次修订"})],
+    )
+    overrides, gold = defect_snapshot(root, batch_id)
+    assert overrides[unit_id].revision == 2
+    assert gold == [
+        {
+            "issue_id": issue.issue_id,
+            "unit_id": unit_id,
+            "severity": Severity.MAJOR.value,
+            "type": IssueType.MEANING.value,
+        }
+    ]
+
+
 def _make_project(
     tmp_path: Path, pages: int = 3, max_words: int = 100
 ) -> tuple[Path, list[object]]:
@@ -1655,6 +1708,33 @@ def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> Non
 
     assert chain == []
     assert pending_recheck is True
+
+
+def test_v3_migration_keeps_schema_retryable_when_verification_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _make_project(tmp_path, 1)
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+    import littrans.verification as verification
+
+    original_verify = verification.verify_extraction
+
+    def fail_verification(*args: object, **kwargs: object) -> dict[str, object]:
+        raise ValueError("forced migration verification failure")
+
+    monkeypatch.setattr(verification, "verify_extraction", fail_verification)
+    with pytest.raises(ValueError, match="forced migration verification failure"):
+        migrate_project_schema(root, 4)
+
+    assert load_project(root).schema_version == 3
+    assert not (root / "evidence" / "migration-v3-v4.json").exists()
+
+    monkeypatch.setattr(verification, "verify_extraction", original_verify)
+    report = migrate_project_schema(root, 4)
+    assert report["source_verification"]["passed"]
+    assert load_project(root).schema_version == 4
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

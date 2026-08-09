@@ -107,20 +107,24 @@ def _defect_snapshot(
             for record in by_unit.get(issue.unit_id, [])
             if effective_translation_payload(unit, record) != accepted_payload
         ]
-        if issue.target_span:
+        target_span = (issue.target_span or "").strip()
+        if target_span:
             cited = [
                 record
                 for record in candidates
-                if issue.target_span
+                if target_span
                 in json.dumps(
                     translation_payload(record), ensure_ascii=False
                 )
             ]
-            if cited:
-                candidates = cited
-        if not candidates:
+            if len(cited) != 1:
+                continue
+            candidates = cited
+        elif len(candidates) != 1:
             continue
-        overrides[issue.unit_id] = candidates[-1]
+        if len(candidates) != 1:
+            continue
+        overrides[issue.unit_id] = candidates[0]
         gold.append(
             {
                 "issue_id": issue.issue_id,
