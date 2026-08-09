@@ -36,6 +36,7 @@ from littrans.models import (
     PageVerificationReceipt,
     ProjectStatus,
     PromptDelivery,
+    RenderPolicy,
     ReviewIssue,
     ReviewScope,
     ReviewUsage,
@@ -443,6 +444,39 @@ def test_source_only_change_requires_current_audit_before_formal_render(
         allow_draft=True,
         batch_id=batch_id,
     )
+
+
+def test_batch_refresh_invalidates_neighbors_of_removed_unit(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=3, max_words=700)
+    assert len(manifests) == 1
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    removed_id = units[1].unit_id
+    units[1] = units[1].model_copy(
+        update={
+            "render_policy": RenderPolicy.OMIT,
+            "translatable": False,
+        }
+    )
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+
+    refreshed = refresh_batch(root, batch_id)
+    assert removed_id not in refreshed.unit_ids
+    assert run_qa(root, batch_id).passed
+    coverage = audit_coverage(root, batch_id)
+    assert not coverage["complete"]
+    assert all(
+        set(missing) == set(refreshed.unit_ids)
+        for missing in coverage["missing"].values()
+    )
+    with pytest.raises(ValueError, match=f"incomplete_audit=.*{batch_id}"):
+        render_project(root, None, "removed-unit", batch_id=batch_id)
 
 
 def test_formal_render_requires_current_external_review_ledger(

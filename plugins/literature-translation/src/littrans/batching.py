@@ -5,7 +5,11 @@ from pathlib import Path
 
 import yaml
 
-from littrans.evidence import relevant_terms, translation_memory
+from littrans.evidence import (
+    record_audit_invalidation,
+    relevant_terms,
+    translation_memory,
+)
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     BatchManifest,
@@ -264,11 +268,18 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
         }
     )
     batch_dir = batch_directory(root, batch_id)
+    removed_unit_ids = [
+        unit_id for unit_id in manifest.unit_ids if unit_id not in revised.unit_ids
+    ]
     start_index = all_units.index(group[0])
     end_index = all_units.index(group[-1])
     before = all_units[start_index - 1] if start_index > 0 else None
     after = all_units[end_index + 1] if end_index + 1 < len(all_units) else None
     with project_write_lock(root):
+        if removed_unit_ids:
+            # The old manifest is still on disk here, so dependency closure can
+            # invalidate the newly adjacent units before the removed anchor is lost.
+            record_audit_invalidation(root, batch_id, removed_unit_ids)
         write_yaml(batch_dir / "manifest.yaml", revised.model_dump(mode="json"))
         (batch_dir / "source.md").write_text(
             "\n".join(_unit_markdown(unit, root) for unit in group), encoding="utf-8"
