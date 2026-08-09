@@ -470,6 +470,8 @@ class AuditRun(StrictModel):
     base_run_id: str | None = None
     packet_id: str | None = None
     unit_fingerprints: dict[str, str]
+    context_fingerprint: str | None = None
+    context_unit_ids: list[str] = Field(default_factory=list)
     issue_ids: list[str] = Field(default_factory=list)
     reviewed_at: str = Field(default_factory=utc_now)
 

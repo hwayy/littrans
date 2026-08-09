@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from littrans.models import (
     ProjectStatus,
     SourceUnit,
@@ -375,6 +377,30 @@ def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, An
         if source_term and in_scope and source_term.casefold() in source:
             matches.append(term)
     return matches
+
+
+def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
+    """Return the exact shared instructions and terminology shown to auditors."""
+    selected = list(units)
+    brief = (root / "context" / "document-brief.md").read_text(
+        encoding="utf-8"
+    ).strip()
+    style = (root / "context" / "style-guide.md").read_text(
+        encoding="utf-8"
+    ).strip()
+    terms = yaml.safe_dump(
+        {"approved_terms": relevant_terms(root, selected)},
+        allow_unicode=True,
+        sort_keys=False,
+    ).strip()
+    return (
+        f"# Document brief\n\n{brief}\n\n# Translation style\n\n{style}\n\n"
+        f"# Relevant approved terminology\n\n```yaml\n{terms}\n```\n"
+    )
+
+
+def audit_context_fingerprint(root: Path, units: Iterable[SourceUnit]) -> str:
+    return sha256_text(audit_context_text(root, units))
 
 
 def translation_memory(

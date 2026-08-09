@@ -6,12 +6,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from littrans.batching import load_manifest
 from littrans.evidence import (
+    audit_context_text,
     dependency_closure,
-    relevant_terms,
     translation_memory,
     translation_unit_fingerprint,
     translations_semantically_equal,
@@ -166,21 +164,23 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
     positions = [index[batch_id] for batch_id in batch_ids]
     if positions != list(range(min(positions), min(positions) + len(positions))):
         raise ValueError("workflow packet batch IDs must be consecutive and ordered")
-    return [ordered[position] for position in positions]
+    selected = [ordered[position] for position in positions]
+    unit_counts = Counter(
+        unit_id for manifest in selected for unit_id in manifest.unit_ids
+    )
+    overlapping = sorted(
+        unit_id for unit_id, count in unit_counts.items() if count > 1
+    )
+    if overlapping:
+        raise ValueError(
+            "Workflow packet batches contain overlapping source units: "
+            f"{overlapping}"
+        )
+    return selected
 
 
 def _shared_context(root: Path, units: list[SourceUnit]) -> str:
-    brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8").strip()
-    style = (root / "context" / "style-guide.md").read_text(encoding="utf-8").strip()
-    terms = yaml.safe_dump(
-        {"approved_terms": relevant_terms(root, units)},
-        allow_unicode=True,
-        sort_keys=False,
-    ).strip()
-    return (
-        f"# Document brief\n\n{brief}\n\n# Translation style\n\n{style}\n\n"
-        f"# Relevant approved terminology\n\n```yaml\n{terms}\n```\n"
-    )
+    return audit_context_text(root, units)
 
 
 def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
@@ -537,6 +537,8 @@ def import_review_set(
                     unit_id: manifest.unit_fingerprints[unit_id]
                     for unit_id in coverage_ids
                 },
+                expected_context_fingerprint=manifest.file_sha256["shared"],
+                context_unit_ids=list(manifest.unit_fingerprints),
             )
         finally:
             temporary.unlink(missing_ok=True)

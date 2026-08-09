@@ -71,6 +71,25 @@
       "title": "Unit Fingerprints",
       "type": "object"
     },
+    "context_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Fingerprint"
+    },
+    "context_unit_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Context Unit Ids",
+      "type": "array"
+    },
     "issue_ids": {
       "items": {
         "type": "string"

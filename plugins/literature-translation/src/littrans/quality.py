@@ -10,6 +10,7 @@ from typing import Any
 
 from littrans.batching import load_manifest
 from littrans.evidence import (
+    audit_context_fingerprint,
     batch_unit_fingerprints,
     source_representation_text,
 )
@@ -266,9 +267,10 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
             )
-        if record.figure_labels:
+        rendered_figure_labels = record.figure_labels or unit.figure_labels
+        if rendered_figure_labels:
             effective_target += "\n" + "\n".join(
-                label.target or "" for label in record.figure_labels
+                label.target or "" for label in rendered_figure_labels
             )
         semantic_source = _semantic_comparison_text(_comparison_source_text(unit))
         semantic_target = _semantic_comparison_text(effective_target)
@@ -516,8 +518,13 @@ def _audit_runs(root: Path, batch_id: str) -> list[AuditRun]:
 def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
     manifest = load_manifest(root, batch_id)
     current = batch_unit_fingerprints(root, batch_id)
+    all_units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
     expected = set(manifest.unit_ids)
     coverage: dict[str, set[str]] = {lens: set() for lens in REQUIRED_AUDIT_LENSES}
+    context_fingerprints: dict[tuple[str, ...], str | None] = {}
     invalidation_path = (
         root / "evidence" / "audits" / f"{batch_id}.invalidations.json"
     )
@@ -530,6 +537,19 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
         invalidated = {}
     for run in _audit_runs(root, batch_id):
         if run.lens not in coverage:
+            continue
+        context_ids = tuple(run.context_unit_ids)
+        if not run.context_fingerprint or not context_ids:
+            continue
+        if context_ids not in context_fingerprints:
+            context_fingerprints[context_ids] = (
+                audit_context_fingerprint(
+                    root, [all_units[unit_id] for unit_id in context_ids]
+                )
+                if all(unit_id in all_units for unit_id in context_ids)
+                else None
+            )
+        if context_fingerprints[context_ids] != run.context_fingerprint:
             continue
         coverage[run.lens].update(
             unit_id
@@ -576,6 +596,8 @@ def import_review(
     reviewer: str | None = None,
     packet_id: str | None = None,
     expected_unit_fingerprints: dict[str, str] | None = None,
+    expected_context_fingerprint: str | None = None,
+    context_unit_ids: list[str] | None = None,
 ) -> list[ReviewIssue]:
     issues = read_jsonl(input_path, ReviewIssue)
     with project_write_lock(root):
@@ -617,6 +639,34 @@ def import_review(
             )
             if stale:
                 raise ValueError(f"Audit packet is stale for units: {stale}")
+        run_context_ids: list[str] = []
+        run_context_fingerprint: str | None = None
+        if internal_lenses:
+            run_context_ids = list(
+                manifest.unit_ids if context_unit_ids is None else context_unit_ids
+            )
+            if len(run_context_ids) != len(set(run_context_ids)):
+                raise ValueError("Audit context unit IDs must be unique")
+            all_units = {
+                unit.unit_id: unit
+                for unit in read_jsonl(
+                    root / "derived" / "units.jsonl", SourceUnit
+                )
+            }
+            missing_context_units = sorted(set(run_context_ids) - set(all_units))
+            if missing_context_units:
+                raise ValueError(
+                    "Audit context references missing source units: "
+                    f"{missing_context_units}"
+                )
+            run_context_fingerprint = audit_context_fingerprint(
+                root, [all_units[unit_id] for unit_id in run_context_ids]
+            )
+            if (
+                expected_context_fingerprint is not None
+                and run_context_fingerprint != expected_context_fingerprint
+            ):
+                raise ValueError("Audit packet context is stale")
 
         issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
         existing = {
@@ -646,6 +696,8 @@ def import_review(
                     for unit_id in manifest.unit_ids
                     if unit_id in coverage_ids
                 },
+                context_fingerprint=run_context_fingerprint,
+                context_unit_ids=run_context_ids,
                 issue_ids=[issue.issue_id for issue in issues],
             )
             append_jsonl(_audit_runs_path(root, batch_id), [run])

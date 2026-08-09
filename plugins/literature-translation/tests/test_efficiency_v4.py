@@ -13,6 +13,7 @@ from reportlab.pdfgen import canvas
 from littrans import external_review
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
+    audit_context_text,
     batch_source_fingerprint,
     batch_structure_fingerprint,
     batch_unit_fingerprints,
@@ -67,6 +68,7 @@ from littrans.quality import (
 from littrans.rendering import render_project
 from littrans.storage import (
     append_jsonl,
+    atomic_write_text,
     load_project,
     read_json,
     read_jsonl,
@@ -482,8 +484,24 @@ def _store_manual_audit_packet(
             for batch_id in packet.batch_ids
         }
     )
+    units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
     for file_id, path in file_paths.items():
-        path.write_text(f"# Reviewed packet file: {file_id}\n", encoding="utf-8")
+        content = (
+            audit_context_text(
+                root,
+                [
+                    units[unit_id]
+                    for unit_id in packet.unit_fingerprints
+                    if unit_id in units
+                ],
+            )
+            if file_id == "shared"
+            else f"# Reviewed packet file: {file_id}\n"
+        )
+        atomic_write_text(path, content)
     files = {
         file_id: str(path.relative_to(root)).replace("\\", "/")
         for file_id, path in file_paths.items()
@@ -721,6 +739,49 @@ def test_glossary_change_invalidates_qa_workflow_approval_and_render(
     assert {item.code for item in report.errors} == {"approved-term-missing"}
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "expected_stage"),
+    [
+        ("context/document-brief.md", "audit"),
+        ("context/style-guide.md", "audit"),
+        ("glossary/approved.yaml", "qa"),
+    ],
+)
+def test_audit_context_changes_invalidate_lens_coverage(
+    tmp_path: Path, relative_path: str, expected_stage: str
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    assert audit_coverage(root, batch_id)["complete"]
+    context_path = root / relative_path
+    if context_path.suffix == ".yaml":
+        write_yaml(
+            context_path,
+            {
+                "terms": [
+                    {
+                        "source": "architecture",
+                        "target": "架构",
+                        "scope": "document",
+                    }
+                ]
+            },
+        )
+    else:
+        atomic_write_text(
+            context_path,
+            context_path.read_text(encoding="utf-8").rstrip()
+            + "\n\nNew mandatory audit instruction.\n",
+        )
+
+    assert not audit_coverage(root, batch_id)["complete"]
+    assert workflow_next(root)["stage"] == expected_stage
+    with pytest.raises(ValueError, match=f"incomplete_audit=.*{batch_id}"):
+        render_project(root, None, "stale-audit-context", batch_id=batch_id)
+
+
 def test_structured_source_representations_select_and_enforce_terms(
     tmp_path: Path,
 ) -> None:
@@ -812,6 +873,60 @@ def test_structured_source_representations_select_and_enforce_terms(
     }
     assert missing_units == set(manifest.unit_ids)
     assert forbidden_units == {units[2].unit_id}
+
+
+def test_qa_uses_rendered_source_figure_label_fallback(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    source = original.source_text.replace("architecture", "system")
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "source_text": source,
+            "source_hash": sha256_text(source),
+            "figure_labels": [
+                FigureLabel(source="Architecture", target="架构")
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    assert verify_extraction(root, "all", force=True)["passed"]
+    refresh_batch(root, manifest.batch_id)
+    write_yaml(
+        root / "glossary" / "approved.yaml",
+        {
+            "terms": [
+                {
+                    "source": "architecture",
+                    "target": "架构",
+                    "scope": "document",
+                }
+            ]
+        },
+    )
+    input_path = root / "batches" / manifest.batch_id / "figure-fallback.jsonl"
+    write_jsonl(
+        input_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="该图展示控件。",
+                source_hash=unit.source_hash,
+            )
+        ],
+    )
+    submit_translation(root, manifest.batch_id, input_path)
+
+    report = run_qa(root, manifest.batch_id)
+    assert report.passed, report.errors
+    assert not {
+        item.code
+        for item in report.errors
+        if item.code in {"approved-term-missing", "forbidden-term"}
+    }
 
 
 def test_source_only_change_requires_current_audit_before_formal_render(
@@ -1749,6 +1864,27 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
     assert all(audit_coverage(root, batch_id)["complete"] for batch_id in batch_ids)
 
 
+def test_workflow_packet_rejects_overlapping_batch_manifests(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    duplicate = create_batches(
+        root, "1", max_words=700, prefix="duplicate-scope"
+    )[0]
+    overlapping_ids = {manifests[0].batch_id, duplicate.batch_id}
+    ordered = [
+        manifest.batch_id
+        for manifest in create_workflow_packet.__globals__["_all_manifests"](
+            root
+        )
+        if manifest.batch_id in overlapping_ids
+    ]
+    assert set(ordered) == overlapping_ids
+
+    with pytest.raises(ValueError, match="overlapping source units"):
+        create_workflow_packet(root, "translate", ordered)
+
+
 def test_audit_packet_includes_all_rendered_structured_translation_fields(
     tmp_path: Path,
 ) -> None:
@@ -1920,6 +2056,37 @@ def test_review_set_rejects_packet_file_changed_after_creation(
     write_jsonl(issues_path, [])
 
     with pytest.raises(ValueError, match="packet file digest mismatch"):
+        import_review_set(
+            root,
+            root / "packets" / packet.packet_id / "manifest.json",
+            issues_path,
+        )
+
+    assert audit_coverage(root, batch.batch_id)["missing"]["fidelity"] == sorted(
+        batch.unit_ids
+    )
+
+
+def test_review_set_rejects_context_changed_after_packet_creation(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch = manifests[0]
+    _submit(root, batch.batch_id)
+    assert run_qa(root, batch.batch_id).passed
+    packet = create_workflow_packet(
+        root, "audit", [batch.batch_id], "fidelity"
+    )
+    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    write_jsonl(issues_path, [])
+    style_path = root / "context" / "style-guide.md"
+    atomic_write_text(
+        style_path,
+        style_path.read_text(encoding="utf-8").rstrip()
+        + "\n\n- Newly mandatory terminology review.\n",
+    )
+
+    with pytest.raises(ValueError, match="Audit packet context is stale"):
         import_review_set(
             root,
             root / "packets" / packet.packet_id / "manifest.json",
@@ -2693,12 +2860,12 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     assert preview["changed"] is False
     assert preview["importable"] == {
         "qa": 0,
-        "audit_lenses": 3,
+        "audit_lenses": 0,
         "external_runs": 2,
     }
     assert preview["pending_recheck"] == {
         "qa": [batch_id],
-        "audit": [],
+        "audit": [batch_id],
         "external": [],
     }
     report = migrate_project_schema(root, 4)
@@ -2712,7 +2879,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     rerun = run_qa(root, batch_id)
     assert not rerun.passed
     assert {item.code for item in rerun.errors} == {"approved-term-missing"}
-    assert audit_coverage(root, batch_id)["complete"]
+    assert not audit_coverage(root, batch_id)["complete"]
     migrated_runs = read_jsonl(runs_path, ExternalReviewRun)
     migrated = next(run for run in migrated_runs if run.run_id == "legacy-run-v4")
     assert migrated.schema_version == 2

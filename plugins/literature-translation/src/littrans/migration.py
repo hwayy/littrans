@@ -287,6 +287,7 @@ def migrate_project_schema(
             "qa": None,
             "qa_context_verified": False,
             "audit_lenses": [],
+            "audit_context_verified": False,
             "external_runs": [],
             "unit_ids": manifest.unit_ids,
             "translatable_unit_ids": manifest.translatable_unit_ids,
@@ -312,6 +313,8 @@ def migrate_project_schema(
                     for lens in audit.get("lenses", [])
                     if lens in {"fidelity", "technical", "chinese-style"}
                 ]
+                if item["audit_lenses"]:
+                    stale["audit"].append(batch_id)
             else:
                 stale["audit"].append(batch_id)
         runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
@@ -337,7 +340,9 @@ def migrate_project_schema(
                 for item in candidates.values()
             ),
             "audit_lenses": sum(
-                len(item["audit_lenses"]) for item in candidates.values()
+                len(item["audit_lenses"])
+                for item in candidates.values()
+                if item["audit_context_verified"]
             ),
             "external_runs": sum(
                 len(item["external_runs"]) for item in candidates.values()
@@ -392,9 +397,15 @@ def migrate_project_schema(
                 audit_path = root / "reviews" / f"{batch_id}.audit.json"
                 audit = read_json(audit_path)
                 audit["translation_fingerprint"] = item["current_fingerprint"]
+                audit["historical_lenses"] = item["audit_lenses"]
+                audit["lenses"] = []
                 audit["unit_coverage"] = {
-                    lens: item["unit_ids"]
+                    lens: []
                     for lens in item["audit_lenses"]
+                }
+                audit["missing_coverage"] = {
+                    lens: item["unit_ids"]
+                    for lens in {"fidelity", "technical", "chinese-style"}
                 }
                 write_json(audit_path, audit)
             runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
