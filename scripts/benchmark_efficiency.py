@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
@@ -54,14 +55,38 @@ def _lean_translation_context(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _consecutive_packet_groups(
+    manifests: list[Any], selected_batch_ids: set[str]
+) -> list[list[Any]]:
+    groups: list[list[Any]] = []
+    current: list[Any] = []
+    for manifest in manifests:
+        if manifest.batch_id not in selected_batch_ids:
+            if current:
+                groups.append(current)
+                current = []
+            continue
+        current.append(manifest)
+        if len(current) == 3:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups
+
+
 def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
-    manifests = _all_manifests(root)
+    all_manifests = _all_manifests(root)
+    manifests = all_manifests
     if completed_only:
         manifests = [
             manifest
             for manifest in manifests
             if _batch_stage(root, manifest.batch_id) == "complete"
         ]
+    packet_groups = _consecutive_packet_groups(
+        all_manifests, {manifest.batch_id for manifest in manifests}
+    )
     history = read_jsonl(
         root / "translations" / "history.jsonl", TranslationRecord
     )
@@ -90,8 +115,7 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     translations = translation_map(root)
     legacy_bytes = 0
     optimized_bytes = 0
-    for offset in range(0, len(manifests), 3):
-        group = manifests[offset : offset + 3]
+    for group in packet_groups:
         group_units = [
             unit_map[unit_id]
             for manifest in group

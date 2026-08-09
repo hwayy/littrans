@@ -436,6 +436,20 @@ def import_review_set(
     return {"packet_id": manifest.packet_id, "lens": manifest.lens, "imported": imported}
 
 
+def _allocated_packet_bytes(
+    packet: WorkflowPacketManifest, selected_batch_ids: set[str]
+) -> int:
+    """Allocate every packet byte equally and deterministically across its batches."""
+    if not packet.batch_ids:
+        return 0
+    quotient, remainder = divmod(packet.total_bytes, len(packet.batch_ids))
+    return sum(
+        quotient + (index < remainder)
+        for index, batch_id in enumerate(packet.batch_ids)
+        if batch_id in selected_batch_ids
+    )
+
+
 def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict[str, Any]:
     all_manifests = _all_manifests(root)
     known = {manifest.batch_id for manifest in all_manifests}
@@ -481,9 +495,6 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         WorkflowPacketManifest.model_validate(read_json(path))
         for path in (root / "packets").glob("*/manifest.json")
     ]
-    packet_manifests = [
-        packet for packet in packet_manifests if set(packet.batch_ids) <= selected
-    ]
     external_runs = []
     for batch_id in selected:
         external_runs.extend(
@@ -507,7 +518,10 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         "semantic_noop_records": semantic_noops,
         "semantic_noop_ratio": semantic_noops / len(history) if history else 0.0,
         "legacy_packet_bytes": legacy_packet_bytes,
-        "generated_packet_bytes": sum(packet.total_bytes for packet in packet_manifests),
+        "generated_packet_bytes": sum(
+            _allocated_packet_bytes(packet, selected) for packet in packet_manifests
+        ),
+        "generated_packet_allocation": "equal-per-batch-leading-remainder",
         "page_receipts": sum(
             (root / "evidence" / "pages" / f"page-{page:04}.json").is_file()
             for page in selected_pages

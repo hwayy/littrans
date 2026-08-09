@@ -287,15 +287,58 @@ def test_completed_benchmark_uses_effective_workflow_gates(tmp_path: Path) -> No
     assert result["history_records"] == len(expected_history) == 2
 
 
+def test_completed_benchmark_does_not_group_across_incomplete_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, manifests = _make_project(tmp_path, pages=3, max_words=100)
+    first, middle, last = manifests
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    _audit_and_approve(root, first.batch_id)
+    _audit_and_approve(root, last.batch_id)
+    original_shared_context = benchmark.__globals__["_shared_context"]
+    shared_groups: list[list[str]] = []
+
+    def capture_shared_context(project_root: Path, units: list[SourceUnit]) -> str:
+        shared_groups.append([unit.unit_id for unit in units])
+        return original_shared_context(project_root, units)
+
+    monkeypatch.setitem(
+        benchmark.__globals__, "_shared_context", capture_shared_context
+    )
+
+    result = benchmark(root, completed_only=True)
+
+    assert result["batches"] == 2
+    assert shared_groups == [list(first.unit_ids), list(last.unit_ids)]
+    assert not set(middle.unit_ids) & {
+        unit_id for group in shared_groups for unit_id in group
+    }
+
+
 def test_workflow_metrics_rejects_unknown_batch_ids(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=2, max_words=100)
 
     with pytest.raises(ValueError, match=r"Unknown batch IDs: \['stale-batch'\]"):
         workflow_metrics(root, [manifests[0].batch_id, "stale-batch"])
 
+    packet = create_workflow_packet(
+        root,
+        "translate",
+        [manifest.batch_id for manifest in manifests],
+    )
     metrics = workflow_metrics(root, [manifests[0].batch_id])
+    quotient, remainder = divmod(packet.total_bytes, len(packet.batch_ids))
     assert metrics["batch_ids"] == [manifests[0].batch_id]
     assert metrics["page_receipts"] == 1
+    assert metrics["generated_packet_bytes"] == quotient + (remainder > 0)
+    assert (
+        metrics["generated_packet_allocation"]
+        == "equal-per-batch-leading-remainder"
+    )
 
 
 def _make_project(
