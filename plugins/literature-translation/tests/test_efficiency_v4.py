@@ -3452,7 +3452,15 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     )
     write_yaml(
         root / "glossary" / "approved.yaml",
-        {"terms": [{"source": "architecture", "target": "架构"}]},
+        {
+            "terms": [
+                {"source": "architecture", "target": "架构"},
+                {
+                    "source": "quantum chromodynamics",
+                    "target": "量子色动力学",
+                },
+            ]
+        },
     )
     audit_path = root / "reviews" / f"{batch_id}.audit.json"
     audit = read_json(audit_path)
@@ -3462,9 +3470,11 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     write_json(audit_path, audit)
     (root / "evidence" / "audits" / f"{batch_id}.jsonl").unlink()
     runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
-    legacy_packet_sha256 = sha256_text(
-        external_review._packet_text(root, batch_id)[0]
-    )
+    legacy_packet = external_review._packet_text(root, batch_id, compact=False)[0]
+    compact_packet = external_review._packet_text(root, batch_id)[0]
+    assert "quantum chromodynamics" in legacy_packet
+    assert "quantum chromodynamics" not in compact_packet
+    legacy_packet_sha256 = sha256_text(legacy_packet)
     append_jsonl(
         runs_path,
         [

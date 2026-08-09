@@ -334,7 +334,7 @@ def migrate_project_schema(
                 stale["audit"].append(batch_id)
         runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
         runs = read_jsonl(runs_path, ExternalReviewRun)
-        packet_text, _ = _packet_text(root, batch_id)
+        packet_text, _ = _packet_text(root, batch_id, compact=False)
         packet_sha256 = sha256_text(packet_text)
         external_chain, external_stale = _migratable_v3_external_chain(
             runs, legacy_fingerprint, packet_sha256
