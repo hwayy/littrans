@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import runpy
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2177,18 +2178,31 @@ def test_review_set_revalidates_packet_inside_the_audit_import_lock(
     manifest_path = root / "packets" / packet.packet_id / "manifest.json"
     issues_path = manifest_path.parent / "issues.jsonl"
     write_jsonl(issues_path, [])
-    original_import = import_review_set.__globals__["import_review"]
+    original_lock = import_review_set.__globals__["project_write_lock"]
     raced = False
 
-    def racing_import(*args: object, **kwargs: object) -> list[ReviewIssue]:
+    @contextmanager
+    def racing_lock(lock_root: Path):
         nonlocal raced
-        if not raced:
-            raced = True
-            _submit(root, batch_id, suffix="并发修订")
-        return original_import(*args, **kwargs)
+        with original_lock(lock_root):
+            if not raced:
+                raced = True
+                current = translation_map(root)
+                unit_id = manifests[0].translatable_unit_ids[0]
+                current[unit_id] = current[unit_id].model_copy(
+                    update={
+                        "target_text": current[unit_id].target_text + "并发修订",
+                        "revision": current[unit_id].revision + 1,
+                        "status": ProjectStatus.REVISED,
+                    }
+                )
+                write_jsonl(
+                    root / "translations" / "current.jsonl", current.values()
+                )
+            yield
 
     monkeypatch.setitem(
-        import_review_set.__globals__, "import_review", racing_import
+        import_review_set.__globals__, "project_write_lock", racing_lock
     )
 
     with pytest.raises(ValueError, match="Audit packet is stale for units"):
@@ -2201,6 +2215,66 @@ def test_review_set_revalidates_packet_inside_the_audit_import_lock(
     assert read_jsonl(
         root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
     ) == []
+
+
+def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 2)
+    first, second = manifests
+    for batch in manifests:
+        _submit(root, batch.batch_id)
+        assert run_qa(root, batch.batch_id).passed
+
+    existing_issue = ReviewIssue(
+        issue_id="later-batch-conflict",
+        batch_id=second.batch_id,
+        unit_id=second.unit_ids[0],
+        severity=Severity.MAJOR,
+        type=IssueType.MEANING,
+        explanation="Previously imported issue content.",
+        reviewer="independent-fidelity-auditor",
+    )
+    existing_path = root / "reviews" / "existing-second-batch.jsonl"
+    write_jsonl(existing_path, [existing_issue])
+    import_review(root, second.batch_id, existing_path, lenses=[])
+
+    packet = create_workflow_packet(
+        root, "audit", [first.batch_id, second.batch_id], "fidelity"
+    )
+    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    issues_path = manifest_path.parent / "issues.jsonl"
+    first_issue = ReviewIssue(
+        issue_id="first-batch-fresh",
+        batch_id=first.batch_id,
+        unit_id=first.unit_ids[0],
+        severity=Severity.MAJOR,
+        type=IssueType.MEANING,
+        explanation="This issue is valid but must not be imported yet.",
+        reviewer="independent-fidelity-auditor",
+    )
+    conflicting_issue = existing_issue.model_copy(
+        update={"explanation": "Conflicting replacement issue content."}
+    )
+    write_jsonl(issues_path, [first_issue, conflicting_issue])
+
+    current_before = (root / "translations" / "current.jsonl").read_bytes()
+    project_before = (root / "project.yaml").read_bytes()
+    first_summary = root / "reviews" / f"{first.batch_id}.audit.json"
+    assert not first_summary.exists()
+
+    with pytest.raises(
+        ValueError, match="issue IDs already exist with different content"
+    ):
+        import_review_set(root, manifest_path, issues_path)
+
+    assert read_jsonl(
+        root / "reviews" / f"{first.batch_id}.issues.jsonl", ReviewIssue
+    ) == []
+    assert read_jsonl(
+        root / "evidence" / "audits" / f"{first.batch_id}.jsonl", AuditRun
+    ) == []
+    assert not first_summary.exists()
+    assert (root / "translations" / "current.jsonl").read_bytes() == current_before
+    assert (root / "project.yaml").read_bytes() == project_before
 
 
 def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:

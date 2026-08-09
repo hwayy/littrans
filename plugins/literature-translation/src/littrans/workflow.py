@@ -29,19 +29,20 @@ from littrans.models import (
 from littrans.project import translation_map
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
+    _apply_review_import_locked,
+    _prepare_review_import_locked,
     audit_coverage,
-    import_review,
     qa_report_is_current,
 )
 from littrans.storage import (
     atomic_write_text,
     load_project,
+    project_write_lock,
     read_json,
     read_jsonl,
     require_current_project_schema,
     sha256_file,
     write_json,
-    write_jsonl,
 )
 
 
@@ -431,6 +432,8 @@ def import_review_set(
         )
     if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
         raise ValueError("review import-set requires an audit packet manifest")
+    if len(manifest.batch_ids) != len(set(manifest.batch_ids)):
+        raise ValueError("Audit packet batch IDs must be unique")
     required_files = {
         "shared",
         *(f"{batch_id}:audit" for batch_id in manifest.batch_ids),
@@ -506,43 +509,41 @@ def import_review_set(
             )
         by_batch[issue.batch_id].append(issue)
 
-    imported: dict[str, int] = {}
-    for batch_id in manifest.batch_ids:
-        batch = batches[batch_id]
-        coverage_ids = [
-            unit_id
-            for unit_id in batch.unit_ids
-            if unit_id in manifest.unit_ids
-        ]
-        temporary = (packet_dir / f".{batch_id}.import.jsonl").resolve()
-        try:
-            temporary.relative_to(packet_root)
-        except ValueError as exc:
-            raise ValueError("Audit import path escapes the project packet root") from exc
-        write_jsonl(temporary, by_batch[batch_id])
-        try:
-            import_review(
-                root,
-                batch_id,
-                temporary,
-                [manifest.lens],
-                covered_unit_ids=coverage_ids,
-                reviewer=(
-                    by_batch[batch_id][0].reviewer
-                    if by_batch[batch_id]
-                    else f"independent-{manifest.lens}-auditor"
-                ),
-                packet_id=manifest.packet_id,
-                expected_unit_fingerprints={
-                    unit_id: manifest.unit_fingerprints[unit_id]
-                    for unit_id in coverage_ids
-                },
-                expected_context_fingerprint=manifest.file_sha256["shared"],
-                context_unit_ids=list(manifest.unit_fingerprints),
+    imported = {
+        batch_id: len(by_batch[batch_id]) for batch_id in manifest.batch_ids
+    }
+    with project_write_lock(root):
+        plans = []
+        for batch_id in manifest.batch_ids:
+            batch = batches[batch_id]
+            coverage_ids = [
+                unit_id
+                for unit_id in batch.unit_ids
+                if unit_id in manifest.unit_ids
+            ]
+            plans.append(
+                _prepare_review_import_locked(
+                    root=root,
+                    batch_id=batch_id,
+                    issues=by_batch[batch_id],
+                    lenses=[manifest.lens],
+                    covered_unit_ids=coverage_ids,
+                    reviewer=(
+                        by_batch[batch_id][0].reviewer
+                        if by_batch[batch_id]
+                        else f"independent-{manifest.lens}-auditor"
+                    ),
+                    packet_id=manifest.packet_id,
+                    expected_unit_fingerprints={
+                        unit_id: manifest.unit_fingerprints[unit_id]
+                        for unit_id in coverage_ids
+                    },
+                    expected_context_fingerprint=manifest.file_sha256["shared"],
+                    context_unit_ids=list(manifest.unit_fingerprints),
+                )
             )
-        finally:
-            temporary.unlink(missing_ok=True)
-        imported[batch_id] = len(by_batch[batch_id])
+        for plan in plans:
+            _apply_review_import_locked(root, plan)
     return {"packet_id": manifest.packet_id, "lens": manifest.lens, "imported": imported}
 
 

@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from littrans.evidence import (
 from littrans.models import (
     PROJECT_SCHEMA_VERSION,
     AuditRun,
+    BatchManifest,
     IssueStatus,
     ProjectStatus,
     QAItem,
@@ -586,6 +588,196 @@ def _write_audit_summary(root: Path, batch_id: str, issue_count: int) -> dict[st
     return payload
 
 
+@dataclass
+class _ReviewImportPlan:
+    batch_id: str
+    manifest: BatchManifest
+    issues: list[ReviewIssue]
+    merged_issues: list[ReviewIssue]
+    internal_lenses: set[str]
+    coverage_ids: set[str]
+    fingerprints: dict[str, str]
+    context_fingerprint: str | None
+    context_unit_ids: list[str]
+    preserve_status: bool
+    reviewer: str | None
+    packet_id: str | None
+
+
+def _prepare_review_import_locked(
+    root: Path,
+    batch_id: str,
+    issues: list[ReviewIssue],
+    lenses: list[str] | None = None,
+    preserve_status: bool = False,
+    covered_unit_ids: list[str] | None = None,
+    reviewer: str | None = None,
+    packet_id: str | None = None,
+    expected_unit_fingerprints: dict[str, str] | None = None,
+    expected_context_fingerprint: str | None = None,
+    context_unit_ids: list[str] | None = None,
+) -> _ReviewImportPlan:
+    require_current_project_schema(root, "Review import")
+    manifest = load_manifest(root, batch_id)
+    valid_units = set(manifest.unit_ids)
+    issue_ids: set[str] = set()
+    for issue in issues:
+        if issue.batch_id != batch_id:
+            raise ValueError(
+                f"Issue {issue.issue_id} belongs to {issue.batch_id}, not {batch_id}"
+            )
+        if issue.unit_id not in valid_units:
+            raise ValueError(f"Issue {issue.issue_id} references an invalid unit")
+        if issue.issue_id in issue_ids:
+            raise ValueError(f"Duplicate review issue ID: {issue.issue_id}")
+        issue_ids.add(issue.issue_id)
+
+    selected_lenses = set(REQUIRED_AUDIT_LENSES if lenses is None else lenses)
+    internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
+    coverage_ids = set(
+        manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
+    )
+    invalid_coverage = coverage_ids - valid_units
+    if invalid_coverage:
+        raise ValueError(
+            f"Audit coverage references invalid units: {sorted(invalid_coverage)}"
+        )
+    fingerprints = batch_unit_fingerprints(root, batch_id)
+    if expected_unit_fingerprints is not None:
+        if set(expected_unit_fingerprints) != coverage_ids:
+            raise ValueError(
+                "Expected audit fingerprints must match the covered unit IDs"
+            )
+        stale = sorted(
+            unit_id
+            for unit_id, expected in expected_unit_fingerprints.items()
+            if fingerprints.get(unit_id) != expected
+        )
+        if stale:
+            raise ValueError(f"Audit packet is stale for units: {stale}")
+    run_context_ids: list[str] = []
+    run_context_fingerprint: str | None = None
+    if internal_lenses:
+        run_context_ids = list(
+            manifest.unit_ids if context_unit_ids is None else context_unit_ids
+        )
+        if len(run_context_ids) != len(set(run_context_ids)):
+            raise ValueError("Audit context unit IDs must be unique")
+        all_units = {
+            unit.unit_id: unit
+            for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        }
+        missing_context_units = sorted(set(run_context_ids) - set(all_units))
+        if missing_context_units:
+            raise ValueError(
+                "Audit context references missing source units: "
+                f"{missing_context_units}"
+            )
+        run_context_fingerprint = audit_context_fingerprint(
+            root, [all_units[unit_id] for unit_id in run_context_ids]
+        )
+        if (
+            expected_context_fingerprint is not None
+            and run_context_fingerprint != expected_context_fingerprint
+        ):
+            raise ValueError("Audit packet context is stale")
+
+    issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
+    existing = {
+        issue.issue_id: issue for issue in read_jsonl(issue_path, ReviewIssue)
+    }
+    conflicting_issue_ids = sorted(
+        issue.issue_id
+        for issue in issues
+        if issue.issue_id in existing and existing[issue.issue_id] != issue
+    )
+    if conflicting_issue_ids:
+        raise ValueError(
+            "Review issue IDs already exist with different content: "
+            f"{conflicting_issue_ids}"
+        )
+    existing.update({issue.issue_id: issue for issue in issues})
+    return _ReviewImportPlan(
+        batch_id=batch_id,
+        manifest=manifest,
+        issues=issues,
+        merged_issues=list(existing.values()),
+        internal_lenses=internal_lenses,
+        coverage_ids=coverage_ids,
+        fingerprints=fingerprints,
+        context_fingerprint=run_context_fingerprint,
+        context_unit_ids=run_context_ids,
+        preserve_status=preserve_status,
+        reviewer=reviewer,
+        packet_id=packet_id,
+    )
+
+
+def _apply_review_import_locked(root: Path, plan: _ReviewImportPlan) -> list[ReviewIssue]:
+    issue_path = root / "reviews" / f"{plan.batch_id}.issues.jsonl"
+    write_jsonl(issue_path, plan.merged_issues)
+    valid_units = set(plan.manifest.unit_ids)
+    runs = _audit_runs(root, plan.batch_id)
+    for lens in sorted(plan.internal_lenses):
+        prior = next((run for run in reversed(runs) if run.lens == lens), None)
+        run = AuditRun(
+            run_id=uuid.uuid4().hex,
+            batch_ids=[plan.batch_id],
+            reviewer=plan.reviewer
+            or (
+                plan.issues[0].reviewer
+                if plan.issues
+                else "independent-auditor"
+            ),
+            lens=lens,
+            scope=(
+                ReviewScope.FULL
+                if plan.coverage_ids >= valid_units
+                else ReviewScope.INCREMENTAL
+            ),
+            base_run_id=prior.run_id if prior else None,
+            packet_id=plan.packet_id,
+            unit_fingerprints={
+                unit_id: plan.fingerprints[unit_id]
+                for unit_id in plan.manifest.unit_ids
+                if unit_id in plan.coverage_ids
+            },
+            context_fingerprint=plan.context_fingerprint,
+            context_unit_ids=plan.context_unit_ids,
+            issue_ids=[issue.issue_id for issue in plan.issues],
+        )
+        append_jsonl(_audit_runs_path(root, plan.batch_id), [run])
+        runs.append(run)
+    if plan.internal_lenses or not (
+        root / "reviews" / f"{plan.batch_id}.audit.json"
+    ).exists():
+        summary = _write_audit_summary(root, plan.batch_id, len(plan.issues))
+        summary["total_issue_count"] = len(plan.merged_issues)
+        write_json(root / "reviews" / f"{plan.batch_id}.audit.json", summary)
+    if not plan.preserve_status:
+        has_open_blocking = any(
+            issue.status is IssueStatus.OPEN
+            and issue.severity in BLOCKING_SEVERITIES
+            for issue in plan.merged_issues
+        )
+        current = translation_map(root)
+        for unit_id in plan.manifest.translatable_unit_ids:
+            if has_open_blocking or (
+                STATUS_ORDER[current[unit_id].status]
+                <= STATUS_ORDER[ProjectStatus.REVIEWED]
+            ):
+                current[unit_id] = current[unit_id].model_copy(
+                    update={"status": ProjectStatus.REVIEWED}
+                )
+        write_jsonl(root / "translations" / "current.jsonl", current.values())
+        if has_open_blocking or (
+            STATUS_ORDER[load_project(root).status]
+            <= STATUS_ORDER[ProjectStatus.REVIEWED]
+        ):
+            promote_status(root, ProjectStatus.REVIEWED)
+    return plan.merged_issues
+
+
 def import_review(
     root: Path,
     batch_id: str,
@@ -601,145 +793,20 @@ def import_review(
 ) -> list[ReviewIssue]:
     issues = read_jsonl(input_path, ReviewIssue)
     with project_write_lock(root):
-        require_current_project_schema(root, "Review import")
-        manifest = load_manifest(root, batch_id)
-        valid_units = set(manifest.unit_ids)
-        issue_ids: set[str] = set()
-        for issue in issues:
-            if issue.batch_id != batch_id:
-                raise ValueError(
-                    f"Issue {issue.issue_id} belongs to {issue.batch_id}, not {batch_id}"
-                )
-            if issue.unit_id not in valid_units:
-                raise ValueError(f"Issue {issue.issue_id} references an invalid unit")
-            if issue.issue_id in issue_ids:
-                raise ValueError(f"Duplicate review issue ID: {issue.issue_id}")
-            issue_ids.add(issue.issue_id)
-
-        selected_lenses = set(REQUIRED_AUDIT_LENSES if lenses is None else lenses)
-        internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
-        coverage_ids = set(
-            manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
+        plan = _prepare_review_import_locked(
+            root,
+            batch_id,
+            issues,
+            lenses,
+            preserve_status,
+            covered_unit_ids,
+            reviewer,
+            packet_id,
+            expected_unit_fingerprints,
+            expected_context_fingerprint,
+            context_unit_ids,
         )
-        invalid_coverage = coverage_ids - valid_units
-        if invalid_coverage:
-            raise ValueError(
-                f"Audit coverage references invalid units: {sorted(invalid_coverage)}"
-            )
-        fingerprints = batch_unit_fingerprints(root, batch_id)
-        if expected_unit_fingerprints is not None:
-            if set(expected_unit_fingerprints) != coverage_ids:
-                raise ValueError(
-                    "Expected audit fingerprints must match the covered unit IDs"
-                )
-            stale = sorted(
-                unit_id
-                for unit_id, expected in expected_unit_fingerprints.items()
-                if fingerprints.get(unit_id) != expected
-            )
-            if stale:
-                raise ValueError(f"Audit packet is stale for units: {stale}")
-        run_context_ids: list[str] = []
-        run_context_fingerprint: str | None = None
-        if internal_lenses:
-            run_context_ids = list(
-                manifest.unit_ids if context_unit_ids is None else context_unit_ids
-            )
-            if len(run_context_ids) != len(set(run_context_ids)):
-                raise ValueError("Audit context unit IDs must be unique")
-            all_units = {
-                unit.unit_id: unit
-                for unit in read_jsonl(
-                    root / "derived" / "units.jsonl", SourceUnit
-                )
-            }
-            missing_context_units = sorted(set(run_context_ids) - set(all_units))
-            if missing_context_units:
-                raise ValueError(
-                    "Audit context references missing source units: "
-                    f"{missing_context_units}"
-                )
-            run_context_fingerprint = audit_context_fingerprint(
-                root, [all_units[unit_id] for unit_id in run_context_ids]
-            )
-            if (
-                expected_context_fingerprint is not None
-                and run_context_fingerprint != expected_context_fingerprint
-            ):
-                raise ValueError("Audit packet context is stale")
-
-        issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
-        existing = {
-            issue.issue_id: issue for issue in read_jsonl(issue_path, ReviewIssue)
-        }
-        conflicting_issue_ids = sorted(
-            issue.issue_id
-            for issue in issues
-            if issue.issue_id in existing and existing[issue.issue_id] != issue
-        )
-        if conflicting_issue_ids:
-            raise ValueError(
-                "Review issue IDs already exist with different content: "
-                f"{conflicting_issue_ids}"
-            )
-        existing.update({issue.issue_id: issue for issue in issues})
-        merged_issues = list(existing.values())
-        write_jsonl(issue_path, merged_issues)
-        runs = _audit_runs(root, batch_id)
-        for lens in sorted(internal_lenses):
-            prior = next((run for run in reversed(runs) if run.lens == lens), None)
-            run = AuditRun(
-                run_id=uuid.uuid4().hex,
-                batch_ids=[batch_id],
-                reviewer=reviewer
-                or (issues[0].reviewer if issues else "independent-auditor"),
-                lens=lens,
-                scope=(
-                    ReviewScope.FULL
-                    if coverage_ids >= valid_units
-                    else ReviewScope.INCREMENTAL
-                ),
-                base_run_id=prior.run_id if prior else None,
-                packet_id=packet_id,
-                unit_fingerprints={
-                    unit_id: fingerprints[unit_id]
-                    for unit_id in manifest.unit_ids
-                    if unit_id in coverage_ids
-                },
-                context_fingerprint=run_context_fingerprint,
-                context_unit_ids=run_context_ids,
-                issue_ids=[issue.issue_id for issue in issues],
-            )
-            append_jsonl(_audit_runs_path(root, batch_id), [run])
-            runs.append(run)
-        if internal_lenses or not (
-            root / "reviews" / f"{batch_id}.audit.json"
-        ).exists():
-            summary = _write_audit_summary(root, batch_id, len(issues))
-            summary["total_issue_count"] = len(merged_issues)
-            write_json(root / "reviews" / f"{batch_id}.audit.json", summary)
-        if not preserve_status:
-            has_open_blocking = any(
-                issue.status is IssueStatus.OPEN
-                and issue.severity in BLOCKING_SEVERITIES
-                for issue in merged_issues
-            )
-            current = translation_map(root)
-            for unit_id in manifest.translatable_unit_ids:
-                if has_open_blocking or (
-                    STATUS_ORDER[current[unit_id].status]
-                    <= STATUS_ORDER[ProjectStatus.REVIEWED]
-                ):
-                    current[unit_id] = current[unit_id].model_copy(
-                        update={"status": ProjectStatus.REVIEWED}
-                    )
-            write_jsonl(root / "translations" / "current.jsonl", current.values())
-            if has_open_blocking or (
-                STATUS_ORDER[load_project(root).status]
-                <= STATUS_ORDER[ProjectStatus.REVIEWED]
-            ):
-                promote_status(root, ProjectStatus.REVIEWED)
-    return merged_issues
+        return _apply_review_import_locked(root, plan)
 
 
 def resolve_issue(
