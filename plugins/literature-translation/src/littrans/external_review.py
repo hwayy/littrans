@@ -258,7 +258,9 @@ def _packet_text(
     ]
     if missing:
         raise ValueError(f"Review packet references missing source units: {missing}")
-    selected_ids = set(covered_unit_ids or manifest.unit_ids)
+    selected_ids = set(
+        manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
+    )
     packet_ids = [
         unit.unit_id
         for unit in all_units
@@ -960,7 +962,16 @@ def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
         if run.translation_fingerprint == fingerprint
     ]
     primary = next((run for run in reversed(runs) if run.role == "primary"), None)
-    second = next((run for run in reversed(runs) if run.role == "second-opinion"), None)
+    second = next(
+        (
+            run
+            for run in reversed(runs)
+            if run.role == "second-opinion"
+            and primary is not None
+            and run.base_run_id == primary.run_id
+        ),
+        None,
+    )
     needs_second = bool(primary and _needs_second_opinion(root, primary))
     if primary is None:
         verdict = "missing"
@@ -1064,9 +1075,7 @@ def run_external_review(
     if second_opinion and latest_primary:
         scope = latest_primary.scope
         base_run = latest_primary
-        covered_unit_ids = latest_primary.covered_unit_ids or list(
-            load_manifest(root, batch_id).unit_ids
-        )
+        covered_unit_ids = list(latest_primary.covered_unit_ids)
         selected_reviewer_id = reviewer_id
     else:
         scope, base_run, covered_unit_ids, selected_reviewer_id = _primary_review_scope(

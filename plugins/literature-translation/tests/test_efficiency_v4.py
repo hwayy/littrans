@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from reportlab.lib.pagesizes import letter
@@ -14,9 +16,10 @@ from littrans.evidence import (
     batch_structure_fingerprint,
     batch_unit_fingerprints,
     dependency_closure,
+    page_evidence_units,
     translation_memory,
 )
-from littrans.external_review import _primary_review_scope
+from littrans.external_review import _primary_review_scope, external_review_status
 from littrans.migration import _legacy_v3_batch_fingerprint, migrate_project_schema
 from littrans.models import (
     ExternalReviewConfig,
@@ -31,6 +34,7 @@ from littrans.models import (
     PromptDelivery,
     ReviewIssue,
     ReviewScope,
+    ReviewUsage,
     SemanticStatus,
     Severity,
     SidebarRole,
@@ -60,6 +64,69 @@ from littrans.workflow import create_workflow_packet, import_review_set, workflo
 
 def test_claude_stdin_delivery_remains_shadow_gated() -> None:
     assert external_review.CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED is False
+
+
+def test_shadow_ab_forces_distinct_delivery_arms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "shadow_external_ab.py"))
+    variant_delivery = namespace["_variant_delivery"]
+
+    assert variant_delivery("legacy") is PromptDelivery.FILE
+    assert variant_delivery("optimized") is PromptDelivery.STDIN
+    with pytest.raises(ValueError, match="Unknown shadow variant"):
+        variant_delivery("unexpected")
+
+    reviewer = ExternalReviewerConfig(
+        id="shadow",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        fast=False,
+    )
+    deliveries: list[PromptDelivery] = []
+
+    def invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        delivery = kwargs["forced_delivery"]
+        assert isinstance(delivery, PromptDelivery)
+        deliveries.append(delivery)
+        return (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            delivery,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=2),
+            0.01,
+        )
+
+    run_ab = namespace["run_ab"]
+    globals_ = run_ab.__globals__
+    monkeypatch.setitem(
+        globals_,
+        "load_project",
+        lambda root: SimpleNamespace(
+            external_review=ExternalReviewConfig(reviewers=[reviewer])
+        ),
+    )
+    monkeypatch.setitem(
+        globals_, "_packet_text", lambda *args, **kwargs: ("packet", [1])
+    )
+    monkeypatch.setitem(
+        globals_, "_render_packet", lambda root, packet_dir, text, pages: packet_dir / "packet.md"
+    )
+    monkeypatch.setitem(globals_, "_evidence_map", lambda *args, **kwargs: {})
+    monkeypatch.setitem(globals_, "_invoke", invoke)
+
+    result = run_ab(tmp_path, ["batch"], set(), reviewer.id)
+
+    assert deliveries == [PromptDelivery.FILE, PromptDelivery.STDIN]
+    assert result["delivery_protocol_passed"] is True
 
 
 def _make_project(
@@ -327,7 +394,11 @@ def test_external_review_does_not_reuse_approval_after_glossary_change(
 def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
-    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0]
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(update={"kind": UnitKind.CAPTION})
+    write_jsonl(units_path, units)
+    unit = units[0]
     input_path = root / "batches" / batch_id / "caption-initial.jsonl"
     write_jsonl(
         input_path,
@@ -352,6 +423,43 @@ def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> No
     returned = submit_translation(root, batch_id, input_path)
     assert returned[0].revision == 1
     assert (root / "translations" / "history.jsonl").read_bytes() == before
+
+
+def test_caption_like_paragraph_separator_change_is_semantic_revision(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0]
+    input_path = root / "batches" / batch_id / "paragraph-initial.jsonl"
+    write_jsonl(
+        input_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="图 1。说明了普通段落中的引用。",
+                source_hash=unit.source_hash,
+            )
+        ],
+    )
+    submit_translation(root, batch_id, input_path)
+    current = translation_map(root)[unit.unit_id]
+    write_jsonl(
+        input_path,
+        [
+            current.model_copy(
+                update={"target_text": "图 1 说明了普通段落中的引用。"}
+            )
+        ],
+    )
+
+    returned = submit_translation(root, batch_id, input_path)
+
+    assert returned[0].revision == 2
+    assert returned[0].target_text == "图 1 说明了普通段落中的引用。"
+    assert len(
+        read_jsonl(root / "translations" / "history.jsonl", TranslationRecord)
+    ) == 2
 
 
 def test_source_rebinding_does_not_create_translation_revision(
@@ -443,6 +551,35 @@ def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path)
     ]
 
 
+def test_dependency_closure_composes_sidebar_and_continuation_dependencies(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=4, max_words=700)
+    assert len(manifests) == 1
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[1] = units[1].model_copy(
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "composed-sidebar",
+            "sidebar_role": SidebarRole.TITLE,
+        }
+    )
+    units[2] = units[2].model_copy(
+        update={
+            "sidebar_id": "composed-sidebar",
+            "sidebar_role": SidebarRole.BODY,
+            "continued_to_next": True,
+        }
+    )
+    units[3] = units[3].model_copy(update={"continues_from_previous": True})
+    write_jsonl(units_path, units)
+
+    closure = dependency_closure(root, [manifests[0].batch_id], [units[0].unit_id])
+
+    assert closure == [unit.unit_id for unit in units]
+
+
 def test_page_receipts_skip_unchanged_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -515,6 +652,90 @@ def test_page_receipt_does_not_hide_new_blocking_issue(tmp_path: Path) -> None:
     assert refreshed["passed"]
     assert refreshed["verified_pages"] == [1]
     assert verify_extraction(root, "1")["cached_pages"] == [1]
+
+
+def test_partial_page_verification_inherits_cross_page_blocker(
+    tmp_path: Path,
+) -> None:
+    root, _ = _make_project(tmp_path, 2)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "cross-page",
+            "sidebar_role": SidebarRole.TITLE,
+        }
+    )
+    units[1] = units[1].model_copy(
+        update={"sidebar_id": "cross-page", "sidebar_role": SidebarRole.BODY}
+    )
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+    issue = ExtractionIssue(
+        issue_id="cross-page-blocker",
+        page=1,
+        unit_id=units[0].unit_id,
+        severity=Severity.BLOCKER,
+        code="cross-page-defect",
+        message="The first sidebar fragment invalidates every dependent page.",
+    )
+    write_jsonl(root / "derived" / "extraction-issues.jsonl", [issue])
+
+    result = verify_extraction(root, "2")
+
+    assert not result["passed"]
+    assert result["cached_pages"] == []
+    assert result["verified_pages"] == [2]
+    assert {error["code"] for error in result["errors"]} == {
+        "open-extraction-issue"
+    }
+    receipt = PageVerificationReceipt.model_validate(
+        read_json(root / "evidence" / "pages" / "page-0002.json")
+    )
+    assert not receipt.passed
+
+
+def test_page_evidence_closes_continuation_and_sidebar_dependencies(
+    tmp_path: Path,
+) -> None:
+    root, _ = _make_project(tmp_path, 3)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(update={"continued_to_next": True})
+    units[1] = units[1].model_copy(
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "continued-sidebar",
+            "sidebar_role": SidebarRole.TITLE,
+        }
+    )
+    units[2] = units[2].model_copy(
+        update={
+            "sidebar_id": "continued-sidebar",
+            "sidebar_role": SidebarRole.BODY,
+        }
+    )
+    write_jsonl(units_path, units)
+
+    assert [unit.unit_id for unit in page_evidence_units(1, units)] == [
+        unit.unit_id for unit in units
+    ]
+    assert [unit.unit_id for unit in page_evidence_units(2, units)] == [
+        unit.unit_id for unit in units
+    ]
+    assert verify_extraction(root, "all", force=True)["passed"]
+    replacement = "A changed final sidebar fragment."
+    units[2] = units[2].model_copy(
+        update={"source_text": replacement, "source_hash": sha256_text(replacement)}
+    )
+    write_jsonl(units_path, units)
+
+    refreshed = verify_extraction(root, "1")
+
+    assert refreshed["passed"]
+    assert refreshed["cached_pages"] == []
+    assert refreshed["verified_pages"] == [1]
 
 
 def test_partial_verification_failure_preserves_clean_page_receipt(
@@ -641,6 +862,20 @@ def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) ->
         first_id
     ]
     assert audit_coverage(root, second.batch_id)["missing"]["fidelity"] == []
+
+
+def test_review_import_preserves_explicitly_empty_lenses(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    empty = root / "reviews" / "no-lenses.jsonl"
+    write_jsonl(empty, [])
+
+    import_review(root, batch_id, empty, lenses=[])
+
+    coverage = audit_coverage(root, batch_id)
+    assert not coverage["complete"]
+    assert all(not unit_ids for unit_ids in coverage["coverage"].values())
 
 
 def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
@@ -845,6 +1080,84 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     assert f"## Unit {outside_id} [READ-ONLY SEAM CONTEXT]" in packet
     assert "do not report issues against them" in packet
     assert pages == [5, 6, 7]
+
+
+def test_external_status_does_not_reuse_an_old_second_opinion(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    fingerprint = external_review.batch_translation_fingerprint(root, batch_id)
+    suggestion = ReviewIssue(
+        issue_id="low-confidence-suggestion",
+        batch_id=batch_id,
+        unit_id=manifests[0].unit_ids[0],
+        severity=Severity.SUGGESTION,
+        type=IssueType.STYLE,
+        explanation="A low-confidence point requires an independent second opinion.",
+        confidence=0.2,
+        reviewer="external:claude",
+    )
+    write_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", [suggestion])
+
+    def run(
+        run_id: str,
+        role: str,
+        *,
+        base_run_id: str | None = None,
+        issue_ids: list[str] | None = None,
+    ) -> ExternalReviewRun:
+        return ExternalReviewRun(
+            run_id=run_id,
+            batch_id=batch_id,
+            reviewer_id="claude",
+            driver="claude-code",
+            role=role,
+            requested_model="claude-sonnet-5",
+            actual_model="claude-sonnet-5",
+            model_verified=True,
+            translation_fingerprint=fingerprint,
+            packet_sha256="0" * 64,
+            prompt_version="test",
+            base_run_id=base_run_id,
+            verdict=ExternalReviewVerdict.ACCEPTED,
+            summary="No substantive defects found.",
+            issue_ids=issue_ids or [],
+        )
+
+    append_jsonl(
+        root / "reviews" / f"{batch_id}.external-runs.jsonl",
+        [
+            run("primary-one", "primary"),
+            run("second-for-one", "second-opinion", base_run_id="primary-one"),
+            run(
+                "primary-two",
+                "primary",
+                issue_ids=[suggestion.issue_id],
+            ),
+        ],
+    )
+
+    status = external_review_status(root, batch_id)
+
+    assert status["second_opinion_required"] is True
+    assert status["second_opinion"] is None
+    assert status["verdict"] == ExternalReviewVerdict.INCONCLUSIVE
+    assert status["external_approvable"] is False
 
 
 def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(

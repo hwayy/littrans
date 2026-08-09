@@ -582,7 +582,7 @@ def import_review(
     existing.update({issue.issue_id: issue for issue in issues})
     merged_issues = list(existing.values())
     write_jsonl(issue_path, merged_issues)
-    selected_lenses = set(lenses or REQUIRED_AUDIT_LENSES)
+    selected_lenses = set(REQUIRED_AUDIT_LENSES if lenses is None else lenses)
     internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
     coverage_ids = set(
         manifest.unit_ids if covered_unit_ids is None else covered_unit_ids

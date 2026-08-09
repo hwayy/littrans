@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from littrans.evidence import translation_payload
+from littrans.evidence import effective_translation_payload, translation_payload
 from littrans.external_review import (
     _evidence_map,
     _invoke,
@@ -26,6 +26,7 @@ from littrans.models import (
     PromptDelivery,
     ReviewIssue,
     Severity,
+    SourceUnit,
     TranslationRecord,
 )
 from littrans.project import translation_map
@@ -63,10 +64,22 @@ JSON schema.
 </task>"""
 
 
+def _variant_delivery(variant: str) -> PromptDelivery:
+    if variant == "legacy":
+        return PromptDelivery.FILE
+    if variant == "optimized":
+        return PromptDelivery.STDIN
+    raise ValueError(f"Unknown shadow variant: {variant}")
+
+
 def _defect_snapshot(
     root: Path, batch_id: str
 ) -> tuple[dict[str, TranslationRecord], list[dict[str, str]]]:
     current = translation_map(root)
+    units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
     history = read_jsonl(root / "translations" / "history.jsonl", TranslationRecord)
     by_unit: dict[str, list[TranslationRecord]] = defaultdict(list)
     for record in history:
@@ -87,11 +100,12 @@ def _defect_snapshot(
         accepted = current.get(issue.unit_id)
         if accepted is None or issue.unit_id in overrides:
             continue
-        accepted_payload = translation_payload(accepted)
+        unit = units[issue.unit_id]
+        accepted_payload = effective_translation_payload(unit, accepted)
         candidates = [
             record
             for record in by_unit.get(issue.unit_id, [])
-            if translation_payload(record) != accepted_payload
+            if effective_translation_payload(unit, record) != accepted_payload
         ]
         if issue.target_span:
             cited = [
@@ -217,9 +231,7 @@ def run_ab(
                     _evidence_map(
                         root, sample["batch_id"], sample["overrides"]
                     ),
-                    forced_delivery=(
-                        PromptDelivery.FILE if variant == "legacy" else None
-                    ),
+                    forced_delivery=_variant_delivery(variant),
                     file_prompt=(
                         _legacy_prompt(packet_path) if variant == "legacy" else None
                     ),
@@ -299,6 +311,10 @@ def run_ab(
         and reductions["duration_seconds"] >= 0.20
         and reductions["provider_turns"] >= 0.30
     )
+    delivery_protocol_passed = all(
+        result["prompt_delivery"] == _variant_delivery(result["variant"]).value
+        for result in results
+    )
     return {
         "project": str(root),
         "reviewer_id": reviewer_id,
@@ -316,7 +332,10 @@ def run_ab(
         "medians": medians,
         "reductions": reductions,
         "efficiency_passed": efficiency_passed,
-        "prompt_delivery_enabled": quality_passed and efficiency_passed,
+        "delivery_protocol_passed": delivery_protocol_passed,
+        "prompt_delivery_enabled": (
+            quality_passed and efficiency_passed and delivery_protocol_passed
+        ),
     }
 
 

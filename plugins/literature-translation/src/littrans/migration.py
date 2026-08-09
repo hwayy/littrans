@@ -371,7 +371,12 @@ def migrate_project_schema(
                                     "current_fingerprint"
                                 ],
                                 "scope": ReviewScope.FULL,
-                                "base_run_id": old.run_id,
+                                "base_run_id": (
+                                    f"{old.base_run_id}-v4"
+                                    if old.role == "second-opinion"
+                                    and old.base_run_id
+                                    else old.run_id
+                                ),
                                 "covered_unit_ids": item["unit_ids"],
                                 "unit_fingerprints": item[
                                     "unit_fingerprints"

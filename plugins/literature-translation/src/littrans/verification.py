@@ -341,24 +341,26 @@ def verify_extraction(
     page_set = set(pages)
     units = [unit for unit in all_units if unit.page in page_set]
     by_page = {page: [unit for unit in units if unit.page == page] for page in pages}
-    errors = _semantic_errors(
-        root, _semantic_context_units(all_units, set(requested_pages))
-    )
+    errors = [
+        error
+        for error in _semantic_errors(root, all_units)
+        if _error_pages(error, page_dependencies)
+    ]
     for issue in extraction_issues:
-        if (
-            issue.page in page_set
-            and issue.status is IssueStatus.OPEN
-            and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
-        ):
-            errors.append(
-                {
-                    "code": "open-extraction-issue",
-                    "page": issue.page,
-                    "issue_id": issue.issue_id,
-                    "issue_code": issue.code,
-                    "unit_id": issue.unit_id,
-                }
-            )
+        if issue.status is not IssueStatus.OPEN or issue.severity not in {
+            Severity.BLOCKER,
+            Severity.MAJOR,
+        }:
+            continue
+        error = {
+            "code": "open-extraction-issue",
+            "page": issue.page,
+            "issue_id": issue.issue_id,
+            "issue_code": issue.code,
+            "unit_id": issue.unit_id,
+        }
+        if _error_pages(error, page_dependencies) & page_set:
+            errors.append(error)
     page_results: list[dict[str, Any]] = []
     for page_number in pages:
         page = document[page_number - 1]

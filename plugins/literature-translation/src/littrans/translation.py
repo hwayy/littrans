@@ -35,7 +35,9 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")
             prior = current.get(record.unit_id)
-            if prior is not None and translations_semantically_equal(prior, record):
+            if prior is not None and translations_semantically_equal(
+                unit, prior, record
+            ):
                 if prior.source_hash != record.source_hash:
                     binding_update = prior.model_copy(
                         update={

@@ -7,7 +7,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from littrans.models import ProjectStatus, SourceUnit, TranslationRecord, utc_now
+from littrans.models import (
+    ProjectStatus,
+    SourceUnit,
+    TranslationRecord,
+    UnitKind,
+    utc_now,
+)
 from littrans.project import load_terms, translation_map
 from littrans.semantics import normalize_zh_caption
 from littrans.storage import (
@@ -79,19 +85,28 @@ def _canonical(payload: Any) -> str:
 
 
 def translation_payload(record: TranslationRecord) -> dict[str, Any]:
-    """Return the effective payload, excluding workflow-only metadata."""
-    payload = record.model_dump(
+    """Return stored translation content, excluding workflow-only metadata."""
+    return record.model_dump(
         mode="json", include=TRANSLATION_PAYLOAD_FIELDS, exclude_none=True
     )
-    if "target_text" in payload:
+
+
+def effective_translation_payload(
+    unit: SourceUnit, record: TranslationRecord
+) -> dict[str, Any]:
+    """Return renderer-aware semantic content for one source unit."""
+    payload = translation_payload(record)
+    if unit.kind is UnitKind.CAPTION and "target_text" in payload:
         payload["target_text"] = normalize_zh_caption(payload["target_text"])
     return payload
 
 
 def translations_semantically_equal(
-    left: TranslationRecord, right: TranslationRecord
+    unit: SourceUnit, left: TranslationRecord, right: TranslationRecord
 ) -> bool:
-    return translation_payload(left) == translation_payload(right)
+    return effective_translation_payload(unit, left) == effective_translation_payload(
+        unit, right
+    )
 
 
 def source_unit_fingerprint(unit: SourceUnit) -> str:
@@ -117,7 +132,11 @@ def translation_unit_fingerprint(
 ) -> str:
     payload = {
         "source": source_unit_fingerprint(unit),
-        "translation": translation_payload(record) if record is not None else None,
+        "translation": (
+            effective_translation_payload(unit, record)
+            if record is not None
+            else None
+        ),
     }
     return sha256_text(_canonical(payload))
 
@@ -194,30 +213,35 @@ def dependency_closure(
         if index + 1 < len(units):
             selected.add(units[index + 1].unit_id)
 
-    # A continued paragraph/list/note is one logical unit.
-    for unit_id in list(selected):
-        index = positions[unit_id]
-        left = index
-        while left > 0 and units[left].continues_from_previous:
-            left -= 1
-            selected.add(units[left].unit_id)
-        right = index
-        while right + 1 < len(units) and (
-            units[right].continued_to_next
-            or units[right + 1].continues_from_previous
-        ):
-            right += 1
-            selected.add(units[right].unit_id)
-
-    # Sidebars are visually and semantically reviewed as complete groups.
-    sidebar_ids = {
-        units[positions[unit_id]].sidebar_id
-        for unit_id in selected
-        if units[positions[unit_id]].sidebar_id
-    }
-    selected.update(
-        unit.unit_id for unit in units if unit.sidebar_id in sidebar_ids
-    )
+    # Continued structures and sidebars may pull one another into the closure.
+    while True:
+        previous_size = len(selected)
+        for unit_id in list(selected):
+            index = positions[unit_id]
+            left = index
+            while left > 0 and (
+                units[left].continues_from_previous
+                or units[left - 1].continued_to_next
+            ):
+                left -= 1
+                selected.add(units[left].unit_id)
+            right = index
+            while right + 1 < len(units) and (
+                units[right].continued_to_next
+                or units[right + 1].continues_from_previous
+            ):
+                right += 1
+                selected.add(units[right].unit_id)
+        sidebar_ids = {
+            units[positions[unit_id]].sidebar_id
+            for unit_id in selected
+            if units[positions[unit_id]].sidebar_id
+        }
+        selected.update(
+            unit.unit_id for unit in units if unit.sidebar_id in sidebar_ids
+        )
+        if len(selected) == previous_size:
+            break
 
     # Include both sides only for batch seams reached by the dependency closure.
     for batch_id in batch_ids:
@@ -273,26 +297,33 @@ def record_audit_invalidation(
 def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
     """Return the source units that determine one page's verification receipt."""
     selected_indices = {index for index, unit in enumerate(units) if unit.page == page}
-    sidebar_ids = {
-        units[index].sidebar_id
-        for index in selected_indices
-        if units[index].sidebar_id
-    }
-    selected_indices.update(
-        index for index, unit in enumerate(units) if unit.sidebar_id in sidebar_ids
-    )
-    for index in list(selected_indices):
-        left = index
-        while left > 0 and units[left].continues_from_previous:
-            left -= 1
-            selected_indices.add(left)
-        right = index
-        while right + 1 < len(units) and (
-            units[right].continued_to_next
-            or units[right + 1].continues_from_previous
-        ):
-            right += 1
-            selected_indices.add(right)
+    while True:
+        previous_size = len(selected_indices)
+        sidebar_ids = {
+            units[index].sidebar_id
+            for index in selected_indices
+            if units[index].sidebar_id
+        }
+        selected_indices.update(
+            index for index, unit in enumerate(units) if unit.sidebar_id in sidebar_ids
+        )
+        for index in list(selected_indices):
+            left = index
+            while left > 0 and (
+                units[left].continues_from_previous
+                or units[left - 1].continued_to_next
+            ):
+                left -= 1
+                selected_indices.add(left)
+            right = index
+            while right + 1 < len(units) and (
+                units[right].continued_to_next
+                or units[right + 1].continues_from_previous
+            ):
+                right += 1
+                selected_indices.add(right)
+        if len(selected_indices) == previous_size:
+            break
     return [units[index] for index in sorted(selected_indices)]
 
 

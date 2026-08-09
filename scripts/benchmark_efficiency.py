@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from littrans.evidence import translation_memory, translation_payload
+from littrans.evidence import translation_memory, translations_semantically_equal
 from littrans.models import SourceUnit, TranslationRecord
 from littrans.project import translation_map
 from littrans.storage import read_jsonl
@@ -64,6 +64,8 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     history = read_jsonl(
         root / "translations" / "history.jsonl", TranslationRecord
     )
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    unit_map = {unit.unit_id: unit for unit in all_units}
     if completed_only:
         selected_unit_ids = {
             unit_id for manifest in manifests for unit_id in manifest.unit_ids
@@ -75,14 +77,14 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     for record in history:
         prior = previous.get(record.unit_id)
         if prior is not None:
-            if translation_payload(prior) == translation_payload(record):
+            if translations_semantically_equal(
+                unit_map[record.unit_id], prior, record
+            ):
                 semantic_noops += 1
             else:
                 semantic_changes += 1
         previous[record.unit_id] = record
 
-    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    unit_map = {unit.unit_id: unit for unit in all_units}
     positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     translations = translation_map(root)
     legacy_bytes = 0

@@ -13,8 +13,8 @@ from littrans.evidence import (
     dependency_closure,
     relevant_terms,
     translation_memory,
-    translation_payload,
     translation_unit_fingerprint,
+    translations_semantically_equal,
 )
 from littrans.models import (
     AuditRun,
@@ -379,11 +379,17 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         for record in read_jsonl(root / "translations" / "history.jsonl", TranslationRecord)
         if record.unit_id in selected_units
     ]
+    units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
     previous: dict[str, TranslationRecord] = {}
     semantic_noops = 0
     for record in history:
         prior = previous.get(record.unit_id)
-        if prior is not None and translation_payload(prior) == translation_payload(record):
+        if prior is not None and translations_semantically_equal(
+            units[record.unit_id], prior, record
+        ):
             semantic_noops += 1
         previous[record.unit_id] = record
     legacy_packet_bytes = sum(
