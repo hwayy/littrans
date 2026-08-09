@@ -2770,6 +2770,26 @@ def test_external_status_does_not_reuse_an_old_second_opinion(
     assert status["external_approvable"] is False
 
 
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_v4_migration_rejects_pre_v3_source_schemas(
+    tmp_path: Path, schema_version: int
+) -> None:
+    root, _ = _make_project(tmp_path, 1)
+    config = load_project(root)
+    config.schema_version = schema_version
+    save_project(root, config)
+    project_before = (root / "project.yaml").read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=f"requires a schema-v3 source project.*schema {schema_version}",
+    ):
+        migrate_project_schema(root, 4)
+
+    assert (root / "project.yaml").read_bytes() == project_before
+    assert not (root / "evidence" / "migration-v3-v4.json").exists()
+
+
 def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     tmp_path: Path,
 ) -> None:

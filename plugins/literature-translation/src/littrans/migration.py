@@ -261,6 +261,11 @@ def migrate_project_schema(
             "changed": False,
             "message": "Project already uses schema v4.",
         }
+    if config.schema_version != 3:
+        raise ValueError(
+            "Schema-v4 project migration requires a schema-v3 source project; "
+            f"found schema {config.schema_version}"
+        )
 
     from littrans.batching import load_manifest
     from littrans.quality import (
