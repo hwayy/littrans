@@ -221,6 +221,11 @@ def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
 
 
 def run_qa(root: Path, batch_id: str) -> QAReport:
+    with project_write_lock(root):
+        return _run_qa_locked(root, batch_id)
+
+
+def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
     config = require_current_project_schema(root, "Deterministic QA")
     manifest = load_manifest(root, batch_id)
     require_verified_extraction(root, set(manifest.pages))
@@ -286,7 +291,12 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 label.target or "" for label in rendered_figure_labels
             )
-        semantic_source = _semantic_comparison_text(_comparison_source_text(unit))
+        effective_source = _comparison_source_text(unit)
+        if rendered_figure_labels:
+            effective_source += "\n" + "\n".join(
+                label.source for label in rendered_figure_labels
+            )
+        semantic_source = _semantic_comparison_text(effective_source)
         semantic_target = _semantic_comparison_text(effective_target)
         if not effective_target.strip():
             errors.append(
@@ -484,16 +494,15 @@ def run_qa(root: Path, batch_id: str) -> QAReport:
     write_json(qa_dir / f"{batch_id}.json", report.model_dump(mode="json"))
     _write_qa_markdown(qa_dir / f"{batch_id}.md", report)
     if report.passed:
-        with project_write_lock(root):
-            current = translation_map(root)
-            for unit_id in manifest.translatable_unit_ids:
-                if STATUS_ORDER[current[unit_id].status] <= STATUS_ORDER[ProjectStatus.QA_PASSED]:
-                    current[unit_id] = current[unit_id].model_copy(
-                        update={"status": ProjectStatus.QA_PASSED}
-                    )
-            write_jsonl(root / "translations" / "current.jsonl", current.values())
-            if STATUS_ORDER[load_project(root).status] <= STATUS_ORDER[ProjectStatus.QA_PASSED]:
-                promote_status(root, ProjectStatus.QA_PASSED)
+        current = translation_map(root)
+        for unit_id in manifest.translatable_unit_ids:
+            if STATUS_ORDER[current[unit_id].status] <= STATUS_ORDER[ProjectStatus.QA_PASSED]:
+                current[unit_id] = current[unit_id].model_copy(
+                    update={"status": ProjectStatus.QA_PASSED}
+                )
+        write_jsonl(root / "translations" / "current.jsonl", current.values())
+        if STATUS_ORDER[load_project(root).status] <= STATUS_ORDER[ProjectStatus.QA_PASSED]:
+            promote_status(root, ProjectStatus.QA_PASSED)
     return report
 
 

@@ -1204,6 +1204,48 @@ def test_qa_uses_rendered_source_figure_label_fallback(tmp_path: Path) -> None:
     assert "Figure label translations:\n- 架构" in evidence_target
 
 
+def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "figure_labels": [
+                FigureLabel(source="Speed 10 m/s", target="速度 10 m/s")
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    assert verify_extraction(root, "all", force=True)["passed"]
+    refresh_batch(root, manifest.batch_id)
+    input_path = root / "batches" / manifest.batch_id / "numeric-label.jsonl"
+    write_jsonl(
+        input_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="该图展示速度。",
+                figure_labels=[
+                    FigureLabel(source="Speed 10 m/s", target="速度 100 m/s")
+                ],
+                source_hash=unit.source_hash,
+            )
+        ],
+    )
+    submit_translation(root, manifest.batch_id, input_path)
+
+    report = run_qa(root, manifest.batch_id)
+
+    codes = {item.code for item in report.errors}
+    assert "number-mismatch" in codes
+    assert "number-unit-mismatch" in codes
+
+
 def test_figure_label_overrides_require_complete_source_mapping(
     tmp_path: Path,
 ) -> None:

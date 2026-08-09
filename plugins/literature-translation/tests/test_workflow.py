@@ -2109,6 +2109,80 @@ def test_approval_cannot_stamp_a_revision_with_stale_evidence(
         approve_batch(prepared_project, manifest.batch_id, "machine")
 
 
+def test_qa_cannot_promote_a_revision_it_did_not_check(
+    prepared_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = create_batches(
+        prepared_project, "1", max_words=300, prefix="qa-race"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    current = translation_map(prepared_project)
+    revised_records = [
+        current[unit_id].model_copy(
+            update={"target_text": current[unit_id].target_text + " revised"}
+        )
+        for unit_id in manifest.translatable_unit_ids
+    ]
+    revision_input = (
+        prepared_project / "batches" / manifest.batch_id / "qa-race-revision.jsonl"
+    )
+    write_jsonl(revision_input, revised_records)
+
+    fingerprint_seen = threading.Event()
+    release_qa = threading.Event()
+    original_fingerprint = quality_module.batch_translation_fingerprint
+
+    def paused_fingerprint(root: Path, batch_id: str) -> str:
+        value = original_fingerprint(root, batch_id)
+        if threading.current_thread().name == "qa-thread":
+            fingerprint_seen.set()
+            if not release_qa.wait(5):
+                raise TimeoutError("test did not release QA")
+        return value
+
+    monkeypatch.setattr(
+        quality_module, "batch_translation_fingerprint", paused_fingerprint
+    )
+    reports: list[object] = []
+    errors: list[BaseException] = []
+
+    def qa() -> None:
+        try:
+            reports.append(run_qa(prepared_project, manifest.batch_id))
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failure
+            errors.append(exc)
+
+    def revise() -> None:
+        try:
+            submit_translation(prepared_project, manifest.batch_id, revision_input)
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failure
+            errors.append(exc)
+
+    qa_thread = threading.Thread(target=qa, name="qa-thread")
+    revision_thread = threading.Thread(target=revise, name="qa-revision-thread")
+    qa_thread.start()
+    assert fingerprint_seen.wait(5)
+    revision_thread.start()
+    time.sleep(0.2)
+    assert revision_thread.is_alive()
+    release_qa.set()
+    qa_thread.join(5)
+    revision_thread.join(5)
+
+    assert not qa_thread.is_alive()
+    assert not revision_thread.is_alive()
+    assert not errors
+    assert len(reports) == 1
+    assert {
+        translation_map(prepared_project)[unit_id].status
+        for unit_id in manifest.translatable_unit_ids
+    } == {ProjectStatus.REVISED}
+    assert not quality_module.qa_report_is_current(
+        prepared_project, manifest.batch_id
+    )
+
+
 def test_grouped_code_secondary_ids_are_unique_in_bilingual_html(
     prepared_project: Path,
 ) -> None:
