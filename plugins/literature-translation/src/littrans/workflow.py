@@ -33,6 +33,7 @@ from littrans.quality import (
     _apply_review_import_locked,
     _prepare_review_import_locked,
     audit_coverage,
+    audit_evidence_context_fingerprint,
     qa_report_is_current,
 )
 from littrans.storage import (
@@ -564,7 +565,11 @@ def import_review_set(
                         unit_id: manifest.unit_fingerprints[unit_id]
                         for unit_id in coverage_ids
                     },
-                    expected_context_fingerprint=manifest.file_sha256["shared"],
+                    expected_context_fingerprint=audit_evidence_context_fingerprint(
+                        manifest.file_sha256["shared"],
+                        manifest.unit_fingerprints,
+                        list(manifest.unit_fingerprints),
+                    ),
                     context_unit_ids=list(manifest.unit_fingerprints),
                 )
             )
@@ -608,6 +613,7 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         unit.unit_id: unit
         for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     }
+    history = [record for record in history if record.unit_id in units]
     previous: dict[str, TranslationRecord] = {}
     semantic_noops = 0
     for record in history:

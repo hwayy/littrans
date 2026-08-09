@@ -15,6 +15,7 @@ from littrans.evidence import (
     batch_unit_fingerprints,
     effective_figure_labels,
     source_representation_text,
+    translation_unit_fingerprint,
 )
 from littrans.models import (
     PROJECT_SCHEMA_VERSION,
@@ -538,6 +539,27 @@ def _audit_runs(root: Path, batch_id: str) -> list[AuditRun]:
     return read_jsonl(_audit_runs_path(root, batch_id), AuditRun)
 
 
+def audit_evidence_context_fingerprint(
+    shared_fingerprint: str,
+    unit_fingerprints: dict[str, str],
+    context_unit_ids: list[str],
+) -> str:
+    missing = [
+        unit_id for unit_id in context_unit_ids if unit_id not in unit_fingerprints
+    ]
+    if missing:
+        raise ValueError(f"Audit context fingerprints are missing units: {missing}")
+    return sha256_text(
+        "audit-evidence-context-v2|"
+        + shared_fingerprint
+        + "|"
+        + "\n".join(
+            f"{unit_id}:{unit_fingerprints[unit_id]}"
+            for unit_id in context_unit_ids
+        )
+    )
+
+
 def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
     manifest = load_manifest(root, batch_id)
     current = batch_unit_fingerprints(root, batch_id)
@@ -545,6 +567,7 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
         unit.unit_id: unit
         for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     }
+    translations = translation_map(root)
     expected = set(manifest.unit_ids)
     coverage: dict[str, set[str]] = {lens: set() for lens in REQUIRED_AUDIT_LENSES}
     context_fingerprints: dict[tuple[str, ...], str | None] = {}
@@ -566,8 +589,17 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
             continue
         if context_ids not in context_fingerprints:
             context_fingerprints[context_ids] = (
-                audit_context_fingerprint(
-                    root, [all_units[unit_id] for unit_id in context_ids]
+                audit_evidence_context_fingerprint(
+                    audit_context_fingerprint(
+                        root, [all_units[unit_id] for unit_id in context_ids]
+                    ),
+                    {
+                        unit_id: translation_unit_fingerprint(
+                            all_units[unit_id], translations.get(unit_id)
+                        )
+                        for unit_id in context_ids
+                    },
+                    list(context_ids),
                 )
                 if all(unit_id in all_units for unit_id in context_ids)
                 else None
@@ -694,8 +726,19 @@ def _prepare_review_import_locked(
                 "Audit context references missing source units: "
                 f"{missing_context_units}"
             )
-        run_context_fingerprint = audit_context_fingerprint(
-            root, [all_units[unit_id] for unit_id in run_context_ids]
+        current_translations = translation_map(root)
+        context_fingerprints = {
+            unit_id: translation_unit_fingerprint(
+                all_units[unit_id], current_translations.get(unit_id)
+            )
+            for unit_id in run_context_ids
+        }
+        run_context_fingerprint = audit_evidence_context_fingerprint(
+            audit_context_fingerprint(
+                root, [all_units[unit_id] for unit_id in run_context_ids]
+            ),
+            context_fingerprints,
+            run_context_ids,
         )
         if (
             expected_context_fingerprint is not None

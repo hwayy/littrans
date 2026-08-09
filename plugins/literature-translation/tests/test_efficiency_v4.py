@@ -632,6 +632,21 @@ def test_workflow_metrics_rejects_unknown_batch_ids(tmp_path: Path) -> None:
     )
 
 
+def test_workflow_metrics_ignores_history_for_removed_source_units(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _submit(root, batch_id, suffix="修订")
+    write_jsonl(root / "derived" / "units.jsonl", [])
+
+    metrics = workflow_metrics(root, [batch_id])
+
+    assert metrics["history_records"] == 0
+    assert metrics["semantic_noop_records"] == 0
+
+
 def _make_project(
     tmp_path: Path, pages: int = 3, max_words: int = 100
 ) -> tuple[Path, list[object]]:
@@ -2931,6 +2946,21 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     ]
     assert audit_coverage(root, manifests[2].batch_id)["missing"]["fidelity"] == [
         "u003"
+    ]
+
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    changed_source = units[0].source_text + " changed seam"
+    units[0] = units[0].model_copy(
+        update={
+            "source_text": changed_source,
+            "source_hash": sha256_text(changed_source),
+        }
+    )
+    write_jsonl(units_path, units)
+
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == [
+        "u002"
     ]
 
 
