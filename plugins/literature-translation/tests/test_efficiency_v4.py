@@ -1011,6 +1011,33 @@ def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) ->
     assert audit_coverage(root, second.batch_id)["missing"]["fidelity"] == []
 
 
+def test_review_set_rejects_covered_unit_without_packet_fingerprint(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    assert run_qa(root, batch_id).passed
+    packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
+    covered_id = packet.unit_ids[0]
+    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_payload = read_json(manifest_path)
+    manifest_payload["unit_fingerprints"].pop(covered_id)
+    write_json(manifest_path, manifest_payload)
+    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    write_jsonl(issues_path, [])
+
+    _submit(root, batch_id, suffix="修订")
+
+    with pytest.raises(
+        ValueError, match=f"missing fingerprints for covered units.*{covered_id}"
+    ):
+        import_review_set(root, manifest_path, issues_path)
+    assert audit_coverage(root, batch_id)["missing"]["fidelity"] == [
+        covered_id
+    ]
+
+
 def test_review_import_preserves_explicitly_empty_lenses(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id

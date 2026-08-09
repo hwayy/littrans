@@ -317,6 +317,14 @@ def import_review_set(
     manifest = WorkflowPacketManifest.model_validate(read_json(packet_manifest_path))
     if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
         raise ValueError("review import-set requires an audit packet manifest")
+    missing_fingerprints = sorted(
+        set(manifest.unit_ids) - set(manifest.unit_fingerprints)
+    )
+    if missing_fingerprints:
+        raise ValueError(
+            "Audit packet is missing fingerprints for covered units: "
+            f"{missing_fingerprints}"
+        )
     units = {
         unit.unit_id: unit
         for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
