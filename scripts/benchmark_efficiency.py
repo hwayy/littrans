@@ -65,16 +65,29 @@ def _consecutive_packet_groups(
 ) -> list[list[Any]]:
     groups: list[list[Any]] = []
     current: list[Any] = []
+    current_unit_ids: set[str] = set()
     for manifest in manifests:
         if manifest.batch_id not in selected_batch_ids:
             if current:
                 groups.append(current)
                 current = []
+                current_unit_ids = set()
             continue
+        candidate_ids = set(manifest.unit_ids)
+        if len(candidate_ids) != len(manifest.unit_ids):
+            raise ValueError(
+                f"Benchmark manifest {manifest.batch_id} contains duplicate source units"
+            )
+        if current_unit_ids & candidate_ids:
+            groups.append(current)
+            current = []
+            current_unit_ids = set()
         current.append(manifest)
+        current_unit_ids.update(candidate_ids)
         if len(current) == 3:
             groups.append(current)
             current = []
+            current_unit_ids = set()
     if current:
         groups.append(current)
     return groups

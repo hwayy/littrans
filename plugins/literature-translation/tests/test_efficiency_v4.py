@@ -452,6 +452,34 @@ def test_completed_benchmark_does_not_group_across_incomplete_batches(
     )
 
 
+def test_benchmark_splits_overlapping_manifests_into_executable_groups(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    root, manifests = _make_project(tmp_path, pages=1)
+    duplicate = create_batches(
+        root, "1", max_words=700, prefix="benchmark-overlap"
+    )[0]
+    selected_ids = {manifests[0].batch_id, duplicate.batch_id}
+    ordered = [
+        manifest
+        for manifest in namespace["_all_manifests"](root)
+        if manifest.batch_id in selected_ids
+    ]
+
+    groups = namespace["_consecutive_packet_groups"](ordered, selected_ids)
+
+    assert [manifest.batch_id for group in groups for manifest in group] == [
+        manifest.batch_id for manifest in ordered
+    ]
+    assert len(groups) == 2
+    for group in groups:
+        batch_ids = [manifest.batch_id for manifest in group]
+        packet = create_workflow_packet(root, "translate", batch_ids)
+        assert packet.batch_ids == batch_ids
+
+
 def test_shadow_cli_rejects_duplicate_batch_samples_before_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
