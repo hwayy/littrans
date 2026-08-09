@@ -575,69 +575,93 @@ def import_review(
     covered_unit_ids: list[str] | None = None,
     reviewer: str | None = None,
     packet_id: str | None = None,
+    expected_unit_fingerprints: dict[str, str] | None = None,
 ) -> list[ReviewIssue]:
-    require_current_project_schema(root, "Review import")
-    manifest = load_manifest(root, batch_id)
     issues = read_jsonl(input_path, ReviewIssue)
-    valid_units = set(manifest.unit_ids)
-    issue_ids: set[str] = set()
-    for issue in issues:
-        if issue.batch_id != batch_id:
-            raise ValueError(f"Issue {issue.issue_id} belongs to {issue.batch_id}, not {batch_id}")
-        if issue.unit_id not in valid_units:
-            raise ValueError(f"Issue {issue.issue_id} references an invalid unit")
-        if issue.issue_id in issue_ids:
-            raise ValueError(f"Duplicate review issue ID: {issue.issue_id}")
-        issue_ids.add(issue.issue_id)
-    issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
-    existing = {issue.issue_id: issue for issue in read_jsonl(issue_path, ReviewIssue)}
-    existing.update({issue.issue_id: issue for issue in issues})
-    merged_issues = list(existing.values())
-    write_jsonl(issue_path, merged_issues)
-    selected_lenses = set(REQUIRED_AUDIT_LENSES if lenses is None else lenses)
-    internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
-    coverage_ids = set(
-        manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
-    )
-    invalid_coverage = coverage_ids - set(manifest.unit_ids)
-    if invalid_coverage:
-        raise ValueError(f"Audit coverage references invalid units: {sorted(invalid_coverage)}")
-    fingerprints = batch_unit_fingerprints(root, batch_id)
-    runs = _audit_runs(root, batch_id)
-    for lens in sorted(internal_lenses):
-        prior = next((run for run in reversed(runs) if run.lens == lens), None)
-        run = AuditRun(
-            run_id=uuid.uuid4().hex,
-            batch_ids=[batch_id],
-            reviewer=reviewer or (issues[0].reviewer if issues else "independent-auditor"),
-            lens=lens,
-            scope=(
-                ReviewScope.FULL
-                if coverage_ids >= set(manifest.unit_ids)
-                else ReviewScope.INCREMENTAL
-            ),
-            base_run_id=prior.run_id if prior else None,
-            packet_id=packet_id,
-            unit_fingerprints={
-                unit_id: fingerprints[unit_id]
-                for unit_id in manifest.unit_ids
-                if unit_id in coverage_ids
-            },
-            issue_ids=[issue.issue_id for issue in issues],
+    with project_write_lock(root):
+        require_current_project_schema(root, "Review import")
+        manifest = load_manifest(root, batch_id)
+        valid_units = set(manifest.unit_ids)
+        issue_ids: set[str] = set()
+        for issue in issues:
+            if issue.batch_id != batch_id:
+                raise ValueError(
+                    f"Issue {issue.issue_id} belongs to {issue.batch_id}, not {batch_id}"
+                )
+            if issue.unit_id not in valid_units:
+                raise ValueError(f"Issue {issue.issue_id} references an invalid unit")
+            if issue.issue_id in issue_ids:
+                raise ValueError(f"Duplicate review issue ID: {issue.issue_id}")
+            issue_ids.add(issue.issue_id)
+
+        selected_lenses = set(REQUIRED_AUDIT_LENSES if lenses is None else lenses)
+        internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
+        coverage_ids = set(
+            manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
         )
-        append_jsonl(_audit_runs_path(root, batch_id), [run])
-        runs.append(run)
-    if internal_lenses or not (root / "reviews" / f"{batch_id}.audit.json").exists():
-        summary = _write_audit_summary(root, batch_id, len(issues))
-        summary["total_issue_count"] = len(merged_issues)
-        write_json(root / "reviews" / f"{batch_id}.audit.json", summary)
-    if not preserve_status:
-        has_open_blocking = any(
-            issue.status is IssueStatus.OPEN
-            and issue.severity in BLOCKING_SEVERITIES
-            for issue in merged_issues
-        )
-        with project_write_lock(root):
+        invalid_coverage = coverage_ids - valid_units
+        if invalid_coverage:
+            raise ValueError(
+                f"Audit coverage references invalid units: {sorted(invalid_coverage)}"
+            )
+        fingerprints = batch_unit_fingerprints(root, batch_id)
+        if expected_unit_fingerprints is not None:
+            if set(expected_unit_fingerprints) != coverage_ids:
+                raise ValueError(
+                    "Expected audit fingerprints must match the covered unit IDs"
+                )
+            stale = sorted(
+                unit_id
+                for unit_id, expected in expected_unit_fingerprints.items()
+                if fingerprints.get(unit_id) != expected
+            )
+            if stale:
+                raise ValueError(f"Audit packet is stale for units: {stale}")
+
+        issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
+        existing = {
+            issue.issue_id: issue for issue in read_jsonl(issue_path, ReviewIssue)
+        }
+        existing.update({issue.issue_id: issue for issue in issues})
+        merged_issues = list(existing.values())
+        write_jsonl(issue_path, merged_issues)
+        runs = _audit_runs(root, batch_id)
+        for lens in sorted(internal_lenses):
+            prior = next((run for run in reversed(runs) if run.lens == lens), None)
+            run = AuditRun(
+                run_id=uuid.uuid4().hex,
+                batch_ids=[batch_id],
+                reviewer=reviewer
+                or (issues[0].reviewer if issues else "independent-auditor"),
+                lens=lens,
+                scope=(
+                    ReviewScope.FULL
+                    if coverage_ids >= valid_units
+                    else ReviewScope.INCREMENTAL
+                ),
+                base_run_id=prior.run_id if prior else None,
+                packet_id=packet_id,
+                unit_fingerprints={
+                    unit_id: fingerprints[unit_id]
+                    for unit_id in manifest.unit_ids
+                    if unit_id in coverage_ids
+                },
+                issue_ids=[issue.issue_id for issue in issues],
+            )
+            append_jsonl(_audit_runs_path(root, batch_id), [run])
+            runs.append(run)
+        if internal_lenses or not (
+            root / "reviews" / f"{batch_id}.audit.json"
+        ).exists():
+            summary = _write_audit_summary(root, batch_id, len(issues))
+            summary["total_issue_count"] = len(merged_issues)
+            write_json(root / "reviews" / f"{batch_id}.audit.json", summary)
+        if not preserve_status:
+            has_open_blocking = any(
+                issue.status is IssueStatus.OPEN
+                and issue.severity in BLOCKING_SEVERITIES
+                for issue in merged_issues
+            )
             current = translation_map(root)
             for unit_id in manifest.translatable_unit_ids:
                 if has_open_blocking or (

@@ -28,6 +28,7 @@ from littrans.migration import (
     migrate_project_schema,
 )
 from littrans.models import (
+    AuditRun,
     ExternalReviewConfig,
     ExternalReviewDriver,
     ExternalReviewerConfig,
@@ -1826,6 +1827,43 @@ def test_review_set_rejects_covered_unit_without_packet_fingerprint(
     assert audit_coverage(root, batch_id)["missing"]["fidelity"] == [
         covered_id
     ]
+
+
+def test_review_set_revalidates_packet_inside_the_audit_import_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    assert run_qa(root, batch_id).passed
+    packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
+    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    issues_path = manifest_path.parent / "issues.jsonl"
+    write_jsonl(issues_path, [])
+    original_import = import_review_set.__globals__["import_review"]
+    raced = False
+
+    def racing_import(*args: object, **kwargs: object) -> list[ReviewIssue]:
+        nonlocal raced
+        if not raced:
+            raced = True
+            _submit(root, batch_id, suffix="并发修订")
+        return original_import(*args, **kwargs)
+
+    monkeypatch.setitem(
+        import_review_set.__globals__, "import_review", racing_import
+    )
+
+    with pytest.raises(ValueError, match="Audit packet is stale for units"):
+        import_review_set(root, manifest_path, issues_path)
+
+    assert raced
+    assert audit_coverage(root, batch_id)["missing"]["fidelity"] == sorted(
+        manifests[0].unit_ids
+    )
+    assert read_jsonl(
+        root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
+    ) == []
 
 
 def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:

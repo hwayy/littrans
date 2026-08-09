@@ -509,6 +509,10 @@ def import_review_set(
                     else f"independent-{manifest.lens}-auditor"
                 ),
                 packet_id=manifest.packet_id,
+                expected_unit_fingerprints={
+                    unit_id: manifest.unit_fingerprints[unit_id]
+                    for unit_id in coverage_ids
+                },
             )
         finally:
             temporary.unlink(missing_ok=True)
