@@ -1285,7 +1285,7 @@ def run_external_review(
     issues = _convert_issues(
         batch_id, reviewer, actual_model, fingerprint, run_id, payload
     )
-    import_path = root / "reviews" / ".external-import.jsonl"
+    import_path = root / "reviews" / f".external-import-{run_id}.jsonl"
     write_jsonl(import_path, issues)
     try:
         import_review(

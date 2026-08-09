@@ -338,6 +338,70 @@ def test_failed_external_review_records_actual_prompt_delivery(
     assert not runs[-1].success
 
 
+def test_external_review_uses_a_per_run_import_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    config = load_project(root)
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    save_project(root, config)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+
+    def invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        return (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=2),
+            0.01,
+        )
+
+    import_paths: list[Path] = []
+
+    def capture_import(
+        project_root: Path,
+        batch_id: str,
+        input_path: Path,
+        *args: object,
+        **kwargs: object,
+    ) -> list[ReviewIssue]:
+        assert project_root == root
+        assert input_path.exists()
+        assert read_jsonl(input_path, ReviewIssue) == []
+        import_paths.append(input_path)
+        return []
+
+    monkeypatch.setattr(external_review, "_invoke", invoke)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+    monkeypatch.setattr(external_review, "import_review", capture_import)
+
+    for manifest in manifests:
+        status = external_review.run_external_review(root, manifest.batch_id)
+        assert status["external_approvable"]
+
+    assert len(import_paths) == len(manifests) == 2
+    assert len(set(import_paths)) == len(import_paths)
+    assert all(path.name.startswith(".external-import-") for path in import_paths)
+    assert all(not path.exists() for path in import_paths)
+
+
 def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
