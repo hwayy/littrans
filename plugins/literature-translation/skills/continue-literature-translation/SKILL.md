@@ -12,6 +12,7 @@ Coordinate state transitions; keep translation and review judgment independent. 
 1. Run `workflow next PROJECT --limit 3`.
 2. Accept only its consecutive same-stage batch set. Finish that set before selecting another.
 3. Use `workflow metrics PROJECT --batch-ids ID1,ID2,ID3` for a compact progress and usage snapshot. Do not load whole-project history into model context.
+4. If the reported stage is `revise`, resolve, reject, or waive each open internal substantive issue, revising the affected translation when required. Do not start external review until `workflow next` advances past `revise`.
 
 ## Translate
 

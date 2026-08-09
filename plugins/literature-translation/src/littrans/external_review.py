@@ -1001,16 +1001,17 @@ def _require_machine_reviewed(root: Path, batch_id: str) -> None:
     if not audit_coverage(root, batch_id)["complete"]:
         raise ValueError("External review requires all current internal audit lenses")
     issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)
-    open_internal_blocking = [
+    open_internal_substantive = [
         issue.issue_id
         for issue in issues
         if issue.status is IssueStatus.OPEN
-        and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+        and issue.severity is not Severity.SUGGESTION
         and not issue.reviewer.startswith("external:")
     ]
-    if open_internal_blocking:
+    if open_internal_substantive:
         raise ValueError(
-            f"External review is blocked by internal issues: {open_internal_blocking}"
+            "External review is blocked by internal substantive issues: "
+            f"{open_internal_substantive}"
         )
     translations = translation_map(root)
     allowed = {

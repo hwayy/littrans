@@ -21,6 +21,7 @@ from littrans.models import (
     ExternalReviewRun,
     IssueStatus,
     ProjectStatus,
+    RenderPolicy,
     ReviewIssue,
     Severity,
     SourceUnit,
@@ -83,22 +84,37 @@ def _batch_stage(root: Path, batch_id: str) -> str:
     ):
         return "machine-approve"
     config = load_project(root)
-    open_blocking = [
+    open_issues = [
         issue
         for issue in read_jsonl(
             root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
         )
         if issue.status is IssueStatus.OPEN
-        and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+    ]
+    external_enabled = bool(
+        config.external_review and config.external_review.enabled
+    )
+    open_internal_substantive = [
+        issue
+        for issue in open_issues
+        if issue.severity is not Severity.SUGGESTION
+        and not issue.reviewer.startswith("external:")
+    ]
+    if external_enabled and open_internal_substantive:
+        return "revise"
+    open_blocking = [
+        issue
+        for issue in open_issues
+        if issue.severity in {Severity.BLOCKER, Severity.MAJOR}
     ]
     if open_blocking:
         external_only = all(
             issue.reviewer.startswith("external:") for issue in open_blocking
         )
-        if external_only and config.external_review and config.external_review.enabled:
+        if external_only and external_enabled:
             return "external-review"
         return "machine-approve"
-    if config.external_review and config.external_review.enabled:
+    if external_enabled:
         from littrans.external_review import external_review_status
 
         if not external_review_status(root, batch_id)["external_approvable"]:
@@ -116,6 +132,22 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
     if not 1 <= limit <= 3:
         raise ValueError("workflow next limit must be between 1 and 3")
     manifests = _all_manifests(root)
+    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    manifest_unit_ids = {
+        unit_id for manifest in manifests for unit_id in manifest.unit_ids
+    }
+    unbatched_units = sorted(
+        unit.unit_id
+        for unit in units
+        if unit.render_policy is RenderPolicy.INCLUDE
+        and unit.unit_id not in manifest_unit_ids
+    )
+    if unbatched_units:
+        raise ValueError(
+            "Workflow manifests do not cover current renderable source units; "
+            "refresh or create batches before continuing: "
+            f"unbatched_units={unbatched_units}"
+        )
     stages = [(manifest.batch_id, _batch_stage(root, manifest.batch_id)) for manifest in manifests]
     start = next((index for index, (_, stage) in enumerate(stages) if stage != "complete"), None)
     if start is None:

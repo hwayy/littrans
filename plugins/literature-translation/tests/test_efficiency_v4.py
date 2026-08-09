@@ -928,6 +928,57 @@ def test_formal_render_requires_current_external_review_ledger(
     )
 
 
+def test_internal_minor_requires_revision_before_external_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    minor = ReviewIssue(
+        issue_id="internal-minor-before-external",
+        batch_id=batch_id,
+        unit_id=manifests[0].translatable_unit_ids[0],
+        severity=Severity.MINOR,
+        type=IssueType.MEANING,
+        explanation="Resolve this substantive internal finding before paid review.",
+        reviewer="independent-fidelity-auditor",
+    )
+    issue_path = root / "reviews" / "internal-minor.jsonl"
+    write_jsonl(issue_path, [minor])
+    import_review(root, batch_id, issue_path)
+    invoked = False
+
+    def forbidden_invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(external_review, "_invoke", forbidden_invoke)
+
+    assert workflow_next(root)["stage"] == "revise"
+    with pytest.raises(
+        ValueError,
+        match="internal substantive issues.*internal-minor-before-external",
+    ):
+        external_review.run_external_review(root, batch_id)
+    assert not invoked
+
+
 def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
     tmp_path: Path,
 ) -> None:
@@ -995,6 +1046,43 @@ def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> Non
     assert render_project(
         root, "1", "unbatched-draft", allow_draft=True
     )
+
+
+def test_workflow_rejects_completion_with_an_unbatched_interior_unit(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=700)
+    assert len(manifests) == 1
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    assert workflow_next(root)["stage"] == "complete"
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    source = "print('inserted source-only unit')"
+    inserted = SourceUnit(
+        unit_id="interior-unbatched-code",
+        kind=UnitKind.CODE,
+        page=1,
+        bbox=(570, 40, 610, 100),
+        source_text=source,
+        source_hash=sha256_text(source),
+        translatable=False,
+        code_language="python",
+        verification_status=SemanticStatus.VERIFIED,
+        confidence=1.0,
+    )
+    write_jsonl(units_path, [units[0], inserted, *units[1:]])
+    assert verify_extraction(root, "all", force=True)["passed"]
+
+    with pytest.raises(
+        ValueError, match="unbatched_units=.*interior-unbatched-code"
+    ):
+        workflow_next(root)
+
+    refreshed = refresh_batch(root, batch_id)
+    assert inserted.unit_id in refreshed.unit_ids
+    assert workflow_next(root)["stage"] == "qa"
 
 
 def test_external_review_does_not_reuse_approval_after_glossary_change(
