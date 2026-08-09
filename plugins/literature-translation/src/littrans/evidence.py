@@ -115,6 +115,16 @@ def effective_translation_payload(
 ) -> dict[str, Any]:
     """Return renderer-aware semantic content for one source unit."""
     payload = translation_payload(record)
+    try:
+        rendered_figure_labels = effective_figure_labels(unit, record)
+    except ValueError:
+        # Keep malformed legacy records fingerprintable so deterministic QA can
+        # report the mapping error instead of failing before it writes a report.
+        rendered_figure_labels = record.figure_labels
+    payload["figure_labels"] = [
+        label.model_dump(mode="json", exclude_none=True)
+        for label in rendered_figure_labels
+    ]
     if unit.kind is UnitKind.CAPTION and "target_text" in payload:
         payload["target_text"] = normalize_zh_caption(payload["target_text"])
     return payload

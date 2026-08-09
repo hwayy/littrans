@@ -772,6 +772,75 @@ def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
     }
 
 
+def test_explicit_fallback_figure_labels_are_semantic_noop(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "figure_labels": [
+                FigureLabel(source="Open", target="打开"),
+                FigureLabel(source="Close", target="关闭"),
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    assert verify_extraction(root, "all", force=True)["passed"]
+    refresh_batch(root, manifest.batch_id)
+    _submit(root, manifest.batch_id)
+    _audit_and_approve(root, manifest.batch_id)
+
+    current_path = root / "translations" / "current.jsonl"
+    history_path = root / "translations" / "history.jsonl"
+    batch_path = root / "batches" / manifest.batch_id / "translation.jsonl"
+    prior = translation_map(root)[unit.unit_id]
+    assert prior.figure_labels == []
+    before = {
+        "current": current_path.read_bytes(),
+        "history": history_path.read_bytes(),
+        "project": (root / "project.yaml").read_bytes(),
+        "qa": (root / "qa" / f"{manifest.batch_id}.json").read_bytes(),
+        "audit": (
+            root / "reviews" / f"{manifest.batch_id}.audit.json"
+        ).read_bytes(),
+        "runs": (
+            root / "evidence" / "audits" / f"{manifest.batch_id}.jsonl"
+        ).read_bytes(),
+    }
+    write_jsonl(
+        batch_path,
+        [
+            prior.model_copy(
+                update={
+                    "figure_labels": unit.figure_labels,
+                    "revision": prior.revision + 1,
+                    "status": ProjectStatus.DRAFT,
+                }
+            )
+        ],
+    )
+
+    returned = submit_translation(root, manifest.batch_id, batch_path)
+
+    assert returned == [prior]
+    assert read_jsonl(batch_path, TranslationRecord) == [prior]
+    assert audit_coverage(root, manifest.batch_id)["complete"]
+    assert before == {
+        "current": current_path.read_bytes(),
+        "history": history_path.read_bytes(),
+        "project": (root / "project.yaml").read_bytes(),
+        "qa": (root / "qa" / f"{manifest.batch_id}.json").read_bytes(),
+        "audit": (
+            root / "reviews" / f"{manifest.batch_id}.audit.json"
+        ).read_bytes(),
+        "runs": (
+            root / "evidence" / "audits" / f"{manifest.batch_id}.jsonl"
+        ).read_bytes(),
+    }
+
+
 def test_new_blocking_audit_reopens_approved_batch(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
