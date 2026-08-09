@@ -169,10 +169,13 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     target = record.target_text if record else "[source-only]"
     if record and record.target_table:
         target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
-    if record and record.figure_labels:
+    rendered_figure_labels = (
+        record.figure_labels if record and record.figure_labels else unit.figure_labels
+    )
+    if rendered_figure_labels:
         target += "\n\nFigure label translations:\n" + "\n".join(
             f"- {label.source}: {label.target or '[missing]'}"
-            for label in record.figure_labels
+            for label in rendered_figure_labels
         )
     if record and record.reader_note:
         note = record.reader_note
@@ -347,15 +350,31 @@ def import_review_set(
     root: Path, packet_manifest_path: Path, issues_path: Path
 ) -> dict[str, Any]:
     require_current_project_schema(root, "Review-set import")
-    manifest = WorkflowPacketManifest.model_validate(read_json(packet_manifest_path))
-    if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
-        raise ValueError("review import-set requires an audit packet manifest")
+    supplied_manifest = WorkflowPacketManifest.model_validate(
+        read_json(packet_manifest_path)
+    )
     packet_root = (root / "packets").resolve()
-    packet_dir = (packet_root / manifest.packet_id).resolve()
+    packet_dir = (packet_root / supplied_manifest.packet_id).resolve()
     try:
         packet_dir.relative_to(packet_root)
     except ValueError as exc:
         raise ValueError("Audit packet path escapes the project packet root") from exc
+    canonical_path = (packet_dir / "manifest.json").resolve()
+    try:
+        canonical_path.relative_to(packet_root)
+    except ValueError as exc:
+        raise ValueError("Canonical audit manifest escapes the packet root") from exc
+    if not canonical_path.is_file():
+        raise ValueError(
+            f"Canonical audit packet manifest does not exist: {canonical_path}"
+        )
+    manifest = WorkflowPacketManifest.model_validate(read_json(canonical_path))
+    if supplied_manifest != manifest:
+        raise ValueError(
+            "Provided audit packet manifest does not match the canonical stored manifest"
+        )
+    if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
+        raise ValueError("review import-set requires an audit packet manifest")
     missing_fingerprints = sorted(
         set(manifest.unit_ids) - set(manifest.unit_fingerprints)
     )
