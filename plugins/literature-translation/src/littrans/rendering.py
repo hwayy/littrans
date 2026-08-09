@@ -619,6 +619,10 @@ def render_project(
         render_unit = unit
         if unit.kind is UnitKind.TABLE and record and record.target_table:
             render_unit = unit.model_copy(update={"table": record.target_table})
+        if unit.kind is UnitKind.FIGURE and record and record.figure_labels:
+            render_unit = unit.model_copy(
+                update={"figure_labels": record.figure_labels}
+            )
         rendered = _target_markdown(render_unit, target)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
@@ -707,7 +711,7 @@ def render_project(
             source_view=True,
         )
         target_html = _unit_html(
-            unit,
+            render_unit,
             bilingual_target,
             record.target_table if record else None,
             source_view=False,

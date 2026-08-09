@@ -73,16 +73,6 @@ def _batch_stage(root: Path, batch_id: str) -> str:
         return "qa"
     if not audit_coverage(root, batch_id)["complete"]:
         return "audit"
-    allowed_machine = {
-        ProjectStatus.MACHINE_REVIEWED,
-        ProjectStatus.EXTERNAL_REVIEWED,
-        ProjectStatus.HUMAN_APPROVED,
-    }
-    if any(
-        translations[unit_id].status not in allowed_machine
-        for unit_id in manifest.translatable_unit_ids
-    ):
-        return "machine-approve"
     config = load_project(root)
     open_issues = [
         issue
@@ -99,14 +89,22 @@ def _batch_stage(root: Path, batch_id: str) -> str:
         for issue in open_issues
         if issue.severity is not Severity.SUGGESTION
     ]
-    if external_enabled and open_substantive:
-        return "revise"
     open_blocking = [
         issue
         for issue in open_issues
         if issue.severity in {Severity.BLOCKER, Severity.MAJOR}
     ]
-    if open_blocking:
+    if open_blocking or (external_enabled and open_substantive):
+        return "revise"
+    allowed_machine = {
+        ProjectStatus.MACHINE_REVIEWED,
+        ProjectStatus.EXTERNAL_REVIEWED,
+        ProjectStatus.HUMAN_APPROVED,
+    }
+    if any(
+        translations[unit_id].status not in allowed_machine
+        for unit_id in manifest.translatable_unit_ids
+    ):
         return "machine-approve"
     if external_enabled:
         from littrans.external_review import external_review_status

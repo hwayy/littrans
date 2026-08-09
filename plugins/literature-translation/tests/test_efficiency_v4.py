@@ -682,7 +682,7 @@ def test_new_blocking_audit_reopens_approved_batch(tmp_path: Path) -> None:
         for unit_id in load_manifest(root, batch_id).translatable_unit_ids
     } == {ProjectStatus.REVIEWED}
     assert load_project(root).status is ProjectStatus.REVIEWED
-    assert workflow_next(root)["stage"] == "machine-approve"
+    assert workflow_next(root)["stage"] == "revise"
     with pytest.raises(ValueError, match="Open blocker/major issues remain"):
         approve_batch(root, batch_id, "machine")
     with pytest.raises(ValueError, match="open_severe=.*late-major"):
@@ -1082,7 +1082,7 @@ def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
     )
     import_review(root, batch_id, blocker_path)
 
-    assert workflow_next(root)["stage"] == "machine-approve"
+    assert workflow_next(root)["stage"] == "revise"
 
 
 def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> None:
@@ -1758,7 +1758,9 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
     unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
         update={
             "kind": UnitKind.FIGURE,
-            "figure_labels": [FigureLabel(source="Status", target="状态")],
+            "figure_labels": [
+                FigureLabel(source="Status", target="来源单元旧译")
+            ],
             "visual_text_status": SemanticStatus.VERIFIED,
         }
     )
@@ -1773,7 +1775,9 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
             TranslationRecord(
                 unit_id=unit.unit_id,
                 target_text="状态图",
-                figure_labels=[FigureLabel(source="Status", target="状态")],
+                figure_labels=[
+                    FigureLabel(source="Status", target="译文记录新译")
+                ],
                 reader_note=ReaderNote(
                     text="该状态已由规范勘误更新。",
                     sources=["https://example.com/erratum"],
@@ -1794,11 +1798,22 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
     )
 
     assert "Figure label sources:\n- Status" in audit_text
-    assert "Figure label translations:\n- Status: 状态" in audit_text
+    assert "Figure label translations:\n- Status: 译文记录新译" in audit_text
+    assert "来源单元旧译" not in audit_text
     assert "Reader note (separate from translated body):" in audit_text
     assert "该状态已由规范勘误更新。" in audit_text
     assert "https://example.com/erratum" in audit_text
     assert "Accessed: 2026-08-09" in audit_text
+
+    outputs = render_project(
+        root, "1", "structured-fields-draft", allow_draft=True
+    )
+    rendered_markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    rendered_html = Path(outputs["html"]).read_text(encoding="utf-8")
+    assert "译文记录新译" in rendered_markdown
+    assert "译文记录新译" in rendered_html
+    assert "来源单元旧译" not in rendered_markdown
+    assert "来源单元旧译" not in rendered_html
 
     issues = root / "packets" / packet.packet_id / "issues.jsonl"
     write_jsonl(issues, [])
