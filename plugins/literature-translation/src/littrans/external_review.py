@@ -379,6 +379,7 @@ def _evidence_map(
     root: Path,
     batch_id: str,
     translation_overrides: dict[str, TranslationRecord] | None = None,
+    covered_unit_ids: list[str] | None = None,
 ) -> dict[str, tuple[str, str]]:
     manifest = load_manifest(root, batch_id)
     units = {
@@ -387,8 +388,13 @@ def _evidence_map(
     translations = translation_map(root)
     if translation_overrides:
         translations.update(translation_overrides)
+    selected_ids = set(
+        manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
+    )
     evidence: dict[str, tuple[str, str]] = {}
     for unit_id in manifest.unit_ids:
+        if unit_id not in selected_ids:
+            continue
         unit = units[unit_id]
         record = translations.get(unit_id)
         source = unit.source_markdown or unit.source_text
@@ -1175,7 +1181,14 @@ def run_external_review(
                 duration_seconds,
                 usage,
                 cost_usd,
-            ) = _invoke(reviewer, packet_path, work_dir, _evidence_map(root, batch_id))
+            ) = _invoke(
+                reviewer,
+                packet_path,
+                work_dir,
+                _evidence_map(
+                    root, batch_id, covered_unit_ids=covered_unit_ids
+                ),
+            )
         except ExternalInvocationError as exc:
             run_id = uuid.uuid4().hex
             response_dir = root / "reviews" / "external" / batch_id

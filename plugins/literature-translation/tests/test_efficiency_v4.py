@@ -1236,7 +1236,7 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
 
 
 def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, manifests = _make_project(tmp_path, pages=11, max_words=700)
     assert [len(manifest.unit_ids) for manifest in manifests] == [5, 5, 1]
@@ -1304,6 +1304,41 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     assert f"## Unit {outside_id} [READ-ONLY SEAM CONTEXT]" in packet
     assert "do not report issues against them" in packet
     assert pages == [5, 6, 7]
+
+    _audit_and_approve(root, middle.batch_id)
+    captured_evidence: dict[str, tuple[str, str]] = {}
+
+    def invoke(
+        reviewer: ExternalReviewerConfig,
+        packet_path: Path,
+        work_dir: Path,
+        evidence: dict[str, tuple[str, str]],
+        **kwargs: object,
+    ) -> tuple[object, ...]:
+        captured_evidence.update(evidence)
+        return (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=2),
+            0.01,
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", invoke)
+    monkeypatch.setattr(
+        external_review, "_command_version", lambda command: "test"
+    )
+    result = external_review.run_external_review(root, middle.batch_id)
+
+    assert result["external_approvable"]
+    assert set(captured_evidence) == set(covered)
+    assert outside_id not in captured_evidence
 
 
 def test_external_status_does_not_reuse_an_old_second_opinion(
