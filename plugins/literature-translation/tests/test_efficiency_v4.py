@@ -5,6 +5,7 @@ import runpy
 from pathlib import Path
 from types import SimpleNamespace
 
+import fitz
 import pytest
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -27,6 +28,7 @@ from littrans.migration import (
 )
 from littrans.models import (
     ExternalReviewConfig,
+    ExternalReviewDriver,
     ExternalReviewerConfig,
     ExternalReviewRun,
     ExternalReviewVerdict,
@@ -626,6 +628,10 @@ def test_external_review_does_not_reuse_approval_after_glossary_change(
         prompt_version="test",
         verdict=ExternalReviewVerdict.ACCEPTED,
         summary="No substantive defects.",
+        covered_unit_ids=list(manifests[0].unit_ids),
+        unit_fingerprints=batch_unit_fingerprints(root, batch_id),
+        source_fingerprint=batch_source_fingerprint(root, batch_id),
+        structure_fingerprint=batch_structure_fingerprint(root, batch_id),
     )
     runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
     append_jsonl(runs_path, [accepted])
@@ -837,14 +843,25 @@ def test_page_receipts_skip_unchanged_verification(
     receipt_path = root / "evidence" / "pages" / "page-0001.json"
     before = receipt_path.read_bytes()
 
-    import littrans.verification as verification
+    def fail_pixmap(*args: object, **kwargs: object) -> object:
+        raise AssertionError("cached verification attempted to rasterize the PDF")
 
-    def fail_report(*args: object, **kwargs: object) -> str:
-        raise AssertionError("cached verification attempted to render")
-
-    monkeypatch.setattr(verification, "_write_visual_report", fail_report)
+    monkeypatch.setattr(fitz.Page, "get_pixmap", fail_pixmap)
     require_verified_extraction(root, {1})
     assert receipt_path.read_bytes() == before
+
+
+def test_partial_verification_report_keeps_cached_pages(tmp_path: Path) -> None:
+    root, _ = _make_project(tmp_path, 2)
+    (root / "evidence" / "pages" / "page-0002.json").unlink()
+
+    result = verify_extraction(root, "all")
+    report = Path(result["visual_report"]).read_text(encoding="utf-8")
+
+    assert result["cached_pages"] == [1]
+    assert result["verified_pages"] == [2]
+    assert "PDF p.1" in report
+    assert "PDF p.2" in report
 
 
 def test_cache_hit_verification_persists_current_result(tmp_path: Path) -> None:
@@ -1241,6 +1258,24 @@ def test_review_set_rejects_covered_unit_without_packet_fingerprint(
     ]
 
 
+def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    assert run_qa(root, batch_id).passed
+    packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
+    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    payload = read_json(manifest_path)
+    payload["packet_id"] = "../escaped"
+    write_json(manifest_path, payload)
+    issues_path = manifest_path.parent / "issues.jsonl"
+    write_jsonl(issues_path, [])
+
+    with pytest.raises(ValueError, match="packet_id"):
+        import_review_set(root, manifest_path, issues_path)
+    assert not (root / "escaped").exists()
+
+
 def test_review_set_rejects_issue_outside_packet_unit_coverage(
     tmp_path: Path,
 ) -> None:
@@ -1434,6 +1469,124 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
     records[3] = records[3].model_copy(update={"target_text": "第二处技术修订", "revision": 2})
     write_jsonl(root / "translations" / "current.jsonl", records)
     assert _primary_review_scope(root, manifest.batch_id, None)[0] is ReviewScope.FULL
+
+
+def test_incremental_external_review_rejects_inconclusive_base_chain(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=5, max_words=700)
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    _submit(root, manifest.batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            ),
+            ExternalReviewerConfig(
+                id="antigravity",
+                driver="antigravity",
+                command="antigravity",
+                model="gemini-3.1-pro",
+                effort="high",
+            ),
+        ]
+    )
+    save_project(root, config)
+    suggestion = ReviewIssue(
+        issue_id="uncertain-base-suggestion",
+        batch_id=manifest.batch_id,
+        unit_id=manifest.unit_ids[0],
+        severity=Severity.SUGGESTION,
+        type=IssueType.STYLE,
+        explanation="This low-confidence suggestion requires a second opinion.",
+        confidence=0.2,
+        reviewer="external:claude",
+    )
+    write_jsonl(
+        root / "reviews" / f"{manifest.batch_id}.issues.jsonl", [suggestion]
+    )
+    snapshot = batch_unit_fingerprints(root, manifest.batch_id)
+    primary = ExternalReviewRun(
+        run_id="inconclusive-chain-primary",
+        batch_id=manifest.batch_id,
+        reviewer_id="claude",
+        driver="claude-code",
+        role="primary",
+        requested_model="claude-sonnet-5",
+        actual_model="claude-sonnet-5",
+        model_verified=True,
+        translation_fingerprint="old-fingerprint",
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.ACCEPTED,
+        summary="Accepted subject to a required second opinion.",
+        issue_ids=[suggestion.issue_id],
+        covered_unit_ids=list(snapshot),
+        unit_fingerprints=snapshot,
+        source_fingerprint=batch_source_fingerprint(root, manifest.batch_id),
+        structure_fingerprint=batch_structure_fingerprint(root, manifest.batch_id),
+    )
+    second = primary.model_copy(
+        update={
+            "run_id": "inconclusive-chain-second",
+            "reviewer_id": "antigravity",
+            "driver": ExternalReviewDriver.ANTIGRAVITY,
+            "role": "second-opinion",
+            "requested_model": "gemini-3.1-pro",
+            "actual_model": "gemini-3.1-pro",
+            "base_run_id": primary.run_id,
+            "verdict": ExternalReviewVerdict.INCONCLUSIVE,
+            "summary": "The second opinion was inconclusive.",
+            "issue_ids": [],
+        }
+    )
+    append_jsonl(
+        root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+        [primary, second],
+    )
+    current = translation_map(root)
+    changed_id = manifest.translatable_unit_ids[2]
+    current[changed_id] = current[changed_id].model_copy(
+        update={"target_text": "局部修订", "revision": 2}
+    )
+    write_jsonl(root / "translations" / "current.jsonl", current.values())
+    current_snapshot = batch_unit_fingerprints(root, manifest.batch_id)
+    inherited = primary.model_copy(
+        update={
+            "run_id": "accepted-incremental-from-inconclusive-base",
+            "translation_fingerprint": external_review.batch_translation_fingerprint(
+                root, manifest.batch_id
+            ),
+            "scope": ReviewScope.INCREMENTAL,
+            "base_run_id": primary.run_id,
+            "issue_ids": [],
+            "covered_unit_ids": [changed_id],
+            "unit_fingerprints": current_snapshot,
+        }
+    )
+    append_jsonl(
+        root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+        [inherited],
+    )
+
+    status = external_review_status(root, manifest.batch_id)
+    assert status["verdict"] == ExternalReviewVerdict.INCONCLUSIVE
+    assert not status["external_approvable"]
+
+    scope, base, covered, reviewer = _primary_review_scope(
+        root, manifest.batch_id, None
+    )
+    assert scope is ReviewScope.FULL
+    assert base is None
+    assert covered == manifest.unit_ids
+    assert reviewer is None
 
 
 def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(

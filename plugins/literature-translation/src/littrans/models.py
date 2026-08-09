@@ -483,7 +483,7 @@ class AuditRun(StrictModel):
 
 class WorkflowPacketManifest(StrictModel):
     schema_version: int = 1
-    packet_id: str
+    packet_id: BatchId
     stage: str
     batch_ids: list[BatchId] = Field(min_length=1, max_length=3)
     lens: str | None = None

@@ -920,6 +920,58 @@ def _needs_second_opinion(root: Path, run: ExternalReviewRun) -> bool:
     )
 
 
+def _primary_chain_approvable(
+    root: Path,
+    runs: list[ExternalReviewRun],
+    primary: ExternalReviewRun,
+    seen: set[str] | None = None,
+) -> bool:
+    """Require each incremental primary and its inherited chain to satisfy the gate."""
+    visited = set(seen or ())
+    if primary.run_id in visited:
+        return False
+    visited.add(primary.run_id)
+    if (
+        primary.role != "primary"
+        or not primary.success
+        or not primary.model_verified
+        or primary.verdict is not ExternalReviewVerdict.ACCEPTED
+        or not primary.unit_fingerprints
+    ):
+        return False
+    if _needs_second_opinion(root, primary):
+        second = next(
+            (
+                run
+                for run in reversed(runs)
+                if run.role == "second-opinion"
+                and run.base_run_id == primary.run_id
+            ),
+            None,
+        )
+        if (
+            second is None
+            or not second.success
+            or not second.model_verified
+            or second.verdict is not primary.verdict
+        ):
+            return False
+    if primary.scope is ReviewScope.INCREMENTAL:
+        inherited = next(
+            (
+                run
+                for run in runs
+                if run.role == "primary" and run.run_id == primary.base_run_id
+            ),
+            None,
+        )
+        return bool(
+            inherited
+            and _primary_chain_approvable(root, runs, inherited, visited)
+        )
+    return True
+
+
 def _require_machine_reviewed(root: Path, batch_id: str) -> None:
     manifest = load_manifest(root, batch_id)
     require_verified_extraction(root, set(manifest.pages))
@@ -964,9 +1016,10 @@ def _require_machine_reviewed(root: Path, batch_id: str) -> None:
 def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
     _review_config(root)
     fingerprint = batch_translation_fingerprint(root, batch_id)
+    all_runs = read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
     runs = [
         run
-        for run in read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
+        for run in all_runs
         if run.translation_fingerprint == fingerprint
     ]
     primary = next((run for run in reversed(runs) if run.role == "primary"), None)
@@ -983,6 +1036,8 @@ def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
     needs_second = bool(primary and _needs_second_opinion(root, primary))
     if primary is None:
         verdict = "missing"
+    elif not _primary_chain_approvable(root, all_runs, primary):
+        verdict = ExternalReviewVerdict.INCONCLUSIVE.value
     elif not primary.model_verified:
         verdict = ExternalReviewVerdict.INCONCLUSIVE.value
     elif needs_second and second is None:
@@ -1023,19 +1078,16 @@ def _primary_review_scope(
     current_source = batch_source_fingerprint(root, batch_id)
     current_structure = batch_structure_fingerprint(root, batch_id)
     reviewer_ids = {reviewer.id for reviewer in _review_config(root).reviewers}
-    base = next(
-        (
-            run
-            for run in reversed(read_jsonl(_runs_path(root, batch_id), ExternalReviewRun))
-            if run.role == "primary"
-            and run.success
-            and run.model_verified
-            and run.verdict is ExternalReviewVerdict.ACCEPTED
-            and run.unit_fingerprints
-            and run.reviewer_id in reviewer_ids
-        ),
-        None,
-    )
+    runs = read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
+    latest_primary = next((run for run in reversed(runs) if run.role == "primary"), None)
+    base = latest_primary
+    if base is not None:
+        chain_approvable = (
+            _primary_chain_approvable(root, runs, base)
+            and base.reviewer_id in reviewer_ids
+        )
+        if not chain_approvable:
+            base = None
     if base is None:
         return ReviewScope.FULL, None, list(manifest.unit_ids), requested_reviewer
     changed = changed_units(current_units, base.unit_fingerprints) & set(

@@ -334,6 +334,12 @@ def import_review_set(
     manifest = WorkflowPacketManifest.model_validate(read_json(packet_manifest_path))
     if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
         raise ValueError("review import-set requires an audit packet manifest")
+    packet_root = (root / "packets").resolve()
+    packet_dir = (packet_root / manifest.packet_id).resolve()
+    try:
+        packet_dir.relative_to(packet_root)
+    except ValueError as exc:
+        raise ValueError("Audit packet path escapes the project packet root") from exc
     missing_fingerprints = sorted(
         set(manifest.unit_ids) - set(manifest.unit_fingerprints)
     )
@@ -388,7 +394,11 @@ def import_review_set(
             for unit_id in batch.unit_ids
             if unit_id in manifest.unit_ids
         ]
-        temporary = root / "packets" / manifest.packet_id / f".{batch_id}.import.jsonl"
+        temporary = (packet_dir / f".{batch_id}.import.jsonl").resolve()
+        try:
+            temporary.relative_to(packet_root)
+        except ValueError as exc:
+            raise ValueError("Audit import path escapes the project packet root") from exc
         write_jsonl(temporary, by_batch[batch_id])
         try:
             import_review(

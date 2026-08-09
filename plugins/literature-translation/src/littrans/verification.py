@@ -163,7 +163,11 @@ def _overlap(a: tuple[float, float, float, float], b: tuple[float, float, float,
 
 
 def _write_visual_report(
-    root: Path, document: fitz.Document, pages: list[int], by_page: dict[int, list[SourceUnit]]
+    root: Path,
+    document: fitz.Document,
+    pages: list[int],
+    by_page: dict[int, list[SourceUnit]],
+    render_pages: set[int] | None = None,
 ) -> str:
     report_dir = root / "derived" / "verification"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -180,7 +184,8 @@ def _write_visual_report(
     for page_number in pages:
         page = document[page_number - 1]
         image_path = report_dir / f"page-{page_number:04}.png"
-        page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(image_path)
+        if render_pages is None or page_number in render_pages or not image_path.is_file():
+            page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(image_path)
         boxes: list[str] = []
         for unit in by_page.get(page_number, []):
             x0, y0, x1, y1 = unit.bbox
@@ -283,6 +288,10 @@ def verify_extraction(
     document = fitz.open(config.source(root))
     requested_pages = parse_page_spec(page_spec, document.page_count)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    requested_by_page = {
+        page: [unit for unit in all_units if unit.page == page]
+        for page in requested_pages
+    }
     extraction_issues = read_jsonl(
         root / "derived" / "extraction-issues.jsonl", ExtractionIssue
     )
@@ -328,6 +337,13 @@ def verify_extraction(
 
     pages = [page for page in requested_pages if page not in cached]
     if not pages:
+        report_path = _write_visual_report(
+            root,
+            document,
+            requested_pages,
+            requested_by_page,
+            render_pages=set(),
+        )
         document.close()
         payload = {
             "passed": not semantic_errors,
@@ -344,7 +360,7 @@ def verify_extraction(
                 for page in requested_pages
             ],
             "errors": semantic_errors,
-            "visual_report": str(root / "derived" / "extraction-report.html"),
+            "visual_report": report_path,
             "cached_pages": requested_pages,
             "verified_pages": [],
             "validator_version": VERIFIER_VERSION,
@@ -469,7 +485,14 @@ def verify_extraction(
                 "token_coverage": round(coverage, 4),
             }
         )
-    report_path = _write_visual_report(root, document, pages, by_page)
+    report_path = _write_visual_report(
+        root,
+        document,
+        requested_pages,
+        requested_by_page,
+        render_pages=set(pages),
+    )
+    document.close()
     error_page_sets = [
         (error, _error_pages(error, page_dependencies)) for error in errors
     ]

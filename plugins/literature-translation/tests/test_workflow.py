@@ -13,6 +13,11 @@ from reportlab.pdfgen import canvas
 import littrans.external_review as external_review
 import littrans.quality as quality_module
 from littrans.batching import create_batches, load_manifest, refresh_batch
+from littrans.evidence import (
+    batch_source_fingerprint,
+    batch_structure_fingerprint,
+    batch_unit_fingerprints,
+)
 from littrans.external_review import (
     PROMPT_VERSION,
     _antigravity_prompt,
@@ -1753,6 +1758,16 @@ def test_external_packet_is_isolated_and_external_gate_is_strict(
         prompt_version="test",
         verdict=ExternalReviewVerdict.ACCEPTED,
         summary="No substantive defects.",
+        covered_unit_ids=list(manifest.unit_ids),
+        unit_fingerprints=batch_unit_fingerprints(
+            prepared_project, manifest.batch_id
+        ),
+        source_fingerprint=batch_source_fingerprint(
+            prepared_project, manifest.batch_id
+        ),
+        structure_fingerprint=batch_structure_fingerprint(
+            prepared_project, manifest.batch_id
+        ),
     )
     append_jsonl(
         prepared_project / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
