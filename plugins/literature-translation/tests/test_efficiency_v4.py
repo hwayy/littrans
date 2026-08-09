@@ -37,6 +37,7 @@ from littrans.models import (
     SourceUnit,
     TranslationRecord,
     UnitKind,
+    WorkflowPacketManifest,
 )
 from littrans.project import initialize_project, translation_map
 from littrans.quality import approve_batch, audit_coverage, import_review, run_qa
@@ -597,6 +598,49 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
         )
         assert result["lens"] == lens
     assert all(audit_coverage(root, batch_id)["complete"] for batch_id in batch_ids)
+
+
+def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 2)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+        assert run_qa(root, manifest.batch_id).passed
+    first, second = manifests
+    second_fingerprints = batch_unit_fingerprints(root, second.batch_id)
+    packet = WorkflowPacketManifest(
+        packet_id="explicit-empty-coverage",
+        stage="audit",
+        batch_ids=[first.batch_id, second.batch_id],
+        lens="fidelity",
+        unit_ids=list(second.unit_ids),
+        unit_fingerprints=second_fingerprints,
+        files={},
+        total_bytes=0,
+    )
+    packet_dir = root / "packets" / packet.packet_id
+    packet_dir.mkdir(parents=True)
+    manifest_path = packet_dir / "manifest.json"
+    write_json(manifest_path, packet.model_dump(mode="json"))
+    issues_path = packet_dir / "issues.jsonl"
+    write_jsonl(issues_path, [])
+
+    current = translation_map(root)
+    first_id = first.translatable_unit_ids[0]
+    current[first_id] = current[first_id].model_copy(
+        update={
+            "target_text": current[first_id].target_text + "修订",
+            "revision": 2,
+            "status": ProjectStatus.REVISED,
+        }
+    )
+    write_jsonl(root / "translations" / "current.jsonl", current.values())
+
+    import_review_set(root, manifest_path, issues_path)
+
+    assert audit_coverage(root, first.batch_id)["missing"]["fidelity"] == [
+        first_id
+    ]
+    assert audit_coverage(root, second.batch_id)["missing"]["fidelity"] == []
 
 
 def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(

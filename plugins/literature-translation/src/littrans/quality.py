@@ -584,7 +584,9 @@ def import_review(
     write_jsonl(issue_path, merged_issues)
     selected_lenses = set(lenses or REQUIRED_AUDIT_LENSES)
     internal_lenses = selected_lenses & REQUIRED_AUDIT_LENSES
-    coverage_ids = set(covered_unit_ids or manifest.unit_ids)
+    coverage_ids = set(
+        manifest.unit_ids if covered_unit_ids is None else covered_unit_ids
+    )
     invalid_coverage = coverage_ids - set(manifest.unit_ids)
     if invalid_coverage:
         raise ValueError(f"Audit coverage references invalid units: {sorted(invalid_coverage)}")
