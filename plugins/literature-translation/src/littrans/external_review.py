@@ -677,12 +677,12 @@ def _invoke(
                         else (exc.stderr or "")
                     )
                     last_raw = stdout or stderr
-                    raise ExternalInvocationError(
-                        f"External reviewer failed: external CLI timed out after {exc.timeout} seconds",
-                        attempts,
-                        last_raw,
-                        delivery,
-                    ) from None
+                    errors.append(
+                        f"external CLI timed out after {exc.timeout} seconds "
+                        f"for model={model}, delivery={delivery.value}"
+                    )
+                    log_path.unlink(missing_ok=True)
+                    break
                 raw = result.stdout or result.stderr
                 last_raw = raw
                 log_text = (

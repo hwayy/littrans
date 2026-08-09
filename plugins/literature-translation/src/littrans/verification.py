@@ -341,7 +341,9 @@ def verify_extraction(
     page_set = set(pages)
     units = [unit for unit in all_units if unit.page in page_set]
     by_page = {page: [unit for unit in units if unit.page == page] for page in pages}
-    errors = _semantic_errors(root, _semantic_context_units(all_units, page_set))
+    errors = _semantic_errors(
+        root, _semantic_context_units(all_units, set(requested_pages))
+    )
     for issue in extraction_issues:
         if (
             issue.page in page_set

@@ -1511,6 +1511,70 @@ def test_external_driver_timeout_becomes_an_auditable_failure(
     assert stdin_exc.value.prompt_delivery is PromptDelivery.STDIN
 
 
+def test_external_driver_timeout_continues_to_fallback_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fallback_model = "claude-sonnet-4-6"
+    reviewer = ExternalReviewerConfig.model_validate(
+        {
+            "id": "claude",
+            "driver": "claude-code",
+            "command": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "high",
+            "fast": False,
+            "fallbacks": [{"model": fallback_model, "effort": "high"}],
+        }
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    calls: list[list[str]] = []
+
+    def timeout_then_succeed(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(
+                command, kwargs.get("timeout", 330), output="primary timed out"
+            )
+        payload = {
+            "verdict": "accepted",
+            "summary": "No substantive defects.",
+            "issues": [],
+        }
+        requested_model = command[command.index("--model") + 1]
+        raw = json.dumps(
+            {
+                "result": json.dumps(payload),
+                "modelUsage": {requested_model: {"inputTokens": 1}},
+                "fast_mode_state": "off",
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, raw, "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", timeout_then_succeed)
+
+    result = external_review._invoke(reviewer, packet, work_dir, {})
+
+    assert result[2] == fallback_model
+    assert result[6] == 2
+    assert fallback_model not in calls[0]
+    assert fallback_model in calls[1]
+
+    calls.clear()
+    monkeypatch.setattr(
+        external_review, "CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED", True
+    )
+    delivery_result = external_review._invoke(reviewer, packet, work_dir, {})
+    assert delivery_result[2] == reviewer.model
+    assert delivery_result[6] == 2
+    assert delivery_result[7] is PromptDelivery.FILE
+
+
 def test_least_used_assignment_counts_primary_batches_not_retries(
     prepared_project: Path,
 ) -> None:

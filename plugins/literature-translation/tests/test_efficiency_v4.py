@@ -421,6 +421,32 @@ def test_page_receipts_skip_unchanged_verification(
     assert receipt_path.read_bytes() == before
 
 
+def test_cached_pages_remain_in_requested_global_semantic_checks(
+    tmp_path: Path,
+) -> None:
+    root, _ = _make_project(tmp_path, 2)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[1] = units[1].model_copy(update={"unit_id": units[0].unit_id})
+    write_jsonl(units_path, units)
+
+    result = verify_extraction(root, "all")
+
+    assert not result["passed"]
+    assert result["cached_pages"] == [1]
+    assert result["verified_pages"] == [2]
+    assert {error["code"] for error in result["errors"]} == {
+        "duplicate-unit-id"
+    }
+    failed_receipt = PageVerificationReceipt.model_validate(
+        read_json(root / "evidence" / "pages" / "page-0002.json")
+    )
+    assert not failed_receipt.passed
+    assert {error["code"] for error in failed_receipt.errors} == {
+        "duplicate-unit-id"
+    }
+
+
 def test_page_receipt_does_not_hide_new_blocking_issue(tmp_path: Path) -> None:
     root, _ = _make_project(tmp_path, 1)
     issues_path = root / "derived" / "extraction-issues.jsonl"
