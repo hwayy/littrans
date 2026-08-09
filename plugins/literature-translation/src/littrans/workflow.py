@@ -162,9 +162,25 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     source = unit.source_markdown or unit.source_text
     if unit.table:
         source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
+    if unit.figure_labels:
+        source += "\n\nFigure label sources:\n" + "\n".join(
+            f"- {label.source}" for label in unit.figure_labels
+        )
     target = record.target_text if record else "[source-only]"
     if record and record.target_table:
         target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
+    if record and record.figure_labels:
+        target += "\n\nFigure label translations:\n" + "\n".join(
+            f"- {label.source}: {label.target or '[missing]'}"
+            for label in record.figure_labels
+        )
+    if record and record.reader_note:
+        note = record.reader_note
+        target += "\n\nReader note (separate from translated body):\n" + note.text
+        if note.sources:
+            target += "\nSources:\n" + "\n".join(f"- {source}" for source in note.sources)
+        if note.accessed_at:
+            target += f"\nAccessed: {note.accessed_at}"
     return (
         f"## {unit.unit_id} (page {unit.page}; {unit.kind})\n\n"
         f"### Source\n\n{source}\n\n### Translation\n\n{target}\n"

@@ -40,6 +40,7 @@ from littrans.models import (
     PageVerificationReceipt,
     ProjectStatus,
     PromptDelivery,
+    ReaderNote,
     RenderPolicy,
     ReviewIssue,
     ReviewScope,
@@ -1445,6 +1446,67 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
         )
         assert result["lens"] == lens
     assert all(audit_coverage(root, batch_id)["complete"] for batch_id in batch_ids)
+
+
+def test_audit_packet_includes_all_rendered_structured_translation_fields(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "figure_labels": [FigureLabel(source="Status", target="状态")],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    verification = verify_extraction(root, "all", force=True)
+    assert verification["passed"], verification["errors"]
+    refresh_batch(root, manifest.batch_id)
+    input_path = root / "batches" / manifest.batch_id / "structured.jsonl"
+    write_jsonl(
+        input_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="状态图",
+                figure_labels=[FigureLabel(source="Status", target="状态")],
+                reader_note=ReaderNote(
+                    text="该状态已由规范勘误更新。",
+                    sources=["https://example.com/erratum"],
+                    accessed_at="2026-08-09",
+                ),
+                source_hash=unit.source_hash,
+            )
+        ],
+    )
+    submit_translation(root, manifest.batch_id, input_path)
+    assert run_qa(root, manifest.batch_id).passed
+
+    packet = create_workflow_packet(
+        root, "audit", [manifest.batch_id], "fidelity"
+    )
+    audit_text = (root / packet.files[f"{manifest.batch_id}:audit"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "Figure label sources:\n- Status" in audit_text
+    assert "Figure label translations:\n- Status: 状态" in audit_text
+    assert "Reader note (separate from translated body):" in audit_text
+    assert "该状态已由规范勘误更新。" in audit_text
+    assert "https://example.com/erratum" in audit_text
+    assert "Accessed: 2026-08-09" in audit_text
+
+    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    write_jsonl(issues, [])
+    import_review_set(
+        root,
+        root / "packets" / packet.packet_id / "manifest.json",
+        issues,
+    )
+    assert audit_coverage(root, manifest.batch_id)["missing"]["fidelity"] == []
 
 
 def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) -> None:
