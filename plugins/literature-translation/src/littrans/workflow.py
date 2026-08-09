@@ -19,8 +19,10 @@ from littrans.evidence import (
 from littrans.models import (
     AuditRun,
     ExternalReviewRun,
+    IssueStatus,
     ProjectStatus,
     ReviewIssue,
+    Severity,
     SourceUnit,
     TranslationRecord,
     WorkflowPacketManifest,
@@ -80,6 +82,21 @@ def _batch_stage(root: Path, batch_id: str) -> str:
     ):
         return "machine-approve"
     config = load_project(root)
+    open_blocking = [
+        issue
+        for issue in read_jsonl(
+            root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
+        )
+        if issue.status is IssueStatus.OPEN
+        and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+    ]
+    if open_blocking:
+        external_only = all(
+            issue.reviewer.startswith("external:") for issue in open_blocking
+        )
+        if external_only and config.external_review and config.external_review.enabled:
+            return "external-review"
+        return "machine-approve"
     if config.external_review and config.external_review.enabled:
         from littrans.external_review import external_review_status
 

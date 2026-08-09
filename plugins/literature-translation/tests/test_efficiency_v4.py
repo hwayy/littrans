@@ -486,6 +486,45 @@ def test_formal_render_requires_current_external_review_ledger(
     )
 
 
+def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(
+        update={
+            "kind": UnitKind.CODE,
+            "translatable": False,
+            "code_language": "python",
+        }
+    )
+    write_jsonl(units_path, units)
+    manifest = refresh_batch(root, batch_id)
+    assert manifest.translatable_unit_ids == []
+    assert verify_extraction(root, "all", force=True)["passed"]
+    _audit_and_approve(root, batch_id)
+    blocker_path = root / "reviews" / "source-only-blocker.jsonl"
+    write_jsonl(
+        blocker_path,
+        [
+            ReviewIssue(
+                issue_id="source-only-blocker",
+                batch_id=batch_id,
+                unit_id=manifest.unit_ids[0],
+                severity=Severity.BLOCKER,
+                type=IssueType.TECHNICAL,
+                explanation="The source-only code unit is substantively incorrect.",
+                reviewer="source-only-auditor",
+            )
+        ],
+    )
+    import_review(root, batch_id, blocker_path)
+
+    assert workflow_next(root)["stage"] == "machine-approve"
+
+
 def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
@@ -1371,6 +1410,11 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     for manifest in manifests:
         _submit(root, manifest.batch_id)
     middle = manifests[1]
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[3] = units[3].model_copy(update={"continued_to_next": True})
+    units[4] = units[4].model_copy(update={"continues_from_previous": True})
+    write_jsonl(units_path, units)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
         reviewers=[
@@ -1417,21 +1461,24 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
 
     scope, _, covered, _ = _primary_review_scope(root, middle.batch_id, None)
     assert scope is ReviewScope.INCREMENTAL
-    outside_id = manifests[0].unit_ids[-1]
+    outside_ids = manifests[0].unit_ids[-2:]
     context_ids = external_review._outer_seam_context_ids(
         root, middle.batch_id, covered
     )
-    assert context_ids == [outside_id]
-    assert outside_id not in covered
+    assert context_ids == outside_ids
+    assert not set(outside_ids) & set(covered)
     packet, pages = external_review._packet_text(
         root,
         middle.batch_id,
         covered,
         read_only_context_ids=context_ids,
     )
-    assert f"## Unit {outside_id} [READ-ONLY SEAM CONTEXT]" in packet
+    assert all(
+        f"## Unit {unit_id} [READ-ONLY SEAM CONTEXT]" in packet
+        for unit_id in outside_ids
+    )
     assert "do not report issues against them" in packet
-    assert pages == [5, 6, 7]
+    assert pages == [4, 5, 6, 7]
 
     _audit_and_approve(root, middle.batch_id)
     captured_evidence: dict[str, tuple[str, str]] = {}
@@ -1466,7 +1513,7 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
 
     assert result["external_approvable"]
     assert set(captured_evidence) == set(covered)
-    assert outside_id not in captured_evidence
+    assert not set(outside_ids) & set(captured_evidence)
 
 
 def test_external_status_does_not_reuse_an_old_second_opinion(

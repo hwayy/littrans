@@ -213,19 +213,20 @@ def _outer_seam_context_ids(
     root: Path, batch_id: str, covered_unit_ids: list[str]
 ) -> list[str]:
     manifest = load_manifest(root, batch_id)
-    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     covered = set(covered_unit_ids)
-    context: list[str] = []
-    first_id = manifest.unit_ids[0]
-    last_id = manifest.unit_ids[-1]
-    first = positions[first_id]
-    last = positions[last_id]
-    if first_id in covered and first > 0:
-        context.append(all_units[first - 1].unit_id)
-    if last_id in covered and last + 1 < len(all_units):
-        context.append(all_units[last + 1].unit_id)
-    return context
+    reached_seams = [
+        unit_id
+        for unit_id in (manifest.unit_ids[0], manifest.unit_ids[-1])
+        if unit_id in covered
+    ]
+    if not reached_seams:
+        return []
+    manifest_ids = set(manifest.unit_ids)
+    return [
+        unit_id
+        for unit_id in dependency_closure(root, [batch_id], reached_seams)
+        if unit_id not in manifest_ids
+    ]
 
 
 def _packet_text(
