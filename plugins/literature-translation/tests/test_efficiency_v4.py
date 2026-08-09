@@ -20,7 +20,11 @@ from littrans.evidence import (
     translation_memory,
 )
 from littrans.external_review import _primary_review_scope, external_review_status
-from littrans.migration import _legacy_v3_batch_fingerprint, migrate_project_schema
+from littrans.migration import (
+    _legacy_v3_batch_fingerprint,
+    _migratable_v3_external_chain,
+    migrate_project_schema,
+)
 from littrans.models import (
     ExternalReviewConfig,
     ExternalReviewerConfig,
@@ -385,6 +389,36 @@ def test_source_only_change_requires_current_audit_before_formal_render(
         "draft-source-only-audit",
         allow_draft=True,
         batch_id=batch_id,
+    )
+
+
+def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    source = "print('new source-only unit')"
+    unbatched = SourceUnit(
+        unit_id="unbatched-code",
+        kind=UnitKind.CODE,
+        page=1,
+        bbox=(570, 40, 610, 100),
+        source_text=source,
+        source_hash=sha256_text(source),
+        translatable=False,
+        code_language="python",
+        verification_status=SemanticStatus.VERIFIED,
+        confidence=1.0,
+    )
+    write_jsonl(units_path, [*units, unbatched])
+    assert verify_extraction(root, "1", force=True)["passed"]
+
+    with pytest.raises(ValueError, match="unbatched_units=.*unbatched-code"):
+        render_project(root, "1", "unbatched-formal")
+    assert render_project(
+        root, "1", "unbatched-draft", allow_draft=True
     )
 
 
@@ -1585,6 +1619,42 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
         if run.run_id == "legacy-second-opinion-v4"
     )
     assert migrated_second.base_run_id == migrated.run_id
+
+
+def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> None:
+    fingerprint = "legacy-fingerprint"
+    accepted = ExternalReviewRun(
+        schema_version=1,
+        run_id="old-accepted",
+        batch_id="legacy-batch",
+        reviewer_id="legacy-reviewer",
+        driver="claude-code",
+        role="primary",
+        requested_model="legacy-model",
+        actual_model="legacy-model",
+        model_verified=True,
+        translation_fingerprint=fingerprint,
+        packet_sha256="0" * 64,
+        prompt_version="v3",
+        verdict=ExternalReviewVerdict.ACCEPTED,
+        summary="Older accepted review.",
+    )
+    failed = accepted.model_copy(
+        update={
+            "run_id": "newer-failed",
+            "model_verified": False,
+            "verdict": ExternalReviewVerdict.INCONCLUSIVE,
+            "summary": "Newer review could not verify the configured model.",
+            "success": False,
+        }
+    )
+
+    chain, pending_recheck = _migratable_v3_external_chain(
+        [accepted, failed], fingerprint
+    )
+
+    assert chain == []
+    assert pending_recheck is True
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

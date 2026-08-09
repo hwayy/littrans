@@ -511,6 +511,7 @@ def render_project(
     ]
     stale_qa: list[str] = []
     incomplete_audit: list[str] = []
+    unbatched_units: list[str] = []
     if not allow_draft:
         relevant_manifests = manifests
         if not relevant_manifests:
@@ -522,6 +523,12 @@ def render_project(
                 for manifest in [load_manifest(root, path.name)]
                 if selected_ids & set(manifest.unit_ids)
             ]
+        covered_manifest_units = {
+            unit_id
+            for manifest in relevant_manifests
+            for unit_id in manifest.unit_ids
+        }
+        unbatched_units = sorted(selected_ids - covered_manifest_units)
         stale_qa = [
             manifest.batch_id
             for manifest in relevant_manifests
@@ -542,12 +549,18 @@ def render_project(
             ):
                 open_severe.append(issue.issue_id)
     if not allow_draft and (
-        missing or unapproved or stale_qa or incomplete_audit or open_severe
+        missing
+        or unapproved
+        or unbatched_units
+        or stale_qa
+        or incomplete_audit
+        or open_severe
     ):
         raise ValueError(
             "Formal rendering is blocked; "
             f"missing={missing}, not_publishable={unapproved}, "
-            f"stale_qa={stale_qa}, incomplete_audit={incomplete_audit}, "
+            f"unbatched_units={unbatched_units}, stale_qa={stale_qa}, "
+            f"incomplete_audit={incomplete_audit}, "
             f"open_severe={open_severe}"
         )
 

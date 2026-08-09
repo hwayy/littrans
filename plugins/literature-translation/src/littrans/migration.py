@@ -193,6 +193,54 @@ def _legacy_v3_batch_fingerprint(root: Path, batch_id: str) -> str:
     return sha256_text("\n".join(material))
 
 
+def _migratable_v3_external_chain(
+    runs: list[ExternalReviewRun], legacy_fingerprint: str
+) -> tuple[list[ExternalReviewRun], bool]:
+    matching = [
+        run for run in runs if run.translation_fingerprint == legacy_fingerprint
+    ]
+    primary_index = next(
+        (
+            index
+            for index in range(len(matching) - 1, -1, -1)
+            if matching[index].role == "primary"
+        ),
+        None,
+    )
+    if primary_index is None:
+        return [], bool(runs)
+
+    primary = matching[primary_index]
+
+    def accepted(run: ExternalReviewRun) -> bool:
+        return bool(
+            run.success
+            and run.model_verified
+            and run.verdict is ExternalReviewVerdict.ACCEPTED
+        )
+
+    if not accepted(primary):
+        return [], True
+
+    chain = [primary]
+    second_candidates = [
+        run
+        for index, run in enumerate(matching)
+        if run.role == "second-opinion"
+        and (
+            run.base_run_id == primary.run_id
+            or (run.base_run_id is None and index > primary_index)
+        )
+    ]
+    if second_candidates:
+        second = second_candidates[-1]
+        if accepted(second):
+            chain.append(second)
+            return chain, False
+        return chain, True
+    return chain, False
+
+
 def migrate_project_schema(
     root: Path, to_version: int = 4, dry_run: bool = False
 ) -> dict[str, Any]:
@@ -268,16 +316,11 @@ def migrate_project_schema(
                 stale["audit"].append(batch_id)
         runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
         runs = read_jsonl(runs_path, ExternalReviewRun)
-        accepted = [
-            run
-            for run in runs
-            if run.translation_fingerprint == legacy_fingerprint
-            and run.success
-            and run.model_verified
-            and run.verdict is ExternalReviewVerdict.ACCEPTED
-        ]
-        item["external_runs"] = accepted
-        if runs and not accepted:
+        external_chain, external_stale = _migratable_v3_external_chain(
+            runs, legacy_fingerprint
+        )
+        item["external_runs"] = external_chain
+        if external_stale:
             stale["external"].append(batch_id)
         candidates[batch_id] = item
 
