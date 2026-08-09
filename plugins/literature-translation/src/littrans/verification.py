@@ -23,9 +23,9 @@ from littrans.models import (
 )
 from littrans.semantics import looks_like_continuation, normalize_prose
 from littrans.storage import (
-    load_project,
     read_json,
     read_jsonl,
+    require_current_project_schema,
     sha256_file,
     sha256_text,
     write_json,
@@ -268,7 +268,7 @@ def _receipt_key(
 def verify_extraction(
     root: Path, page_spec: str = "all", force: bool = False
 ) -> dict[str, Any]:
-    config = load_project(root)
+    config = require_current_project_schema(root, "Source verification")
     actual_source_sha256 = sha256_file(config.source(root))
     if actual_source_sha256 != config.source_sha256:
         raise ValueError("Source PDF hash changed after project initialization")
@@ -337,6 +337,7 @@ def verify_extraction(
             "validator_version": VERIFIER_VERSION,
             "instruction": "Page verification receipts match the current PDF, source units, assets, and validator.",
         }
+        write_json(root / "derived" / "verification.json", payload)
         return payload
     page_set = set(pages)
     units = [unit for unit in all_units if unit.page in page_set]

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
+PROJECT_SCHEMA_VERSION = 4
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -209,7 +210,7 @@ class ExternalReviewConfig(StrictModel):
 
 
 class ProjectConfig(StrictModel):
-    schema_version: int = 4
+    schema_version: int = PROJECT_SCHEMA_VERSION
     project_id: str
     title: str
     source_path: str

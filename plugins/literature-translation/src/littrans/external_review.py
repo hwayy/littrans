@@ -54,6 +54,7 @@ from littrans.storage import (
     atomic_write_text,
     load_project,
     read_jsonl,
+    require_current_project_schema,
     sha256_text,
     write_json,
     write_jsonl,
@@ -1055,6 +1056,7 @@ def run_external_review(
     second_opinion: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    require_current_project_schema(root, "External review")
     _require_machine_reviewed(root, batch_id)
     fingerprint = batch_translation_fingerprint(root, batch_id)
     if not second_opinion and not dry_run:

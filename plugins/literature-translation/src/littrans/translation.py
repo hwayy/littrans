@@ -6,10 +6,17 @@ from littrans.batching import batch_directory, load_manifest
 from littrans.evidence import record_audit_invalidation, translations_semantically_equal
 from littrans.models import ProjectStatus, SourceUnit, TranslationRecord, utc_now
 from littrans.project import promote_status, translation_map
-from littrans.storage import append_jsonl, project_write_lock, read_jsonl, write_jsonl
+from littrans.storage import (
+    append_jsonl,
+    project_write_lock,
+    read_jsonl,
+    require_current_project_schema,
+    write_jsonl,
+)
 
 
 def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[TranslationRecord]:
+    require_current_project_schema(root, "Translation submission")
     manifest = load_manifest(root, batch_id)
     submitted = read_jsonl(input_path, TranslationRecord)
     expected = set(manifest.translatable_unit_ids)

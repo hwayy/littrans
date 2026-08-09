@@ -37,6 +37,7 @@ from littrans.storage import (
     load_project,
     read_json,
     read_jsonl,
+    require_current_project_schema,
     write_json,
     write_jsonl,
 )
@@ -159,6 +160,7 @@ def create_workflow_packet(
     batch_ids: list[str],
     lens: str | None = None,
 ) -> WorkflowPacketManifest:
+    require_current_project_schema(root, "Workflow packet creation")
     if stage not in {"translate", "audit"}:
         raise ValueError("workflow packet stage must be translate or audit")
     if stage == "audit" and lens not in REQUIRED_AUDIT_LENSES:
@@ -311,6 +313,7 @@ def create_workflow_packet(
 def import_review_set(
     root: Path, packet_manifest_path: Path, issues_path: Path
 ) -> dict[str, Any]:
+    require_current_project_schema(root, "Review-set import")
     manifest = WorkflowPacketManifest.model_validate(read_json(packet_manifest_path))
     if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
         raise ValueError("review import-set requires an audit packet manifest")

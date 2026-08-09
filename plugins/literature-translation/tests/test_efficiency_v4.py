@@ -44,7 +44,13 @@ from littrans.models import (
     WorkflowPacketManifest,
 )
 from littrans.project import initialize_project, translation_map
-from littrans.quality import approve_batch, audit_coverage, import_review, run_qa
+from littrans.quality import (
+    approve_batch,
+    audit_coverage,
+    import_review,
+    qa_report_is_current,
+    run_qa,
+)
 from littrans.rendering import render_project
 from littrans.storage import (
     append_jsonl,
@@ -595,6 +601,74 @@ def test_page_receipts_skip_unchanged_verification(
     monkeypatch.setattr(verification, "_write_visual_report", fail_report)
     require_verified_extraction(root, {1})
     assert receipt_path.read_bytes() == before
+
+
+def test_cache_hit_verification_persists_current_result(tmp_path: Path) -> None:
+    root, _ = _make_project(tmp_path, 2)
+    issue = ExtractionIssue(
+        issue_id="page-two-blocker",
+        page=2,
+        severity=Severity.BLOCKER,
+        code="page-two-defect",
+        message="Only the second page is defective.",
+    )
+    write_jsonl(root / "derived" / "extraction-issues.jsonl", [issue])
+
+    failed = verify_extraction(root, "2")
+    assert not failed["passed"]
+    assert read_json(root / "derived" / "verification.json")["passed"] is False
+
+    cached = verify_extraction(root, "1")
+    persisted = read_json(root / "derived" / "verification.json")
+
+    assert cached["passed"]
+    assert cached["cached_pages"] == [1]
+    assert cached["verified_pages"] == []
+    assert persisted == cached
+    assert persisted["pages"] == [
+        {
+            "page": 1,
+            "unit_count": 1,
+            "token_coverage": persisted["pages"][0]["token_coverage"],
+            "cached": True,
+        }
+    ]
+
+
+def test_schema_v3_rejects_new_v4_evidence(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    assert run_qa(root, batch_id).passed
+    qa_path = root / "qa" / f"{batch_id}.json"
+    verification_path = root / "derived" / "verification.json"
+    verification_before = verification_path.read_bytes()
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+    write_json(
+        qa_path,
+        {
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "passed": True,
+            "translation_fingerprint": "legacy-v3-fingerprint",
+            "errors": [],
+            "warnings": [],
+        },
+    )
+    qa_before = qa_path.read_bytes()
+
+    assert not qa_report_is_current(root, batch_id)
+    assert workflow_next(root)["stage"] == "qa"
+    with pytest.raises(ValueError, match="project migrate"):
+        run_qa(root, batch_id)
+    with pytest.raises(ValueError, match="project migrate"):
+        verify_extraction(root, "1", force=True)
+
+    assert qa_path.read_bytes() == qa_before
+    assert verification_path.read_bytes() == verification_before
+    assert load_project(root).schema_version == 3
 
 
 def test_cached_pages_remain_in_requested_global_semantic_checks(

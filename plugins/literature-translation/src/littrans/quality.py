@@ -13,6 +13,7 @@ from littrans.evidence import (
     batch_unit_fingerprints,
 )
 from littrans.models import (
+    PROJECT_SCHEMA_VERSION,
     AuditRun,
     IssueStatus,
     ProjectStatus,
@@ -32,6 +33,7 @@ from littrans.storage import (
     project_write_lock,
     read_json,
     read_jsonl,
+    require_current_project_schema,
     sha256_text,
     write_json,
     write_jsonl,
@@ -105,6 +107,8 @@ def current_qa_context_fingerprint(root: Path) -> str:
 
 
 def qa_report_is_current(root: Path, batch_id: str) -> bool:
+    if load_project(root).schema_version != PROJECT_SCHEMA_VERSION:
+        return False
     path = root / "qa" / f"{batch_id}.json"
     if not path.is_file():
         return False
@@ -212,7 +216,7 @@ def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
 
 
 def run_qa(root: Path, batch_id: str) -> QAReport:
-    config = load_project(root)
+    config = require_current_project_schema(root, "Deterministic QA")
     manifest = load_manifest(root, batch_id)
     require_verified_extraction(root, set(manifest.pages))
     units = {
@@ -565,6 +569,7 @@ def import_review(
     reviewer: str | None = None,
     packet_id: str | None = None,
 ) -> list[ReviewIssue]:
+    require_current_project_schema(root, "Review import")
     manifest = load_manifest(root, batch_id)
     issues = read_jsonl(input_path, ReviewIssue)
     valid_units = set(manifest.unit_ids)
@@ -647,6 +652,7 @@ def import_review(
 def resolve_issue(
     root: Path, batch_id: str, issue_id: str, status: IssueStatus, resolution: str
 ) -> ReviewIssue:
+    require_current_project_schema(root, "Review issue resolution")
     load_manifest(root, batch_id)
     if status is IssueStatus.OPEN:
         raise ValueError("Resolved review issue status must not be open")
@@ -706,6 +712,7 @@ def approve_batch(
 ) -> ProjectStatus:
     if level not in {"machine", "external", "human"}:
         raise ValueError("level must be machine, external, or human")
+    require_current_project_schema(root, "Batch approval")
     with project_write_lock(root):
         manifest = load_manifest(root, batch_id)
         require_verified_extraction(root, set(manifest.pages))

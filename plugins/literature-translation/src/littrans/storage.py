@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import BaseModel
 
-from littrans.models import ProjectConfig, utc_now
+from littrans.models import PROJECT_SCHEMA_VERSION, ProjectConfig, utc_now
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -138,6 +138,19 @@ def initialize_project_dirs(root: Path) -> None:
 
 def load_project(root: Path) -> ProjectConfig:
     return ProjectConfig.model_validate(read_yaml(root / "project.yaml"))
+
+
+def require_current_project_schema(
+    root: Path, operation: str
+) -> ProjectConfig:
+    config = load_project(root)
+    if config.schema_version != PROJECT_SCHEMA_VERSION:
+        raise ValueError(
+            f"{operation} requires project schema v{PROJECT_SCHEMA_VERSION}; "
+            "run `littrans project migrate PROJECT --to 4` first "
+            f"(current schema: v{config.schema_version})"
+        )
+    return config
 
 
 def save_project(root: Path, config: ProjectConfig) -> None:
