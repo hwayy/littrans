@@ -16,6 +16,7 @@ from littrans.storage import read_jsonl
 from littrans.workflow import (
     _all_manifests,
     _audit_unit_text,
+    _batch_stage,
     _shared_context,
 )
 
@@ -56,11 +57,11 @@ def _lean_translation_context(
 def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     manifests = _all_manifests(root)
     if completed_only:
-        reviewed = {
-            path.name.removesuffix(".external-runs.jsonl")
-            for path in (root / "reviews").glob("*.external-runs.jsonl")
-        }
-        manifests = [manifest for manifest in manifests if manifest.batch_id in reviewed]
+        manifests = [
+            manifest
+            for manifest in manifests
+            if _batch_stage(root, manifest.batch_id) == "complete"
+        ]
     history = read_jsonl(
         root / "translations" / "history.jsonl", TranslationRecord
     )
@@ -142,7 +143,7 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Read-only LitTrans v3 history replay and packet-size benchmark."
+        description="Read-only LitTrans history replay and packet-size benchmark."
     )
     parser.add_argument("project", type=Path)
     parser.add_argument("--completed-only", action="store_true")

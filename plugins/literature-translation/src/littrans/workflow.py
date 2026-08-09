@@ -421,11 +421,17 @@ def import_review_set(
 
 
 def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict[str, Any]:
-    selected = set(batch_ids or [manifest.batch_id for manifest in _all_manifests(root)])
-    manifests = [manifest for manifest in _all_manifests(root) if manifest.batch_id in selected]
+    all_manifests = _all_manifests(root)
+    known = {manifest.batch_id for manifest in all_manifests}
+    selected = known if batch_ids is None else set(batch_ids)
+    missing = sorted(selected - known)
+    if missing:
+        raise ValueError(f"Unknown batch IDs: {missing}")
+    manifests = [manifest for manifest in all_manifests if manifest.batch_id in selected]
     selected_units = {
         unit_id for manifest in manifests for unit_id in manifest.translatable_unit_ids
     }
+    selected_pages = {page for manifest in manifests for page in manifest.pages}
     history = [
         record
         for record in read_jsonl(root / "translations" / "history.jsonl", TranslationRecord)
@@ -486,7 +492,10 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         "semantic_noop_ratio": semantic_noops / len(history) if history else 0.0,
         "legacy_packet_bytes": legacy_packet_bytes,
         "generated_packet_bytes": sum(packet.total_bytes for packet in packet_manifests),
-        "page_receipts": len(list((root / "evidence" / "pages").glob("page-*.json"))),
+        "page_receipts": sum(
+            (root / "evidence" / "pages" / f"page-{page:04}.json").is_file()
+            for page in selected_pages
+        ),
         "audit_runs": sum(
             len(
                 read_jsonl(

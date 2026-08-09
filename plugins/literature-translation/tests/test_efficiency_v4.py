@@ -75,7 +75,12 @@ from littrans.storage import (
 )
 from littrans.translation import submit_translation
 from littrans.verification import require_verified_extraction, verify_extraction
-from littrans.workflow import create_workflow_packet, import_review_set, workflow_next
+from littrans.workflow import (
+    create_workflow_packet,
+    import_review_set,
+    workflow_metrics,
+    workflow_next,
+)
 
 
 def test_claude_stdin_delivery_remains_shadow_gated() -> None:
@@ -233,6 +238,63 @@ def test_shadow_recall_requires_batch_and_severity_match() -> None:
         [{"batch_id": "gold-batch", "gold": [gold], "issues": [exact]}],
         {Severity.BLOCKER.value, Severity.MAJOR.value},
     ) == 1.0
+
+
+def test_completed_benchmark_uses_effective_workflow_gates(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    complete, incomplete = manifests
+    _submit(root, complete.batch_id)
+    _submit(root, complete.batch_id, suffix="修订")
+    _submit(root, incomplete.batch_id)
+    _audit_and_approve(root, complete.batch_id)
+    failed = ExternalReviewRun(
+        run_id="failed-attempt",
+        batch_id=incomplete.batch_id,
+        reviewer_id="claude",
+        driver=ExternalReviewDriver.CLAUDE_CODE,
+        role="primary",
+        requested_model="claude-sonnet-5",
+        model_verified=False,
+        translation_fingerprint=external_review.batch_translation_fingerprint(
+            root, incomplete.batch_id
+        ),
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.INCONCLUSIVE,
+        summary="The reviewer process failed.",
+        success=False,
+    )
+    append_jsonl(
+        root / "reviews" / f"{incomplete.batch_id}.external-runs.jsonl",
+        [failed],
+    )
+
+    result = benchmark(root, completed_only=True)
+    completed_units = set(complete.unit_ids)
+    expected_history = [
+        record
+        for record in read_jsonl(
+            root / "translations" / "history.jsonl", TranslationRecord
+        )
+        if record.unit_id in completed_units
+    ]
+
+    assert result["batches"] == 1
+    assert result["history_records"] == len(expected_history) == 2
+
+
+def test_workflow_metrics_rejects_unknown_batch_ids(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+
+    with pytest.raises(ValueError, match=r"Unknown batch IDs: \['stale-batch'\]"):
+        workflow_metrics(root, [manifests[0].batch_id, "stale-batch"])
+
+    metrics = workflow_metrics(root, [manifests[0].batch_id])
+    assert metrics["batch_ids"] == [manifests[0].batch_id]
+    assert metrics["page_receipts"] == 1
 
 
 def _make_project(
