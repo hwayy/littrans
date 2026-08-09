@@ -46,6 +46,7 @@ from littrans.quality import (
     audit_coverage,
     batch_translation_fingerprint,
     import_review,
+    qa_report_is_current,
 )
 from littrans.semantics import normalize_zh_caption
 from littrans.storage import (
@@ -869,13 +870,11 @@ def _needs_second_opinion(root: Path, run: ExternalReviewRun) -> bool:
 def _require_machine_reviewed(root: Path, batch_id: str) -> None:
     manifest = load_manifest(root, batch_id)
     require_verified_extraction(root, set(manifest.pages))
-    fingerprint = batch_translation_fingerprint(root, batch_id)
     qa_path = root / "qa" / f"{batch_id}.json"
     audit_path = root / "reviews" / f"{batch_id}.audit.json"
     if not qa_path.exists() or not audit_path.exists():
         raise ValueError("External review requires current QA and internal audit records")
-    qa = json.loads(qa_path.read_text(encoding="utf-8"))
-    if not qa.get("passed") or qa.get("translation_fingerprint") != fingerprint:
+    if not qa_report_is_current(root, batch_id):
         raise ValueError("External review requires passing, current deterministic QA")
     if not audit_coverage(root, batch_id)["complete"]:
         raise ValueError("External review requires all current internal audit lenses")

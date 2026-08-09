@@ -10,11 +10,11 @@ import yaml
 
 from littrans.batching import load_manifest
 from littrans.evidence import (
-    batch_unit_fingerprints,
     dependency_closure,
     relevant_terms,
     translation_memory,
     translation_payload,
+    translation_unit_fingerprint,
 )
 from littrans.models import (
     AuditRun,
@@ -170,7 +170,8 @@ def create_workflow_packet(
     unit_map = {unit.unit_id: unit for unit in all_units}
     positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     translations = translation_map(root)
-    selected_ids = [unit_id for manifest in manifests for unit_id in manifest.unit_ids]
+    requested_ids = [unit_id for manifest in manifests for unit_id in manifest.unit_ids]
+    selected_ids = list(requested_ids)
 
     if stage == "audit":
         pending = {
@@ -187,6 +188,31 @@ def create_workflow_packet(
     shared_path = packet_dir / "shared.md"
     atomic_write_text(shared_path, _shared_context(root, selected_units))
     files["shared"] = str(shared_path.relative_to(root)).replace("\\", "/")
+
+    read_only_context_path: Path | None = None
+    if stage == "audit":
+        requested_set = set(requested_ids)
+        context_units = [
+            unit_map[unit_id]
+            for unit_id in selected_ids
+            if unit_id in unit_map and unit_id not in requested_set
+        ]
+        if context_units:
+            read_only_context_path = packet_dir / "read-only-context.md"
+            context_body = (
+                "# Read-only semantic seam context\n\n"
+                "These units are outside the requested batch set. Use them to inspect "
+                "continuations and cross-batch seams, but do not treat them as reviewed "
+                "coverage for this packet.\n\n"
+                + "\n".join(
+                    _audit_unit_text(unit, translations.get(unit.unit_id))
+                    for unit in context_units
+                )
+            )
+            atomic_write_text(read_only_context_path, context_body)
+            files["audit:read-only-context"] = str(
+                read_only_context_path.relative_to(root)
+            ).replace("\\", "/")
 
     for manifest in manifests:
         batch_units = [
@@ -243,6 +269,12 @@ def create_workflow_packet(
             body = (
                 f"# Independent {lens} audit: {manifest.batch_id}\n\n{focus}\n\n"
                 "Do not read prior issues. Return ReviewIssue JSONL only; an empty file means no issues.\n\n"
+                + (
+                    "Consult read-only-context.md for semantic seam context. Its units "
+                    "are outside this packet's review coverage.\n\n"
+                    if read_only_context_path is not None
+                    else ""
+                )
                 + "\n".join(_audit_unit_text(unit, translations.get(unit.unit_id)) for unit in batch_units)
             )
             atomic_write_text(audit_path, body)
@@ -250,10 +282,16 @@ def create_workflow_packet(
                 audit_path.relative_to(root)
             ).replace("\\", "/")
 
-    fingerprints: dict[str, str] = {}
-    for batch_id in batch_ids:
-        fingerprints.update(batch_unit_fingerprints(root, batch_id))
-    packet_unit_ids = [unit_id for unit_id in selected_ids if unit_id in fingerprints]
+    requested_set = set(requested_ids)
+    packet_unit_ids = [
+        unit_id for unit_id in selected_ids if unit_id in requested_set
+    ]
+    fingerprints = {
+        unit.unit_id: translation_unit_fingerprint(
+            unit, translations.get(unit.unit_id)
+        )
+        for unit in selected_units
+    }
     total_bytes = sum((root / path).stat().st_size for path in files.values())
     manifest = WorkflowPacketManifest(
         packet_id=packet_id,
@@ -261,11 +299,7 @@ def create_workflow_packet(
         batch_ids=batch_ids,
         lens=lens,
         unit_ids=packet_unit_ids,
-        unit_fingerprints={
-            unit_id: fingerprints[unit_id]
-            for unit_id in packet_unit_ids
-            if unit_id in fingerprints
-        },
+        unit_fingerprints=fingerprints,
         files=files,
         total_bytes=total_bytes,
     )
@@ -280,9 +314,16 @@ def import_review_set(
     manifest = WorkflowPacketManifest.model_validate(read_json(packet_manifest_path))
     if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
         raise ValueError("review import-set requires an audit packet manifest")
-    current: dict[str, str] = {}
-    for batch_id in manifest.batch_ids:
-        current.update(batch_unit_fingerprints(root, batch_id))
+    units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
+    translations = translation_map(root)
+    current = {
+        unit_id: translation_unit_fingerprint(units[unit_id], translations.get(unit_id))
+        for unit_id in manifest.unit_fingerprints
+        if unit_id in units
+    }
     stale = [
         unit_id
         for unit_id, fingerprint in manifest.unit_fingerprints.items()
@@ -303,7 +344,7 @@ def import_review_set(
         coverage_ids = [
             unit_id
             for unit_id in batch.unit_ids
-            if unit_id in manifest.unit_fingerprints
+            if unit_id in manifest.unit_ids
         ]
         temporary = root / "packets" / manifest.packet_id / f".{batch_id}.import.jsonl"
         write_jsonl(temporary, by_batch[batch_id])

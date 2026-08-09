@@ -233,6 +233,58 @@ def test_glossary_change_invalidates_qa_workflow_approval_and_render(
     assert {item.code for item in report.errors} == {"approved-term-missing"}
 
 
+def test_external_review_does_not_reuse_approval_after_glossary_change(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    accepted = ExternalReviewRun(
+        run_id="accepted-before-glossary-change",
+        batch_id=batch_id,
+        reviewer_id="claude",
+        driver="claude-code",
+        role="primary",
+        requested_model="claude-sonnet-5",
+        actual_model="claude-sonnet-5",
+        model_verified=True,
+        translation_fingerprint=external_review.batch_translation_fingerprint(
+            root, batch_id
+        ),
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.ACCEPTED,
+        summary="No substantive defects.",
+    )
+    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+    append_jsonl(runs_path, [accepted])
+    assert external_review.run_external_review(root, batch_id)["external_approvable"]
+
+    write_yaml(
+        root / "glossary" / "approved.yaml",
+        {"terms": [{"source": "architecture", "target": "架构"}]},
+    )
+
+    with pytest.raises(ValueError, match="passing, current deterministic QA"):
+        external_review.run_external_review(root, batch_id)
+    assert read_jsonl(runs_path, ExternalReviewRun) == [accepted]
+
+
 def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
@@ -481,6 +533,42 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
         )
         assert result["lens"] == lens
     assert all(audit_coverage(root, batch_id)["complete"] for batch_id in batch_ids)
+
+
+def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+        assert run_qa(root, manifest.batch_id).passed
+    middle = manifests[1]
+
+    packet = create_workflow_packet(root, "audit", [middle.batch_id], "fidelity")
+
+    assert packet.unit_ids == middle.unit_ids
+    assert set(packet.unit_fingerprints) == {"u001", "u002", "u003"}
+    context_path = root / packet.files["audit:read-only-context"]
+    context = context_path.read_text(encoding="utf-8")
+    assert "outside the requested batch set" in context
+    assert "## u001" in context
+    assert "## u003" in context
+    audit_path = root / packet.files[f"{middle.batch_id}:audit"]
+    audit = audit_path.read_text(encoding="utf-8")
+    assert "## u002" in audit
+    assert "## u001" not in audit
+    assert "## u003" not in audit
+
+    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    write_jsonl(issues, [])
+    import_review_set(root, root / "packets" / packet.packet_id / "manifest.json", issues)
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
+    assert audit_coverage(root, manifests[0].batch_id)["missing"]["fidelity"] == [
+        "u001"
+    ]
+    assert audit_coverage(root, manifests[2].batch_id)["missing"]["fidelity"] == [
+        "u003"
+    ]
 
 
 def test_memory_is_current_approved_relevant_and_bounded(tmp_path: Path) -> None:
