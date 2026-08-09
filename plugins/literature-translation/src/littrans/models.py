@@ -490,6 +490,7 @@ class WorkflowPacketManifest(StrictModel):
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
     files: dict[str, str]
+    file_sha256: dict[str, str] = Field(default_factory=dict)
     total_bytes: int = Field(ge=0)
     created_at: str = Field(default_factory=utc_now)
 

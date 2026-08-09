@@ -40,6 +40,7 @@ from littrans.storage import (
     read_json,
     read_jsonl,
     require_current_project_schema,
+    sha256_file,
     write_json,
     write_jsonl,
 )
@@ -331,6 +332,9 @@ def create_workflow_packet(
         for unit in selected_units
     }
     total_bytes = sum((root / path).stat().st_size for path in files.values())
+    file_sha256 = {
+        file_id: sha256_file(root / path) for file_id, path in files.items()
+    }
     manifest = WorkflowPacketManifest(
         packet_id=packet_id,
         stage=stage,
@@ -339,6 +343,7 @@ def create_workflow_packet(
         unit_ids=packet_unit_ids,
         unit_fingerprints=fingerprints,
         files=files,
+        file_sha256=file_sha256,
         total_bytes=total_bytes,
     )
     manifest_path = packet_dir / "manifest.json"
@@ -375,6 +380,35 @@ def import_review_set(
         )
     if manifest.stage != "audit" or manifest.lens not in REQUIRED_AUDIT_LENSES:
         raise ValueError("review import-set requires an audit packet manifest")
+    required_files = {
+        "shared",
+        *(f"{batch_id}:audit" for batch_id in manifest.batch_ids),
+    }
+    missing_files = sorted(required_files - set(manifest.files))
+    if missing_files:
+        raise ValueError(
+            f"Audit packet manifest is missing required review files: {missing_files}"
+        )
+    if set(manifest.file_sha256) != set(manifest.files):
+        raise ValueError(
+            "Audit packet manifest must contain one digest for every packet file"
+        )
+    packet_bytes = 0
+    for file_id, relative_path in manifest.files.items():
+        packet_path = (root / relative_path).resolve()
+        try:
+            packet_path.relative_to(packet_dir)
+        except ValueError as exc:
+            raise ValueError(
+                f"Audit packet file escapes its packet directory: {file_id}"
+            ) from exc
+        if not packet_path.is_file():
+            raise ValueError(f"Audit packet file is missing: {file_id}")
+        if sha256_file(packet_path) != manifest.file_sha256[file_id]:
+            raise ValueError(f"Audit packet file digest mismatch: {file_id}")
+        packet_bytes += packet_path.stat().st_size
+    if packet_bytes != manifest.total_bytes:
+        raise ValueError("Audit packet total_bytes does not match its stored files")
     missing_fingerprints = sorted(
         set(manifest.unit_ids) - set(manifest.unit_fingerprints)
     )

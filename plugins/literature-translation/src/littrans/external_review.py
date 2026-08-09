@@ -130,11 +130,15 @@ class ExternalInvocationError(RuntimeError):
         attempts: int,
         raw: str = "",
         prompt_delivery: PromptDelivery = PromptDelivery.FILE,
+        usage: ReviewUsage | None = None,
+        cost_usd: float | None = None,
     ) -> None:
         super().__init__(message)
         self.attempts = attempts
         self.raw = raw
         self.prompt_delivery = prompt_delivery
+        self.usage = usage or ReviewUsage()
+        self.cost_usd = cost_usd
 
 
 def _review_config(root: Path) -> ExternalReviewConfig:
@@ -673,6 +677,9 @@ def _invoke(
     attempts = 0
     last_raw = ""
     last_delivery = forced_delivery or PromptDelivery.FILE
+    usage_totals = {field: 0 for field in ReviewUsage.model_fields}
+    total_cost_usd = 0.0
+    has_cost = False
     started = time.perf_counter()
     for model, effort in candidates:
         candidate = reviewer.model_copy(update={"model": model, "effort": effort})
@@ -738,6 +745,12 @@ def _invoke(
                     break
                 raw = result.stdout or result.stderr
                 last_raw = raw
+                attempt_usage, attempt_cost = _review_usage(raw, candidate.driver)
+                for field in usage_totals:
+                    usage_totals[field] += getattr(attempt_usage, field)
+                if attempt_cost is not None:
+                    total_cost_usd += attempt_cost
+                    has_cost = True
                 log_text = (
                     log_path.read_text(encoding="utf-8", errors="replace")
                     if log_path.exists()
@@ -767,7 +780,6 @@ def _invoke(
                             f"requested={model}, actual={actual_label}"
                         )
                     _validate_issue_evidence(payload, evidence)
-                    usage, cost = _review_usage(raw, candidate.driver)
                     return (
                         payload,
                         raw,
@@ -778,8 +790,8 @@ def _invoke(
                         attempts,
                         delivery,
                         time.perf_counter() - started,
-                        usage,
-                        cost,
+                        ReviewUsage.model_validate(usage_totals),
+                        total_cost_usd if has_cost else None,
                     )
                 except (json.JSONDecodeError, ValueError) as exc:
                     errors.append(str(exc))
@@ -804,6 +816,8 @@ def _invoke(
         attempts,
         last_raw,
         last_delivery,
+        ReviewUsage.model_validate(usage_totals),
+        total_cost_usd if has_cost else None,
     )
 
 
@@ -1268,6 +1282,8 @@ def run_external_review(
                 source_fingerprint=source_fingerprint,
                 structure_fingerprint=structure_fingerprint,
                 prompt_delivery=exc.prompt_delivery,
+                usage=exc.usage,
+                cost_usd=exc.cost_usd,
                 verdict=ExternalReviewVerdict.INCONCLUSIVE,
                 summary=str(exc),
                 response_path=str(raw_path.relative_to(root)).replace("\\", "/"),

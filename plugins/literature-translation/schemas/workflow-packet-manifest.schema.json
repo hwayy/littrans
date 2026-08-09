@@ -58,6 +58,13 @@
       "title": "Files",
       "type": "object"
     },
+    "file_sha256": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "File Sha256",
+      "type": "object"
+    },
     "total_bytes": {
       "minimum": 0,
       "title": "Total Bytes",

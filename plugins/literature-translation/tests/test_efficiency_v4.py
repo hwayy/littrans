@@ -69,6 +69,7 @@ from littrans.storage import (
     read_json,
     read_jsonl,
     save_project,
+    sha256_file,
     sha256_text,
     write_json,
     write_jsonl,
@@ -401,6 +402,39 @@ def _audit_and_approve(root: Path, batch_id: str) -> None:
     write_jsonl(empty, [])
     import_review(root, batch_id, empty)
     assert approve_batch(root, batch_id, "machine") is ProjectStatus.MACHINE_REVIEWED
+
+
+def _store_manual_audit_packet(
+    root: Path, packet: WorkflowPacketManifest
+) -> tuple[WorkflowPacketManifest, Path]:
+    assert packet.stage == "audit"
+    packet_dir = root / "packets" / packet.packet_id
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    file_paths = {"shared": packet_dir / "shared.md"}
+    file_paths.update(
+        {
+            f"{batch_id}:audit": packet_dir / f"{batch_id}.audit.md"
+            for batch_id in packet.batch_ids
+        }
+    )
+    for file_id, path in file_paths.items():
+        path.write_text(f"# Reviewed packet file: {file_id}\n", encoding="utf-8")
+    files = {
+        file_id: str(path.relative_to(root)).replace("\\", "/")
+        for file_id, path in file_paths.items()
+    }
+    stored = packet.model_copy(
+        update={
+            "files": files,
+            "file_sha256": {
+                file_id: sha256_file(path) for file_id, path in file_paths.items()
+            },
+            "total_bytes": sum(path.stat().st_size for path in file_paths.values()),
+        }
+    )
+    manifest_path = packet_dir / "manifest.json"
+    write_json(manifest_path, stored.model_dump(mode="json"))
+    return stored, manifest_path
 
 
 def test_failed_external_review_records_actual_prompt_delivery(
@@ -1603,11 +1637,7 @@ def test_review_set_rejects_manifest_that_differs_from_canonical_packet(
         files={},
         total_bytes=0,
     )
-    packet_dir = root / "packets" / canonical.packet_id
-    packet_dir.mkdir(parents=True)
-    write_json(
-        packet_dir / "manifest.json", canonical.model_dump(mode="json")
-    )
+    canonical, _ = _store_manual_audit_packet(root, canonical)
     forged = canonical.model_copy(
         update={
             "unit_ids": list(batch.unit_ids),
@@ -1624,6 +1654,38 @@ def test_review_set_rejects_manifest_that_differs_from_canonical_packet(
 
     with pytest.raises(ValueError, match="does not match the canonical stored manifest"):
         import_review_set(root, forged_path, issues_path)
+
+    assert audit_coverage(root, batch.batch_id)["missing"]["fidelity"] == sorted(
+        batch.unit_ids
+    )
+
+
+def test_review_set_rejects_packet_file_changed_after_creation(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch = manifests[0]
+    _submit(root, batch.batch_id)
+    assert run_qa(root, batch.batch_id).passed
+    packet = create_workflow_packet(
+        root, "audit", [batch.batch_id], "fidelity"
+    )
+    audit_path = root / packet.files[f"{batch.batch_id}:audit"]
+    audit_path.write_text(
+        audit_path.read_text(encoding="utf-8").replace(
+            "这是经过技术审校的中文译文", "[translation omitted after packet creation]"
+        ),
+        encoding="utf-8",
+    )
+    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    write_jsonl(issues_path, [])
+
+    with pytest.raises(ValueError, match="packet file digest mismatch"):
+        import_review_set(
+            root,
+            root / "packets" / packet.packet_id / "manifest.json",
+            issues_path,
+        )
 
     assert audit_coverage(root, batch.batch_id)["missing"]["fidelity"] == sorted(
         batch.unit_ids
@@ -1647,10 +1709,8 @@ def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) ->
         files={},
         total_bytes=0,
     )
-    packet_dir = root / "packets" / packet.packet_id
-    packet_dir.mkdir(parents=True)
-    manifest_path = packet_dir / "manifest.json"
-    write_json(manifest_path, packet.model_dump(mode="json"))
+    packet, manifest_path = _store_manual_audit_packet(root, packet)
+    packet_dir = manifest_path.parent
     issues_path = packet_dir / "issues.jsonl"
     write_jsonl(issues_path, [])
 
@@ -1738,10 +1798,8 @@ def test_review_set_rejects_issue_outside_packet_unit_coverage(
         files={},
         total_bytes=0,
     )
-    packet_dir = root / "packets" / packet.packet_id
-    packet_dir.mkdir(parents=True)
-    manifest_path = packet_dir / "manifest.json"
-    write_json(manifest_path, packet.model_dump(mode="json"))
+    packet, manifest_path = _store_manual_audit_packet(root, packet)
+    packet_dir = manifest_path.parent
     issues_path = packet_dir / "issues.jsonl"
     issue = ReviewIssue(
         issue_id="hallucinated-omitted-unit",

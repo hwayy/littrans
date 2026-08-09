@@ -1580,6 +1580,79 @@ def test_external_driver_timeout_continues_to_fallback_model(
     assert delivery_result[7] is PromptDelivery.FILE
 
 
+def test_external_driver_accumulates_usage_across_format_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    calls = 0
+
+    def invalid_then_succeed(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        usage = (
+            {
+                "inputTokens": 10,
+                "cacheCreationInputTokens": 2,
+                "cacheReadInputTokens": 3,
+                "outputTokens": 4,
+                "costUSD": 0.1,
+            }
+            if calls == 1
+            else {
+                "inputTokens": 20,
+                "cacheCreationInputTokens": 5,
+                "cacheReadInputTokens": 7,
+                "outputTokens": 8,
+                "costUSD": 0.2,
+            }
+        )
+        payload = (
+            {"verdict": "accepted"}
+            if calls == 1
+            else {
+                "verdict": "accepted",
+                "summary": "No substantive defects found.",
+                "issues": [],
+            }
+        )
+        raw = json.dumps(
+            {
+                "result": json.dumps(payload),
+                "modelUsage": {reviewer.model: usage},
+                "num_turns": calls,
+                "fast_mode_state": "off",
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, raw, "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", invalid_then_succeed)
+
+    result = external_review._invoke(reviewer, packet, work_dir, {})
+    usage = result[9]
+
+    assert result[6] == 2
+    assert usage.input_tokens == 30
+    assert usage.cache_creation_input_tokens == 7
+    assert usage.cache_read_input_tokens == 10
+    assert usage.output_tokens == 12
+    assert usage.provider_turns == 3
+    assert result[10] == pytest.approx(0.3)
+
+
 def test_least_used_assignment_counts_primary_batches_not_retries(
     prepared_project: Path,
 ) -> None:
