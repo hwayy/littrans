@@ -2032,6 +2032,15 @@ def test_workflow_packet_rejects_overlapping_batch_manifests(
     ]
     assert set(ordered) == overlapping_ids
 
+    next_action = workflow_next(root)
+    assert next_action["stage"] == "translate"
+    assert len(next_action["batch_ids"]) == 1
+    assert next_action["batch_ids"][0] in overlapping_ids
+    recommended = create_workflow_packet(
+        root, next_action["stage"], next_action["batch_ids"]
+    )
+    assert recommended.batch_ids == next_action["batch_ids"]
+
     with pytest.raises(ValueError, match="overlapping source units"):
         create_workflow_packet(root, "translate", ordered)
 

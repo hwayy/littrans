@@ -146,10 +146,21 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
         return {"stage": "complete", "batch_ids": [], "limit": limit}
     stage = stages[start][1]
     batch_ids: list[str] = []
-    for batch_id, candidate_stage in stages[start:]:
+    selected_unit_ids: set[str] = set()
+    for manifest, (batch_id, candidate_stage) in zip(
+        manifests[start:], stages[start:], strict=True
+    ):
         if candidate_stage != stage or len(batch_ids) >= limit:
             break
+        candidate_ids = set(manifest.unit_ids)
+        if len(candidate_ids) != len(manifest.unit_ids):
+            raise ValueError(
+                f"Workflow manifest {batch_id} contains duplicate source units"
+            )
+        if selected_unit_ids & candidate_ids:
+            break
         batch_ids.append(batch_id)
+        selected_unit_ids.update(candidate_ids)
     return {"stage": stage, "batch_ids": batch_ids, "limit": limit}
 
 
