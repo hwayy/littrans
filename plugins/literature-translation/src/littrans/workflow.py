@@ -94,13 +94,12 @@ def _batch_stage(root: Path, batch_id: str) -> str:
     external_enabled = bool(
         config.external_review and config.external_review.enabled
     )
-    open_internal_substantive = [
+    open_substantive = [
         issue
         for issue in open_issues
         if issue.severity is not Severity.SUGGESTION
-        and not issue.reviewer.startswith("external:")
     ]
-    if external_enabled and open_internal_substantive:
+    if external_enabled and open_substantive:
         return "revise"
     open_blocking = [
         issue
@@ -108,11 +107,6 @@ def _batch_stage(root: Path, batch_id: str) -> str:
         if issue.severity in {Severity.BLOCKER, Severity.MAJOR}
     ]
     if open_blocking:
-        external_only = all(
-            issue.reviewer.startswith("external:") for issue in open_blocking
-        )
-        if external_only and external_enabled:
-            return "external-review"
         return "machine-approve"
     if external_enabled:
         from littrans.external_review import external_review_status

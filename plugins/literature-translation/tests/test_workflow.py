@@ -1915,7 +1915,9 @@ def test_external_issue_does_not_block_second_opinion_gate(
         preserve_status=True,
     )
 
-    _require_machine_reviewed(prepared_project, manifest.batch_id)
+    _require_machine_reviewed(
+        prepared_project, manifest.batch_id, allow_external_issues=True
+    )
 
 
 def test_external_issue_evidence_accepts_structured_source_and_target_spans() -> None:

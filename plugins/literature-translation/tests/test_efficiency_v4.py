@@ -61,6 +61,7 @@ from littrans.quality import (
     audit_coverage,
     import_review,
     qa_report_is_current,
+    resolve_issue,
     run_qa,
 )
 from littrans.rendering import render_project
@@ -973,10 +974,76 @@ def test_internal_minor_requires_revision_before_external_review(
     assert workflow_next(root)["stage"] == "revise"
     with pytest.raises(
         ValueError,
-        match="internal substantive issues.*internal-minor-before-external",
+        match="unresolved substantive issues.*internal-minor-before-external",
     ):
         external_review.run_external_review(root, batch_id)
     assert not invoked
+
+
+def test_external_finding_requires_resolution_before_another_paid_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    issue = ReviewIssue(
+        issue_id="external-major-before-rerun",
+        batch_id=batch_id,
+        unit_id=manifests[0].translatable_unit_ids[0],
+        severity=Severity.MAJOR,
+        type=IssueType.MEANING,
+        explanation="The external reviewer requested a substantive revision.",
+        reviewer="external:claude:claude-sonnet-5",
+    )
+    issue_path = root / "reviews" / "external-major.jsonl"
+    write_jsonl(issue_path, [issue])
+    import_review(
+        root,
+        batch_id,
+        issue_path,
+        lenses=["external:claude"],
+        preserve_status=True,
+    )
+    invoked = False
+
+    def forbidden_invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(external_review, "_invoke", forbidden_invoke)
+
+    assert workflow_next(root)["stage"] == "revise"
+    with pytest.raises(
+        ValueError,
+        match="unresolved substantive issues.*external-major-before-rerun",
+    ):
+        external_review.run_external_review(root, batch_id)
+    assert not invoked
+
+    resolve_issue(
+        root,
+        batch_id,
+        issue.issue_id,
+        IssueStatus.RESOLVED,
+        "The translation was revised and is ready for external recheck.",
+    )
+    assert workflow_next(root)["stage"] == "external-review"
 
 
 def test_workflow_does_not_complete_source_only_batch_with_open_blocker(

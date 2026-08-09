@@ -989,7 +989,9 @@ def _primary_chain_approvable(
     return True
 
 
-def _require_machine_reviewed(root: Path, batch_id: str) -> None:
+def _require_machine_reviewed(
+    root: Path, batch_id: str, *, allow_external_issues: bool = False
+) -> None:
     manifest = load_manifest(root, batch_id)
     require_verified_extraction(root, set(manifest.pages))
     qa_path = root / "qa" / f"{batch_id}.json"
@@ -1001,17 +1003,20 @@ def _require_machine_reviewed(root: Path, batch_id: str) -> None:
     if not audit_coverage(root, batch_id)["complete"]:
         raise ValueError("External review requires all current internal audit lenses")
     issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)
-    open_internal_substantive = [
+    open_substantive = [
         issue.issue_id
         for issue in issues
         if issue.status is IssueStatus.OPEN
         and issue.severity is not Severity.SUGGESTION
-        and not issue.reviewer.startswith("external:")
+        and (
+            not allow_external_issues
+            or not issue.reviewer.startswith("external:")
+        )
     ]
-    if open_internal_substantive:
+    if open_substantive:
         raise ValueError(
-            "External review is blocked by internal substantive issues: "
-            f"{open_internal_substantive}"
+            "External review is blocked by unresolved substantive issues: "
+            f"{open_substantive}"
         )
     translations = translation_map(root)
     allowed = {
@@ -1134,7 +1139,9 @@ def run_external_review(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     require_current_project_schema(root, "External review")
-    _require_machine_reviewed(root, batch_id)
+    _require_machine_reviewed(
+        root, batch_id, allow_external_issues=second_opinion
+    )
     fingerprint = batch_translation_fingerprint(root, batch_id)
     if not second_opinion and not dry_run:
         current_status = external_review_status(root, batch_id)
