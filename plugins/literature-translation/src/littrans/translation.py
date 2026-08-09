@@ -67,6 +67,12 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             changed.append(revised)
 
         if not changed and not rebound:
+            batch_path = batch_directory(root, batch_id) / "translation.jsonl"
+            if input_path.resolve() == batch_path.resolve():
+                batch_records = [
+                    current[unit_id] for unit_id in manifest.translatable_unit_ids
+                ]
+                write_jsonl(batch_path, batch_records)
             return normalized
 
         current.update(

@@ -263,11 +263,13 @@ def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
         )
         for record in records
     ]
-    input_path = root / "batches" / batch_id / "noop.jsonl"
+    input_path = root / "batches" / batch_id / "translation.jsonl"
     write_jsonl(input_path, noop)
+    assert read_jsonl(input_path, TranslationRecord) == noop
     returned = submit_translation(root, batch_id, input_path)
     assert returned[0].revision == records[0].revision
     assert returned[0].status is ProjectStatus.MACHINE_REVIEWED
+    assert read_jsonl(input_path, TranslationRecord) == records
     assert before == {
         "current": current_path.read_bytes(),
         "history": history_path.read_bytes(),
@@ -1038,6 +1040,54 @@ def test_review_set_rejects_covered_unit_without_packet_fingerprint(
     ]
 
 
+def test_review_set_rejects_issue_outside_packet_unit_coverage(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=700)
+    assert len(manifests) == 1
+    batch = manifests[0]
+    _submit(root, batch.batch_id)
+    assert run_qa(root, batch.batch_id).passed
+    fingerprints = batch_unit_fingerprints(root, batch.batch_id)
+    covered_id, omitted_id = batch.unit_ids
+    packet = WorkflowPacketManifest(
+        packet_id="issue-outside-coverage",
+        stage="audit",
+        batch_ids=[batch.batch_id],
+        lens="fidelity",
+        unit_ids=[covered_id],
+        unit_fingerprints={covered_id: fingerprints[covered_id]},
+        files={},
+        total_bytes=0,
+    )
+    packet_dir = root / "packets" / packet.packet_id
+    packet_dir.mkdir(parents=True)
+    manifest_path = packet_dir / "manifest.json"
+    write_json(manifest_path, packet.model_dump(mode="json"))
+    issues_path = packet_dir / "issues.jsonl"
+    issue = ReviewIssue(
+        issue_id="hallucinated-omitted-unit",
+        batch_id=batch.batch_id,
+        unit_id=omitted_id,
+        severity=Severity.MAJOR,
+        type=IssueType.MEANING,
+        explanation="This unit was not included in the incremental audit packet.",
+        reviewer="independent-fidelity-auditor",
+    )
+    write_jsonl(issues_path, [issue])
+
+    with pytest.raises(
+        ValueError, match=f"outside the audit packet coverage.*{omitted_id}"
+    ):
+        import_review_set(root, manifest_path, issues_path)
+    assert read_jsonl(
+        root / "reviews" / f"{batch.batch_id}.issues.jsonl", ReviewIssue
+    ) == []
+    assert audit_coverage(root, batch.batch_id)["missing"]["fidelity"] == sorted(
+        batch.unit_ids
+    )
+
+
 def test_review_import_preserves_explicitly_empty_lenses(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
@@ -1445,7 +1495,23 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
                 prompt_version="v3",
                 verdict=ExternalReviewVerdict.ACCEPTED,
                 summary="Accepted under the v3 evidence contract.",
-            )
+            ),
+            ExternalReviewRun(
+                schema_version=1,
+                run_id="legacy-second-opinion",
+                batch_id=batch_id,
+                reviewer_id="legacy-second-reviewer",
+                driver="antigravity",
+                role="second-opinion",
+                requested_model="legacy-second-model",
+                actual_model="legacy-second-model",
+                model_verified=True,
+                translation_fingerprint=legacy_fingerprint,
+                packet_sha256="1" * 64,
+                prompt_version="v3",
+                verdict=ExternalReviewVerdict.ACCEPTED,
+                summary="Second opinion accepted under the v3 evidence contract.",
+            ),
         ],
     )
     current_before = (root / "translations" / "current.jsonl").read_bytes()
@@ -1455,7 +1521,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     assert preview["importable"] == {
         "qa": 0,
         "audit_lenses": 3,
-        "external_runs": 1,
+        "external_runs": 2,
     }
     assert preview["pending_recheck"] == {
         "qa": [batch_id],
@@ -1478,6 +1544,12 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     migrated = next(run for run in migrated_runs if run.run_id == "legacy-run-v4")
     assert migrated.schema_version == 2
     assert migrated.base_run_id == "legacy-run"
+    migrated_second = next(
+        run
+        for run in migrated_runs
+        if run.run_id == "legacy-second-opinion-v4"
+    )
+    assert migrated_second.base_run_id == migrated.run_id
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

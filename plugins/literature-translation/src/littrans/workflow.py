@@ -343,15 +343,29 @@ def import_review_set(
     if stale:
         raise ValueError(f"Audit packet is stale for units: {stale}")
     issues = read_jsonl(issues_path, ReviewIssue)
+    batches = {
+        batch_id: load_manifest(root, batch_id) for batch_id in manifest.batch_ids
+    }
+    covered_unit_ids = set(manifest.unit_ids)
     by_batch: dict[str, list[ReviewIssue]] = {batch_id: [] for batch_id in manifest.batch_ids}
     for issue in issues:
         if issue.batch_id not in by_batch:
             raise ValueError(f"Issue {issue.issue_id} is outside the packet batch set")
+        if issue.unit_id not in covered_unit_ids:
+            raise ValueError(
+                f"Issue {issue.issue_id} targets a unit outside the audit packet coverage: "
+                f"{issue.unit_id}"
+            )
+        if issue.unit_id not in batches[issue.batch_id].unit_ids:
+            raise ValueError(
+                f"Issue {issue.issue_id} targets a unit outside batch "
+                f"{issue.batch_id}: {issue.unit_id}"
+            )
         by_batch[issue.batch_id].append(issue)
 
     imported: dict[str, int] = {}
     for batch_id in manifest.batch_ids:
-        batch = load_manifest(root, batch_id)
+        batch = batches[batch_id]
         coverage_ids = [
             unit_id
             for unit_id in batch.unit_ids

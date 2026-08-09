@@ -353,8 +353,16 @@ def migrate_project_schema(
                 }
                 write_json(audit_path, audit)
             runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+            latest_migrated_primary_id: str | None = None
             for old in item["external_runs"]:
                 migrated_id = f"{old.run_id}-v4"
+                migrated_base_run_id: str | None = old.run_id
+                if old.role == "primary":
+                    latest_migrated_primary_id = migrated_id
+                elif old.base_run_id:
+                    migrated_base_run_id = f"{old.base_run_id}-v4"
+                else:
+                    migrated_base_run_id = latest_migrated_primary_id
                 if any(
                     run.run_id == migrated_id
                     for run in read_jsonl(runs_path, ExternalReviewRun)
@@ -371,12 +379,7 @@ def migrate_project_schema(
                                     "current_fingerprint"
                                 ],
                                 "scope": ReviewScope.FULL,
-                                "base_run_id": (
-                                    f"{old.base_run_id}-v4"
-                                    if old.role == "second-opinion"
-                                    and old.base_run_id
-                                    else old.run_id
-                                ),
+                                "base_run_id": migrated_base_run_id,
                                 "covered_unit_ids": item["unit_ids"],
                                 "unit_fingerprints": item[
                                     "unit_fingerprints"
