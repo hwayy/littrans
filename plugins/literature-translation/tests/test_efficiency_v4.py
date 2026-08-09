@@ -472,6 +472,31 @@ def test_completed_benchmark_rejects_an_empty_population(tmp_path: Path) -> None
         benchmark(root, completed_only=True)
 
 
+def test_benchmark_ignores_history_for_removed_source_units(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, _ = _make_project(tmp_path, pages=1)
+    removed = TranslationRecord(
+        unit_id="u999",
+        target_text="已删除单元的旧译文",
+        source_hash="removed-source",
+    )
+    write_jsonl(
+        root / "translations" / "history.jsonl",
+        [
+            removed,
+            removed.model_copy(update={"target_text": "历史修订", "revision": 2}),
+        ],
+    )
+
+    result = benchmark(root, completed_only=False)
+
+    assert result["history_records"] == 0
+    assert result["semantic_noop_records"] == 0
+    assert result["semantic_change_records"] == 0
+
+
 def test_completed_benchmark_does_not_group_across_incomplete_batches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3262,6 +3287,27 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     assert result["external_approvable"]
     assert set(captured_evidence) == set(covered)
     assert not set(outside_ids) & set(captured_evidence)
+
+    accepted = read_jsonl(
+        root / "reviews" / f"{middle.batch_id}.external-runs.jsonl",
+        ExternalReviewRun,
+    )[-1]
+    current = translation_map(root)
+    outside_id = outside_ids[-1]
+    current[outside_id] = current[outside_id].model_copy(
+        update={"target_text": "批外接缝译文已变更", "revision": 2}
+    )
+    write_jsonl(root / "translations" / "current.jsonl", current.values())
+
+    assert not external_review_status(root, middle.batch_id)["external_approvable"]
+    assert accepted.context_fingerprint != (
+        external_review._external_review_context_fingerprint(
+            root,
+            middle.batch_id,
+            accepted.covered_unit_ids,
+            accepted.scope,
+        )
+    )
 
 
 def test_external_status_does_not_reuse_an_old_second_opinion(

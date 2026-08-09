@@ -23,6 +23,7 @@ from littrans.evidence import (
     dependency_closure,
     effective_figure_labels,
     relevant_terms,
+    translation_unit_fingerprint,
 )
 from littrans.models import (
     ExternalReviewConfig,
@@ -261,18 +262,26 @@ def _external_review_context_fingerprint(
         else []
     )
     selected_ids = set(covered) | set(read_only)
-    selected_units = [
-        unit
-        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-        if unit.unit_id in selected_ids
-    ]
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    selected_units = [unit for unit in all_units if unit.unit_id in selected_ids]
+    read_only_ids = set(read_only)
+    translations = translation_map(root)
+    read_only_fingerprint = sha256_text(
+        "\n".join(
+            f"{unit.unit_id}:{translation_unit_fingerprint(unit, translations.get(unit.unit_id))}"
+            for unit in all_units
+            if unit.unit_id in read_only_ids
+        )
+    )
     return sha256_text(
-        "external-review-context-v1|"
+        "external-review-context-v2|"
         + PROMPT_VERSION
         + "|"
         + _domain_expertise(root)
         + "|"
         + audit_context_fingerprint(root, selected_units)
+        + "|"
+        + read_only_fingerprint
     )
 
 

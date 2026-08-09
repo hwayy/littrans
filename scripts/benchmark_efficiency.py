@@ -112,6 +112,7 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     )
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     unit_map = {unit.unit_id: unit for unit in all_units}
+    history = [record for record in history if record.unit_id in unit_map]
     if completed_only:
         selected_unit_ids = {
             unit_id for manifest in manifests for unit_id in manifest.unit_ids
