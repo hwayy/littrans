@@ -385,6 +385,14 @@ def source_representation_text(unit: SourceUnit) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def equation_markdown(unit: SourceUnit) -> str:
+    """Return the exact display-math representation emitted in formal Markdown."""
+    if unit.kind is not UnitKind.EQUATION:
+        raise ValueError(f"Unit is not an equation: {unit.unit_id}")
+    number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
+    return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
+
+
 def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
     selected = list(units)
     source = "\n".join(

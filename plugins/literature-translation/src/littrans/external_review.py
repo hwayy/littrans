@@ -22,6 +22,7 @@ from littrans.evidence import (
     changed_units,
     dependency_closure,
     effective_figure_labels,
+    equation_markdown,
     relevant_terms,
     translation_unit_fingerprint,
 )
@@ -348,7 +349,11 @@ def _packet_text(
     for unit_id in packet_ids:
         unit = units[unit_id]
         record = translations.get(unit_id)
-        source = unit.source_markdown or unit.source_text
+        source = (
+            equation_markdown(unit)
+            if unit.kind is UnitKind.EQUATION
+            else unit.source_markdown or unit.source_text
+        )
         if unit.table:
             source += "\n\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else "[NO TRANSLATION: source-only unit]"
@@ -488,7 +493,11 @@ def _evidence_map(
             continue
         unit = units[unit_id]
         record = translations.get(unit_id)
-        source = unit.source_markdown or unit.source_text
+        source = (
+            equation_markdown(unit)
+            if unit.kind is UnitKind.EQUATION
+            else unit.source_markdown or unit.source_text
+        )
         if unit.table:
             source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else ""

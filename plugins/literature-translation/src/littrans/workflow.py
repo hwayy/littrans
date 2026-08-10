@@ -11,6 +11,7 @@ from littrans.evidence import (
     audit_context_text,
     dependency_closure,
     effective_figure_labels,
+    equation_markdown,
     translation_memory,
     translation_unit_fingerprint,
     translations_semantically_equal,
@@ -25,6 +26,7 @@ from littrans.models import (
     Severity,
     SourceUnit,
     TranslationRecord,
+    UnitKind,
     WorkflowPacketManifest,
 )
 from littrans.project import translation_map
@@ -214,7 +216,11 @@ def _shared_context(root: Path, units: list[SourceUnit]) -> str:
 
 
 def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
-    source = unit.source_markdown or unit.source_text
+    source = (
+        equation_markdown(unit)
+        if unit.kind is UnitKind.EQUATION
+        else unit.source_markdown or unit.source_text
+    )
     if unit.table:
         source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
     if unit.figure_labels:

@@ -2964,6 +2964,36 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     ]
 
 
+def test_review_packets_show_renderer_visible_equations(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.EQUATION,
+            "translatable": False,
+            "latex": r"E = mc^2",
+            "equation_number": "7.3",
+            "math_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    refresh_batch(root, batch_id)
+    expected = "$$\nE = mc^2 \\tag{7.3}\n$$"
+
+    packet = create_workflow_packet(root, "audit", [batch_id], "technical")
+    audit_text = (root / packet.files[f"{batch_id}:audit"]).read_text(
+        encoding="utf-8"
+    )
+    external_text = external_review._packet_text(root, batch_id)[0]
+    evidence_source = external_review._evidence_map(root, batch_id)[unit.unit_id][0]
+
+    assert expected in audit_text
+    assert expected in external_text
+    assert expected in evidence_source
+
+
 def test_memory_is_current_approved_relevant_and_bounded(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path)
     for manifest in manifests:

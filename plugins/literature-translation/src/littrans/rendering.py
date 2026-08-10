@@ -14,7 +14,7 @@ from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from littrans.batching import load_manifest
-from littrans.evidence import effective_figure_labels
+from littrans.evidence import effective_figure_labels, equation_markdown
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     CalloutKind,
@@ -291,8 +291,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CODE:
         return fenced_code(unit.source_text, unit.code_language)
     if unit.kind is UnitKind.EQUATION:
-        number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
-        return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
+        return equation_markdown(unit)
     if unit.kind is UnitKind.FIGURE:
         asset = _asset_markdown(unit) or f"`[figure: PDF page {unit.page}]`"
         labels = [
