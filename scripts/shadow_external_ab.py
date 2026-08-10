@@ -92,7 +92,7 @@ def _defect_snapshot(
         for issue in read_jsonl(
             root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
         )
-        if issue.status is not IssueStatus.OPEN
+        if issue.status is IssueStatus.RESOLVED
         and issue.severity in {Severity.BLOCKER, Severity.MAJOR, Severity.MINOR}
     ]
     priority = {Severity.BLOCKER: 0, Severity.MAJOR: 1, Severity.MINOR: 2}

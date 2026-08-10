@@ -378,6 +378,14 @@ def test_shadow_defect_snapshot_requires_unambiguous_history_match(
         }
     ]
 
+    for rejected_status in (IssueStatus.REJECTED, IssueStatus.WAIVED):
+        write_jsonl(
+            issues_path,
+            [issue.model_copy(update={"status": rejected_status})],
+        )
+        with pytest.raises(ValueError, match="No reconstructable historical defect"):
+            defect_snapshot(root, batch_id)
+
 
 def test_shadow_recall_requires_batch_and_severity_match() -> None:
     repo_root = Path(__file__).resolve().parents[3]
@@ -1627,6 +1635,31 @@ def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> Non
     assert render_project(
         root, "1", "unbatched-draft", allow_draft=True
     )
+
+
+def test_formal_page_render_rejects_manifest_with_removed_source_unit(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=700)
+    assert len(manifests) == 1
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    removed_id = units[1].unit_id
+    units[1] = units[1].model_copy(update={"translatable": False})
+    write_jsonl(units_path, units)
+    refreshed = refresh_batch(root, batch_id)
+    assert removed_id in refreshed.unit_ids
+    assert removed_id not in refreshed.translatable_unit_ids
+    _submit(root, batch_id)
+
+    write_jsonl(units_path, [units[0]])
+
+    with pytest.raises(
+        ValueError,
+        match=rf"manifests reference removed source units.*{removed_id}",
+    ):
+        render_project(root, "1", "removed-page-unit")
 
 
 def test_workflow_rejects_completion_with_an_unbatched_interior_unit(

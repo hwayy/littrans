@@ -524,6 +524,25 @@ def render_project(
                 for manifest in [load_manifest(root, path.name)]
                 if selected_ids & set(manifest.unit_ids)
             ]
+        current_unit_ids = {unit.unit_id for unit in all_units}
+        removed_manifest_units = {
+            manifest.batch_id: [
+                unit_id
+                for unit_id in manifest.unit_ids
+                if unit_id not in current_unit_ids
+            ]
+            for manifest in relevant_manifests
+            if any(
+                unit_id not in current_unit_ids
+                for unit_id in manifest.unit_ids
+            )
+        }
+        if removed_manifest_units:
+            raise ValueError(
+                "Formal rendering is blocked because manifests reference removed "
+                "source units; recreate the affected batches: "
+                f"removed_units={removed_manifest_units}"
+            )
         covered_manifest_units = {
             unit_id
             for manifest in relevant_manifests
