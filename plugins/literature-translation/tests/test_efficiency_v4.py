@@ -889,8 +889,51 @@ def test_failed_external_review_records_actual_prompt_delivery(
     )
     save_project(root, config)
 
+    snapshot_active = False
+    snapshot_calls: list[str] = []
+    original_lock = external_review.project_write_lock
+    original_packet_text = external_review._packet_text
+    original_context_fingerprint = (
+        external_review._external_review_context_fingerprint
+    )
+
+    @contextmanager
+    def tracked_lock(*args: object, **kwargs: object):
+        nonlocal snapshot_active
+        with original_lock(*args, **kwargs):
+            snapshot_active = True
+            try:
+                yield
+            finally:
+                snapshot_active = False
+
+    def tracked_packet_text(*args: object, **kwargs: object) -> tuple[str, list[int]]:
+        assert snapshot_active
+        snapshot_calls.append("packet")
+        return original_packet_text(*args, **kwargs)
+
+    def tracked_context_fingerprint(*args: object, **kwargs: object) -> str:
+        assert snapshot_active
+        snapshot_calls.append("context")
+        return original_context_fingerprint(*args, **kwargs)
+
+    monkeypatch.setattr(external_review, "project_write_lock", tracked_lock)
+    monkeypatch.setattr(external_review, "_packet_text", tracked_packet_text)
+    monkeypatch.setattr(
+        external_review,
+        "_external_review_context_fingerprint",
+        tracked_context_fingerprint,
+    )
     dry_run = external_review.run_external_review(root, batch_id, dry_run=True)
     assert dry_run["prompt_delivery"] == PromptDelivery.FILE
+    assert snapshot_calls == ["packet", "context"]
+    monkeypatch.setattr(external_review, "project_write_lock", original_lock)
+    monkeypatch.setattr(external_review, "_packet_text", original_packet_text)
+    monkeypatch.setattr(
+        external_review,
+        "_external_review_context_fingerprint",
+        original_context_fingerprint,
+    )
 
     def fail_invoke(*args: object, **kwargs: object) -> None:
         raise external_review.ExternalInvocationError(

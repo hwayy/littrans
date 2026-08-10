@@ -57,6 +57,7 @@ from littrans.storage import (
     append_jsonl,
     atomic_write_text,
     load_project,
+    project_write_lock,
     read_jsonl,
     require_current_project_schema,
     sha256_text,
@@ -1269,23 +1270,27 @@ def run_external_review(
         selected_reviewer_id,
         latest_primary.reviewer_id if second_opinion and latest_primary else None,
     )
-    read_only_context_ids = (
-        _outer_seam_context_ids(root, batch_id, covered_unit_ids)
-        if scope is ReviewScope.INCREMENTAL
-        else []
-    )
-    packet_text, pages = _packet_text(
-        root,
-        batch_id,
-        covered_unit_ids,
-        read_only_context_ids=read_only_context_ids,
-    )
-    current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
-    source_fingerprint = batch_source_fingerprint(root, batch_id)
-    structure_fingerprint = batch_structure_fingerprint(root, batch_id)
-    context_fingerprint = _external_review_context_fingerprint(
-        root, batch_id, covered_unit_ids, scope
-    )
+    with project_write_lock(root):
+        read_only_context_ids = (
+            _outer_seam_context_ids(root, batch_id, covered_unit_ids)
+            if scope is ReviewScope.INCREMENTAL
+            else []
+        )
+        packet_text, pages = _packet_text(
+            root,
+            batch_id,
+            covered_unit_ids,
+            read_only_context_ids=read_only_context_ids,
+        )
+        current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
+        source_fingerprint = batch_source_fingerprint(root, batch_id)
+        structure_fingerprint = batch_structure_fingerprint(root, batch_id)
+        context_fingerprint = _external_review_context_fingerprint(
+            root, batch_id, covered_unit_ids, scope
+        )
+        evidence_snapshot = _evidence_map(
+            root, batch_id, covered_unit_ids=covered_unit_ids
+        )
     prompt_builder = (
         _claude_prompt
         if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
@@ -1364,9 +1369,7 @@ def run_external_review(
                 reviewer,
                 packet_path,
                 work_dir,
-                _evidence_map(
-                    root, batch_id, covered_unit_ids=covered_unit_ids
-                ),
+                evidence_snapshot,
             )
         except ExternalInvocationError as exc:
             run_id = uuid.uuid4().hex
