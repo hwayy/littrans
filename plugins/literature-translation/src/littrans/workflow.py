@@ -144,6 +144,19 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
             "refresh or create batches before continuing: "
             f"unbatched_units={unbatched_units}"
         )
+    removed_manifest_units = {
+        manifest.batch_id: [
+            unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map
+        ]
+        for manifest in manifests
+        if any(unit_id not in unit_map for unit_id in manifest.unit_ids)
+    }
+    if removed_manifest_units:
+        raise ValueError(
+            "Workflow manifests reference removed source units; recreate the "
+            "affected batches before continuing: "
+            f"removed_units={removed_manifest_units}"
+        )
     stale_translatability = [
         manifest.batch_id
         for manifest in manifests
@@ -197,6 +210,24 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
     if positions != list(range(min(positions), min(positions) + len(positions))):
         raise ValueError("workflow packet batch IDs must be consecutive and ordered")
     selected = [ordered[position] for position in positions]
+    current_unit_ids = {
+        unit.unit_id
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
+    removed_units = {
+        manifest.batch_id: [
+            unit_id
+            for unit_id in manifest.unit_ids
+            if unit_id not in current_unit_ids
+        ]
+        for manifest in selected
+        if any(unit_id not in current_unit_ids for unit_id in manifest.unit_ids)
+    }
+    if removed_units:
+        raise ValueError(
+            "Workflow manifests reference removed source units; recreate the "
+            f"affected batches before continuing: removed_units={removed_units}"
+        )
     unit_counts = Counter(
         unit_id for manifest in selected for unit_id in manifest.unit_ids
     )

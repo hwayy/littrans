@@ -1693,6 +1693,32 @@ def test_workflow_requires_refresh_when_unit_becomes_translatable(
     assert workflow_next(root)["stage"] == "translate"
 
 
+def test_workflow_rejects_manifests_with_removed_source_only_units(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
+        update={"translatable": False}
+    )
+    write_jsonl(units_path, [unit])
+    refreshed = refresh_batch(root, batch_id)
+    assert refreshed.translatable_unit_ids == []
+    write_jsonl(units_path, [])
+
+    with pytest.raises(
+        ValueError,
+        match=r"reference removed source units.*u001",
+    ):
+        workflow_next(root)
+    with pytest.raises(
+        ValueError,
+        match=r"reference removed source units.*u001",
+    ):
+        create_workflow_packet(root, "audit", [batch_id], "fidelity")
+
+
 def test_external_review_does_not_reuse_approval_after_glossary_change(
     tmp_path: Path,
 ) -> None:
@@ -3740,6 +3766,64 @@ def test_v3_migration_reconstructs_legacy_figure_label_packets(
     assert report["pending_recheck"]["external"] == []
     migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
     assert migrated.run_id == "legacy-figure-run-v4"
+    assert migrated.context_fingerprint
+
+
+def test_v3_migration_reconstructs_legacy_equation_packets(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.EQUATION,
+            "translatable": False,
+            "latex": r"E = mc^2",
+            "equation_number": "7.3",
+            "math_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    refresh_batch(root, batch_id)
+    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
+    legacy_packet = external_review._legacy_v3_packet_text(root, batch_id)[0]
+    current_packet = external_review._packet_text(root, batch_id, compact=False)[0]
+    assert original.source_text in legacy_packet
+    assert r"E = mc^2 \tag{7.3}" not in legacy_packet
+    assert r"E = mc^2 \tag{7.3}" in current_packet
+
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
+    append_jsonl(
+        runs_path,
+        [
+            ExternalReviewRun(
+                schema_version=1,
+                run_id="legacy-equation-run",
+                batch_id=batch_id,
+                reviewer_id="legacy-reviewer",
+                driver="claude-code",
+                role="primary",
+                requested_model="legacy-model",
+                actual_model="legacy-model",
+                model_verified=True,
+                translation_fingerprint=legacy_fingerprint,
+                packet_sha256=sha256_text(legacy_packet),
+                prompt_version="v3",
+                verdict=ExternalReviewVerdict.ACCEPTED,
+                summary="Accepted under the v3 equation contract.",
+            )
+        ],
+    )
+
+    report = migrate_project_schema(root, 4)
+
+    assert report["importable"]["external_runs"] == 1
+    assert report["pending_recheck"]["external"] == []
+    migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
+    assert migrated.run_id == "legacy-equation-run-v4"
     assert migrated.context_fingerprint
 
 

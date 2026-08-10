@@ -351,7 +351,7 @@ def _packet_text(
         record = translations.get(unit_id)
         source = (
             equation_markdown(unit)
-            if unit.kind is UnitKind.EQUATION
+            if unit.kind is UnitKind.EQUATION and not _legacy_v3
             else unit.source_markdown or unit.source_text
         )
         if unit.table:
