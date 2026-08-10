@@ -1871,6 +1871,8 @@ def test_workflow_requires_refresh_when_unit_becomes_translatable(
 
     with pytest.raises(ValueError, match="stale translatable-unit scope"):
         workflow_next(root)
+    with pytest.raises(ValueError, match="stale translatable-unit scope"):
+        create_workflow_packet(root, "translate", [batch_id])
 
     refreshed = refresh_batch(root, batch_id)
     assert refreshed.translatable_unit_ids == [unit.unit_id]

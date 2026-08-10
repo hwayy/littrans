@@ -211,10 +211,9 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
     if positions != list(range(min(positions), min(positions) + len(positions))):
         raise ValueError("workflow packet batch IDs must be consecutive and ordered")
     selected = [ordered[position] for position in positions]
-    current_unit_ids = {
-        unit.unit_id
-        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    }
+    current_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    current_unit_map = {unit.unit_id: unit for unit in current_units}
+    current_unit_ids = set(current_unit_map)
     removed_units = {
         manifest.batch_id: [
             unit_id
@@ -228,6 +227,22 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
         raise ValueError(
             "Workflow manifests reference removed source units; recreate the "
             f"affected batches before continuing: removed_units={removed_units}"
+        )
+    stale_translatability = [
+        manifest.batch_id
+        for manifest in selected
+        if manifest.translatable_unit_ids
+        != [
+            unit_id
+            for unit_id in manifest.unit_ids
+            if current_unit_map[unit_id].translatable
+        ]
+    ]
+    if stale_translatability:
+        raise ValueError(
+            "Workflow manifests have stale translatable-unit scope; refresh the "
+            "affected batches before creating a packet: "
+            f"batch_ids={stale_translatability}"
         )
     unit_counts = Counter(
         unit_id for manifest in selected for unit_id in manifest.unit_ids
