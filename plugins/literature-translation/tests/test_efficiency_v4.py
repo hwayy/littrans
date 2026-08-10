@@ -1294,6 +1294,56 @@ def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
     assert "number-unit-mismatch" in codes
 
 
+def test_qa_deduplicates_figure_labels_already_in_source_text(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    manifest = manifests[0]
+    units_path = root / "derived" / "units.jsonl"
+    original = read_jsonl(units_path, SourceUnit)[0]
+    label_source = "Speed 10 m/s"
+    source = f"{original.source_text}\n{label_source}"
+    unit = original.model_copy(
+        update={
+            "kind": UnitKind.FIGURE,
+            "source_text": source,
+            "source_hash": sha256_text(source),
+            "figure_labels": [
+                FigureLabel(source=label_source, target="速度 10 m/s")
+            ],
+            "visual_text_status": SemanticStatus.VERIFIED,
+        }
+    )
+    write_jsonl(units_path, [unit])
+    verification = verify_extraction(root, "all", force=True)
+    assert verification["passed"], verification["errors"]
+    refresh_batch(root, manifest.batch_id)
+    input_path = root / "batches" / manifest.batch_id / "numeric-label.jsonl"
+    write_jsonl(
+        input_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="该图展示速度。",
+                figure_labels=[
+                    FigureLabel(source=label_source, target="速度 10 m/s")
+                ],
+                source_hash=unit.source_hash,
+            )
+        ],
+    )
+    submit_translation(root, manifest.batch_id, input_path)
+
+    report = run_qa(root, manifest.batch_id)
+
+    assert report.passed, report.errors
+    assert not {
+        item.code
+        for item in report.errors
+        if item.code in {"number-mismatch", "number-unit-mismatch"}
+    }
+
+
 def test_figure_label_overrides_require_complete_source_mapping(
     tmp_path: Path,
 ) -> None:

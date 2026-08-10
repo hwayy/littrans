@@ -190,11 +190,29 @@ def _semantic_token_present(token: str, raw_target: str, semantic_target: str) -
     return bool(normalized and normalized in semantic_target)
 
 
-def _comparison_source_text(unit: SourceUnit) -> str:
+def _comparison_source_text(
+    unit: SourceUnit,
+    supplemental_fragments: list[str] | None = None,
+) -> str:
     text = unit.source_markdown or unit.source_text
     if unit.kind is UnitKind.LIST_ITEM:
-        return re.sub(r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", "", text, count=1)
-    return text
+        text = re.sub(r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", "", text, count=1)
+    represented = Counter(
+        _semantic_comparison_text(line).casefold()
+        for line in text.splitlines()
+        if line.strip()
+    )
+    missing: list[str] = []
+    for fragment in supplemental_fragments or []:
+        for line in fragment.splitlines():
+            key = _semantic_comparison_text(line).casefold()
+            if not key:
+                continue
+            if represented[key]:
+                represented[key] -= 1
+            else:
+                missing.append(line)
+    return "\n".join([text, *missing])
 
 
 def _without_quoted_titles(text: str) -> str:
@@ -292,11 +310,10 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 label.target or "" for label in rendered_figure_labels
             )
-        effective_source = _comparison_source_text(unit)
-        if rendered_figure_labels:
-            effective_source += "\n" + "\n".join(
-                label.source for label in rendered_figure_labels
-            )
+        effective_source = _comparison_source_text(
+            unit,
+            [label.source for label in rendered_figure_labels],
+        )
         semantic_source = _semantic_comparison_text(effective_source)
         semantic_target = _semantic_comparison_text(effective_target)
         if not effective_target.strip():
