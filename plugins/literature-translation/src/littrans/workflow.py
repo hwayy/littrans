@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from littrans.batching import load_manifest
+from littrans.batching import batch_source_markdown, load_manifest
 from littrans.evidence import (
     audit_context_text,
     dependency_closure,
@@ -383,9 +383,11 @@ def create_workflow_packet(
             if unit_id in unit_map and (stage == "translate" or unit_id in set(selected_ids))
         ]
         if stage == "translate":
-            source_path = root / "batches" / manifest.batch_id / "source.md"
             target_path = packet_dir / f"{manifest.batch_id}.source.md"
-            atomic_write_text(target_path, source_path.read_text(encoding="utf-8"))
+            atomic_write_text(
+                target_path,
+                batch_source_markdown(root, batch_units),
+            )
             memory = translation_memory(root, manifest.unit_ids, limit=6)
             first = positions[manifest.unit_ids[0]]
             last = positions[manifest.unit_ids[-1]]

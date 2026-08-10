@@ -1776,6 +1776,34 @@ def test_workflow_requires_refresh_when_unit_becomes_translatable(
     assert workflow_next(root)["stage"] == "translate"
 
 
+def test_translation_packet_rebuilds_source_from_current_structured_units(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch_id = manifests[0].batch_id
+    source_path = root / "batches" / batch_id / "source.md"
+    stale_source = source_path.read_text(encoding="utf-8")
+    units_path = root / "derived" / "units.jsonl"
+    unit = read_jsonl(units_path, SourceUnit)[0]
+    current_markdown = "**Current structured source**"
+    write_jsonl(
+        units_path,
+        [unit.model_copy(update={"source_markdown": current_markdown})],
+    )
+    assert verify_extraction(root, "all", force=True)["passed"]
+    assert source_path.read_text(encoding="utf-8") == stale_source
+    assert current_markdown not in stale_source
+    assert workflow_next(root)["stage"] == "translate"
+
+    packet = create_workflow_packet(root, "translate", [batch_id])
+    packet_source = (root / packet.files[f"{batch_id}:source"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert current_markdown in packet_source
+    assert unit.source_text not in packet_source
+
+
 def test_workflow_rejects_manifests_with_removed_source_only_units(
     tmp_path: Path,
 ) -> None:

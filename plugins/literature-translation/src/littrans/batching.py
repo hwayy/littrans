@@ -104,6 +104,11 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
     return f"{marker}\n{body}\n"
 
 
+def batch_source_markdown(root: Path, units: list[SourceUnit]) -> str:
+    """Render a batch source file from the current structured source units."""
+    return "\n".join(_unit_markdown(unit, root) for unit in units)
+
+
 def _context_text(
     root: Path, units: list[SourceUnit], before: SourceUnit | None, after: SourceUnit | None
 ) -> str:
@@ -213,7 +218,7 @@ def create_batches(
         after = all_units[end_index + 1] if end_index + 1 < len(all_units) else None
         write_yaml(batch_dir / "manifest.yaml", manifest.model_dump(mode="json"))
         (batch_dir / "source.md").write_text(
-            "\n".join(_unit_markdown(unit, root) for unit in group), encoding="utf-8"
+            batch_source_markdown(root, group), encoding="utf-8"
         )
         (batch_dir / "context.md").write_text(
             _context_text(root, group, before, after), encoding="utf-8"
@@ -282,7 +287,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
             record_audit_invalidation(root, batch_id, removed_unit_ids)
         write_yaml(batch_dir / "manifest.yaml", revised.model_dump(mode="json"))
         (batch_dir / "source.md").write_text(
-            "\n".join(_unit_markdown(unit, root) for unit in group), encoding="utf-8"
+            batch_source_markdown(root, group), encoding="utf-8"
         )
         (batch_dir / "context.md").write_text(
             _context_text(root, group, before, after), encoding="utf-8"
