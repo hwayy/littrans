@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
+from littrans.batching import batch_source_markdown
 from littrans.evidence import (
     dependency_closure,
     translation_memory,
@@ -197,7 +198,11 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
             lean_context = _lean_translation_context(
                 root, all_units, positions, manifest.unit_ids
             ).encode("utf-8")
-            optimized_bytes += len(source_bytes) + len(lean_context)
+            current_source_bytes = batch_source_markdown(
+                root,
+                [unit_map[unit_id] for unit_id in manifest.unit_ids],
+            ).encode("utf-8")
+            optimized_bytes += len(current_source_bytes) + len(lean_context)
     if legacy_bytes <= 0:
         raise ValueError("Efficiency benchmark requires non-zero legacy baseline bytes")
     ratio = optimized_bytes / legacy_bytes

@@ -108,6 +108,7 @@ def _defect_snapshot(
         candidates = [
             record
             for record in by_unit.get(issue.unit_id, [])
+            if record.source_hash == unit.source_hash
             if effective_translation_payload(unit, record) != accepted_payload
         ]
         target_span = (issue.target_span or "").strip()

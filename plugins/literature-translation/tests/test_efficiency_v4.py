@@ -387,6 +387,33 @@ def test_shadow_defect_snapshot_requires_unambiguous_history_match(
         with pytest.raises(ValueError, match="No reconstructable historical defect"):
             defect_snapshot(root, batch_id)
 
+    units_path = root / "derived" / "units.jsonl"
+    unit = read_jsonl(units_path, SourceUnit)[0]
+    revised_source = unit.source_text + " corrected"
+    rebound_hash = sha256_text(revised_source)
+    write_jsonl(
+        units_path,
+        [
+            unit.model_copy(
+                update={
+                    "source_text": revised_source,
+                    "source_hash": rebound_hash,
+                }
+            )
+        ],
+    )
+    accepted = translation_map(root)[unit_id].model_copy(
+        update={"source_hash": rebound_hash}
+    )
+    write_jsonl(root / "translations" / "current.jsonl", [accepted])
+    write_jsonl(
+        issues_path,
+        [issue.model_copy(update={"target_span": "第一次修订"})],
+    )
+
+    with pytest.raises(ValueError, match="No reconstructable historical defect"):
+        defect_snapshot(root, batch_id)
+
 
 def test_shadow_recall_requires_batch_and_severity_match() -> None:
     repo_root = Path(__file__).resolve().parents[3]
@@ -504,6 +531,58 @@ def test_benchmark_ignores_history_for_removed_source_units(tmp_path: Path) -> N
     assert result["history_records"] == 0
     assert result["semantic_noop_records"] == 0
     assert result["semantic_change_records"] == 0
+
+
+def test_benchmark_renders_optimized_writer_source_from_current_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, manifests = _make_project(tmp_path, pages=1)
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0]
+    current_markdown = "**Current structured benchmark source**"
+    write_jsonl(
+        root / "derived" / "units.jsonl",
+        [unit.model_copy(update={"source_markdown": current_markdown})],
+    )
+    stale_source = (
+        root / "batches" / manifests[0].batch_id / "source.md"
+    ).read_text(encoding="utf-8")
+    assert current_markdown not in stale_source
+    rendered_units: list[list[SourceUnit]] = []
+
+    def optimized_source(root_arg: Path, units: list[SourceUnit]) -> str:
+        assert root_arg == root
+        rendered_units.append(units)
+        return current_markdown
+
+    monkeypatch.setitem(
+        benchmark.__globals__,
+        "batch_source_markdown",
+        optimized_source,
+    )
+    baseline = benchmark(root, completed_only=False)
+    marker = "\noptimized-current-source-marker"
+
+    def enlarged_source(root_arg: Path, units: list[SourceUnit]) -> str:
+        return optimized_source(root_arg, units) + marker
+
+    monkeypatch.setitem(
+        benchmark.__globals__,
+        "batch_source_markdown",
+        enlarged_source,
+    )
+    enlarged = benchmark(root, completed_only=False)
+
+    assert rendered_units
+    assert rendered_units[0][0].source_markdown == current_markdown
+    assert enlarged["legacy_packet_bytes"] == baseline["legacy_packet_bytes"]
+    assert (
+        enlarged["optimized_packet_bytes"] - baseline["optimized_packet_bytes"]
+        == len(marker.encode("utf-8"))
+    )
 
 
 def test_completed_benchmark_does_not_group_across_incomplete_batches(
