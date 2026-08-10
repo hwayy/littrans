@@ -2405,7 +2405,8 @@ def test_schema_v3_rejects_new_v4_evidence(tmp_path: Path) -> None:
     qa_before = qa_path.read_bytes()
 
     assert not qa_report_is_current(root, batch_id)
-    assert workflow_next(root)["stage"] == "qa"
+    with pytest.raises(ValueError, match="Workflow coordination.*project migrate"):
+        workflow_next(root)
     with pytest.raises(ValueError, match="project migrate"):
         run_qa(root, batch_id)
     with pytest.raises(ValueError, match="project migrate"):

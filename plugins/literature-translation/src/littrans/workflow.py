@@ -124,6 +124,7 @@ def _batch_stage(root: Path, batch_id: str) -> str:
 
 
 def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
+    require_current_project_schema(root, "Workflow coordination")
     if not 1 <= limit <= 3:
         raise ValueError("workflow next limit must be between 1 and 3")
     manifests = _all_manifests(root)
