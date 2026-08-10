@@ -22,6 +22,7 @@ from littrans.evidence import (
     page_evidence_units,
     relevant_terms,
     translation_memory,
+    translation_unit_fingerprint,
 )
 from littrans.external_review import _primary_review_scope, external_review_status
 from littrans.migration import (
@@ -2749,19 +2750,32 @@ def test_review_set_rejects_context_changed_after_packet_creation(
 
 
 def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) -> None:
-    root, manifests = _make_project(tmp_path, 2)
+    root, manifests = _make_project(tmp_path, 3, max_words=300)
+    assert len(manifests) == 2
     for manifest in manifests:
         _submit(root, manifest.batch_id)
         assert run_qa(root, manifest.batch_id).passed
     first, second = manifests
-    second_fingerprints = batch_unit_fingerprints(root, second.batch_id)
+    assert len(first.unit_ids) == 2
+    units = {
+        unit.unit_id: unit
+        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    }
+    current = translation_map(root)
+    seam_id = first.unit_ids[-1]
+    packet_fingerprints = {
+        seam_id: translation_unit_fingerprint(
+            units[seam_id], current.get(seam_id)
+        ),
+        **batch_unit_fingerprints(root, second.batch_id),
+    }
     packet = WorkflowPacketManifest(
         packet_id="explicit-empty-coverage",
         stage="audit",
         batch_ids=[first.batch_id, second.batch_id],
         lens="fidelity",
         unit_ids=list(second.unit_ids),
-        unit_fingerprints=second_fingerprints,
+        unit_fingerprints=packet_fingerprints,
         files={},
         total_bytes=0,
     )
@@ -2770,7 +2784,6 @@ def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) ->
     issues_path = packet_dir / "issues.jsonl"
     write_jsonl(issues_path, [])
 
-    current = translation_map(root)
     first_id = first.translatable_unit_ids[0]
     current[first_id] = current[first_id].model_copy(
         update={
@@ -2783,9 +2796,9 @@ def test_review_set_preserves_explicitly_empty_batch_coverage(tmp_path: Path) ->
 
     import_review_set(root, manifest_path, issues_path)
 
-    assert audit_coverage(root, first.batch_id)["missing"]["fidelity"] == [
-        first_id
-    ]
+    assert audit_coverage(root, first.batch_id)["missing"]["fidelity"] == sorted(
+        first.unit_ids
+    )
     assert audit_coverage(root, second.batch_id)["missing"]["fidelity"] == []
 
 
@@ -3099,6 +3112,71 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == [
         "u002"
     ]
+
+
+def test_audit_coverage_rejects_new_unreviewed_seam_membership(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+        assert run_qa(root, manifest.batch_id).passed
+    middle = manifests[1]
+    for lens in ("fidelity", "technical", "chinese-style"):
+        packet = create_workflow_packet(root, "audit", [middle.batch_id], lens)
+        issues = root / "packets" / packet.packet_id / "issues.jsonl"
+        write_jsonl(issues, [])
+        import_review_set(
+            root,
+            root / "packets" / packet.packet_id / "manifest.json",
+            issues,
+        )
+    assert audit_coverage(root, middle.batch_id)["complete"]
+    approve_batch(root, middle.batch_id, "machine")
+
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    source = "Inserted source-only seam context."
+    inserted = SourceUnit(
+        unit_id="inserted-seam-context",
+        kind=UnitKind.PARAGRAPH,
+        page=1,
+        bbox=(40, 700, 560, 720),
+        source_text=source,
+        source_hash=sha256_text(source),
+        translatable=False,
+        verification_status=SemanticStatus.VERIFIED,
+        confidence=1.0,
+    )
+    write_jsonl(units_path, [units[0], inserted, *units[1:]])
+    inserted_manifest = manifests[0].model_copy(
+        update={
+            "batch_id": "inserted-seam-batch",
+            "unit_ids": [inserted.unit_id],
+            "translatable_unit_ids": [],
+            "source_words": 0,
+        }
+    )
+    inserted_batch_dir = root / "batches" / inserted_manifest.batch_id
+    inserted_batch_dir.mkdir()
+    write_yaml(
+        inserted_batch_dir / "manifest.yaml",
+        inserted_manifest.model_dump(mode="json"),
+    )
+
+    coverage = audit_coverage(root, middle.batch_id)
+
+    assert not coverage["complete"]
+    assert all(
+        missing == middle.unit_ids for missing in coverage["missing"].values()
+    )
+    with pytest.raises(ValueError, match=f"incomplete_audit=.*{middle.batch_id}"):
+        render_project(
+            root,
+            None,
+            "new-seam-context",
+            batch_id=middle.batch_id,
+        )
 
 
 def test_review_packets_show_renderer_visible_equations(tmp_path: Path) -> None:

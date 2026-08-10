@@ -13,6 +13,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import (
     audit_context_fingerprint,
     batch_unit_fingerprints,
+    dependency_closure,
     effective_figure_labels,
     source_representation_text,
     translation_unit_fingerprint,
@@ -604,6 +605,16 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
         context_ids = tuple(run.context_unit_ids)
         if not run.context_fingerprint or not context_ids:
             continue
+        if run.packet_id:
+            required_context_ids = set(
+                dependency_closure(
+                    root,
+                    [batch_id],
+                    run.unit_fingerprints,
+                )
+            )
+            if not required_context_ids.issubset(context_ids):
+                continue
         if context_ids not in context_fingerprints:
             context_fingerprints[context_ids] = (
                 audit_evidence_context_fingerprint(
