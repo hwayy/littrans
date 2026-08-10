@@ -588,7 +588,10 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
     translations = translation_map(root)
     expected = set(manifest.unit_ids)
     coverage: dict[str, set[str]] = {lens: set() for lens in REQUIRED_AUDIT_LENSES}
-    context_fingerprints: dict[tuple[str, ...], str | None] = {}
+    context_inputs: dict[
+        tuple[str, ...],
+        tuple[str, dict[str, str]] | None,
+    ] = {}
     invalidation_path = (
         root / "evidence" / "audits" / f"{batch_id}.invalidations.json"
     )
@@ -615,9 +618,9 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
             )
             if not required_context_ids.issubset(context_ids):
                 continue
-        if context_ids not in context_fingerprints:
-            context_fingerprints[context_ids] = (
-                audit_evidence_context_fingerprint(
+        if context_ids not in context_inputs:
+            context_inputs[context_ids] = (
+                (
                     audit_context_fingerprint(
                         root, [all_units[unit_id] for unit_id in context_ids]
                     ),
@@ -627,12 +630,26 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
                         )
                         for unit_id in context_ids
                     },
-                    list(context_ids),
                 )
                 if all(unit_id in all_units for unit_id in context_ids)
                 else None
             )
-        if context_fingerprints[context_ids] != run.context_fingerprint:
+        inputs = context_inputs[context_ids]
+        if inputs is None:
+            continue
+        shared_fingerprint, current_context_fingerprints = inputs
+        effective_context_fingerprints = {
+            unit_id: run.unit_fingerprints.get(
+                unit_id, current_context_fingerprints[unit_id]
+            )
+            for unit_id in context_ids
+        }
+        current_context_fingerprint = audit_evidence_context_fingerprint(
+            shared_fingerprint,
+            effective_context_fingerprints,
+            list(context_ids),
+        )
+        if current_context_fingerprint != run.context_fingerprint:
             continue
         coverage[run.lens].update(
             unit_id

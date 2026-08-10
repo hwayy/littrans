@@ -340,15 +340,24 @@ def create_workflow_packet(
     positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     translations = translation_map(root)
     requested_ids = [unit_id for manifest in manifests for unit_id in manifest.unit_ids]
+    pending_ids = set(requested_ids)
     selected_ids = list(requested_ids)
 
     if stage == "audit":
-        pending = {
+        pending_ids = {
             unit_id
             for manifest in manifests
             for unit_id in audit_coverage(root, manifest.batch_id)["missing"][lens or ""]
         }
-        selected_ids = dependency_closure(root, batch_ids, pending) if pending else []
+        selected_ids = (
+            dependency_closure(root, batch_ids, pending_ids)
+            if pending_ids
+            else []
+        )
+    packet_unit_ids = [
+        unit_id for unit_id in requested_ids if unit_id in pending_ids
+    ]
+    coverage_set = set(packet_unit_ids)
     selected_units = [unit_map[unit_id] for unit_id in selected_ids if unit_id in unit_map]
     packet_id = f"{stage}-{uuid.uuid4().hex[:12]}"
     packet_dir = root / "packets" / packet_id
@@ -360,11 +369,10 @@ def create_workflow_packet(
 
     read_only_context_path: Path | None = None
     if stage == "audit":
-        requested_set = set(requested_ids)
         context_units = [
             unit_map[unit_id]
             for unit_id in selected_ids
-            if unit_id in unit_map and unit_id not in requested_set
+            if unit_id in unit_map and unit_id not in coverage_set
         ]
         if context_units:
             read_only_context_path = packet_dir / "read-only-context.md"
@@ -380,7 +388,8 @@ def create_workflow_packet(
         batch_units = [
             unit_map[unit_id]
             for unit_id in manifest.unit_ids
-            if unit_id in unit_map and (stage == "translate" or unit_id in set(selected_ids))
+            if unit_id in unit_map
+            and (stage == "translate" or unit_id in coverage_set)
         ]
         if stage == "translate":
             target_path = packet_dir / f"{manifest.batch_id}.source.md"
@@ -439,10 +448,6 @@ def create_workflow_packet(
                 audit_path.relative_to(root)
             ).replace("\\", "/")
 
-    requested_set = set(requested_ids)
-    packet_unit_ids = [
-        unit_id for unit_id in selected_ids if unit_id in requested_set
-    ]
     fingerprints = {
         unit.unit_id: translation_unit_fingerprint(
             unit, translations.get(unit.unit_id)

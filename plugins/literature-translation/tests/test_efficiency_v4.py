@@ -2125,6 +2125,93 @@ def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path)
     ]
 
 
+def test_incremental_audit_keeps_dependency_context_out_of_coverage(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=11, max_words=700)
+    assert [len(manifest.unit_ids) for manifest in manifests] == [5, 5, 1]
+    middle = manifests[1]
+    _submit(root, middle.batch_id)
+    assert run_qa(root, middle.batch_id).passed
+    initial = create_workflow_packet(
+        root,
+        "audit",
+        [middle.batch_id],
+        "fidelity",
+    )
+    initial_issues = root / "packets" / initial.packet_id / "issues.jsonl"
+    write_jsonl(initial_issues, [])
+    import_review_set(
+        root,
+        root / "packets" / initial.packet_id / "manifest.json",
+        initial_issues,
+    )
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
+
+    current = translation_map(root)
+    changed_id = "u008"
+    records = [
+        (
+            current[unit_id].model_copy(
+                update={
+                    "target_text": current[unit_id].target_text + "局部修订"
+                }
+            )
+            if unit_id == changed_id
+            else current[unit_id]
+        )
+        for unit_id in middle.translatable_unit_ids
+    ]
+    input_path = root / "batches" / middle.batch_id / "incremental.jsonl"
+    write_jsonl(input_path, records)
+    submit_translation(root, middle.batch_id, input_path)
+    pending = ["u007", "u008", "u009"]
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == pending
+
+    packet = create_workflow_packet(
+        root,
+        "audit",
+        [middle.batch_id],
+        "fidelity",
+    )
+
+    assert packet.unit_ids == pending
+    assert list(packet.unit_fingerprints) == [
+        "u005",
+        "u006",
+        "u007",
+        "u008",
+        "u009",
+        "u010",
+        "u011",
+    ]
+    read_only = (
+        root / packet.files["audit:read-only-context"]
+    ).read_text(encoding="utf-8")
+    assert all(
+        f"## {unit_id}" in read_only
+        for unit_id in ("u005", "u006", "u010", "u011")
+    )
+    audit = (root / packet.files[f"{middle.batch_id}:audit"]).read_text(
+        encoding="utf-8"
+    )
+    assert all(f"## {unit_id}" in audit for unit_id in pending)
+    assert all(
+        f"## {unit_id}" not in audit
+        for unit_id in ("u005", "u006", "u010", "u011")
+    )
+
+    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    write_jsonl(issues, [])
+    import_review_set(
+        root,
+        root / "packets" / packet.packet_id / "manifest.json",
+        issues,
+    )
+
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
+
+
 def test_dependency_closure_composes_sidebar_and_continuation_dependencies(
     tmp_path: Path,
 ) -> None:
