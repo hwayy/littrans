@@ -200,7 +200,11 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
             ).encode("utf-8")
             current_source_bytes = batch_source_markdown(
                 root,
-                [unit_map[unit_id] for unit_id in manifest.unit_ids],
+                [
+                    unit_map[unit_id]
+                    for unit_id in manifest.unit_ids
+                    if unit_id in unit_map
+                ],
             ).encode("utf-8")
             optimized_bytes += len(current_source_bytes) + len(lean_context)
     if legacy_bytes <= 0:
