@@ -12,7 +12,7 @@ Use the bundled Python launcher described in `../../references/runtime.md` for e
 ## Independence
 
 - Prefer a fresh task or independent subagent that receives only the raw batch artifacts. Do not provide the expected verdict, prior reviewer conclusions, or translator rationale beyond recorded uncertainties.
-- When subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish.
+- When subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish. For a coordinated set, let `continue-literature-translation` assign one lens reviewer across at most three batches.
 - When independent execution is unavailable, perform the three passes sequentially and disclose that limitation.
 
 ## Procedure
@@ -21,9 +21,12 @@ Use the bundled Python launcher described in `../../references/runtime.md` for e
 2. Compare every translatable unit under all three lenses. Use [issue-contract.md](references/issue-contract.md).
 3. Check non-translatable neighbors and structural metadata against the PDF: verify display and inline LaTeX, equation numbers, code indentation/language, figure-label translations, captions, paragraph continuation, titled sidebar grouping, and cross-references. Check every source/target table cell and its row/column alignment. Do not rewrite protected code or formulas.
 4. Write JSONL issues only. Use precise source and target spans, explain the actual defect, and propose a revision only when confident.
-5. Import the issue file with `review import` even when it is empty; this records completion of all three lenses.
+5. Import each independent single-batch issue file with `review import --lenses <lens>` even when it is empty. Import a coordinated packet with `review import-set`; never claim lenses that the reviewer did not perform.
 6. Report issue counts and all blocker/major findings. Do not run `translation submit`, resolve findings, or approve the batch.
 
 If the project enables `external_review`, the internal audit remains mandatory and precedes
 the external stage. Follow [external-review.md](references/external-review.md) only after
 machine approval; external reviewers do not replace the three internal lenses.
+
+Audit evidence is unit-level. After a revision, review the packet's changed dependency closure;
+unchanged current coverage is reusable, but missing lens coverage always blocks approval.

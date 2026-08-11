@@ -12,7 +12,13 @@ from reportlab.pdfgen import canvas
 
 import littrans.external_review as external_review
 import littrans.quality as quality_module
+import littrans.storage as storage_module
 from littrans.batching import create_batches, load_manifest, refresh_batch
+from littrans.evidence import (
+    batch_source_fingerprint,
+    batch_structure_fingerprint,
+    batch_unit_fingerprints,
+)
 from littrans.external_review import (
     PROMPT_VERSION,
     _antigravity_prompt,
@@ -48,9 +54,11 @@ from littrans.models import (
     IssueStatus,
     IssueType,
     ProjectStatus,
+    PromptDelivery,
     ReaderNote,
     RenderPolicy,
     ReviewIssue,
+    ReviewScope,
     Severity,
     SidebarRole,
     SourceUnit,
@@ -131,6 +139,29 @@ def make_pdf(path: Path) -> None:
         pdf.drawString(72, 30, f"Page {page}")
         pdf.showPage()
     pdf.save()
+
+
+def test_atomic_write_retries_transient_permission_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "atomic.txt"
+    real_replace = storage_module.os.replace
+    attempts = 0
+
+    def flaky_replace(source: str | Path, destination: str | Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("temporarily locked")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(storage_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(storage_module.time, "sleep", lambda seconds: None)
+
+    storage_module.atomic_write_text(path, "durable\n")
+
+    assert attempts == 3
+    assert path.read_text(encoding="utf-8") == "durable\n"
 
 
 def test_scaled_number_normalization_handles_chinese_readable_forms() -> None:
@@ -1496,7 +1527,156 @@ def test_external_driver_timeout_becomes_an_auditable_failure(
 
     assert exc_info.value.attempts == 1
     assert exc_info.value.raw == "partial output"
+    assert exc_info.value.prompt_delivery is PromptDelivery.FILE
+    assert exc_info.value.duration_seconds >= 0
     assert "timed out after 330 seconds" in str(exc_info.value)
+
+    with pytest.raises(external_review.ExternalInvocationError) as stdin_exc:
+        external_review._invoke(
+            reviewer,
+            packet,
+            work_dir,
+            {},
+            forced_delivery=PromptDelivery.STDIN,
+        )
+    assert stdin_exc.value.prompt_delivery is PromptDelivery.STDIN
+
+
+def test_external_driver_timeout_continues_to_fallback_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fallback_model = "claude-sonnet-4-6"
+    reviewer = ExternalReviewerConfig.model_validate(
+        {
+            "id": "claude",
+            "driver": "claude-code",
+            "command": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "high",
+            "fast": False,
+            "fallbacks": [{"model": fallback_model, "effort": "high"}],
+        }
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    calls: list[list[str]] = []
+
+    def timeout_then_succeed(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(
+                command, kwargs.get("timeout", 330), output="primary timed out"
+            )
+        payload = {
+            "verdict": "accepted",
+            "summary": "No substantive defects.",
+            "issues": [],
+        }
+        requested_model = command[command.index("--model") + 1]
+        raw = json.dumps(
+            {
+                "result": json.dumps(payload),
+                "modelUsage": {requested_model: {"inputTokens": 1}},
+                "fast_mode_state": "off",
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, raw, "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", timeout_then_succeed)
+
+    result = external_review._invoke(reviewer, packet, work_dir, {})
+
+    assert result[2] == fallback_model
+    assert result[6] == 2
+    assert fallback_model not in calls[0]
+    assert fallback_model in calls[1]
+
+    calls.clear()
+    monkeypatch.setattr(
+        external_review, "CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED", True
+    )
+    delivery_result = external_review._invoke(reviewer, packet, work_dir, {})
+    assert delivery_result[2] == reviewer.model
+    assert delivery_result[6] == 2
+    assert delivery_result[7] is PromptDelivery.FILE
+
+
+def test_external_driver_accumulates_usage_across_format_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    calls = 0
+
+    def invalid_then_succeed(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        usage = (
+            {
+                "inputTokens": 10,
+                "cacheCreationInputTokens": 2,
+                "cacheReadInputTokens": 3,
+                "outputTokens": 4,
+                "costUSD": 0.1,
+            }
+            if calls == 1
+            else {
+                "inputTokens": 20,
+                "cacheCreationInputTokens": 5,
+                "cacheReadInputTokens": 7,
+                "outputTokens": 8,
+                "costUSD": 0.2,
+            }
+        )
+        payload = (
+            {"verdict": "accepted"}
+            if calls == 1
+            else {
+                "verdict": "accepted",
+                "summary": "No substantive defects found.",
+                "issues": [],
+            }
+        )
+        raw = json.dumps(
+            {
+                "result": json.dumps(payload),
+                "modelUsage": {reviewer.model: usage},
+                "num_turns": calls,
+                "fast_mode_state": "off",
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, raw, "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", invalid_then_succeed)
+
+    result = external_review._invoke(reviewer, packet, work_dir, {})
+    usage = result[9]
+
+    assert result[6] == 2
+    assert usage.input_tokens == 30
+    assert usage.cache_creation_input_tokens == 7
+    assert usage.cache_read_input_tokens == 10
+    assert usage.output_tokens == 12
+    assert usage.provider_turns == 3
+    assert result[10] == pytest.approx(0.3)
 
 
 def test_least_used_assignment_counts_primary_batches_not_retries(
@@ -1677,6 +1857,22 @@ def test_external_packet_is_isolated_and_external_gate_is_strict(
         prompt_version="test",
         verdict=ExternalReviewVerdict.ACCEPTED,
         summary="No substantive defects.",
+        covered_unit_ids=list(manifest.unit_ids),
+        unit_fingerprints=batch_unit_fingerprints(
+            prepared_project, manifest.batch_id
+        ),
+        source_fingerprint=batch_source_fingerprint(
+            prepared_project, manifest.batch_id
+        ),
+        structure_fingerprint=batch_structure_fingerprint(
+            prepared_project, manifest.batch_id
+        ),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            prepared_project,
+            manifest.batch_id,
+            list(manifest.unit_ids),
+            ReviewScope.FULL,
+        ),
     )
     append_jsonl(
         prepared_project / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
@@ -1726,7 +1922,9 @@ def test_external_issue_does_not_block_second_opinion_gate(
         preserve_status=True,
     )
 
-    _require_machine_reviewed(prepared_project, manifest.batch_id)
+    _require_machine_reviewed(
+        prepared_project, manifest.batch_id, allow_external_issues=True
+    )
 
 
 def test_external_issue_evidence_accepts_structured_source_and_target_spans() -> None:
@@ -1909,6 +2107,80 @@ def test_approval_cannot_stamp_a_revision_with_stale_evidence(
     } == {ProjectStatus.REVISED}
     with pytest.raises(ValueError, match="QA report is stale"):
         approve_batch(prepared_project, manifest.batch_id, "machine")
+
+
+def test_qa_cannot_promote_a_revision_it_did_not_check(
+    prepared_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = create_batches(
+        prepared_project, "1", max_words=300, prefix="qa-race"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    current = translation_map(prepared_project)
+    revised_records = [
+        current[unit_id].model_copy(
+            update={"target_text": current[unit_id].target_text + " revised"}
+        )
+        for unit_id in manifest.translatable_unit_ids
+    ]
+    revision_input = (
+        prepared_project / "batches" / manifest.batch_id / "qa-race-revision.jsonl"
+    )
+    write_jsonl(revision_input, revised_records)
+
+    fingerprint_seen = threading.Event()
+    release_qa = threading.Event()
+    original_fingerprint = quality_module.batch_translation_fingerprint
+
+    def paused_fingerprint(root: Path, batch_id: str) -> str:
+        value = original_fingerprint(root, batch_id)
+        if threading.current_thread().name == "qa-thread":
+            fingerprint_seen.set()
+            if not release_qa.wait(5):
+                raise TimeoutError("test did not release QA")
+        return value
+
+    monkeypatch.setattr(
+        quality_module, "batch_translation_fingerprint", paused_fingerprint
+    )
+    reports: list[object] = []
+    errors: list[BaseException] = []
+
+    def qa() -> None:
+        try:
+            reports.append(run_qa(prepared_project, manifest.batch_id))
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failure
+            errors.append(exc)
+
+    def revise() -> None:
+        try:
+            submit_translation(prepared_project, manifest.batch_id, revision_input)
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failure
+            errors.append(exc)
+
+    qa_thread = threading.Thread(target=qa, name="qa-thread")
+    revision_thread = threading.Thread(target=revise, name="qa-revision-thread")
+    qa_thread.start()
+    assert fingerprint_seen.wait(5)
+    revision_thread.start()
+    time.sleep(0.2)
+    assert revision_thread.is_alive()
+    release_qa.set()
+    qa_thread.join(5)
+    revision_thread.join(5)
+
+    assert not qa_thread.is_alive()
+    assert not revision_thread.is_alive()
+    assert not errors
+    assert len(reports) == 1
+    assert {
+        translation_map(prepared_project)[unit_id].status
+        for unit_id in manifest.translatable_unit_ids
+    } == {ProjectStatus.REVISED}
+    assert not quality_module.qa_report_is_current(
+        prepared_project, manifest.batch_id
+    )
 
 
 def test_grouped_code_secondary_ids_are_unique_in_bilingual_html(

@@ -14,8 +14,10 @@ from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from littrans.batching import load_manifest
+from littrans.evidence import effective_figure_labels, equation_markdown
 from littrans.extractor import parse_page_spec
 from littrans.models import (
+    BatchManifest,
     CalloutKind,
     IssueStatus,
     ProjectStatus,
@@ -27,6 +29,7 @@ from littrans.models import (
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
+from littrans.quality import audit_coverage, qa_report_is_current
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
@@ -42,6 +45,31 @@ LEGACY_PUBLISHABLE = {
     ProjectStatus.EXTERNAL_REVIEWED,
     ProjectStatus.HUMAN_APPROVED,
 }
+
+
+def _manifest_cover(
+    selected_ids: set[str], manifests: list[BatchManifest]
+) -> list[BatchManifest] | None:
+    """Choose a deterministic evidence cover without requiring redundant batches."""
+    remaining = set(selected_ids)
+    cover: list[BatchManifest] = []
+    candidates = list(manifests)
+    while remaining:
+        ranked = sorted(
+            (
+                (len(remaining & set(manifest.unit_ids)), manifest)
+                for manifest in candidates
+                if remaining & set(manifest.unit_ids)
+            ),
+            key=lambda item: (-item[0], item[1].created_at, item[1].batch_id),
+        )
+        if not ranked:
+            return None
+        _, selected = ranked[0]
+        cover.append(selected)
+        remaining.difference_update(selected.unit_ids)
+        candidates.remove(selected)
+    return cover
 
 
 def _is_cjk_character(character: str) -> bool:
@@ -289,8 +317,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CODE:
         return fenced_code(unit.source_text, unit.code_language)
     if unit.kind is UnitKind.EQUATION:
-        number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
-        return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
+        return equation_markdown(unit)
     if unit.kind is UnitKind.FIGURE:
         asset = _asset_markdown(unit) or f"`[figure: PDF page {unit.page}]`"
         labels = [
@@ -444,6 +471,7 @@ def render_project(
     name: str,
     allow_draft: bool = False,
     batch_id: str | None = None,
+    batch_ids: list[str] | None = None,
 ) -> dict[str, str]:
     config = load_project(root)
     publishable = (
@@ -451,28 +479,52 @@ def render_project(
         if config.external_review and config.external_review.enabled
         else LEGACY_PUBLISHABLE
     )
-    if (page_spec is None) == (batch_id is None):
-        raise ValueError("Specify exactly one of page_spec or batch_id")
-    manifest = load_manifest(root, batch_id) if batch_id else None
+    selectors = sum(value is not None for value in (page_spec, batch_id, batch_ids))
+    if selectors != 1:
+        raise ValueError("Specify exactly one of page_spec, batch_id, or batch_ids")
+    if batch_ids is not None and (not batch_ids or len(batch_ids) > 3):
+        raise ValueError("batch_ids must contain one to three exact batch IDs")
+    if batch_ids is not None:
+        from littrans.workflow import _validate_batch_set
+
+        _validate_batch_set(root, batch_ids)
+    selected_batch_ids = batch_ids or ([batch_id] if batch_id else [])
+    manifests = [load_manifest(root, value) for value in selected_batch_ids]
     pages = (
-        set(manifest.pages)
-        if manifest
+        {page for manifest in manifests for page in manifest.pages}
+        if manifests
         else set(parse_page_spec(page_spec or "", config.source_pages))
     )
     if not allow_draft:
         require_verified_extraction(root, pages)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    if manifest:
+    if manifests:
         unit_map = {unit.unit_id: unit for unit in all_units}
-        missing_manifest_units = [unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map]
+        selected_manifest_unit_ids = [
+            unit_id for manifest in manifests for unit_id in manifest.unit_ids
+        ]
+        if len(selected_manifest_unit_ids) != len(set(selected_manifest_unit_ids)):
+            raise ValueError("Selected batches contain overlapping source units")
+        positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
+        first_positions = [
+            min(positions.get(unit_id, 10**12) for unit_id in manifest.unit_ids)
+            for manifest in manifests
+        ]
+        if first_positions != sorted(first_positions):
+            raise ValueError("batch_ids must follow source order")
+        missing_manifest_units = [
+            unit_id for unit_id in selected_manifest_unit_ids if unit_id not in unit_map
+        ]
         if missing_manifest_units:
             raise ValueError(f"Batch references missing source units: {missing_manifest_units}")
-        units = [unit_map[unit_id] for unit_id in manifest.unit_ids]
+        selected_set = set(selected_manifest_unit_ids)
+        units = [unit for unit in all_units if unit.unit_id in selected_set]
     else:
         units = [unit for unit in all_units if unit.page in pages]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
     render_units, grouped_code_ids = _coalesce_code_units(units)
     translations = translation_map(root)
+    selected_ids = {unit.unit_id for unit in units}
     missing = [
         unit.unit_id for unit in units if unit.translatable and unit.unit_id not in translations
     ]
@@ -483,8 +535,119 @@ def render_project(
         and unit.unit_id in translations
         and translations[unit.unit_id].status not in publishable
     ]
+    stale_qa: list[str] = []
+    incomplete_audit: list[str] = []
+    stale_external: list[str] = []
+    unbatched_units: list[str] = []
+    if not allow_draft:
+        relevant_manifests = manifests
+        gate_status: dict[str, tuple[bool, bool, bool]] = {}
+        if not relevant_manifests:
+            candidate_manifests = [
+                manifest
+                for path in (root / "batches").iterdir()
+                if path.is_dir()
+                and (path / "manifest.yaml").is_file()
+                for manifest in [load_manifest(root, path.name)]
+                if selected_ids & set(manifest.unit_ids)
+            ]
+        current_unit_ids = {unit.unit_id for unit in all_units}
+        if not relevant_manifests:
+            if config.external_review and config.external_review.enabled:
+                from littrans.external_review import external_review_status
+
+            for manifest in candidate_manifests:
+                has_removed_units = any(
+                    unit_id not in current_unit_ids for unit_id in manifest.unit_ids
+                )
+                qa_current = not has_removed_units and qa_report_is_current(
+                    root, manifest.batch_id
+                )
+                audit_complete = bool(
+                    not has_removed_units
+                    and audit_coverage(root, manifest.batch_id)["complete"]
+                )
+                external_current = bool(
+                    not has_removed_units
+                    and (
+                        not config.external_review
+                        or not config.external_review.enabled
+                        or external_review_status(root, manifest.batch_id)[
+                            "external_approvable"
+                        ]
+                    )
+                )
+                gate_status[manifest.batch_id] = (
+                    qa_current,
+                    audit_complete,
+                    external_current,
+                )
+            eligible_manifests = [
+                manifest
+                for manifest in candidate_manifests
+                if all(gate_status[manifest.batch_id])
+            ]
+            relevant_manifests = (
+                _manifest_cover(selected_ids, eligible_manifests)
+                or candidate_manifests
+            )
+        removed_manifest_units = {
+            manifest.batch_id: [
+                unit_id
+                for unit_id in manifest.unit_ids
+                if unit_id not in current_unit_ids
+            ]
+            for manifest in relevant_manifests
+            if any(
+                unit_id not in current_unit_ids
+                for unit_id in manifest.unit_ids
+            )
+        }
+        if removed_manifest_units:
+            raise ValueError(
+                "Formal rendering is blocked because manifests reference removed "
+                "source units; recreate the affected batches: "
+                f"removed_units={removed_manifest_units}"
+            )
+        covered_manifest_units = {
+            unit_id
+            for manifest in relevant_manifests
+            for unit_id in manifest.unit_ids
+        }
+        unbatched_units = sorted(selected_ids - covered_manifest_units)
+        stale_qa = [
+            manifest.batch_id
+            for manifest in relevant_manifests
+            if not (
+                gate_status[manifest.batch_id][0]
+                if manifest.batch_id in gate_status
+                else qa_report_is_current(root, manifest.batch_id)
+            )
+        ]
+        incomplete_audit = [
+            manifest.batch_id
+            for manifest in relevant_manifests
+            if not (
+                gate_status[manifest.batch_id][1]
+                if manifest.batch_id in gate_status
+                else audit_coverage(root, manifest.batch_id)["complete"]
+            )
+        ]
+        if config.external_review and config.external_review.enabled:
+            from littrans.external_review import external_review_status
+
+            stale_external = [
+                manifest.batch_id
+                for manifest in relevant_manifests
+                if not (
+                    gate_status[manifest.batch_id][2]
+                    if manifest.batch_id in gate_status
+                    else external_review_status(root, manifest.batch_id)[
+                        "external_approvable"
+                    ]
+                )
+            ]
     open_severe: list[str] = []
-    selected_ids = {unit.unit_id for unit in units}
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):
         for issue in read_jsonl(issue_path, ReviewIssue):
             if (
@@ -493,10 +656,22 @@ def render_project(
                 and issue.severity in {Severity.BLOCKER, Severity.MAJOR}
             ):
                 open_severe.append(issue.issue_id)
-    if not allow_draft and (missing or unapproved or open_severe):
+    if not allow_draft and (
+        missing
+        or unapproved
+        or unbatched_units
+        or stale_qa
+        or incomplete_audit
+        or stale_external
+        or open_severe
+    ):
         raise ValueError(
             "Formal rendering is blocked; "
-            f"missing={missing}, not_publishable={unapproved}, open_severe={open_severe}"
+            f"missing={missing}, not_publishable={unapproved}, "
+            f"unbatched_units={unbatched_units}, stale_qa={stale_qa}, "
+            f"incomplete_audit={incomplete_audit}, "
+            f"stale_external={stale_external}, "
+            f"open_severe={open_severe}"
         )
 
     output_name = _safe_name(name)
@@ -541,6 +716,11 @@ def render_project(
         render_unit = unit
         if unit.kind is UnitKind.TABLE and record and record.target_table:
             render_unit = unit.model_copy(update={"table": record.target_table})
+        rendered_figure_labels = effective_figure_labels(unit, record)
+        if rendered_figure_labels:
+            render_unit = unit.model_copy(
+                update={"figure_labels": rendered_figure_labels}
+            )
         rendered = _target_markdown(render_unit, target)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
@@ -629,7 +809,7 @@ def render_project(
             source_view=True,
         )
         target_html = _unit_html(
-            unit,
+            render_unit,
             bilingual_target,
             record.target_table if record else None,
             source_view=False,
@@ -832,7 +1012,11 @@ def render_project(
         json.dumps(
             {
                 "passed": not render_errors,
-                "selection": {"batch_id": batch_id, "pages": sorted(pages)},
+                "selection": {
+                    "batch_id": batch_id,
+                    "batch_ids": selected_batch_ids or None,
+                    "pages": sorted(pages),
+                },
                 "unit_ids": [unit.unit_id for unit in units],
                 "errors": render_errors,
             },
@@ -851,9 +1035,9 @@ def render_project(
         "unresolved": str(unresolved_path),
         "render_qa": str(render_qa_path),
     }
-    if config.external_review and config.external_review.enabled and batch_id:
+    if config.external_review and config.external_review.enabled and selected_batch_ids:
         external_path = output / f"{output_name}.external-review.md"
-        _write_external_review_summary(external_path, root, batch_id)
+        _write_external_review_summary_set(external_path, root, selected_batch_ids)
         outputs["external_review"] = str(external_path)
     return outputs
 
@@ -897,6 +1081,30 @@ def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> Non
         or ["None."]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_external_review_summary_set(
+    path: Path, root: Path, batch_ids: list[str]
+) -> None:
+    if len(batch_ids) == 1:
+        _write_external_review_summary(path, root, batch_ids[0])
+        return
+    from littrans.external_review import external_review_status
+
+    lines = ["# External review set", ""]
+    for batch_id in batch_ids:
+        status = external_review_status(root, batch_id)
+        lines.extend(
+            [
+                f"## {batch_id}",
+                "",
+                f"- Verdict: **{status['verdict']}**",
+                f"- External approval gate: {'PASS' if status['external_approvable'] else 'FAIL'}",
+                f"- Translation fingerprint: `{status['translation_fingerprint']}`",
+                "",
+            ]
+        )
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _render_quality_errors(

@@ -16,12 +16,65 @@
       ],
       "title": "ExternalReviewVerdict",
       "type": "string"
+    },
+    "PromptDelivery": {
+      "enum": [
+        "stdin",
+        "file"
+      ],
+      "title": "PromptDelivery",
+      "type": "string"
+    },
+    "ReviewScope": {
+      "enum": [
+        "full",
+        "incremental"
+      ],
+      "title": "ReviewScope",
+      "type": "string"
+    },
+    "ReviewUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cache Creation Input Tokens",
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cache Read Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "provider_turns": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Provider Turns",
+          "type": "integer"
+        }
+      },
+      "title": "ReviewUsage",
+      "type": "object"
     }
   },
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": 1,
+      "default": 2,
       "title": "Schema Version",
       "type": "integer"
     },
@@ -125,6 +178,113 @@
     "prompt_version": {
       "title": "Prompt Version",
       "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/ReviewScope",
+      "default": "full"
+    },
+    "base_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Base Run Id"
+    },
+    "covered_unit_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Covered Unit Ids",
+      "type": "array"
+    },
+    "unit_fingerprints": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Unit Fingerprints",
+      "type": "object"
+    },
+    "source_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Fingerprint"
+    },
+    "structure_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Structure Fingerprint"
+    },
+    "context_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Fingerprint"
+    },
+    "duration_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Duration Seconds"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cost_usd": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Usd"
+    },
+    "prompt_delivery": {
+      "$ref": "#/$defs/PromptDelivery",
+      "default": "file"
     },
     "verdict": {
       "$ref": "#/$defs/ExternalReviewVerdict"
