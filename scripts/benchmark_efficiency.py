@@ -302,6 +302,14 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
                 )
         for manifest in group:
             batch_dir = root / "batches" / manifest.batch_id
+            current_manifest_ids = [
+                unit_id for unit_id in manifest.unit_ids if unit_id in unit_map
+            ]
+            if not current_manifest_ids:
+                raise ValueError(
+                    "Benchmark manifest has no current source units: "
+                    f"{manifest.batch_id}"
+                )
             source_bytes = (batch_dir / "source.md").read_bytes()
             context_bytes = (batch_dir / "context.md").read_bytes()
             translation_path = batch_dir / "translation.jsonl"
@@ -314,15 +322,11 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
                 len(source_bytes) + len(context_bytes) + len(translation_bytes)
             )
             lean_context = _lean_translation_context(
-                root, all_units, positions, manifest.unit_ids
+                root, all_units, positions, current_manifest_ids
             ).encode("utf-8")
             current_source_bytes = batch_source_markdown(
                 root,
-                [
-                    unit_map[unit_id]
-                    for unit_id in manifest.unit_ids
-                    if unit_id in unit_map
-                ],
+                [unit_map[unit_id] for unit_id in current_manifest_ids],
             ).encode("utf-8")
             optimized_bytes += len(current_source_bytes) + len(lean_context)
     if legacy_bytes <= 0:

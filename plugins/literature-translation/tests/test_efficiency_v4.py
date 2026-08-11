@@ -714,6 +714,27 @@ def test_benchmark_skips_removed_interior_manifest_units(tmp_path: Path) -> None
     assert result["optimized_packet_bytes"] > 0
 
 
+def test_benchmark_skips_removed_boundary_manifest_units(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, manifests = _make_project(tmp_path, pages=3, max_words=700)
+    assert len(manifests) == 1
+    assert manifests[0].unit_ids == ["u001", "u002", "u003"]
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    write_jsonl(
+        units_path,
+        [unit for unit in units if unit.unit_id == "u002"],
+    )
+
+    result = benchmark(root, completed_only=False)
+
+    assert result["batches"] == 1
+    assert result["legacy_packet_bytes"] > 0
+    assert result["optimized_packet_bytes"] > 0
+
+
 def test_completed_benchmark_does_not_group_across_incomplete_batches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
