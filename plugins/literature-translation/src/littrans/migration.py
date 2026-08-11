@@ -7,9 +7,9 @@ from typing import Any
 from rapidfuzz.fuzz import ratio
 
 from littrans.evidence import (
-    batch_source_fingerprint,
-    batch_structure_fingerprint,
-    batch_unit_fingerprints,
+    source_unit_fingerprint,
+    structure_unit_fingerprint,
+    translation_unit_fingerprint,
 )
 from littrans.extractor import parse_page_spec
 from littrans.models import (
@@ -132,15 +132,25 @@ def migrate_translations(
     return report
 
 
-def _legacy_v3_batch_fingerprint(root: Path, batch_id: str) -> str:
+def _legacy_v3_batch_fingerprint(
+    root: Path,
+    batch_id: str,
+    *,
+    units: dict[str, SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
+) -> str:
     from littrans.batching import load_manifest
 
     manifest = load_manifest(root, batch_id)
-    translations = translation_map(root)
-    units = {
-        unit.unit_id: unit
-        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    }
+    translations = translations if translations is not None else translation_map(root)
+    units = (
+        units
+        if units is not None
+        else {
+            unit.unit_id: unit
+            for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        }
+    )
     source_fields = {
         "kind",
         "source_hash",
@@ -275,10 +285,10 @@ def migrate_project_schema(
     from littrans.batching import load_manifest
     from littrans.external_review import (
         _external_review_context_fingerprint,
+        _legacy_v3_packet_context,
         _legacy_v3_packet_text,
     )
     from littrans.quality import (
-        batch_translation_fingerprint,
         current_qa_context_fingerprint,
     )
 
@@ -287,17 +297,80 @@ def migrate_project_schema(
         for path in (root / "batches").iterdir()
         if path.is_dir() and (path / "manifest.yaml").is_file()
     )
+    manifests = {batch_id: load_manifest(root, batch_id) for batch_id in batch_ids}
+    evidence_batch_ids = [
+        batch_id
+        for batch_id in batch_ids
+        if (root / "qa" / f"{batch_id}.json").is_file()
+        or (root / "reviews" / f"{batch_id}.audit.json").is_file()
+        or (root / "reviews" / f"{batch_id}.external-runs.jsonl").is_file()
+    ]
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    unit_map = {unit.unit_id: unit for unit in all_units}
+    translations = translation_map(root)
+    needed_unit_ids = {
+        unit_id
+        for batch_id in evidence_batch_ids
+        for unit_id in manifests[batch_id].unit_ids
+    }
+    missing_units = sorted(needed_unit_ids - set(unit_map))
+    if missing_units:
+        raise ValueError(
+            "Schema-v4 migration cannot fingerprint removed manifest units: "
+            f"{missing_units}"
+        )
+    current_unit_fingerprints = {
+        unit_id: translation_unit_fingerprint(
+            unit_map[unit_id], translations.get(unit_id)
+        )
+        for unit_id in needed_unit_ids
+    }
+    source_unit_fingerprints = {
+        unit_id: source_unit_fingerprint(unit_map[unit_id])
+        for unit_id in needed_unit_ids
+    }
+    structure_unit_fingerprints = {
+        unit_id: structure_unit_fingerprint(unit_map[unit_id])
+        for unit_id in needed_unit_ids
+    }
+    legacy_packet_context = _legacy_v3_packet_context(root)
     candidates: dict[str, dict[str, Any]] = {}
     stale: dict[str, list[str]] = {"qa": [], "audit": [], "external": []}
     current_qa_context = current_qa_context_fingerprint(root)
-    for batch_id in batch_ids:
-        legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
-        current_fingerprint = batch_translation_fingerprint(root, batch_id)
-        manifest = load_manifest(root, batch_id)
+    for batch_id in evidence_batch_ids:
+        manifest = manifests[batch_id]
+        legacy_fingerprint = _legacy_v3_batch_fingerprint(
+            root,
+            batch_id,
+            units=unit_map,
+            translations=translations,
+        )
+        unit_fingerprints = {
+            unit_id: current_unit_fingerprints[unit_id]
+            for unit_id in manifest.unit_ids
+        }
+        current_fingerprint = sha256_text(
+            "\n".join(
+                f"{unit_id}:{fingerprint}"
+                for unit_id, fingerprint in unit_fingerprints.items()
+            )
+        )
         item: dict[str, Any] = {
             "legacy_fingerprint": legacy_fingerprint,
             "current_fingerprint": current_fingerprint,
-            "unit_fingerprints": batch_unit_fingerprints(root, batch_id),
+            "unit_fingerprints": unit_fingerprints,
+            "source_fingerprint": sha256_text(
+                "\n".join(
+                    f"{unit_id}:{source_unit_fingerprints[unit_id]}"
+                    for unit_id in manifest.unit_ids
+                )
+            ),
+            "structure_fingerprint": sha256_text(
+                "\n".join(
+                    f"{unit_id}:{structure_unit_fingerprints[unit_id]}"
+                    for unit_id in manifest.unit_ids
+                )
+            ),
             "qa": None,
             "qa_context_verified": False,
             "audit_lenses": [],
@@ -334,11 +407,20 @@ def migrate_project_schema(
                 stale["audit"].append(batch_id)
         runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
         runs = read_jsonl(runs_path, ExternalReviewRun)
-        packet_text, _ = _legacy_v3_packet_text(root, batch_id)
-        packet_sha256 = sha256_text(packet_text)
-        external_chain, external_stale = _migratable_v3_external_chain(
-            runs, legacy_fingerprint, packet_sha256
-        )
+        if runs:
+            packet_text, _ = _legacy_v3_packet_text(
+                root,
+                batch_id,
+                _all_units=all_units,
+                _translations=translations,
+                _legacy_context=legacy_packet_context,
+            )
+            packet_sha256 = sha256_text(packet_text)
+            external_chain, external_stale = _migratable_v3_external_chain(
+                runs, legacy_fingerprint, packet_sha256
+            )
+        else:
+            external_chain, external_stale = [], False
         item["external_runs"] = external_chain
         if external_chain:
             item["external_context_fingerprint"] = (
@@ -466,12 +548,12 @@ def migrate_project_schema(
                                 "unit_fingerprints": item[
                                     "unit_fingerprints"
                                 ],
-                                "source_fingerprint": batch_source_fingerprint(
-                                    root, batch_id
-                                ),
-                                "structure_fingerprint": batch_structure_fingerprint(
-                                    root, batch_id
-                                ),
+                                "source_fingerprint": item[
+                                    "source_fingerprint"
+                                ],
+                                "structure_fingerprint": item[
+                                    "structure_fingerprint"
+                                ],
                                 "context_fingerprint": item[
                                     "external_context_fingerprint"
                                 ],

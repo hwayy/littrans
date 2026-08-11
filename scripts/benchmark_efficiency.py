@@ -13,12 +13,13 @@ sys.path.insert(0, str(SOURCE_ROOT))
 from littrans.batching import batch_source_markdown
 from littrans.evidence import (
     dependency_closure,
+    effective_figure_labels,
     translation_memory,
     translations_semantically_equal,
 )
-from littrans.models import SourceUnit, TranslationRecord
+from littrans.models import PROJECT_SCHEMA_VERSION, ProjectStatus, SourceUnit, TranslationRecord
 from littrans.project import translation_map
-from littrans.storage import read_jsonl
+from littrans.storage import load_project, read_jsonl
 from littrans.workflow import (
     _all_manifests,
     _audit_packet_text,
@@ -96,13 +97,56 @@ def _consecutive_packet_groups(
 
 def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     all_manifests = _all_manifests(root)
+    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    unit_map = {unit.unit_id: unit for unit in all_units}
+    translations = translation_map(root)
+    packet_translations = dict(translations)
+    legacy_packet_normalizations = 0
+    for unit_id, record in translations.items():
+        unit = unit_map.get(unit_id)
+        if unit is None:
+            continue
+        try:
+            effective_figure_labels(unit, record)
+        except ValueError:
+            # Schema-v3 projects can contain record-only OCR labels that the
+            # v4 renderer correctly rejects. Keep the history replay read-only
+            # and size the packet using the source unit's visible label set.
+            packet_translations[unit_id] = record.model_copy(
+                update={"figure_labels": []}
+            )
+            legacy_packet_normalizations += 1
     manifests = all_manifests
     if completed_only:
-        manifests = [
-            manifest
-            for manifest in manifests
-            if _batch_stage(root, manifest.batch_id) == "complete"
-        ]
+        config = load_project(root)
+        if config.schema_version == PROJECT_SCHEMA_VERSION:
+            manifests = [
+                manifest
+                for manifest in manifests
+                if _batch_stage(root, manifest.batch_id) == "complete"
+            ]
+        else:
+            allowed = (
+                {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
+                if config.external_review and config.external_review.enabled
+                else {
+                    ProjectStatus.MACHINE_REVIEWED,
+                    ProjectStatus.EXTERNAL_REVIEWED,
+                    ProjectStatus.HUMAN_APPROVED,
+                }
+            )
+            manifests = [
+                manifest
+                for manifest in manifests
+                if all(
+                    unit_id in unit_map
+                    and unit_id in translations
+                    and translations[unit_id].source_hash
+                    == unit_map[unit_id].source_hash
+                    and translations[unit_id].status in allowed
+                    for unit_id in manifest.translatable_unit_ids
+                )
+            ]
     if not manifests:
         raise ValueError("Efficiency benchmark requires at least one selected batch")
     packet_groups = _consecutive_packet_groups(
@@ -111,8 +155,6 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     history = read_jsonl(
         root / "translations" / "history.jsonl", TranslationRecord
     )
-    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    unit_map = {unit.unit_id: unit for unit in all_units}
     history = [record for record in history if record.unit_id in unit_map]
     if completed_only:
         selected_unit_ids = {
@@ -134,7 +176,6 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
         previous[record.unit_id] = record
 
     positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
-    translations = translation_map(root)
     legacy_bytes = 0
     optimized_bytes = 0
     for group in packet_groups:
@@ -161,7 +202,9 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
             unit for unit in audit_units if unit.unit_id not in requested_set
         ]
         read_only_context = (
-            _audit_read_only_context(read_only_units, translations).encode("utf-8")
+            _audit_read_only_context(
+                read_only_units, packet_translations
+            ).encode("utf-8")
             if read_only_units
             else b""
         )
@@ -178,7 +221,7 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
                         manifest.batch_id,
                         lens,
                         batch_units,
-                        translations,
+                        packet_translations,
                         bool(read_only_units),
                     ).encode("utf-8")
                 )
@@ -217,6 +260,7 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
         "history_records": len(history),
         "semantic_noop_records": semantic_noops,
         "semantic_change_records": semantic_changes,
+        "legacy_packet_normalizations": legacy_packet_normalizations,
         "simulated_noop_new_revisions": 0,
         "simulated_noop_evidence_invalidations": 0,
         "legacy_packet_bytes": legacy_bytes,

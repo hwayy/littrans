@@ -3,7 +3,7 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
-## [0.3.0] - 2026-08-08
+## [0.3.0] - 2026-08-11
 
 ### Added
 
@@ -18,6 +18,8 @@ versioning and correspond to Git tags named `v<version>`.
   revisions, history entries, status changes, or evidence invalidations.
 - Reused unchanged page verification and audit evidence while invalidating changed units and their
   continuation, structured-region, adjacency, and seam dependencies precisely.
+- Reduced large schema-v3 migration previews to one shared project snapshot and skipped expensive
+  fingerprint reconstruction for manifests that contain no legacy evidence.
 - Scoped model packets to relevant approved terms and at most six current approved translation
   memories, with adjacent examples preferred.
 - Added full-to-incremental external review selection, Claude stdin prompt delivery with file-mode

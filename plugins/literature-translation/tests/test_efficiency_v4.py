@@ -11,7 +11,7 @@ import pytest
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from littrans import external_review
+from littrans import external_review, migration
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
     audit_context_text,
@@ -508,6 +508,27 @@ def test_completed_benchmark_rejects_an_empty_population(tmp_path: Path) -> None
         benchmark(root, completed_only=True)
 
 
+def test_completed_benchmark_replays_schema_v3_approved_statuses(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    approved, draft = manifests
+    _submit(root, approved.batch_id)
+    _audit_and_approve(root, approved.batch_id)
+    _submit(root, draft.batch_id)
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+
+    result = benchmark(root, completed_only=True)
+
+    assert result["batches"] == 1
+    assert result["history_records"] == 1
+
+
 def test_benchmark_ignores_history_for_removed_source_units(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[3]
     namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
@@ -531,6 +552,28 @@ def test_benchmark_ignores_history_for_removed_source_units(tmp_path: Path) -> N
     assert result["history_records"] == 0
     assert result["semantic_noop_records"] == 0
     assert result["semantic_change_records"] == 0
+
+
+def test_benchmark_reports_legacy_record_only_figure_labels(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, _ = _make_project(tmp_path, pages=1)
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0].model_copy(
+        update={"kind": UnitKind.FIGURE, "figure_labels": []}
+    )
+    write_jsonl(root / "derived" / "units.jsonl", [unit])
+    record = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="图示",
+        source_hash=unit.source_hash,
+        figure_labels=[FigureLabel(source="Legacy OCR", target="旧 OCR")],
+    )
+    write_jsonl(root / "translations" / "current.jsonl", [record])
+
+    result = benchmark(root, completed_only=False)
+
+    assert result["legacy_packet_normalizations"] == 1
 
 
 def test_benchmark_renders_optimized_writer_source_from_current_units(
@@ -3921,6 +3964,58 @@ def test_v4_migration_rejects_pre_v3_source_schemas(
 
     assert (root / "project.yaml").read_bytes() == project_before
     assert not (root / "evidence" / "migration-v3-v4.json").exists()
+
+
+def test_v3_migration_snapshots_project_data_and_skips_unevidenced_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    evidenced = manifests[0].batch_id
+    _submit(root, evidenced)
+    assert run_qa(root, evidenced).passed
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+
+    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    translations = translation_map(root)
+    baseline_packet = external_review._legacy_v3_packet_text(root, evidenced)
+    snapshot_packet = external_review._legacy_v3_packet_text(
+        root,
+        evidenced,
+        _all_units=units,
+        _translations=translations,
+        _legacy_context=external_review._legacy_v3_packet_context(root),
+    )
+    assert snapshot_packet == baseline_packet
+
+    calls: list[str] = []
+    original = migration._legacy_v3_batch_fingerprint
+
+    def recording_fingerprint(
+        project: Path,
+        batch_id: str,
+        *,
+        units: dict[str, SourceUnit] | None = None,
+        translations: dict[str, TranslationRecord] | None = None,
+    ) -> str:
+        assert units is not None
+        assert translations is not None
+        calls.append(batch_id)
+        return original(
+            project,
+            batch_id,
+            units=units,
+            translations=translations,
+        )
+
+    monkeypatch.setattr(
+        migration, "_legacy_v3_batch_fingerprint", recording_fingerprint
+    )
+    report = migrate_project_schema(root, 4, dry_run=True)
+
+    assert report["batches"] == len(manifests)
+    assert calls == [evidenced]
 
 
 def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(

@@ -311,13 +311,22 @@ def _packet_text(
     compact: bool = True,
     read_only_context_ids: list[str] | None = None,
     _legacy_v3: bool = False,
+    _all_units: list[SourceUnit] | None = None,
+    _translations: dict[str, TranslationRecord] | None = None,
+    _legacy_context: tuple[str, str, str, list[dict[str, Any]]] | None = None,
 ) -> tuple[str, list[int]]:
     manifest = load_manifest(root, batch_id)
-    domain_expertise = _domain_expertise(root)
-    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    all_units = (
+        _all_units
+        if _all_units is not None
+        else read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    )
     units = {unit.unit_id: unit for unit in all_units}
-    translations = translation_map(root)
+    translations = (
+        _translations if _translations is not None else translation_map(root)
+    )
     if translation_overrides:
+        translations = dict(translations)
         translations.update(translation_overrides)
     context_ids = set(read_only_context_ids or []) - set(manifest.unit_ids)
     missing = [
@@ -411,14 +420,23 @@ def _packet_text(
             f"### Source\n\n{source}{source_labels}\n\n"
             f"### Translation\n\n{target}{target_labels}{reader_note}\n"
         )
-    brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
-    style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
+    if _legacy_context is not None:
+        domain_expertise, brief, style, approved_terms = _legacy_context
+    else:
+        domain_expertise = _domain_expertise(root)
+        brief = (root / "context" / "document-brief.md").read_text(
+            encoding="utf-8"
+        )
+        style = (root / "context" / "style-guide.md").read_text(
+            encoding="utf-8"
+        )
+        approved_terms = load_terms(root)
     terms = yaml.safe_dump(
         {
             "approved_terms": (
                 relevant_terms(root, selected_units)
                 if compact and not _legacy_v3
-                else load_terms(root)
+                else approved_terms
             )
         },
         allow_unicode=True,
@@ -467,9 +485,36 @@ def _packet_text(
     )
 
 
-def _legacy_v3_packet_text(root: Path, batch_id: str) -> tuple[str, list[int]]:
+def _legacy_v3_packet_context(
+    root: Path,
+) -> tuple[str, str, str, list[dict[str, Any]]]:
+    """Load immutable project context shared by all legacy packet reconstructions."""
+    return (
+        _domain_expertise(root),
+        (root / "context" / "document-brief.md").read_text(encoding="utf-8"),
+        (root / "context" / "style-guide.md").read_text(encoding="utf-8"),
+        load_terms(root),
+    )
+
+
+def _legacy_v3_packet_text(
+    root: Path,
+    batch_id: str,
+    *,
+    _all_units: list[SourceUnit] | None = None,
+    _translations: dict[str, TranslationRecord] | None = None,
+    _legacy_context: tuple[str, str, str, list[dict[str, Any]]] | None = None,
+) -> tuple[str, list[int]]:
     """Reconstruct the full packet bytes produced by schema-v3 review runs."""
-    return _packet_text(root, batch_id, compact=False, _legacy_v3=True)
+    return _packet_text(
+        root,
+        batch_id,
+        compact=False,
+        _legacy_v3=True,
+        _all_units=_all_units,
+        _translations=_translations,
+        _legacy_context=_legacy_context or _legacy_v3_packet_context(root),
+    )
 
 
 def _evidence_map(
