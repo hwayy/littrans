@@ -519,6 +519,15 @@ def test_completed_benchmark_replays_schema_v3_approved_statuses(
     _submit(root, approved.batch_id)
     _audit_and_approve(root, approved.batch_id)
     _submit(root, draft.batch_id)
+    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, approved.batch_id)
+    qa_path = root / "qa" / f"{approved.batch_id}.json"
+    qa = read_json(qa_path)
+    qa["translation_fingerprint"] = legacy_fingerprint
+    write_json(qa_path, qa)
+    audit_path = root / "reviews" / f"{approved.batch_id}.audit.json"
+    audit = read_json(audit_path)
+    audit["translation_fingerprint"] = legacy_fingerprint
+    write_json(audit_path, audit)
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
@@ -527,6 +536,62 @@ def test_completed_benchmark_replays_schema_v3_approved_statuses(
 
     assert result["batches"] == 1
     assert result["history_records"] == 1
+
+
+def test_completed_benchmark_rejects_open_legacy_source_only_issue(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
+    benchmark = namespace["benchmark"]
+    root, manifests = _make_project(tmp_path, pages=1)
+    manifest = manifests[0]
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0].model_copy(
+        update={"translatable": False}
+    )
+    write_jsonl(root / "derived" / "units.jsonl", [unit])
+    manifest = manifest.model_copy(update={"translatable_unit_ids": []})
+    write_yaml(
+        root / "batches" / manifest.batch_id / "manifest.yaml",
+        manifest.model_dump(mode="json"),
+    )
+    fingerprint = _legacy_v3_batch_fingerprint(root, manifest.batch_id)
+    write_json(
+        root / "qa" / f"{manifest.batch_id}.json",
+        {"passed": True, "translation_fingerprint": fingerprint},
+    )
+    write_json(
+        root / "reviews" / f"{manifest.batch_id}.audit.json",
+        {
+            "translation_fingerprint": fingerprint,
+            "lenses": ["fidelity", "technical", "chinese-style"],
+        },
+    )
+    issue_path = root / "reviews" / f"{manifest.batch_id}.issues.jsonl"
+    write_jsonl(
+        issue_path,
+        [
+            ReviewIssue(
+                issue_id="legacy-source-only-major",
+                batch_id=manifest.batch_id,
+                unit_id=unit.unit_id,
+                severity=Severity.MAJOR,
+                type=IssueType.TECHNICAL,
+                explanation="The source-only unit still has an unresolved defect.",
+                reviewer="legacy-auditor",
+            )
+        ],
+    )
+    config = load_project(root)
+    config.schema_version = 3
+    save_project(root, config)
+
+    with pytest.raises(ValueError, match="at least one selected batch"):
+        benchmark(root, completed_only=True)
+
+    write_jsonl(issue_path, [])
+    result = benchmark(root, completed_only=True)
+    assert result["batches"] == 1
 
 
 def test_benchmark_ignores_history_for_removed_source_units(tmp_path: Path) -> None:

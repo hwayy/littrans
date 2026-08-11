@@ -17,9 +17,23 @@ from littrans.evidence import (
     translation_memory,
     translations_semantically_equal,
 )
-from littrans.models import PROJECT_SCHEMA_VERSION, ProjectStatus, SourceUnit, TranslationRecord
+from littrans.migration import (
+    _legacy_v3_batch_fingerprint,
+    _migratable_v3_external_chain,
+)
+from littrans.models import (
+    PROJECT_SCHEMA_VERSION,
+    ExternalReviewRun,
+    IssueStatus,
+    ProjectConfig,
+    ProjectStatus,
+    ReviewIssue,
+    Severity,
+    SourceUnit,
+    TranslationRecord,
+)
 from littrans.project import translation_map
-from littrans.storage import load_project, read_jsonl
+from littrans.storage import load_project, read_json, read_jsonl
 from littrans.workflow import (
     _all_manifests,
     _audit_packet_text,
@@ -95,6 +109,77 @@ def _consecutive_packet_groups(
     return groups
 
 
+def _legacy_batch_complete(
+    root: Path,
+    manifest: Any,
+    config: ProjectConfig,
+    unit_map: dict[str, SourceUnit],
+    translations: dict[str, TranslationRecord],
+) -> bool:
+    if any(unit_id not in unit_map for unit_id in manifest.unit_ids):
+        return False
+    allowed = (
+        {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
+        if config.external_review and config.external_review.enabled
+        else {
+            ProjectStatus.MACHINE_REVIEWED,
+            ProjectStatus.EXTERNAL_REVIEWED,
+            ProjectStatus.HUMAN_APPROVED,
+        }
+    )
+    if any(
+        unit_id not in translations
+        or translations[unit_id].source_hash != unit_map[unit_id].source_hash
+        or translations[unit_id].status not in allowed
+        for unit_id in manifest.translatable_unit_ids
+    ):
+        return False
+    fingerprint = _legacy_v3_batch_fingerprint(
+        root,
+        manifest.batch_id,
+        units=unit_map,
+        translations=translations,
+    )
+    qa_path = root / "qa" / f"{manifest.batch_id}.json"
+    if not qa_path.is_file():
+        return False
+    qa = read_json(qa_path)
+    if not qa.get("passed") or qa.get("translation_fingerprint") != fingerprint:
+        return False
+    audit_path = root / "reviews" / f"{manifest.batch_id}.audit.json"
+    if not audit_path.is_file():
+        return False
+    audit = read_json(audit_path)
+    if audit.get("translation_fingerprint") != fingerprint or not {
+        "fidelity",
+        "technical",
+        "chinese-style",
+    }.issubset(audit.get("lenses", [])):
+        return False
+    issues = read_jsonl(
+        root / "reviews" / f"{manifest.batch_id}.issues.jsonl", ReviewIssue
+    )
+    external_enabled = bool(config.external_review and config.external_review.enabled)
+    if any(
+        issue.status is IssueStatus.OPEN
+        and (
+            issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+            or (external_enabled and issue.severity is Severity.MINOR)
+        )
+        for issue in issues
+    ):
+        return False
+    if external_enabled:
+        runs = read_jsonl(
+            root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+            ExternalReviewRun,
+        )
+        chain, stale = _migratable_v3_external_chain(runs, fingerprint)
+        if not chain or stale:
+            return False
+    return True
+
+
 def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
     all_manifests = _all_manifests(root)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
@@ -126,25 +211,15 @@ def benchmark(root: Path, completed_only: bool) -> dict[str, object]:
                 if _batch_stage(root, manifest.batch_id) == "complete"
             ]
         else:
-            allowed = (
-                {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
-                if config.external_review and config.external_review.enabled
-                else {
-                    ProjectStatus.MACHINE_REVIEWED,
-                    ProjectStatus.EXTERNAL_REVIEWED,
-                    ProjectStatus.HUMAN_APPROVED,
-                }
-            )
             manifests = [
                 manifest
                 for manifest in manifests
-                if all(
-                    unit_id in unit_map
-                    and unit_id in translations
-                    and translations[unit_id].source_hash
-                    == unit_map[unit_id].source_hash
-                    and translations[unit_id].status in allowed
-                    for unit_id in manifest.translatable_unit_ids
+                if _legacy_batch_complete(
+                    root,
+                    manifest,
+                    config,
+                    unit_map,
+                    translations,
                 )
             ]
     if not manifests:
