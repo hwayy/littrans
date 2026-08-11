@@ -35,6 +35,8 @@ Read these dry-run fields before proceeding:
 The write migration also performs one deterministic full-book source verification to seed page
 receipts. No model is called and no translation, issue, revision, or approval status is rewritten.
 Preserved approval text is not enough to pass a v4 gate when its current evidence is missing.
+Until a batch has current complete v4 evidence, its stored targets are also excluded from approved
+translation memory so stale terminology or unresolved findings cannot propagate into new work.
 
 Evidence that is stale or cannot be tied to the current fingerprint is listed under
 `pending_recheck` and is not promoted. After migration, use the coordinator to select the first

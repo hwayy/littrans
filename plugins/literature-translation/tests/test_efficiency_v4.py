@@ -3591,16 +3591,129 @@ def test_memory_is_current_approved_relevant_and_bounded(tmp_path: Path) -> None
     root, manifests = _make_project(tmp_path)
     for manifest in manifests:
         _submit(root, manifest.batch_id)
-        current = translation_map(root)
-        unit_id = manifest.translatable_unit_ids[0]
-        current[unit_id] = current[unit_id].model_copy(
-            update={"status": ProjectStatus.MACHINE_REVIEWED}
-        )
-        write_jsonl(root / "translations" / "current.jsonl", current.values())
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
     memories = translation_memory(root, manifests[1].unit_ids, limit=6)
     assert 1 <= len(memories) <= 6
     assert all(item["unit_id"] not in manifests[1].unit_ids for item in memories)
     assert memories[0]["unit_id"] in {"u001", "u003"}
+
+
+def test_memory_excludes_stored_approval_with_stale_qa(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+    candidate_id = manifests[0].unit_ids[0]
+    assert candidate_id in {
+        item["unit_id"]
+        for item in translation_memory(root, manifests[1].unit_ids, limit=6)
+    }
+
+    write_yaml(
+        root / "glossary" / "approved.yaml",
+        {
+            "terms": [
+                {
+                    "source": "architecture",
+                    "target": "架构",
+                    "forbidden": ["体系结构"],
+                }
+            ]
+        },
+    )
+
+    assert candidate_id not in {
+        item["unit_id"]
+        for item in translation_memory(root, manifests[1].unit_ids, limit=6)
+    }
+
+
+def test_memory_excludes_external_approval_with_open_minor_issue(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    for manifest in manifests:
+        batch_id = manifest.batch_id
+        accepted = ExternalReviewRun(
+            run_id=f"accepted-{batch_id}",
+            batch_id=batch_id,
+            reviewer_id="claude",
+            driver="claude-code",
+            role="primary",
+            requested_model="claude-sonnet-5",
+            actual_model="claude-sonnet-5",
+            model_verified=True,
+            translation_fingerprint=external_review.batch_translation_fingerprint(
+                root, batch_id
+            ),
+            packet_sha256="0" * 64,
+            prompt_version="test",
+            verdict=ExternalReviewVerdict.ACCEPTED,
+            summary="No substantive defects.",
+            covered_unit_ids=list(manifest.unit_ids),
+            unit_fingerprints=batch_unit_fingerprints(root, batch_id),
+            source_fingerprint=batch_source_fingerprint(root, batch_id),
+            structure_fingerprint=batch_structure_fingerprint(root, batch_id),
+            context_fingerprint=external_review._external_review_context_fingerprint(
+                root,
+                batch_id,
+                list(manifest.unit_ids),
+                ReviewScope.FULL,
+            ),
+        )
+        append_jsonl(
+            root / "reviews" / f"{batch_id}.external-runs.jsonl", [accepted]
+        )
+        approve_batch(root, batch_id, "external")
+    candidate = manifests[0]
+    candidate_id = candidate.unit_ids[0]
+    assert candidate_id in {
+        item["unit_id"]
+        for item in translation_memory(root, manifests[1].unit_ids, limit=6)
+    }
+    issue_path = root / "reviews" / "new-external-minor.jsonl"
+    write_jsonl(
+        issue_path,
+        [
+            ReviewIssue(
+                issue_id="new-external-minor",
+                batch_id=candidate.batch_id,
+                unit_id=candidate_id,
+                severity=Severity.MINOR,
+                type=IssueType.MEANING,
+                explanation="The approved target has a known minor defect.",
+                reviewer="external-memory-auditor",
+            )
+        ],
+    )
+    import_review(root, candidate.batch_id, issue_path)
+
+    assert translation_map(root)[candidate_id].status is ProjectStatus.EXTERNAL_REVIEWED
+    assert workflow_next(root)["stage"] == "revise"
+    assert candidate_id not in {
+        item["unit_id"]
+        for item in translation_memory(root, manifests[1].unit_ids, limit=6)
+    }
 
 
 def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -> None:

@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 
 from littrans.models import (
+    PROJECT_SCHEMA_VERSION,
+    BatchManifest,
     FigureLabel,
     ProjectStatus,
     SourceUnit,
@@ -23,6 +25,7 @@ from littrans.storage import (
     load_project,
     read_json,
     read_jsonl,
+    read_yaml,
     sha256_file,
     sha256_text,
     write_json,
@@ -441,8 +444,13 @@ def audit_context_fingerprint(root: Path, units: Iterable[SourceUnit]) -> str:
 def translation_memory(
     root: Path, current_unit_ids: Iterable[str], limit: int = 6
 ) -> list[dict[str, str]]:
+    if limit <= 0:
+        return []
     current_ids = set(current_unit_ids)
-    config_external = load_project(root).external_review
+    config = load_project(root)
+    if config.schema_version != PROJECT_SCHEMA_VERSION:
+        return []
+    config_external = config.external_review
     units_path = root / "derived" / "units.jsonl"
     translations_path = root / "translations" / "current.jsonl"
     unit_stat = units_path.stat()
@@ -481,14 +489,101 @@ def translation_memory(
         similarity = len(current_tokens & candidate_tokens) / len(union) if union else 0.0
         ranked.append((similarity + adjacent * 2.0, adjacent, unit_id, source, target))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    manifest_paths = sorted((root / "batches").glob("*/manifest.yaml"))
+    manifest_state = _memory_state_token(manifest_paths)
+    manifest_index = dict(
+        _memory_manifest_index(str(root.resolve()), manifest_state)
+    )
+    shared_state = sha256_text(
+        manifest_state
+        + "|"
+        + _memory_state_token(
+            [
+                root / "project.yaml",
+                units_path,
+                translations_path,
+                root / "glossary" / "approved.yaml",
+                root / "context" / "document-brief.md",
+                root / "context" / "style-guide.md",
+            ]
+        )
+    )
+    batch_complete: dict[str, bool] = {}
+    memories: list[dict[str, str]] = []
+    for _, _, unit_id, source, target in ranked:
+        batch_ids = manifest_index.get(unit_id, ())
+        for batch_id in batch_ids:
+            if batch_id not in batch_complete:
+                batch_complete[batch_id] = _memory_batch_is_complete(
+                    str(root.resolve()),
+                    batch_id,
+                    shared_state,
+                    _memory_state_token(_memory_batch_evidence_paths(root, batch_id)),
+                )
+            if batch_complete[batch_id]:
+                memories.append(
+                    {"unit_id": unit_id, "source": source, "target": target}
+                )
+                break
+        if len(memories) >= limit:
+            break
+    return memories
+
+
+def _memory_state_token(paths: Iterable[Path]) -> str:
+    states: list[str] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            states.append(f"{path}:missing")
+        else:
+            states.append(f"{path}:{stat.st_mtime_ns}:{stat.st_size}")
+    return sha256_text("\n".join(states))
+
+
+def _memory_batch_evidence_paths(root: Path, batch_id: str) -> list[Path]:
     return [
-        {
-            "unit_id": unit_id,
-            "source": source,
-            "target": target,
-        }
-        for _, _, unit_id, source, target in ranked[:limit]
+        root / "batches" / batch_id / "manifest.yaml",
+        root / "qa" / f"{batch_id}.json",
+        root / "reviews" / f"{batch_id}.issues.jsonl",
+        root / "reviews" / f"{batch_id}.external-runs.jsonl",
+        root / "evidence" / "audits" / f"{batch_id}.jsonl",
+        root / "evidence" / "audits" / f"{batch_id}.invalidations.json",
     ]
+
+
+@lru_cache(maxsize=8)
+def _memory_manifest_index(
+    root_text: str, manifest_state: str
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    del manifest_state
+    root = Path(root_text)
+    memberships: dict[str, list[str]] = {}
+    for path in sorted((root / "batches").glob("*/manifest.yaml")):
+        manifest = BatchManifest.model_validate(read_yaml(path))
+        for unit_id in manifest.unit_ids:
+            memberships.setdefault(unit_id, []).append(manifest.batch_id)
+    return tuple(
+        (unit_id, tuple(batch_ids))
+        for unit_id, batch_ids in sorted(memberships.items())
+    )
+
+
+@lru_cache(maxsize=4096)
+def _memory_batch_is_complete(
+    root_text: str,
+    batch_id: str,
+    shared_state: str,
+    batch_state: str,
+) -> bool:
+    del shared_state, batch_state
+    from littrans.workflow import _batch_stage
+
+    try:
+        return _batch_stage(Path(root_text), batch_id) == "complete"
+    except (KeyError, OSError, ValueError):
+        return False
 
 
 def _memory_tokens(text: str) -> set[str]:
