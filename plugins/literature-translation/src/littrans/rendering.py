@@ -17,6 +17,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import effective_figure_labels, equation_markdown
 from littrans.extractor import parse_page_spec
 from littrans.models import (
+    BatchManifest,
     CalloutKind,
     IssueStatus,
     ProjectStatus,
@@ -44,6 +45,31 @@ LEGACY_PUBLISHABLE = {
     ProjectStatus.EXTERNAL_REVIEWED,
     ProjectStatus.HUMAN_APPROVED,
 }
+
+
+def _manifest_cover(
+    selected_ids: set[str], manifests: list[BatchManifest]
+) -> list[BatchManifest] | None:
+    """Choose a deterministic evidence cover without requiring redundant batches."""
+    remaining = set(selected_ids)
+    cover: list[BatchManifest] = []
+    candidates = list(manifests)
+    while remaining:
+        ranked = sorted(
+            (
+                (len(remaining & set(manifest.unit_ids)), manifest)
+                for manifest in candidates
+                if remaining & set(manifest.unit_ids)
+            ),
+            key=lambda item: (-item[0], item[1].created_at, item[1].batch_id),
+        )
+        if not ranked:
+            return None
+        _, selected = ranked[0]
+        cover.append(selected)
+        remaining.difference_update(selected.unit_ids)
+        candidates.remove(selected)
+    return cover
 
 
 def _is_cjk_character(character: str) -> bool:
@@ -515,8 +541,9 @@ def render_project(
     unbatched_units: list[str] = []
     if not allow_draft:
         relevant_manifests = manifests
+        gate_status: dict[str, tuple[bool, bool, bool]] = {}
         if not relevant_manifests:
-            relevant_manifests = [
+            candidate_manifests = [
                 manifest
                 for path in (root / "batches").iterdir()
                 if path.is_dir()
@@ -525,6 +552,45 @@ def render_project(
                 if selected_ids & set(manifest.unit_ids)
             ]
         current_unit_ids = {unit.unit_id for unit in all_units}
+        if not relevant_manifests:
+            if config.external_review and config.external_review.enabled:
+                from littrans.external_review import external_review_status
+
+            for manifest in candidate_manifests:
+                has_removed_units = any(
+                    unit_id not in current_unit_ids for unit_id in manifest.unit_ids
+                )
+                qa_current = not has_removed_units and qa_report_is_current(
+                    root, manifest.batch_id
+                )
+                audit_complete = bool(
+                    not has_removed_units
+                    and audit_coverage(root, manifest.batch_id)["complete"]
+                )
+                external_current = bool(
+                    not has_removed_units
+                    and (
+                        not config.external_review
+                        or not config.external_review.enabled
+                        or external_review_status(root, manifest.batch_id)[
+                            "external_approvable"
+                        ]
+                    )
+                )
+                gate_status[manifest.batch_id] = (
+                    qa_current,
+                    audit_complete,
+                    external_current,
+                )
+            eligible_manifests = [
+                manifest
+                for manifest in candidate_manifests
+                if all(gate_status[manifest.batch_id])
+            ]
+            relevant_manifests = (
+                _manifest_cover(selected_ids, eligible_manifests)
+                or candidate_manifests
+            )
         removed_manifest_units = {
             manifest.batch_id: [
                 unit_id
@@ -552,12 +618,20 @@ def render_project(
         stale_qa = [
             manifest.batch_id
             for manifest in relevant_manifests
-            if not qa_report_is_current(root, manifest.batch_id)
+            if not (
+                gate_status[manifest.batch_id][0]
+                if manifest.batch_id in gate_status
+                else qa_report_is_current(root, manifest.batch_id)
+            )
         ]
         incomplete_audit = [
             manifest.batch_id
             for manifest in relevant_manifests
-            if not audit_coverage(root, manifest.batch_id)["complete"]
+            if not (
+                gate_status[manifest.batch_id][1]
+                if manifest.batch_id in gate_status
+                else audit_coverage(root, manifest.batch_id)["complete"]
+            )
         ]
         if config.external_review and config.external_review.enabled:
             from littrans.external_review import external_review_status
@@ -565,9 +639,13 @@ def render_project(
             stale_external = [
                 manifest.batch_id
                 for manifest in relevant_manifests
-                if not external_review_status(root, manifest.batch_id)[
-                    "external_approvable"
-                ]
+                if not (
+                    gate_status[manifest.batch_id][2]
+                    if manifest.batch_id in gate_status
+                    else external_review_status(root, manifest.batch_id)[
+                        "external_approvable"
+                    ]
+                )
             ]
     open_severe: list[str] = []
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):

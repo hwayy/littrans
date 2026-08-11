@@ -1939,6 +1939,22 @@ def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> Non
     )
 
 
+def test_formal_page_render_ignores_redundant_incomplete_manifest(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    complete = manifests[0]
+    _submit(root, complete.batch_id)
+    _audit_and_approve(root, complete.batch_id)
+    redundant = create_batches(root, "1", max_words=100, prefix="alternate")[0]
+    assert redundant.unit_ids == complete.unit_ids
+
+    outputs = render_project(root, "1", "certified-page")
+    assert Path(outputs["markdown"]).is_file()
+    with pytest.raises(ValueError, match=f"stale_qa=.*{redundant.batch_id}"):
+        render_project(root, None, "incomplete-alternate", batch_id=redundant.batch_id)
+
+
 def test_formal_page_render_rejects_manifest_with_removed_source_unit(
     tmp_path: Path,
 ) -> None:
