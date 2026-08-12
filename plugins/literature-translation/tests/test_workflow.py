@@ -1765,6 +1765,27 @@ def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:
     )
     assert parsed == result
     assert label == "Gemini 3.6 Flash (High)"
+
+    envelope = {
+        "conversation_id": "conversation-1",
+        "status": "SUCCESS",
+        "response": "Review complete.",
+        "duration_seconds": 12.5,
+        "num_turns": 1,
+        "structured_output": result,
+        "json_schema": {"type": "object"},
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    parsed, label = _parse_antigravity(json.dumps(envelope), log)
+    assert parsed == result
+    assert label == "Gemini 3.6 Flash (High)"
+
+    # Antigravity 1.1.12 does not identify the actual model in its JSON envelope.
+    # Do not infer verification from the requested model or unrelated envelope fields.
+    parsed, label = _parse_antigravity(json.dumps(envelope), "")
+    assert parsed == result
+    assert label is None
+
     with pytest.raises(json.JSONDecodeError):
         _parse_antigravity('{"verdict": "accepted"', log)
     with pytest.raises(ValueError, match="too short to be auditable"):
@@ -1781,6 +1802,144 @@ def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:
                 }
             )
         )
+
+
+@pytest.mark.parametrize(
+    "structured_output",
+    [pytest.param(None, id="missing"), pytest.param([], id="non-object")],
+)
+def test_antigravity_success_envelope_requires_structured_object(
+    structured_output: object,
+) -> None:
+    envelope: dict[str, object] = {"status": "SUCCESS"}
+    if structured_output is not None:
+        envelope["structured_output"] = structured_output
+
+    with pytest.raises(
+        ValueError,
+        match="SUCCESS result structured_output must be a JSON object",
+    ):
+        _parse_antigravity(json.dumps(envelope), "")
+
+
+def test_antigravity_error_envelope_is_not_treated_as_review_output() -> None:
+    envelope = {
+        "status": "ERROR",
+        "response": "Authentication failed while contacting the provider.",
+        "structured_output": {
+            "verdict": "accepted",
+            "summary": "This must never be accepted.",
+            "issues": [],
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="Authentication failed"):
+        _parse_antigravity(json.dumps(envelope), "")
+
+
+@pytest.mark.parametrize("enveloped", [False, True], ids=["legacy", "envelope"])
+def test_antigravity_rejects_extra_business_fields(enveloped: bool) -> None:
+    result = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+        "model": "gemini-3.6-flash-high",
+    }
+    output: object = (
+        {"status": "SUCCESS", "structured_output": result} if enveloped else result
+    )
+
+    with pytest.raises(ValueError, match="External result fields must be exactly"):
+        _parse_antigravity(json.dumps(output), "")
+
+
+def test_antigravity_error_status_stops_without_format_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="agy",
+        driver="antigravity",
+        command="agy",
+        model="gemini-3.6-flash-high",
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    calls = 0
+
+    def fail_authentication(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        raw = json.dumps(
+            {"status": "ERROR", "response": "Authentication token expired."}
+        )
+        return subprocess.CompletedProcess(command, 0, raw, "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", fail_authentication)
+
+    with pytest.raises(external_review.ExternalInvocationError) as exc_info:
+        external_review._invoke(reviewer, packet, work_dir, {})
+
+    assert calls == 1
+    assert exc_info.value.attempts == 1
+    assert "Authentication token expired" in str(exc_info.value)
+
+
+def test_antigravity_success_envelope_integrates_with_model_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="agy",
+        driver="antigravity",
+        command="agy",
+        model="gemini-3.6-flash-high",
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+
+    def return_success_envelope(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        log_path = Path(command[command.index("--log-file") + 1])
+        log_path.write_text(
+            'Selected model override model="gemini-3.6-flash-high" '
+            'label="Gemini 3.6 Flash (High)"',
+            encoding="utf-8",
+        )
+        raw = json.dumps(
+            {
+                "conversation_id": "conversation-1",
+                "status": "SUCCESS",
+                "response": "Review complete.",
+                "duration_seconds": 1.5,
+                "num_turns": 1,
+                "structured_output": {
+                    "verdict": "accepted",
+                    "summary": "No substantive defects found.",
+                    "issues": [],
+                },
+                "json_schema": {"type": "object"},
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, raw, "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", return_success_envelope)
+
+    result = external_review._invoke(reviewer, packet, work_dir, {})
+
+    assert result[0]["verdict"] == "accepted"
+    assert result[4] == "Gemini 3.6 Flash (High)"
+    assert result[6] == 1
+    assert result[9].input_tokens == 10
+    assert result[9].output_tokens == 5
 
 
 def test_external_packet_is_isolated_and_external_gate_is_strict(

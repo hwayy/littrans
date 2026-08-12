@@ -706,7 +706,21 @@ def _parse_antigravity(stdout: str, log_text: str) -> tuple[dict[str, Any], str 
         label = re.search(r'label="([^"]+)"', line, re.I)
         model = re.search(r'model="([^"]+)"', line, re.I)
         actual = label.group(1) if label else (model.group(1) if model else actual)
-    return _validate_result(json.loads(_strip_json_wrapping(stdout))), actual
+    outer = json.loads(_strip_json_wrapping(stdout))
+    if isinstance(outer, dict) and "status" in outer:
+        status = outer["status"]
+        if status != "SUCCESS":
+            response = outer.get("response")
+            detail = response.strip() if isinstance(response, str) else ""
+            suffix = f": {detail[-1000:]}" if detail else ""
+            raise RuntimeError(f"Antigravity CLI returned status={status!r}{suffix}")
+        structured = outer.get("structured_output")
+        if not isinstance(structured, dict):
+            raise ValueError(
+                "Antigravity SUCCESS result structured_output must be a JSON object"
+            )
+        return _validate_result(structured), actual
+    return _validate_result(outer), actual
 
 
 def _normalized_model(value: str | None) -> str:
