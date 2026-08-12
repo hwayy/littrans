@@ -39,16 +39,22 @@ def package_version() -> str:
 
 def main() -> None:
     marketplace_path = ROOT / ".agents" / "plugins" / "marketplace.json"
+    cursor_marketplace_path = ROOT / ".cursor-plugin" / "marketplace.json"
     manifest_path = PLUGIN_ROOT / ".codex-plugin" / "plugin.json"
+    cursor_manifest_path = PLUGIN_ROOT / ".cursor-plugin" / "plugin.json"
     pyproject_path = PLUGIN_ROOT / "pyproject.toml"
 
     marketplace = load_json(marketplace_path)
+    cursor_marketplace = load_json(cursor_marketplace_path)
     manifest = load_json(manifest_path)
+    cursor_manifest = load_json(cursor_manifest_path)
     with pyproject_path.open("rb") as stream:
         pyproject = tomllib.load(stream)
 
     if marketplace.get("name") != "littrans":
         raise ValueError("Marketplace name must be 'littrans'")
+    if cursor_marketplace.get("name") != "littrans":
+        raise ValueError("Cursor marketplace name must be 'littrans'")
 
     entries = marketplace.get("plugins")
     if not isinstance(entries, list) or len(entries) != 1:
@@ -57,21 +63,38 @@ def main() -> None:
     if not isinstance(entry, dict):
         raise ValueError("Marketplace plugin entry must be an object")
 
+    cursor_entries = cursor_marketplace.get("plugins")
+    if not isinstance(cursor_entries, list) or len(cursor_entries) != 1:
+        raise ValueError("Cursor marketplace must contain exactly one plugin entry")
+    cursor_entry = cursor_entries[0]
+    if not isinstance(cursor_entry, dict):
+        raise ValueError("Cursor marketplace plugin entry must be an object")
+
     plugin_name = manifest.get("name")
     if plugin_name != "literature-translation" or entry.get("name") != plugin_name:
         raise ValueError("Plugin names in the marketplace and manifest do not match")
+    if cursor_manifest.get("name") != plugin_name or cursor_entry.get("name") != plugin_name:
+        raise ValueError("Plugin names in the Cursor marketplace and manifest do not match")
 
     source = entry.get("source")
     if not isinstance(source, dict) or source.get("source") != "local":
         raise ValueError("Marketplace plugin source must be local")
     if source.get("path") != "./plugins/literature-translation":
         raise ValueError("Marketplace plugin path is not the canonical repository path")
+    if cursor_entry.get("source") != "plugins/literature-translation":
+        raise ValueError("Cursor marketplace plugin path is not the canonical repository path")
 
     manifest_version = manifest.get("version")
+    cursor_version = cursor_manifest.get("version")
     project = pyproject.get("project")
     if not isinstance(project, dict):
         raise ValueError("pyproject.toml is missing [project]")
-    versions = {manifest_version, project.get("version"), package_version()}
+    versions = {
+        manifest_version,
+        cursor_version,
+        project.get("version"),
+        package_version(),
+    }
     if len(versions) != 1 or not isinstance(manifest_version, str):
         raise ValueError(f"Release versions are not aligned: {sorted(map(str, versions))}")
     if SEMVER.fullmatch(manifest_version) is None:
@@ -85,6 +108,31 @@ def main() -> None:
     skill_files = sorted((PLUGIN_ROOT / "skills").glob("*/SKILL.md"))
     if not skill_files:
         raise ValueError("Plugin contains no skills")
+    agent_files = sorted((PLUGIN_ROOT / "agents").glob("*.md"))
+    if len(agent_files) != 4:
+        raise ValueError("Cursor plugin must ship exactly four local subagents")
+    frontmatter_re = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n(.*)$", re.DOTALL)
+    write_file_re = re.compile(
+        r"write jsonl|return the issue file path|including an empty file",
+        re.IGNORECASE,
+    )
+    for agent_path in agent_files:
+        agent_text = agent_path.read_text(encoding="utf-8")
+        parsed = frontmatter_re.match(agent_text)
+        if parsed is None:
+            raise ValueError(f"Agent is missing YAML frontmatter: {agent_path.name}")
+        frontmatter, body = parsed.group(1), parsed.group(2)
+        if re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE):
+            if write_file_re.search(body):
+                raise ValueError(
+                    f"Read-only agent {agent_path.name} must return JSONL "
+                    "instead of writing files"
+                )
+            if "jsonl" not in body.lower() or "return" not in body.lower():
+                raise ValueError(
+                    f"Read-only agent {agent_path.name} must return JSONL "
+                    "content for the parent to persist"
+                )
 
     schema_dir = PLUGIN_ROOT / "schemas"
     mismatches = schema_mismatches(schema_dir)
@@ -93,7 +141,7 @@ def main() -> None:
 
     print(
         f"Validated {plugin_name} {manifest_version}: "
-        f"marketplace=littrans, skills={len(skill_files)}"
+        f"marketplace=littrans, skills={len(skill_files)}, agents={len(agent_files)}"
     )
 
 

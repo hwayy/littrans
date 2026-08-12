@@ -2,8 +2,8 @@
 
 LitTrans 0.3.0 reads schema-v3 project content but requires a one-time migration before new v4
 evidence is recorded. Finish any active writer or reviewer task and commit or back up the project
-before migrating. Existing tasks may keep using their loaded older plugin; start a new Codex task
-after the plugin and project have both been upgraded.
+before migrating. Existing sessions may keep using their loaded older plugin; start a new agent
+session after the plugin and project have both been upgraded.
 
 Preview the migration first. This command is read-only:
 

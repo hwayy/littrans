@@ -1,0 +1,16 @@
+{
+  "name": "littrans",
+  "owner": {
+    "name": "Hwa"
+  },
+  "metadata": {
+    "description": "Private marketplace for the literature-translation plugin."
+  },
+  "plugins": [
+    {
+      "name": "literature-translation",
+      "source": "plugins/literature-translation",
+      "description": "A controlled, resumable workflow for high-quality literature translation."
+    }
+  ]
+}

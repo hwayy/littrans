@@ -3,6 +3,21 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.4.0] - 2026-08-13
+
+### Added
+
+- Added a Cursor plugin manifest, marketplace catalog, and local writer/reviewer subagents so the
+  same plugin tree installs on Cursor without changing the Codex marketplace path.
+- Documented Codex and Cursor install, update, and local-only subagent rules.
+
+### Changed
+
+- Rewrote skill descriptions and host invocation wording so workflows are agent-neutral. Codex
+  `$skill-name` prompts in `agents/openai.yaml` are unchanged.
+- Cursor audit reviewers stay read-only and return JSONL for the parent to persist; consumer
+  Cursor install clones into `littrans` before creating the local plugin junction.
+
 ## [0.3.1] - 2026-08-13
 
 ### Fixed

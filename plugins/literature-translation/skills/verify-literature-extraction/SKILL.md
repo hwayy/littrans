@@ -1,6 +1,6 @@
 ---
 name: verify-literature-extraction
-description: Audit and correct a littrans PDF extraction before translation. Use when Codex must verify page completeness, reading order, paragraph boundaries, inline or display LaTeX, structured tables, code indentation and language, notes, figures, screenshots, captions, footnotes, or references against the original PDF and clear the source-verification gate.
+description: Audit and correct a littrans PDF extraction before translation. Use when verifying page completeness, reading order, paragraph boundaries, inline or display LaTeX, structured tables, code indentation and language, notes, figures, screenshots, captions, footnotes, or references against the original PDF and clearing the source-verification gate.
 ---
 
 # Verify Literature Extraction

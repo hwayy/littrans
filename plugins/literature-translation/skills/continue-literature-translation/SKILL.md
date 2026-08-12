@@ -5,7 +5,7 @@ description: Coordinate continuation of an existing littrans project in sets of 
 
 # Continue Literature Translation
 
-Coordinate state transitions; keep translation and review judgment independent. Use the bundled launcher in `../../references/runtime.md` for every `littrans` command.
+Coordinate state transitions; keep translation and review judgment independent. Use the bundled launcher in `../../references/runtime.md` for every `littrans` command. Follow [host-runtimes.md](../../references/host-runtimes.md) when assigning writers and reviewers. Keep all translation, audit, and external-review work on the local host; do not use cloud or remote subagents.
 
 ## Select work
 
@@ -17,15 +17,15 @@ Coordinate state transitions; keep translation and review judgment independent. 
 ## Translate
 
 1. Create one packet with `workflow packet PROJECT --stage translate --batch-ids IDS`.
-2. Assign each batch to a different independent writer. A writer may edit only that batch and must follow `translate-literature-section`.
+2. Assign each batch to a different independent local writer. A writer may edit only that batch and must follow `translate-literature-section`. On Cursor, use the `literature-translator` agent.
 3. Submit each result and run deterministic QA. A semantic no-op submission is success; do not manufacture a revision.
 4. Do not let writers concurrently edit the glossary, source extraction, another batch, or shared evidence.
 
 ## Audit
 
 1. Create three isolated packets for the same set, one each with `--stage audit --lens fidelity`, `technical`, and `chinese-style`.
-2. Assign each lens to a different independent reviewer. Give each reviewer its one packet and no prior findings. Each reviewer audits all selected batches in one pass.
-3. Import each JSONL set with `review import-set PROJECT PACKET_MANIFEST ISSUES_JSONL`, including an empty file when no issue exists.
+2. Assign each lens to a different independent local reviewer. Give each reviewer its one packet and no prior findings. Each reviewer audits all selected batches in one pass. On Cursor, use `literature-fidelity-reviewer`, `literature-technical-reviewer`, and `literature-chinese-style-reviewer`.
+3. Import each JSONL set with `review import-set PROJECT PACKET_MANIFEST ISSUES_JSONL`, including an empty file when no issue exists. On Cursor, persist each read-only reviewer's returned JSONL before importing; do not ask those reviewers to write the file.
 4. After revisions, packet only the missing unit-level coverage. The CLI expands edits to continuation chains, complete sidebars/tables/figures, adjacent units, and batch seams.
 5. Do not approve until all three current lens coverages are complete and every blocker/major issue is resolved, rejected with evidence, or explicitly waived.
 

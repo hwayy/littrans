@@ -1,10 +1,11 @@
 # Literature Translation
 
-`literature-translation` is a Codex plugin for controlled, resumable translation of
-English technical books and research papers into Simplified Chinese. Python manages stable
-source units, exact LaTeX, structured tables, code, state, QA, reviews, and rendering. The
-agent performs the language work. The package does not call a model API directly; projects
-may explicitly configure supported local CLIs for isolated, read-only external review.
+`literature-translation` is an agent plugin for controlled, resumable translation of
+English technical books and research papers into Simplified Chinese. It installs on Codex and
+Cursor. Python manages stable source units, exact LaTeX, structured tables, code, state, QA,
+reviews, and rendering. The agent performs the language work. The package does not call a model
+API directly; projects may explicitly configure supported local CLIs for isolated, read-only
+external review.
 
 ## First use
 
@@ -16,7 +17,8 @@ python scripts/littrans.py doctor
 ```
 
 The launcher creates a private environment outside the plugin installation when necessary.
-See `references/runtime.md` for launcher resolution from an installed Skill.
+See `references/runtime.md` for launcher resolution from an installed skill, and
+`references/host-runtimes.md` for Codex and Cursor invocation.
 
 ## Controlled workflow
 
@@ -34,8 +36,9 @@ See `references/runtime.md` for launcher resolution from an installed Skill.
    Markdown plus responsive bilingual HTML. Human approval is never inferred.
 
 For ongoing projects, `continue-literature-translation` coordinates at most three consecutive
-same-stage batches. It shares document context once, keeps one writer per batch and one independent
-reviewer per audit lens, and retains every quality gate.
+same-stage batches. It shares document context once, keeps one local writer per batch and one
+independent local reviewer per audit lens, and retains every quality gate. Do not use cloud or
+remote subagents for translation or review.
 
 Claude stdin prompt delivery is implemented but disabled by the v0.3 shadow quality gate.
 Production external review continues to use the file packet path.
