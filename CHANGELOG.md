@@ -3,6 +3,15 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.3.1] - 2026-08-13
+
+### Fixed
+
+- Added compatibility with Antigravity CLI 1.1.12 success envelopes while preserving legacy
+  direct structured-review results.
+- Failed immediately on non-success Antigravity statuses and rejected missing, invalid, or
+  unexpectedly extended structured outputs without weakening actual-model verification.
+
 ## [0.3.0] - 2026-08-11
 
 ### Added
