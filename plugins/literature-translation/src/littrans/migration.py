@@ -26,6 +26,7 @@ from littrans.models import (
 from littrans.project import promote_status, translation_map
 from littrans.storage import (
     append_jsonl,
+    atomic_write_text,
     initialize_project_dirs,
     load_project,
     project_write_lock,
@@ -36,6 +37,73 @@ from littrans.storage import (
     write_json,
     write_jsonl,
 )
+
+
+def _v5_packet_cleanup_candidates(root: Path) -> list[str]:
+    packet_root = root / "packets"
+    if not packet_root.is_dir():
+        return []
+    return sorted(
+        str(path.relative_to(root)).replace("\\", "/")
+        for path in packet_root.iterdir()
+        if path.is_dir() and (path / "manifest.json").is_file()
+    )
+
+
+def _ensure_v5_worktree_ignore(root: Path) -> bool:
+    """Add the disposable v5 work root without rewriting existing ignore rules."""
+    path = root / ".gitignore"
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    lines = existing.splitlines()
+    if any(line.strip() == "/.littrans/" for line in lines):
+        return False
+    separator = "" if not existing or existing.endswith(("\n", "\r")) else "\n"
+    atomic_write_text(path, existing + separator + "/.littrans/\n")
+    return True
+
+
+def _migrate_v4_to_v5(root: Path, dry_run: bool) -> dict[str, Any]:
+    config = load_project(root)
+    if config.schema_version != 4:
+        raise ValueError(
+            "Schema-v5 project migration requires a schema-v4 source project; "
+            f"found schema {config.schema_version}"
+        )
+    cleanup_candidates = _v5_packet_cleanup_candidates(root)
+    ignore_path = root / ".gitignore"
+    ignore_present = bool(
+        ignore_path.is_file()
+        and any(
+            line.strip() == "/.littrans/"
+            for line in ignore_path.read_text(encoding="utf-8").splitlines()
+        )
+    )
+    report: dict[str, Any] = {
+        "project": str(root),
+        "from": 4,
+        "to": 5,
+        "dry_run": dry_run,
+        "changed": not dry_run,
+        "evidence_policy": "legacy-v4-readable-until-locally-invalidated",
+        "work_root": ".littrans/work",
+        "gitignore_update_required": not ignore_present,
+        "legacy_packet_cleanup_candidate_count": len(cleanup_candidates),
+        "legacy_packet_cleanup_root": "packets",
+        "legacy_packet_cleanup_command": (
+            "littrans workflow prune-packets PROJECT --dry-run"
+        ),
+        "legacy_packets_deleted": 0,
+    }
+    if dry_run:
+        return report
+    with project_write_lock(root):
+        (root / ".littrans" / "work").mkdir(parents=True, exist_ok=True)
+        report["gitignore_updated"] = _ensure_v5_worktree_ignore(root)
+        report["migrated_at"] = utc_now()
+        write_json(root / "evidence" / "migration-v4-v5.json", report)
+        config.schema_version = 5
+        save_project(root, config)
+    return report
 
 
 def _comparable(text: str) -> str:
@@ -257,11 +325,11 @@ def _migratable_v3_external_chain(
 
 
 def migrate_project_schema(
-    root: Path, to_version: int = 4, dry_run: bool = False
+    root: Path, to_version: int = 5, dry_run: bool = False
 ) -> dict[str, Any]:
-    """Upgrade v3 projects without changing source, translations, issues, or approvals."""
-    if to_version != 4:
-        raise ValueError("Only project schema version 4 is supported")
+    """Upgrade projects without changing source, translations, issues, or approvals."""
+    if to_version not in {4, 5}:
+        raise ValueError("Only project schema versions 4 and 5 are supported")
     config = load_project(root)
     if config.schema_version > to_version:
         raise ValueError(
@@ -274,11 +342,42 @@ def migrate_project_schema(
             "to": to_version,
             "dry_run": dry_run,
             "changed": False,
-            "message": "Project already uses schema v4.",
+            "message": f"Project already uses schema v{to_version}.",
+        }
+    if config.schema_version == 4 and to_version == 5:
+        return _migrate_v4_to_v5(root, dry_run)
+    if config.schema_version == 3 and to_version == 5:
+        if dry_run:
+            v4 = migrate_project_schema(root, 4, True)
+            return {
+                "project": str(root),
+                "from": 3,
+                "to": 5,
+                "dry_run": True,
+                "changed": False,
+                "steps": [v4, {"from": 4, "to": 5, "planned": True}],
+                "legacy_packet_cleanup_candidate_count": len(
+                    _v5_packet_cleanup_candidates(root)
+                ),
+            }
+        v4 = migrate_project_schema(root, 4, False)
+        v5 = _migrate_v4_to_v5(root, False)
+        return {
+            "project": str(root),
+            "from": 3,
+            "to": 5,
+            "dry_run": False,
+            "changed": True,
+            "steps": [v4, v5],
         }
     if config.schema_version != 3:
+        if to_version == 4:
+            raise ValueError(
+                "Schema-v4 project migration requires a schema-v3 source project; "
+                f"found schema {config.schema_version}"
+            )
         raise ValueError(
-            "Schema-v4 project migration requires a schema-v3 source project; "
+            "Schema-v5 project migration requires a schema-v3 or schema-v4 source project; "
             f"found schema {config.schema_version}"
         )
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import uuid
+import json
+import shutil
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +20,11 @@ from littrans.evidence import (
 )
 from littrans.models import (
     AuditRun,
+    BatchManifest,
     ExternalReviewRun,
     IssueStatus,
     ProjectStatus,
+    QAReport,
     RenderPolicy,
     ReviewIssue,
     Severity,
@@ -36,7 +40,7 @@ from littrans.quality import (
     _prepare_review_import_locked,
     audit_coverage,
     audit_evidence_context_fingerprint,
-    qa_report_is_current,
+    current_qa_context_fingerprint,
 )
 from littrans.storage import (
     atomic_write_text,
@@ -46,11 +50,98 @@ from littrans.storage import (
     read_jsonl,
     require_current_project_schema,
     sha256_file,
+    sha256_text,
     write_json,
 )
 
 
-def _all_manifests(root: Path) -> list[Any]:
+@dataclass(frozen=True)
+class WorkflowSnapshot:
+    """One-load, internally consistent view used by workflow coordination."""
+
+    root: Path
+    manifests: tuple[BatchManifest, ...]
+    units: tuple[SourceUnit, ...]
+    unit_map: dict[str, SourceUnit]
+    translations: dict[str, TranslationRecord]
+    qa_reports: dict[str, QAReport | None]
+    issues: dict[str, list[ReviewIssue]]
+    audit_runs: dict[str, list[AuditRun]]
+    external_status: dict[str, dict[str, Any] | None]
+    external_enabled: bool
+    qa_context_fingerprint: str
+
+
+def _translation_fingerprint_from_snapshot(
+    snapshot: WorkflowSnapshot, manifest: BatchManifest
+) -> str:
+    fingerprints = {
+        unit_id: translation_unit_fingerprint(
+            snapshot.unit_map[unit_id], snapshot.translations.get(unit_id)
+        )
+        for unit_id in manifest.unit_ids
+        if unit_id in snapshot.unit_map
+    }
+    return sha256_text(
+        "\n".join(f"{unit_id}:{value}" for unit_id, value in fingerprints.items())
+    )
+
+
+def _load_workflow_snapshot(root: Path) -> WorkflowSnapshot:
+    config = load_project(root)
+    units = tuple(read_jsonl(root / "derived" / "units.jsonl", SourceUnit))
+    unit_map = {unit.unit_id: unit for unit in units}
+    positions = {unit.unit_id: index for index, unit in enumerate(units)}
+    manifests = tuple(
+        sorted(
+            (
+                load_manifest(root, path.name)
+                for path in (root / "batches").iterdir()
+                if path.is_dir() and (path / "manifest.yaml").is_file()
+            ),
+            key=lambda manifest: min(
+                (positions.get(unit_id, 10**12) for unit_id in manifest.unit_ids),
+                default=10**12,
+            ),
+        )
+    )
+    translations = translation_map(root)
+    qa_reports: dict[str, QAReport | None] = {}
+    issues: dict[str, list[ReviewIssue]] = {}
+    audit_runs: dict[str, list[AuditRun]] = {}
+    external_status: dict[str, dict[str, Any] | None] = {}
+    for manifest in manifests:
+        batch_id = manifest.batch_id
+        qa_path = root / "qa" / f"{batch_id}.json"
+        qa_reports[batch_id] = (
+            QAReport.model_validate(read_json(qa_path)) if qa_path.is_file() else None
+        )
+        issues[batch_id] = read_jsonl(
+            root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
+        )
+        audit_runs[batch_id] = read_jsonl(
+            root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
+        )
+        external_path = root / "reviews" / f"{batch_id}.external.json"
+        external_status[batch_id] = (
+            read_json(external_path) if external_path.is_file() else None
+        )
+    return WorkflowSnapshot(
+        root=root,
+        manifests=manifests,
+        units=units,
+        unit_map=unit_map,
+        translations=translations,
+        qa_reports=qa_reports,
+        issues=issues,
+        audit_runs=audit_runs,
+        external_status=external_status,
+        external_enabled=bool(config.external_review and config.external_review.enabled),
+        qa_context_fingerprint=current_qa_context_fingerprint(root),
+    )
+
+
+def _all_manifests(root: Path) -> list[BatchManifest]:
     units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     positions = {unit.unit_id: index for index, unit in enumerate(units)}
     manifests = [
@@ -67,26 +158,46 @@ def _all_manifests(root: Path) -> list[Any]:
     )
 
 
-def _batch_stage(root: Path, batch_id: str) -> str:
-    manifest = load_manifest(root, batch_id)
-    translations = translation_map(root)
+def _batch_stage(
+    root: Path,
+    batch_id: str,
+    snapshot: WorkflowSnapshot | None = None,
+    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None]
+    | None = None,
+) -> str:
+    snapshot = snapshot or _load_workflow_snapshot(root)
+    manifest = next(
+        (item for item in snapshot.manifests if item.batch_id == batch_id), None
+    )
+    if manifest is None:
+        raise ValueError(f"Unknown batch ID: {batch_id}")
+    translations = snapshot.translations
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
         return "translate"
-    if not qa_report_is_current(root, batch_id):
+    qa_report = snapshot.qa_reports[batch_id]
+    if not (
+        qa_report
+        and qa_report.passed
+        and qa_report.translation_fingerprint
+        == _translation_fingerprint_from_snapshot(snapshot, manifest)
+        and qa_report.qa_context_fingerprint == snapshot.qa_context_fingerprint
+    ):
         return "qa"
-    if not audit_coverage(root, batch_id)["complete"]:
+    if not audit_coverage(
+        root,
+        batch_id,
+        manifest=manifest,
+        all_units=snapshot.unit_map,
+        translations=translations,
+        runs=snapshot.audit_runs[batch_id],
+        context_cache=context_cache,
+        validate_packet_closure=False,
+    )["complete"]:
         return "audit"
-    config = load_project(root)
     open_issues = [
-        issue
-        for issue in read_jsonl(
-            root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
-        )
-        if issue.status is IssueStatus.OPEN
+        issue for issue in snapshot.issues[batch_id] if issue.status is IssueStatus.OPEN
     ]
-    external_enabled = bool(
-        config.external_review and config.external_review.enabled
-    )
+    external_enabled = snapshot.external_enabled
     open_substantive = [
         issue
         for issue in open_issues
@@ -110,9 +221,15 @@ def _batch_stage(root: Path, batch_id: str) -> str:
     ):
         return "machine-approve"
     if external_enabled:
-        from littrans.external_review import external_review_status
-
-        if not external_review_status(root, batch_id)["external_approvable"]:
+        external = snapshot.external_status[batch_id]
+        current_fingerprint = _translation_fingerprint_from_snapshot(snapshot, manifest)
+        if not (
+            external
+            and external.get("translation_fingerprint") == current_fingerprint
+            and external.get("verdict") == "accepted"
+            and external.get("external_approvable") is True
+            and not open_substantive
+        ):
             return "external-review"
         if any(
             translations[unit_id].status
@@ -123,15 +240,30 @@ def _batch_stage(root: Path, batch_id: str) -> str:
     return "complete"
 
 
-def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
+def workflow_next(
+    root: Path,
+    limit: int = 3,
+    start_at: str | None = None,
+    through: str | None = None,
+) -> dict[str, Any]:
     require_current_project_schema(root, "Workflow coordination")
     if not 1 <= limit <= 3:
         raise ValueError("workflow next limit must be between 1 and 3")
-    manifests = _all_manifests(root)
-    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    unit_map = {unit.unit_id: unit for unit in units}
+    snapshot = _load_workflow_snapshot(root)
+    manifests = list(snapshot.manifests)
+    all_manifests = list(manifests)
+    units = list(snapshot.units)
+    unit_map = snapshot.unit_map
+    indexes = {manifest.batch_id: index for index, manifest in enumerate(manifests)}
+    for label, batch_id in (("start-at", start_at), ("through", through)):
+        if batch_id is not None and batch_id not in indexes:
+            raise ValueError(f"workflow next --{label} references unknown batch: {batch_id}")
+    lower = indexes[start_at] if start_at else 0
+    upper = indexes[through] if through else len(manifests) - 1
+    if lower > upper:
+        raise ValueError("workflow next --start-at must not follow --through")
     manifest_unit_ids = {
-        unit_id for manifest in manifests for unit_id in manifest.unit_ids
+        unit_id for manifest in all_manifests for unit_id in manifest.unit_ids
     }
     unbatched_units = sorted(
         unit.unit_id
@@ -149,7 +281,7 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
         manifest.batch_id: [
             unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map
         ]
-        for manifest in manifests
+        for manifest in all_manifests
         if any(unit_id not in unit_map for unit_id in manifest.unit_ids)
     }
     if removed_manifest_units:
@@ -160,7 +292,7 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
         )
     stale_translatability = [
         manifest.batch_id
-        for manifest in manifests
+        for manifest in all_manifests
         if manifest.translatable_unit_ids
         != [
             unit_id
@@ -173,10 +305,26 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
             "Workflow manifests have stale translatable-unit scope; refresh the "
             f"affected batches before continuing: batch_ids={stale_translatability}"
         )
-    stages = [(manifest.batch_id, _batch_stage(root, manifest.batch_id)) for manifest in manifests]
+    manifests = all_manifests[lower : upper + 1]
+    context_cache: dict[
+        tuple[str, ...], tuple[str, dict[str, str]] | None
+    ] = {}
+    stages = [
+        (
+            manifest.batch_id,
+            _batch_stage(root, manifest.batch_id, snapshot, context_cache),
+        )
+        for manifest in manifests
+    ]
     start = next((index for index, (_, stage) in enumerate(stages) if stage != "complete"), None)
     if start is None:
-        return {"stage": "complete", "batch_ids": [], "limit": limit}
+        return {
+            "stage": "complete",
+            "batch_ids": [],
+            "limit": limit,
+            "start_at": start_at,
+            "through": through,
+        }
     stage = stages[start][1]
     batch_ids: list[str] = []
     selected_unit_ids: set[str] = set()
@@ -194,7 +342,40 @@ def workflow_next(root: Path, limit: int = 3) -> dict[str, Any]:
             break
         batch_ids.append(batch_id)
         selected_unit_ids.update(candidate_ids)
-    return {"stage": stage, "batch_ids": batch_ids, "limit": limit}
+    return {
+        "stage": stage,
+        "batch_ids": batch_ids,
+        "limit": limit,
+        "start_at": start_at,
+        "through": through,
+    }
+
+
+def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
+    """Return a compact status for an already-selected wave."""
+    require_current_project_schema(root, "Workflow coordination")
+    requested = list(batch_ids)
+    if not requested or len(requested) > 3 or len(set(requested)) != len(requested):
+        raise ValueError("workflow status requires one to three unique batch IDs")
+    snapshot = _load_workflow_snapshot(root)
+    known = {manifest.batch_id for manifest in snapshot.manifests}
+    missing = sorted(set(requested) - known)
+    if missing:
+        raise ValueError(f"Unknown batch IDs: {missing}")
+    context_cache: dict[
+        tuple[str, ...], tuple[str, dict[str, str]] | None
+    ] = {}
+    stages = {
+        batch_id: _batch_stage(root, batch_id, snapshot, context_cache)
+        for batch_id in requested
+    }
+    unique_stages = set(stages.values())
+    return {
+        "batch_ids": requested,
+        "stage": next(iter(unique_stages)) if len(unique_stages) == 1 else "mixed",
+        "stages": stages,
+        "complete": all(stage == "complete" for stage in stages.values()),
+    }
 
 
 def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
@@ -291,8 +472,8 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
         if note.accessed_at:
             target += f"\nAccessed: {note.accessed_at}"
     return (
-        f"## {unit.unit_id} (page {unit.page}; {unit.kind})\n\n"
-        f"### Source\n\n{source}\n\n### Translation\n\n{target}\n"
+        f"## {unit.unit_id} (p{unit.page};{unit.kind})\n\n"
+        f"Source:\n\n{source}\n\nTranslation:\n\n{target}\n"
     )
 
 
@@ -300,10 +481,7 @@ def _audit_read_only_context(
     units: list[SourceUnit], translations: dict[str, TranslationRecord]
 ) -> str:
     return (
-        "# Read-only semantic seam context\n\n"
-        "These units are outside the requested batch set. Use them to inspect "
-        "continuations and cross-batch seams, but do not treat them as reviewed "
-        "coverage for this packet.\n\n"
+        "# Read-only seam context\n\noutside the requested batch set and review coverage.\n\n"
         + "\n".join(
             _audit_unit_text(unit, translations.get(unit.unit_id)) for unit in units
         )
@@ -318,13 +496,13 @@ def _audit_packet_text(
     has_read_only_context: bool,
 ) -> str:
     focus = {
-        "fidelity": "Check fidelity, omissions, additions, references, numbers, and evidence.",
-        "technical": "Check terminology, code, tables, formulas, figures, and technical correctness.",
-        "chinese-style": "Check precise, idiomatic Simplified Chinese without changing meaning.",
+        "fidelity": "Check fidelity, omissions, additions, references, and numbers.",
+        "technical": "Check terminology, code, tables, formulas, and figures.",
+        "chinese-style": "Check precise, idiomatic Simplified Chinese.",
     }[lens]
     return (
-        f"# Independent {lens} audit: {batch_id}\n\n{focus}\n\n"
-        "Do not read prior issues. Return ReviewIssue JSONL only; an empty file means no issues.\n\n"
+        f"# {lens} audit: {batch_id}\n\n{focus}\n\n"
+        "Return ReviewIssue JSONL; empty means no issues.\n\n"
         + (
             "Consult read-only-context.md for semantic seam context. Its units "
             "are outside this packet's review coverage.\n\n"
@@ -342,12 +520,28 @@ def create_workflow_packet(
     stage: str,
     batch_ids: list[str],
     lens: str | None = None,
-) -> WorkflowPacketManifest:
+) -> WorkflowPacketManifest | list[WorkflowPacketManifest]:
     require_current_project_schema(root, "Workflow packet creation")
     if stage not in {"translate", "audit"}:
         raise ValueError("workflow packet stage must be translate or audit")
+    if stage == "audit" and lens == "all":
+        packets: list[WorkflowPacketManifest] = []
+        for selected_lens in sorted(REQUIRED_AUDIT_LENSES):
+            if not any(
+                audit_coverage(root, batch_id)["missing"][selected_lens]
+                for batch_id in batch_ids
+            ):
+                continue
+            packet = create_workflow_packet(root, stage, batch_ids, selected_lens)
+            if isinstance(packet, list):  # pragma: no cover - guarded above
+                packets.extend(packet)
+            else:
+                packets.append(packet)
+        return packets
     if stage == "audit" and lens not in REQUIRED_AUDIT_LENSES:
-        raise ValueError("audit packets require --lens fidelity|technical|chinese-style")
+        raise ValueError(
+            "audit packets require --lens all|fidelity|technical|chinese-style"
+        )
     if stage == "translate" and lens is not None:
         raise ValueError("translation packets do not accept a lens")
     manifests = _validate_batch_set(root, batch_ids)
@@ -355,57 +549,102 @@ def create_workflow_packet(
     unit_map = {unit.unit_id: unit for unit in all_units}
     positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     translations = translation_map(root)
-    requested_ids = [unit_id for manifest in manifests for unit_id in manifest.unit_ids]
-    pending_ids = set(requested_ids)
-    selected_ids = list(requested_ids)
-
+    batch_unit_ids = {
+        manifest.batch_id: list(manifest.unit_ids) for manifest in manifests
+    }
+    batch_context_unit_ids = {
+        manifest.batch_id: list(manifest.unit_ids) for manifest in manifests
+    }
     if stage == "audit":
-        pending_ids = {
+        batch_unit_ids = {}
+        batch_context_unit_ids = {}
+        for manifest in manifests:
+            pending = audit_coverage(root, manifest.batch_id)["missing"][lens or ""]
+            if not pending:
+                continue
+            batch_unit_ids[manifest.batch_id] = [
+                unit_id for unit_id in manifest.unit_ids if unit_id in set(pending)
+            ]
+            batch_context_unit_ids[manifest.batch_id] = dependency_closure(
+                root, [manifest.batch_id], pending
+            )
+        manifests = [
+            manifest for manifest in manifests if manifest.batch_id in batch_unit_ids
+        ]
+        if not manifests:
+            raise ValueError(f"No missing {lens} audit coverage for requested batches")
+        batch_ids = [manifest.batch_id for manifest in manifests]
+    packet_unit_ids = [
+        unit_id
+        for manifest in manifests
+        for unit_id in batch_unit_ids[manifest.batch_id]
+    ]
+    selected_ids = list(
+        dict.fromkeys(
             unit_id
             for manifest in manifests
-            for unit_id in audit_coverage(root, manifest.batch_id)["missing"][lens or ""]
-        }
-        selected_ids = (
-            dependency_closure(root, batch_ids, pending_ids)
-            if pending_ids
-            else []
+            for unit_id in batch_context_unit_ids[manifest.batch_id]
         )
-    packet_unit_ids = [
-        unit_id for unit_id in requested_ids if unit_id in pending_ids
-    ]
-    coverage_set = set(packet_unit_ids)
+    )
     selected_units = [unit_map[unit_id] for unit_id in selected_ids if unit_id in unit_map]
-    packet_id = f"{stage}-{uuid.uuid4().hex[:12]}"
-    packet_dir = root / "packets" / packet_id
+    fingerprints = {
+        unit.unit_id: translation_unit_fingerprint(
+            unit, translations.get(unit.unit_id)
+        )
+        for unit in selected_units
+    }
+    batch_context_fingerprints = {
+        manifest.batch_id: audit_evidence_context_fingerprint(
+            sha256_text(
+                _shared_context(
+                    root,
+                    [
+                        unit_map[unit_id]
+                        for unit_id in batch_context_unit_ids[manifest.batch_id]
+                    ],
+                )
+            ),
+            fingerprints,
+            batch_context_unit_ids[manifest.batch_id],
+        )
+        for manifest in manifests
+        if stage == "audit"
+    }
+    identity = sha256_text(
+        json.dumps(
+            {
+                "version": 2,
+                "stage": stage,
+                "lens": lens,
+                "batch_unit_ids": batch_unit_ids,
+                "batch_context_unit_ids": batch_context_unit_ids,
+                "batch_context_fingerprints": batch_context_fingerprints,
+                "unit_fingerprints": fingerprints,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    packet_id = f"{stage}-{identity[:16]}"
+    storage_root = ".littrans/work"
+    packet_dir = root / storage_root / packet_id
+    existing_path = packet_dir / "manifest.json"
+    if existing_path.is_file():
+        existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
+        if existing.packet_id == packet_id:
+            return existing
     files: dict[str, str] = {}
-
-    shared_path = packet_dir / "shared.md"
-    atomic_write_text(shared_path, _shared_context(root, selected_units))
-    files["shared"] = str(shared_path.relative_to(root)).replace("\\", "/")
-
-    read_only_context_path: Path | None = None
     if stage == "audit":
-        context_units = [
-            unit_map[unit_id]
-            for unit_id in selected_ids
-            if unit_id in unit_map and unit_id not in coverage_set
-        ]
-        if context_units:
-            read_only_context_path = packet_dir / "read-only-context.md"
-            atomic_write_text(
-                read_only_context_path,
-                _audit_read_only_context(context_units, translations),
-            )
-            files["audit:read-only-context"] = str(
-                read_only_context_path.relative_to(root)
-            ).replace("\\", "/")
+        shared_path = packet_dir / "shared.md"
+        atomic_write_text(shared_path, _shared_context(root, selected_units))
+        files["shared"] = str(shared_path.relative_to(root)).replace("\\", "/")
 
     for manifest in manifests:
         batch_units = [
             unit_map[unit_id]
-            for unit_id in manifest.unit_ids
+            for unit_id in batch_unit_ids[manifest.batch_id]
             if unit_id in unit_map
-            and (stage == "translate" or unit_id in coverage_set)
         ]
         if stage == "translate":
             target_path = packet_dir / f"{manifest.batch_id}.source.md"
@@ -449,6 +688,30 @@ def create_workflow_packet(
                 context_path.relative_to(root)
             ).replace("\\", "/")
         else:
+            context_ids = batch_context_unit_ids[manifest.batch_id]
+            read_only_units = [
+                unit_map[unit_id]
+                for unit_id in context_ids
+                if unit_id not in set(batch_unit_ids[manifest.batch_id])
+            ]
+            read_only_context_path: Path | None = None
+            if read_only_units:
+                read_only_context_path = (
+                    packet_dir / f"{manifest.batch_id}.read-only-context.md"
+                )
+                atomic_write_text(
+                    read_only_context_path,
+                    _audit_read_only_context(read_only_units, translations),
+                )
+                context_file = str(read_only_context_path.relative_to(root)).replace(
+                    "\\", "/"
+                )
+                if len(manifests) == 1:
+                    # Compatibility alias for callers that consumed v1's single
+                    # shared seam-context key.
+                    files["audit:read-only-context"] = context_file
+                else:
+                    files[f"{manifest.batch_id}:read-only-context"] = context_file
             audit_path = packet_dir / f"{manifest.batch_id}.audit.md"
             atomic_write_text(
                 audit_path,
@@ -463,13 +726,6 @@ def create_workflow_packet(
             files[f"{manifest.batch_id}:audit"] = str(
                 audit_path.relative_to(root)
             ).replace("\\", "/")
-
-    fingerprints = {
-        unit.unit_id: translation_unit_fingerprint(
-            unit, translations.get(unit.unit_id)
-        )
-        for unit in selected_units
-    }
     total_bytes = sum((root / path).stat().st_size for path in files.values())
     file_sha256 = {
         file_id: sha256_file(root / path) for file_id, path in files.items()
@@ -481,6 +737,10 @@ def create_workflow_packet(
         lens=lens,
         unit_ids=packet_unit_ids,
         unit_fingerprints=fingerprints,
+        batch_unit_ids=batch_unit_ids,
+        batch_context_unit_ids=batch_context_unit_ids,
+        batch_context_fingerprints=batch_context_fingerprints,
+        storage_root=storage_root,
         files=files,
         file_sha256=file_sha256,
         total_bytes=total_bytes,
@@ -497,17 +757,28 @@ def import_review_set(
     supplied_manifest = WorkflowPacketManifest.model_validate(
         read_json(packet_manifest_path)
     )
-    packet_root = (root / "packets").resolve()
+    if supplied_manifest.storage_root not in {"packets", ".littrans/work"}:
+        raise ValueError("Unsupported audit packet storage root")
+    packet_root = (root / supplied_manifest.storage_root).resolve()
     packet_dir = (packet_root / supplied_manifest.packet_id).resolve()
     try:
         packet_dir.relative_to(packet_root)
     except ValueError as exc:
         raise ValueError("Audit packet path escapes the project packet root") from exc
-    canonical_path = (packet_dir / "manifest.json").resolve()
-    try:
-        canonical_path.relative_to(packet_root)
-    except ValueError as exc:
-        raise ValueError("Canonical audit manifest escapes the packet root") from exc
+    compatibility_manifest = (
+        root / "packets" / supplied_manifest.packet_id / "manifest.json"
+    ).resolve()
+    supplied_path = packet_manifest_path.resolve()
+    canonical_path = (
+        compatibility_manifest
+        if supplied_path == compatibility_manifest
+        else (packet_dir / "manifest.json").resolve()
+    )
+    if canonical_path != compatibility_manifest:
+        try:
+            canonical_path.relative_to(packet_root)
+        except ValueError as exc:
+            raise ValueError("Canonical audit manifest escapes the packet root") from exc
     if not canonical_path.is_file():
         raise ValueError(
             f"Canonical audit packet manifest does not exist: {canonical_path}"
@@ -522,8 +793,16 @@ def import_review_set(
     if len(manifest.batch_ids) != len(set(manifest.batch_ids)):
         raise ValueError("Audit packet batch IDs must be unique")
     required_files = {
-        "shared",
         *(f"{batch_id}:audit" for batch_id in manifest.batch_ids),
+        *(
+            (f"{batch_id}:shared" for batch_id in manifest.batch_ids)
+            if manifest.batch_context_unit_ids
+            and all(
+                f"{batch_id}:shared" in manifest.files
+                for batch_id in manifest.batch_ids
+            )
+            else ("shared",)
+        ),
     }
     missing_files = sorted(required_files - set(manifest.files))
     if missing_files:
@@ -575,12 +854,36 @@ def import_review_set(
     ]
     if stale:
         raise ValueError(f"Audit packet is stale for units: {stale}")
-    issues = read_jsonl(issues_path, ReviewIssue)
+    source_issues = read_jsonl(issues_path, ReviewIssue)
+    canonicalize_ids = bool(manifest.batch_unit_ids)
+    issues: list[ReviewIssue] = []
+    id_map: dict[str, str] = {}
+    occurrence: Counter[tuple[str, str]] = Counter()
+    for issue in source_issues:
+        key = (issue.batch_id, issue.issue_id)
+        occurrence[key] += 1
+        ordinal = occurrence[key]
+        canonical_id = (
+            "audit-"
+            + sha256_text(
+                f"{manifest.packet_id}|{manifest.lens}|{issue.batch_id}|"
+                f"{issue.issue_id}|{ordinal}"
+            )[:24]
+            if canonicalize_ids
+            else issue.issue_id
+        )
+        map_key = f"{issue.batch_id}:{issue.issue_id}"
+        if ordinal > 1:
+            map_key += f"#{ordinal}"
+        id_map[map_key] = canonical_id
+        issues.append(issue.model_copy(update={"issue_id": canonical_id}))
     batches = {
         batch_id: load_manifest(root, batch_id) for batch_id in manifest.batch_ids
     }
     covered_unit_ids = set(manifest.unit_ids)
-    by_batch: dict[str, list[ReviewIssue]] = {batch_id: [] for batch_id in manifest.batch_ids}
+    by_batch: dict[str, list[ReviewIssue]] = {
+        batch_id: [] for batch_id in manifest.batch_ids
+    }
     for issue in issues:
         if issue.batch_id not in by_batch:
             raise ValueError(f"Issue {issue.issue_id} is outside the packet batch set")
@@ -603,11 +906,15 @@ def import_review_set(
         plans = []
         for batch_id in manifest.batch_ids:
             batch = batches[batch_id]
-            coverage_ids = [
-                unit_id
-                for unit_id in batch.unit_ids
-                if unit_id in manifest.unit_ids
-            ]
+            coverage_ids = manifest.batch_unit_ids.get(
+                batch_id,
+                [unit_id for unit_id in batch.unit_ids if unit_id in manifest.unit_ids],
+            )
+            if not coverage_ids:
+                continue
+            context_ids = manifest.batch_context_unit_ids.get(
+                batch_id, list(manifest.unit_fingerprints)
+            )
             plans.append(
                 _prepare_review_import_locked(
                     root=root,
@@ -625,17 +932,25 @@ def import_review_set(
                         unit_id: manifest.unit_fingerprints[unit_id]
                         for unit_id in coverage_ids
                     },
-                    expected_context_fingerprint=audit_evidence_context_fingerprint(
-                        manifest.file_sha256["shared"],
-                        manifest.unit_fingerprints,
-                        list(manifest.unit_fingerprints),
+                    expected_context_fingerprint=(
+                        manifest.batch_context_fingerprints.get(batch_id)
+                        or audit_evidence_context_fingerprint(
+                            manifest.file_sha256["shared"],
+                            manifest.unit_fingerprints,
+                            context_ids,
+                        )
                     ),
-                    context_unit_ids=list(manifest.unit_fingerprints),
+                    context_unit_ids=context_ids,
                 )
             )
         for plan in plans:
             _apply_review_import_locked(root, plan)
-    return {"packet_id": manifest.packet_id, "lens": manifest.lens, "imported": imported}
+    return {
+        "packet_id": manifest.packet_id,
+        "lens": manifest.lens,
+        "imported": imported,
+        "id_map": id_map,
+    }
 
 
 def _allocated_packet_bytes(
@@ -650,6 +965,64 @@ def _allocated_packet_bytes(
         for index, batch_id in enumerate(packet.batch_ids)
         if batch_id in selected_batch_ids
     )
+
+
+def prune_workflow_packets(
+    root: Path,
+    batch_ids: Iterable[str] | None = None,
+    *,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """List or remove packets already represented by authoritative audit evidence."""
+    require_current_project_schema(root, "Workflow packet pruning")
+    selected = set(batch_ids or ())
+    known = {manifest.batch_id for manifest in _all_manifests(root)}
+    missing = sorted(selected - known)
+    if missing:
+        raise ValueError(f"Unknown batch IDs: {missing}")
+    imported_ids = {
+        run.packet_id
+        for batch_id in known
+        for run in read_jsonl(
+            root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
+        )
+        if run.packet_id
+    }
+    candidates: dict[str, tuple[WorkflowPacketManifest, list[Path], int]] = {}
+    for packet_root in (root / ".littrans" / "work", root / "packets"):
+        if not packet_root.is_dir():
+            continue
+        for path in packet_root.glob("*/manifest.json"):
+            manifest = WorkflowPacketManifest.model_validate(read_json(path))
+            if manifest.packet_id not in imported_ids:
+                continue
+            if selected and not selected.intersection(manifest.batch_ids):
+                continue
+            packet_dir = path.parent.resolve()
+            packet_dir.relative_to(packet_root.resolve())
+            size = sum(item.stat().st_size for item in packet_dir.rglob("*") if item.is_file())
+            existing = candidates.get(manifest.packet_id)
+            if existing:
+                candidates[manifest.packet_id] = (
+                    manifest,
+                    [*existing[1], packet_dir],
+                    existing[2] + size,
+                )
+            else:
+                candidates[manifest.packet_id] = (manifest, [packet_dir], size)
+    removed: list[str] = []
+    if apply:
+        with project_write_lock(root):
+            for packet_id, (_, packet_dirs, _) in candidates.items():
+                for packet_dir in packet_dirs:
+                    shutil.rmtree(packet_dir)
+                removed.append(packet_id)
+    return {
+        "mode": "apply" if apply else "dry-run",
+        "candidates": list(candidates),
+        "candidate_bytes": sum(size for _, _, size in candidates.values()),
+        "removed": removed,
+    }
 
 
 def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict[str, Any]:
@@ -694,10 +1067,12 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         )
         for manifest in manifests
     )
-    packet_manifests = [
-        WorkflowPacketManifest.model_validate(read_json(path))
-        for path in (root / "packets").glob("*/manifest.json")
-    ]
+    packet_by_id: dict[str, WorkflowPacketManifest] = {}
+    for packet_root in (root / "packets", root / ".littrans" / "work"):
+        for path in packet_root.glob("*/manifest.json"):
+            packet = WorkflowPacketManifest.model_validate(read_json(path))
+            packet_by_id[packet.packet_id] = packet
+    packet_manifests = list(packet_by_id.values())
     external_runs = []
     for batch_id in selected:
         external_runs.extend(
@@ -715,6 +1090,16 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         if run.usage:
             for field, value in run.usage.model_dump().items():
                 token_totals[field] += value
+    audit_runs = [
+        run
+        for batch_id in selected
+        for run in read_jsonl(
+            root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
+        )
+    ]
+    logical_audit_calls = {
+        (run.packet_id or run.run_id, run.lens) for run in audit_runs
+    }
     return {
         "batch_ids": [manifest.batch_id for manifest in manifests],
         "history_records": len(history),
@@ -729,16 +1114,17 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
             (root / "evidence" / "pages" / f"page-{page:04}.json").is_file()
             for page in selected_pages
         ),
-        "audit_runs": sum(
-            len(
-                read_jsonl(
-                    root / "evidence" / "audits" / f"{batch_id}.jsonl",
-                    AuditRun,
-                )
-            )
-            for batch_id in selected
-        ),
+        "audit_runs": len(audit_runs),
+        "audit_evidence_rows": len(audit_runs),
+        "logical_audit_calls": len(logical_audit_calls),
         "external_runs": len(external_runs),
+        "external_attempts": sum(run.attempts for run in external_runs),
+        "external_provider_turns": token_totals["provider_turns"],
+        "external_cached_input_tokens": token_totals["cache_read_input_tokens"],
+        "external_non_cached_input_tokens": max(
+            token_totals["input_tokens"] - token_totals["cache_read_input_tokens"],
+            0,
+        ),
         "external_duration_seconds": duration,
         "external_cost_usd": cost,
         "external_usage": dict(token_totals),

@@ -578,20 +578,44 @@ def audit_evidence_context_fingerprint(
     )
 
 
-def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
-    manifest = load_manifest(root, batch_id)
-    current = batch_unit_fingerprints(root, batch_id)
-    all_units = {
-        unit.unit_id: unit
-        for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+def audit_coverage(
+    root: Path,
+    batch_id: str,
+    *,
+    manifest: BatchManifest | None = None,
+    all_units: dict[str, SourceUnit] | None = None,
+    translations: dict[str, Any] | None = None,
+    runs: list[AuditRun] | None = None,
+    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None]
+    | None = None,
+    validate_packet_closure: bool = True,
+) -> dict[str, Any]:
+    """Return current per-lens evidence coverage.
+
+    The optional inputs let workflow coordination reuse one immutable project
+    snapshot instead of re-reading the whole project once per batch. Public
+    callers retain the original two-argument behavior.
+    """
+    manifest = manifest or load_manifest(root, batch_id)
+    if all_units is None:
+        all_units = {
+            unit.unit_id: unit
+            for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        }
+    translations = translations if translations is not None else translation_map(root)
+    current = {
+        unit_id: translation_unit_fingerprint(
+            all_units[unit_id], translations.get(unit_id)
+        )
+        for unit_id in manifest.unit_ids
+        if unit_id in all_units
     }
-    translations = translation_map(root)
     expected = set(manifest.unit_ids)
     coverage: dict[str, set[str]] = {lens: set() for lens in REQUIRED_AUDIT_LENSES}
     context_inputs: dict[
         tuple[str, ...],
         tuple[str, dict[str, str]] | None,
-    ] = {}
+    ] = context_cache if context_cache is not None else {}
     invalidation_path = (
         root / "evidence" / "audits" / f"{batch_id}.invalidations.json"
     )
@@ -602,13 +626,13 @@ def audit_coverage(root: Path, batch_id: str) -> dict[str, Any]:
     )
     if not isinstance(invalidated, dict):
         invalidated = {}
-    for run in _audit_runs(root, batch_id):
+    for run in runs if runs is not None else _audit_runs(root, batch_id):
         if run.lens not in coverage:
             continue
         context_ids = tuple(run.context_unit_ids)
         if not run.context_fingerprint or not context_ids:
             continue
-        if run.packet_id:
+        if run.packet_id and validate_packet_closure:
             required_context_ids = set(
                 dependency_closure(
                     root,
@@ -1021,6 +1045,9 @@ def approve_batch(
                     f"verdict={external['verdict']}, "
                     f"open_substantive_issues={external['open_substantive_issues']}"
                 )
+            # Keep the compact workflow snapshot authoritative even when the
+            # review run was imported or reconstructed outside run_external_review.
+            write_json(root / "reviews" / f"{batch_id}.external.json", external)
 
         target_status = {
             "machine": ProjectStatus.MACHINE_REVIEWED,

@@ -2416,3 +2416,41 @@ def test_render_qa_does_not_treat_data_attributes_as_element_ids() -> None:
             for unit_id in ("u1", "u2")
         ],
     ) == []
+
+
+def test_render_qa_allows_blank_blockquote_lines_in_sidebar_code() -> None:
+    unit = SourceUnit(
+        unit_id="u1",
+        kind=UnitKind.CODE,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="<Grid />",
+        source_hash=sha256_text("<Grid />"),
+        confidence=1.0,
+        translatable=False,
+        code_language="xaml",
+    )
+    fence = chr(96) * 3
+    markdown = f'<a id="u1"></a>\n> {fence}xaml\n>\n> <Grid />\n> {fence}'
+    rendered_html = '<article id="u1"><pre><code>&lt;Grid /&gt;</code></pre></article>'
+
+    assert _render_quality_errors(markdown, rendered_html, [unit]) == []
+
+
+def test_render_qa_still_rejects_a_nested_blockquote_marker() -> None:
+    unit = SourceUnit(
+        unit_id="u1",
+        kind=UnitKind.NOTE,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="source",
+        source_hash=sha256_text("source"),
+        confidence=1.0,
+    )
+    errors = _render_quality_errors(
+        '<a id="u1"></a>\n> > [!NOTE]',
+        '<article id="u1"><blockquote>note</blockquote></article>',
+        [unit],
+    )
+
+    assert "nested-admonition-marker" in errors

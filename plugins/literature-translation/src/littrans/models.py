@@ -4,13 +4,13 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
-PROJECT_SCHEMA_VERSION = 4
+PROJECT_SCHEMA_VERSION = 5
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -428,6 +428,11 @@ class ExternalReviewRun(StrictModel):
     issue_ids: list[str] = Field(default_factory=list)
     response_path: str | None = None
     attempts: int = Field(default=1, ge=1)
+    failure_type: Literal[
+        "authentication", "network", "format", "model", "timeout", "provider", "unknown"
+    ] | None = None
+    fallback_of: str | None = None
+    attempt_log_path: str | None = None
     success: bool = True
     reviewed_at: str = Field(default_factory=utc_now)
 
@@ -445,6 +450,32 @@ class ReviewUsage(StrictModel):
     cache_read_input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     provider_turns: int = Field(default=0, ge=0)
+
+
+class ExternalReviewAttempt(StrictModel):
+    """One provider invocation attempt, including targeted format-repair attempts."""
+
+    schema_version: int = 1
+    run_id: str
+    batch_id: BatchId
+    attempt: int = Field(ge=1)
+    reviewer_id: str
+    driver: ExternalReviewDriver
+    requested_model: str
+    actual_model: str | None = None
+    effort: str | None = None
+    prompt_delivery: PromptDelivery
+    duration_seconds: float = Field(ge=0)
+    success: bool
+    failure_type: Literal[
+        "authentication", "network", "format", "model", "timeout", "provider", "unknown"
+    ] | None = None
+    error: str | None = None
+    targeted_repair_scheduled: bool = False
+    usage: ReviewUsage = Field(default_factory=ReviewUsage)
+    cost_usd: float | None = Field(default=None, ge=0)
+    raw_response_path: str
+    recorded_at: str = Field(default_factory=utc_now)
 
 
 class PageVerificationReceipt(StrictModel):
@@ -485,13 +516,19 @@ class AuditRun(StrictModel):
 
 
 class WorkflowPacketManifest(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     packet_id: BatchId
     stage: str
     batch_ids: list[BatchId] = Field(min_length=1, max_length=3)
     lens: str | None = None
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
+    # v2 binds evidence to each batch's own coverage and dependency closure.
+    # Defaults preserve readability of v1 manifests during migration.
+    batch_unit_ids: dict[BatchId, list[str]] = Field(default_factory=dict)
+    batch_context_unit_ids: dict[BatchId, list[str]] = Field(default_factory=dict)
+    batch_context_fingerprints: dict[BatchId, str] = Field(default_factory=dict)
+    storage_root: str = "packets"
     files: dict[str, str]
     file_sha256: dict[str, str] = Field(default_factory=dict)
     total_bytes: int = Field(ge=0)

@@ -154,7 +154,7 @@ def require_current_project_schema(
     if config.schema_version != PROJECT_SCHEMA_VERSION:
         raise ValueError(
             f"{operation} requires project schema v{PROJECT_SCHEMA_VERSION}; "
-            "run `littrans project migrate PROJECT --to 4` first "
+            f"run `littrans project migrate PROJECT --to {PROJECT_SCHEMA_VERSION}` first "
             f"(current schema: v{config.schema_version})"
         )
     return config

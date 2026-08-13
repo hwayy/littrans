@@ -3,10 +3,11 @@ from __future__ import annotations
 import html
 import json
 import re
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, select_autoescape
 from latex2mathml.converter import convert as latex_to_mathml
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -37,7 +38,7 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
-from littrans.storage import load_project, plugin_root, read_jsonl
+from littrans.storage import load_project, read_jsonl
 from littrans.verification import require_verified_extraction
 
 LEGACY_PUBLISHABLE = {
@@ -987,14 +988,16 @@ def render_project(
     markdown_path.write_text(markdown_text, encoding="utf-8")
 
     environment = Environment(
-        loader=FileSystemLoader(plugin_root() / "templates"),
         autoescape=select_autoescape(["html", "xml"]),
         trim_blocks=True,
         lstrip_blocks=True,
     )
     environment.filters["inline_html"] = _inline_html
     environment.filters["reader_note_text"] = _reader_note_text
-    template = environment.get_template("bilingual.html.j2")
+    template_text = (
+        files("littrans").joinpath("templates", "bilingual.html.j2").read_text(encoding="utf-8")
+    )
+    template = environment.from_string(template_text)
     html_text = template.render(
         config=config,
         rows=rows,
@@ -1113,7 +1116,10 @@ def _render_quality_errors(
     errors: list[str] = []
     if re.search(r"(?m)^-\s+[•▪■●]\s+", markdown):
         errors.append("duplicated-list-marker")
-    if re.search(r"(?m)^>\s+>\s+", markdown):
+    # Match a genuinely nested blockquote marker on one physical line.
+    # Using \s here also consumes newlines and falsely flags the valid blank
+    # quote line emitted inside a sidebar code fence.
+    if re.search(r"(?m)^>[ \t]+>[ \t]+", markdown):
         errors.append("nested-admonition-marker")
     for unit in units:
         anchor = f'<a id="{unit.unit_id}"></a>'

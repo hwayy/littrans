@@ -3,6 +3,29 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.5.0] - 2026-08-13
+
+### Added
+
+- Added schema-v5 project snapshots, batch-local content-addressed work packets, compact fixed-wave
+  status, safe packet pruning, and metrics that separate logical review calls from evidence rows.
+- Recorded every external-provider attempt with raw output, failure class, duration, tokens, cache
+  use, turns, and fallback lineage; added targeted format repair and per-service process locks.
+
+### Changed
+
+- Scoped internal audit invalidation and closure to each batch's real dependency set, skipped empty
+  audit evidence, stabilized imported reviewer issue IDs, and made three-lens imports atomic.
+- Reworked continuation around one initial audit, consolidated per-batch revision, a frozen wave,
+  and one minimal closure; independent external pipelines can advance without blocking clean peers.
+- Packaged the bilingual HTML template inside the wheel and made layout overrides validate their
+  complete derived snapshot before replacing project files.
+
+### Compatibility
+
+- Added lossless schema-v4-to-v5 migration. Existing evidence remains usable until locally
+  invalidated; legacy packet directories are reported but never deleted automatically.
+
 ## [0.4.0] - 2026-08-13
 
 ### Added

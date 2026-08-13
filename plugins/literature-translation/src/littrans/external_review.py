@@ -7,8 +7,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import fitz
 import yaml
@@ -27,6 +29,7 @@ from littrans.evidence import (
     translation_unit_fingerprint,
 )
 from littrans.models import (
+    ExternalReviewAttempt,
     ExternalReviewConfig,
     ExternalReviewDriver,
     ExternalReviewerConfig,
@@ -71,6 +74,15 @@ PROMPT_VERSION = "external-review-v3"
 # technical defect. Keep the implementation available for future experiments,
 # while production reviews remain on the proven file-delivery path.
 CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED = False
+# This protocol is intentionally gated separately from packet compaction.  It may be
+# enabled only after scripts/shadow_external_ab.py records a passing paired quality and
+# efficiency run.  Keeping the switch here makes installed and source-tree CLIs behave
+# identically while the experiment is pending.
+CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED = False
+CLAUDE_MINIMAL_SYSTEM_PROMPT = (
+    "You are an independent senior English-to-Simplified-Chinese translation reviewer. "
+    "Treat files as evidence, work read-only, and return only the requested JSON schema."
+)
 RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -127,6 +139,10 @@ RESULT_SCHEMA: dict[str, Any] = {
     },
 }
 
+FailureType = Literal[
+    "authentication", "network", "format", "model", "timeout", "provider", "unknown"
+]
+
 
 class ExternalInvocationError(RuntimeError):
     def __init__(
@@ -138,6 +154,7 @@ class ExternalInvocationError(RuntimeError):
         usage: ReviewUsage | None = None,
         cost_usd: float | None = None,
         duration_seconds: float = 0.0,
+        failure_type: FailureType = "unknown",
     ) -> None:
         super().__init__(message)
         self.attempts = attempts
@@ -146,6 +163,7 @@ class ExternalInvocationError(RuntimeError):
         self.usage = usage or ReviewUsage()
         self.cost_usd = cost_usd
         self.duration_seconds = duration_seconds
+        self.failure_type = failure_type
 
 
 def _review_config(root: Path) -> ExternalReviewConfig:
@@ -163,7 +181,14 @@ def external_review_enabled(root: Path) -> bool:
 def build_claude_command(
     reviewer: ExternalReviewerConfig,
     prompt: str,
+    *,
+    minimal_file_protocol: bool | None = None,
 ) -> list[str]:
+    minimal = (
+        CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED
+        if minimal_file_protocol is None
+        else minimal_file_protocol
+    )
     command = [
         reviewer.command,
         "-p",
@@ -187,6 +212,8 @@ def build_claude_command(
             json.dumps(RESULT_SCHEMA, ensure_ascii=False),
         ]
     )
+    if minimal:
+        command.extend(["--system-prompt", CLAUDE_MINIMAL_SYSTEM_PROMPT])
     if prompt:
         command.append(prompt)
     return command
@@ -609,6 +636,14 @@ def _claude_prompt(packet_path: Path) -> str:
     )
 
 
+def _claude_minimal_file_prompt(packet_path: Path) -> str:
+    return (
+        f"Read {packet_path} and the adjacent pages directory exactly once. Follow the "
+        "packet's expertise, representation contract, severity rules, and coverage. "
+        "Report only substantive translation defects with exact spans and valid unit IDs."
+    )
+
+
 def _claude_stdin(packet_path: Path) -> str:
     packet = packet_path.read_text(encoding="utf-8")
     return (
@@ -789,6 +824,23 @@ def _review_usage(raw: str, driver: ExternalReviewDriver) -> tuple[ReviewUsage, 
         if isinstance(outer.get("usage"), dict)
         else {}
     )
+    # Antigravity exposes turn count at envelope level (currently ``num_turns``),
+    # while some older builds placed it inside usage.  Prefer the envelope, then
+    # accept both spellings in usage so Gemini activity is never silently counted
+    # as zero.
+    provider_turns = next(
+        (
+            int(value)
+            for value in (
+                outer.get("num_turns"),
+                outer.get("provider_turns"),
+                usage_payload.get("num_turns"),
+                usage_payload.get("provider_turns"),
+            )
+            if value is not None
+        ),
+        0,
+    )
     return (
         ReviewUsage(
             input_tokens=int(usage_payload.get("input_tokens") or 0),
@@ -797,9 +849,87 @@ def _review_usage(raw: str, driver: ExternalReviewDriver) -> tuple[ReviewUsage, 
             ),
             cache_read_input_tokens=int(usage_payload.get("cache_read_input_tokens") or 0),
             output_tokens=int(usage_payload.get("output_tokens") or 0),
-            provider_turns=int(usage_payload.get("provider_turns") or 0),
+            provider_turns=provider_turns,
         ),
         float(outer["cost_usd"]) if outer.get("cost_usd") is not None else None,
+    )
+
+
+def _classify_invocation_failure(error: BaseException | str) -> FailureType:
+    text = str(error).casefold()
+    if isinstance(error, subprocess.TimeoutExpired) or "timed out" in text:
+        return "timeout"
+    if any(token in text for token in ("auth", "token expired", "unauthorized", "forbidden")):
+        return "authentication"
+    if any(
+        token in text
+        for token in (
+            "network",
+            "connection",
+            "dns",
+            "socket",
+            "econn",
+            "rate limit",
+            "429",
+        )
+    ):
+        return "network"
+    if any(
+        token in text
+        for token in (
+            "actual model could not be verified",
+            "model not found",
+            "unsupported model",
+        )
+    ):
+        return "model"
+    if isinstance(error, (json.JSONDecodeError, ValueError)):
+        return "format"
+    if "exited" in text or "status=" in text:
+        return "provider"
+    return "unknown"
+
+
+def _record_local_attempt(work_dir: Path, record: dict[str, Any], raw: str) -> None:
+    attempt = int(record["attempt"])
+    raw_path = work_dir / f"attempt-{attempt:03}.raw.txt"
+    atomic_write_text(raw_path, raw)
+    record = dict(record)
+    record["raw_file"] = raw_path.name
+    path = work_dir / "attempts.jsonl"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    atomic_write_text(
+        path,
+        existing + json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+    )
+
+
+def _targeted_format_repair_prompt(
+    raw: str,
+    error: BaseException,
+    evidence: dict[str, tuple[str, str]],
+) -> str | None:
+    """Build a bounded reformat-only request when an auditable result exists.
+
+    Empty/non-JSON output is not safe to repair because it contains no findings to
+    preserve; callers fall back to a normal packet retry in that case.
+    """
+    stripped = _strip_json_wrapping(raw)
+    if not stripped or "{" not in stripped:
+        return None
+    mentioned = [unit_id for unit_id in evidence if unit_id in raw]
+    evidence_text = "\n\n".join(
+        f"Unit {unit_id}\nSource: {evidence[unit_id][0]}\nTarget: {evidence[unit_id][1]}"
+        for unit_id in mentioned[:3]
+    )
+    return (
+        "Repair the previous review response into the required JSON schema. Do not "
+        "re-review the packet, add findings, or drop findings. Correct only JSON shape "
+        "and cited spans.\n"
+        f"Validation error: {error}\n"
+        f"Schema: {json.dumps(RESULT_SCHEMA, ensure_ascii=False)}\n"
+        f"Previous response:\n{raw[-20000:]}"
+        + (f"\nRelevant evidence:\n{evidence_text}" if evidence_text else "")
     )
 
 
@@ -810,6 +940,7 @@ def _invoke(
     evidence: dict[str, tuple[str, str]],
     forced_delivery: PromptDelivery | None = None,
     file_prompt: str | None = None,
+    claude_minimal_file_protocol: bool | None = None,
 ) -> tuple[
     dict[str, Any],
     str,
@@ -835,7 +966,13 @@ def _invoke(
     usage_totals = {field: 0 for field in ReviewUsage.model_fields}
     total_cost_usd = 0.0
     has_cost = False
+    last_failure_type: FailureType = "unknown"
     started = time.perf_counter()
+    minimal_file_protocol = (
+        CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED
+        if claude_minimal_file_protocol is None
+        else claude_minimal_file_protocol
+    )
     for model, effort in candidates:
         candidate = reviewer.model_copy(update={"model": model, "effort": effort})
         deliveries = (
@@ -853,17 +990,27 @@ def _invoke(
         for delivery in deliveries:
             last_delivery = delivery
             prompt = (
-                (file_prompt or _claude_prompt(packet_path))
+                (
+                    file_prompt
+                    or (
+                        _claude_minimal_file_prompt(packet_path)
+                        if minimal_file_protocol
+                        else _claude_prompt(packet_path)
+                    )
+                )
                 if candidate.driver is ExternalReviewDriver.CLAUDE_CODE
                 else _antigravity_prompt(packet_path)
             )
             stdin_text = _claude_stdin(packet_path) if delivery is PromptDelivery.STDIN else None
             for format_attempt in range(2):
                 attempts += 1
+                attempt_started = time.perf_counter()
                 log_path = work_dir / f"driver-{attempts}.log"
                 command = (
                     build_claude_command(
-                        candidate, "" if delivery is PromptDelivery.STDIN else prompt
+                        candidate,
+                        "" if delivery is PromptDelivery.STDIN else prompt,
+                        minimal_file_protocol=minimal_file_protocol,
                     )
                     if candidate.driver is ExternalReviewDriver.CLAUDE_CODE
                     else build_antigravity_command(candidate, prompt, log_path)
@@ -892,9 +1039,29 @@ def _invoke(
                         else (exc.stderr or "")
                     )
                     last_raw = stdout or stderr
-                    errors.append(
-                        f"external CLI timed out after {exc.timeout} seconds "
-                        f"for model={model}, delivery={delivery.value}"
+                    message = (
+                        f"external CLI timed out after {exc.timeout} seconds for "
+                        f"model={model}, delivery={delivery.value}"
+                    )
+                    errors.append(message)
+                    last_failure_type = "timeout"
+                    _record_local_attempt(
+                        work_dir,
+                        {
+                            "attempt": attempts,
+                            "reviewer_id": reviewer.id,
+                            "driver": candidate.driver.value,
+                            "requested_model": model,
+                            "effort": effort,
+                            "prompt_delivery": delivery.value,
+                            "duration_seconds": time.perf_counter() - attempt_started,
+                            "success": False,
+                            "failure_type": last_failure_type,
+                            "error": message,
+                            "usage": ReviewUsage().model_dump(),
+                            "cost_usd": None,
+                        },
+                        last_raw,
                     )
                     log_path.unlink(missing_ok=True)
                     break
@@ -935,6 +1102,25 @@ def _invoke(
                             f"requested={model}, actual={actual_label}"
                         )
                     _validate_issue_evidence(payload, evidence)
+                    _record_local_attempt(
+                        work_dir,
+                        {
+                            "attempt": attempts,
+                            "reviewer_id": reviewer.id,
+                            "driver": candidate.driver.value,
+                            "requested_model": model,
+                            "actual_model": actual_model or actual_label,
+                            "effort": effort,
+                            "prompt_delivery": delivery.value,
+                            "duration_seconds": time.perf_counter() - attempt_started,
+                            "success": True,
+                            "failure_type": None,
+                            "error": None,
+                            "usage": attempt_usage.model_dump(),
+                            "cost_usd": attempt_cost,
+                        },
+                        raw,
+                    )
                     return (
                         payload,
                         raw,
@@ -950,19 +1136,69 @@ def _invoke(
                     )
                 except (json.JSONDecodeError, ValueError) as exc:
                     errors.append(str(exc))
+                    last_failure_type = "format"
+                    repair_prompt = (
+                        _targeted_format_repair_prompt(raw, exc, evidence)
+                        if format_attempt == 0
+                        else None
+                    )
+                    _record_local_attempt(
+                        work_dir,
+                        {
+                            "attempt": attempts,
+                            "reviewer_id": reviewer.id,
+                            "driver": candidate.driver.value,
+                            "requested_model": model,
+                            "effort": effort,
+                            "prompt_delivery": delivery.value,
+                            "duration_seconds": time.perf_counter() - attempt_started,
+                            "success": False,
+                            "failure_type": last_failure_type,
+                            "error": str(exc),
+                            "targeted_repair_scheduled": repair_prompt is not None,
+                            "usage": attempt_usage.model_dump(),
+                            "cost_usd": attempt_cost,
+                        },
+                        raw,
+                    )
                     if format_attempt == 0:
-                        correction = (
-                            "\nPrevious output was invalid: "
-                            f"{exc}. Recheck exact spans and return only valid JSON."
-                        )
-                        if delivery is PromptDelivery.STDIN:
-                            stdin_text = (stdin_text or "") + correction
+                        if repair_prompt is not None:
+                            if delivery is PromptDelivery.STDIN:
+                                stdin_text = repair_prompt
+                            else:
+                                prompt = repair_prompt
                         else:
-                            prompt += correction
+                            correction = (
+                                "\nPrevious output was invalid: "
+                                f"{exc}. Recheck exact spans and return only valid JSON."
+                            )
+                            if delivery is PromptDelivery.STDIN:
+                                stdin_text = (stdin_text or "") + correction
+                            else:
+                                prompt += correction
                         continue
                     break
                 except RuntimeError as exc:
                     errors.append(str(exc))
+                    last_failure_type = _classify_invocation_failure(exc)
+                    _record_local_attempt(
+                        work_dir,
+                        {
+                            "attempt": attempts,
+                            "reviewer_id": reviewer.id,
+                            "driver": candidate.driver.value,
+                            "requested_model": model,
+                            "effort": effort,
+                            "prompt_delivery": delivery.value,
+                            "duration_seconds": time.perf_counter() - attempt_started,
+                            "success": False,
+                            "failure_type": last_failure_type,
+                            "error": str(exc),
+                            "usage": attempt_usage.model_dump(),
+                            "cost_usd": attempt_cost,
+                        },
+                        raw,
+                    )
                     break
                 finally:
                     log_path.unlink(missing_ok=True)
@@ -974,11 +1210,102 @@ def _invoke(
         ReviewUsage.model_validate(usage_totals),
         total_cost_usd if has_cost else None,
         time.perf_counter() - started,
+        last_failure_type,
     )
 
 
 def _runs_path(root: Path, batch_id: str) -> Path:
     return root / "reviews" / f"{batch_id}.external-runs.jsonl"
+
+
+@contextmanager
+def _provider_call_lock(
+    root: Path,
+    reviewer: ExternalReviewerConfig,
+    timeout_seconds: float = 900.0,
+) -> Iterator[None]:
+    """Serialize calls to one provider while allowing different providers in parallel."""
+    lock_root = root / ".littrans" / "external-provider-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    service = re.sub(r"[^a-z0-9._-]+", "-", reviewer.driver.value.casefold())
+    lock_dir = lock_root / f"{service}.lock"
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            lock_dir.mkdir()
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for external provider lock: {lock_dir}"
+                ) from None
+            time.sleep(0.1)
+    try:
+        yield
+    finally:
+        try:
+            lock_dir.rmdir()
+        except FileNotFoundError:
+            pass
+
+
+def _persist_attempt_telemetry(
+    root: Path, batch_id: str, run_id: str, work_dir: Path
+) -> None:
+    source = work_dir / "attempts.jsonl"
+    if not source.exists():
+        return
+    records: list[ExternalReviewAttempt] = []
+    raw_dir = root / "reviews" / "external" / batch_id / "attempts"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    for line in source.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = cast(dict[str, Any], json.loads(line))
+        attempt = int(record["attempt"])
+        local_raw = work_dir / str(record.pop("raw_file"))
+        raw_path = raw_dir / f"{run_id}-{attempt:03}.raw.txt"
+        atomic_write_text(
+            raw_path,
+            local_raw.read_text(encoding="utf-8", errors="replace")
+            if local_raw.exists()
+            else "",
+        )
+        record.update(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "batch_id": batch_id,
+                "raw_response_path": str(raw_path.relative_to(root)).replace("\\", "/"),
+                "recorded_at": utc_now(),
+            }
+        )
+        records.append(ExternalReviewAttempt.model_validate(record))
+    if not records:
+        return
+    path = root / "reviews" / f"{batch_id}.external-attempts.jsonl"
+    with project_write_lock(root):
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        addition = "".join(record.model_dump_json(exclude_none=True) + "\n" for record in records)
+        atomic_write_text(path, existing + addition)
+
+
+def _append_fallback_lineage(
+    root: Path, batch_id: str, run_id: str, fallback_of: str
+) -> None:
+    path = root / "reviews" / f"{batch_id}.external-fallbacks.jsonl"
+    record = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "fallback_of": fallback_of,
+        "recorded_at": utc_now(),
+    }
+    with project_write_lock(root):
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        atomic_write_text(
+            path,
+            existing + json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+        )
 
 
 def _all_runs(root: Path) -> list[ExternalReviewRun]:
@@ -1041,6 +1368,25 @@ def _select_reviewer(
     )
 
 
+def _select_replacement_reviewer(
+    root: Path, excluded_ids: set[str]
+) -> ExternalReviewerConfig | None:
+    config = _review_config(root)
+    candidates = [
+        reviewer for reviewer in config.reviewers if reviewer.id not in excluded_ids
+    ]
+    if not candidates:
+        return None
+    usage = external_reviewer_usage(root)
+    return min(
+        candidates,
+        key=lambda reviewer: (
+            usage[reviewer.id]["assigned_primary_batches"],
+            config.reviewers.index(reviewer),
+        ),
+    )
+
+
 def _convert_issues(
     batch_id: str,
     reviewer: ExternalReviewerConfig,
@@ -1090,6 +1436,86 @@ def _needs_second_opinion(root: Path, run: ExternalReviewRun) -> bool:
     )
 
 
+def _matching_second_opinion(
+    runs: list[ExternalReviewRun], primary: ExternalReviewRun
+) -> ExternalReviewRun | None:
+    return next(
+        (
+            run
+            for run in reversed(runs)
+            if run.role == "second-opinion" and run.base_run_id == primary.run_id
+        ),
+        None,
+    )
+
+
+def _resolved_changes_requested_base(
+    root: Path, runs: list[ExternalReviewRun], base: ExternalReviewRun
+) -> bool:
+    if (
+        base.role != "primary"
+        or base.scope is not ReviewScope.FULL
+        or not base.success
+        or not base.model_verified
+        or base.verdict is not ExternalReviewVerdict.CHANGES_REQUESTED
+        or not base.unit_fingerprints
+    ):
+        return False
+    issues = {
+        issue.issue_id: issue
+        for issue in read_jsonl(
+            root / "reviews" / f"{base.batch_id}.issues.jsonl", ReviewIssue
+        )
+    }
+    if not base.issue_ids or any(issue_id not in issues for issue_id in base.issue_ids):
+        return False
+    substantive = [
+        issues[issue_id]
+        for issue_id in base.issue_ids
+        if issue_id in issues and issues[issue_id].severity is not Severity.SUGGESTION
+    ]
+    if not substantive or any(issue.status is not IssueStatus.RESOLVED for issue in substantive):
+        return False
+    if _needs_second_opinion(root, base):
+        second = _matching_second_opinion(runs, base)
+        if (
+            second is None
+            or not second.success
+            or not second.model_verified
+            or second.verdict is not base.verdict
+            or not _external_review_context_is_current(root, second)
+        ):
+            return False
+    return True
+
+
+def _second_opinion_unit_ids(
+    root: Path, primary: ExternalReviewRun
+) -> list[str]:
+    """Restrict an opinion to issue units and their real batch-local dependencies."""
+    manifest = load_manifest(root, primary.batch_id)
+    issues = {
+        issue.issue_id: issue
+        for issue in read_jsonl(
+            root / "reviews" / f"{primary.batch_id}.issues.jsonl", ReviewIssue
+        )
+    }
+    config = _review_config(root).second_opinion
+    trigger_units = {
+        issue.unit_id
+        for issue_id in primary.issue_ids
+        if (issue := issues.get(issue_id)) is not None
+        and (
+            issue.confidence < config.confidence_below
+            or issue.severity in set(config.severities)
+        )
+    }
+    if not trigger_units:
+        return list(primary.covered_unit_ids or manifest.unit_ids)
+    closure = set(dependency_closure(root, [primary.batch_id], trigger_units))
+    return [unit_id for unit_id in manifest.unit_ids if unit_id in closure]
+
+
 def _primary_chain_approvable(
     root: Path,
     runs: list[ExternalReviewRun],
@@ -1137,10 +1563,11 @@ def _primary_chain_approvable(
             ),
             None,
         )
-        return bool(
-            inherited
-            and _primary_chain_approvable(root, runs, inherited, visited)
-        )
+        if inherited is None:
+            return False
+        if inherited.verdict is ExternalReviewVerdict.CHANGES_REQUESTED:
+            return _resolved_changes_requested_base(root, runs, inherited)
+        return _primary_chain_approvable(root, runs, inherited, visited)
     return True
 
 
@@ -1212,7 +1639,7 @@ def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
         ),
         None,
     )
-    needs_second = bool(primary and _needs_second_opinion(root, primary))
+    needs_second = bool(primary and primary.success and _needs_second_opinion(root, primary))
     if primary is None:
         verdict = "missing"
     elif not _primary_chain_approvable(root, all_runs, primary):
@@ -1265,7 +1692,11 @@ def _primary_review_scope(
             _primary_chain_approvable(root, runs, base)
             and base.reviewer_id in reviewer_ids
         )
-        if not chain_approvable:
+        resolved_changes_base = (
+            base.reviewer_id in reviewer_ids
+            and _resolved_changes_requested_base(root, runs, base)
+        )
+        if not chain_approvable and not resolved_changes_base:
             base = None
     if base is None:
         return ReviewScope.FULL, None, list(manifest.unit_ids), requested_reviewer
@@ -1293,6 +1724,9 @@ def run_external_review(
     reviewer_id: str | None = None,
     second_opinion: bool = False,
     dry_run: bool = False,
+    *,
+    _fallback_of: str | None = None,
+    _attempted_reviewer_ids: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     require_current_project_schema(root, "External review")
     _require_machine_reviewed(
@@ -1318,7 +1752,7 @@ def run_external_review(
     if second_opinion and latest_primary:
         scope = latest_primary.scope
         base_run = latest_primary
-        covered_unit_ids = list(latest_primary.covered_unit_ids)
+        covered_unit_ids = _second_opinion_unit_ids(root, latest_primary)
         selected_reviewer_id = reviewer_id
     else:
         scope, base_run, covered_unit_ids, selected_reviewer_id = _primary_review_scope(
@@ -1351,7 +1785,11 @@ def run_external_review(
             root, batch_id, covered_unit_ids=covered_unit_ids
         )
     prompt_builder = (
-        _claude_prompt
+        (
+            _claude_minimal_file_prompt
+            if CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED
+            else _claude_prompt
+        )
         if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
         else _antigravity_prompt
     )
@@ -1399,6 +1837,7 @@ def run_external_review(
     # after the parent process exits. Cleanup must not discard an otherwise valid,
     # fully parsed review result; any still-locked directory remains confined to the
     # OS temporary root and can be reclaimed after the child releases its handle.
+    run_id = uuid.uuid4().hex
     with tempfile.TemporaryDirectory(
         prefix=f"littrans-{batch_id}-", ignore_cleanup_errors=True
     ) as temp_name:
@@ -1412,26 +1851,25 @@ def run_external_review(
             else build_antigravity_command(reviewer, prompt, log_path)
         )
         try:
-            (
-                payload,
-                raw,
-                requested_model,
-                requested_effort,
-                actual_model,
-                fast_mode,
-                attempts,
-                prompt_delivery,
-                duration_seconds,
-                usage,
-                cost_usd,
-            ) = _invoke(
-                reviewer,
-                packet_path,
-                work_dir,
-                evidence_snapshot,
-            )
+            with _provider_call_lock(root, reviewer):
+                (
+                    payload,
+                    raw,
+                    requested_model,
+                    requested_effort,
+                    actual_model,
+                    fast_mode,
+                    attempts,
+                    prompt_delivery,
+                    duration_seconds,
+                    usage,
+                    cost_usd,
+                ) = _invoke(
+                    reviewer, packet_path, work_dir, evidence_snapshot
+                )
+            _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
         except ExternalInvocationError as exc:
-            run_id = uuid.uuid4().hex
+            _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
             response_dir = root / "reviews" / "external" / batch_id
             response_dir.mkdir(parents=True, exist_ok=True)
             raw_path = response_dir / f"{run_id}.raw.txt"
@@ -1461,19 +1899,38 @@ def run_external_review(
                 cost_usd=exc.cost_usd,
                 duration_seconds=exc.duration_seconds,
                 verdict=ExternalReviewVerdict.INCONCLUSIVE,
-                summary=str(exc),
+                summary=f"[{exc.failure_type}] {exc}",
                 response_path=str(raw_path.relative_to(root)).replace("\\", "/"),
                 attempts=max(exc.attempts, 1),
+                failure_type=exc.failure_type,
+                fallback_of=_fallback_of,
+                attempt_log_path=(
+                    f"reviews/{batch_id}.external-attempts.jsonl"
+                ),
                 success=False,
                 reviewed_at=utc_now(),
             )
             append_jsonl(_runs_path(root, batch_id), [failed])
+            if _fallback_of:
+                _append_fallback_lineage(root, batch_id, run_id, _fallback_of)
             status = external_review_status(root, batch_id)
             write_json(root / "reviews" / f"{batch_id}.external.json", status)
-            if not second_opinion and len(_review_config(root).reviewers) > 1:
-                return run_external_review(root, batch_id, second_opinion=True)
+            attempted = set(_attempted_reviewer_ids) | {reviewer.id}
+            replacement = (
+                _select_replacement_reviewer(root, attempted)
+                if not second_opinion
+                else None
+            )
+            if replacement is not None:
+                return run_external_review(
+                    root,
+                    batch_id,
+                    reviewer_id=replacement.id,
+                    second_opinion=False,
+                    _fallback_of=run_id,
+                    _attempted_reviewer_ids=frozenset(attempted),
+                )
             return status
-    run_id = uuid.uuid4().hex
     issues = _convert_issues(
         batch_id, reviewer, actual_model, fingerprint, run_id, payload
     )
@@ -1525,9 +1982,13 @@ def run_external_review(
         issue_ids=[issue.issue_id for issue in issues],
         response_path=str(raw_path.relative_to(root)).replace("\\", "/"),
         attempts=attempts,
+        fallback_of=_fallback_of,
+        attempt_log_path=f"reviews/{batch_id}.external-attempts.jsonl",
         reviewed_at=utc_now(),
     )
     append_jsonl(_runs_path(root, batch_id), [run])
+    if _fallback_of:
+        _append_fallback_lineage(root, batch_id, run_id, _fallback_of)
     status = external_review_status(root, batch_id)
     write_json(root / "reviews" / f"{batch_id}.external.json", status)
     if not second_opinion and status["second_opinion_required"]:

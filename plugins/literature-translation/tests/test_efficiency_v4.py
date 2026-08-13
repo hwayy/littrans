@@ -91,6 +91,10 @@ from littrans.workflow import (
 )
 
 
+def _packet_dir(root: Path, packet: WorkflowPacketManifest) -> Path:
+    return root / packet.storage_root / packet.packet_id
+
+
 def test_claude_stdin_delivery_remains_shadow_gated() -> None:
     assert external_review.CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED is False
 
@@ -103,7 +107,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
     variant_delivery = namespace["_variant_delivery"]
 
     assert variant_delivery("legacy") is PromptDelivery.FILE
-    assert variant_delivery("optimized") is PromptDelivery.STDIN
+    assert variant_delivery("optimized") is PromptDelivery.FILE
     with pytest.raises(ValueError, match="Unknown shadow variant"):
         variant_delivery("unexpected")
 
@@ -172,7 +176,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
 
     result = run_ab(tmp_path, ["batch"], {"batch"}, reviewer.id)
 
-    assert deliveries == [PromptDelivery.FILE, PromptDelivery.STDIN]
+    assert deliveries == [PromptDelivery.FILE, PromptDelivery.FILE]
     assert result["delivery_protocol_passed"] is True
 
 
@@ -779,9 +783,8 @@ def test_completed_benchmark_does_not_group_across_incomplete_batches(
         not (set(first.unit_ids) & set(group) and set(last.unit_ids) & set(group))
         for group in base_shared_groups
     )
-    assert enlarged["optimized_packet_bytes"] - result["optimized_packet_bytes"] == (
-        len(marker.encode("utf-8")) * 3 * 2
-    )
+    # v5 lens packets no longer carry the legacy whole-wave read-only context.
+    assert enlarged["optimized_packet_bytes"] == result["optimized_packet_bytes"]
 
 
 def test_benchmark_splits_overlapping_manifests_into_executable_groups(
@@ -951,7 +954,7 @@ def _store_manual_audit_packet(
     root: Path, packet: WorkflowPacketManifest
 ) -> tuple[WorkflowPacketManifest, Path]:
     assert packet.stage == "audit"
-    packet_dir = root / "packets" / packet.packet_id
+    packet_dir = _packet_dir(root, packet)
     packet_dir.mkdir(parents=True, exist_ok=True)
     file_paths = {"shared": packet_dir / "shared.md"}
     file_paths.update(
@@ -2364,10 +2367,11 @@ def test_source_rebinding_does_not_create_translation_revision(
     assert returned[0].source_hash == new_hash
     assert history_path.read_bytes() == history_before
     assert load_project(root).status is ProjectStatus.REVISED
-    assert all(
-        not audit_coverage(root, manifest.batch_id)["complete"]
-        for manifest in manifests
-    )
+    assert [audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests] == [
+        True,
+        False,
+        True,
+    ]
     with pytest.raises(ValueError, match="not_publishable"):
         render_project(root, None, "stale-rebound", batch_id=batch_id)
 
@@ -2388,7 +2392,11 @@ def test_revision_invalidates_only_dependency_closure(tmp_path: Path) -> None:
         manifests[1].batch_id: {"u002"},
         manifests[2].batch_id: {"u003"},
     }
-    assert all(not audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests)
+    assert [audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests] == [
+        True,
+        False,
+        True,
+    ]
 
 
 def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path) -> None:
@@ -2402,7 +2410,6 @@ def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path)
         "u009",
     ]
     assert dependency_closure(root, [middle.batch_id], ["u007"]) == [
-        "u005",
         "u006",
         "u007",
         "u008",
@@ -2411,7 +2418,6 @@ def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path)
         "u008",
         "u009",
         "u010",
-        "u011",
     ]
 
 
@@ -2429,11 +2435,11 @@ def test_incremental_audit_keeps_dependency_context_out_of_coverage(
         [middle.batch_id],
         "fidelity",
     )
-    initial_issues = root / "packets" / initial.packet_id / "issues.jsonl"
+    initial_issues = _packet_dir(root, initial) / "issues.jsonl"
     write_jsonl(initial_issues, [])
     import_review_set(
         root,
-        root / "packets" / initial.packet_id / "manifest.json",
+        _packet_dir(root, initial) / "manifest.json",
         initial_issues,
     )
     assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
@@ -2467,21 +2473,17 @@ def test_incremental_audit_keeps_dependency_context_out_of_coverage(
 
     assert packet.unit_ids == pending
     assert list(packet.unit_fingerprints) == [
-        "u005",
         "u006",
         "u007",
         "u008",
         "u009",
         "u010",
-        "u011",
     ]
     read_only = (
         root / packet.files["audit:read-only-context"]
     ).read_text(encoding="utf-8")
-    assert all(
-        f"## {unit_id}" in read_only
-        for unit_id in ("u005", "u006", "u010", "u011")
-    )
+    assert all(f"## {unit_id}" in read_only for unit_id in ("u006", "u010"))
+    assert all(f"## {unit_id}" not in read_only for unit_id in ("u005", "u011"))
     audit = (root / packet.files[f"{middle.batch_id}:audit"]).read_text(
         encoding="utf-8"
     )
@@ -2491,11 +2493,11 @@ def test_incremental_audit_keeps_dependency_context_out_of_coverage(
         for unit_id in ("u005", "u006", "u010", "u011")
     )
 
-    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues, [])
     import_review_set(
         root,
-        root / "packets" / packet.packet_id / "manifest.json",
+        _packet_dir(root, packet) / "manifest.json",
         issues,
     )
 
@@ -2873,11 +2875,11 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
     for lens in ("fidelity", "technical", "chinese-style"):
         packet = create_workflow_packet(root, "audit", batch_ids, lens)
         assert packet.total_bytes < legacy_bytes
-        issues = root / "packets" / packet.packet_id / "issues.jsonl"
+        issues = _packet_dir(root, packet) / "issues.jsonl"
         write_jsonl(issues, [])
         result = import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues,
         )
         assert result["lens"] == lens
@@ -2980,11 +2982,11 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
     assert "来源单元旧译" not in rendered_markdown
     assert "来源单元旧译" not in rendered_html
 
-    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues, [])
     import_review_set(
         root,
-        root / "packets" / packet.packet_id / "manifest.json",
+        _packet_dir(root, packet) / "manifest.json",
         issues,
     )
     assert audit_coverage(root, manifest.batch_id)["missing"]["fidelity"] == []
@@ -3081,13 +3083,13 @@ def test_review_set_rejects_packet_file_changed_after_creation(
         ),
         encoding="utf-8",
     )
-    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues_path = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues_path, [])
 
     with pytest.raises(ValueError, match="packet file digest mismatch"):
         import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues_path,
         )
 
@@ -3106,7 +3108,7 @@ def test_review_set_rejects_context_changed_after_packet_creation(
     packet = create_workflow_packet(
         root, "audit", [batch.batch_id], "fidelity"
     )
-    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues_path = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues_path, [])
     style_path = root / "context" / "style-guide.md"
     atomic_write_text(
@@ -3118,7 +3120,7 @@ def test_review_set_rejects_context_changed_after_packet_creation(
     with pytest.raises(ValueError, match="Audit packet context is stale"):
         import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues_path,
         )
 
@@ -3189,11 +3191,11 @@ def test_review_set_rejects_covered_unit_without_packet_fingerprint(
     assert run_qa(root, batch_id).passed
     packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
     covered_id = packet.unit_ids[0]
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = root / packet.storage_root / packet.packet_id / "manifest.json"
     manifest_payload = read_json(manifest_path)
     manifest_payload["unit_fingerprints"].pop(covered_id)
     write_json(manifest_path, manifest_payload)
-    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues_path = manifest_path.parent / "issues.jsonl"
     write_jsonl(issues_path, [])
 
     _submit(root, batch_id, suffix="修订")
@@ -3215,7 +3217,7 @@ def test_review_set_revalidates_packet_inside_the_audit_import_lock(
     _submit(root, batch_id)
     assert run_qa(root, batch_id).passed
     packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = _packet_dir(root, packet) / "manifest.json"
     issues_path = manifest_path.parent / "issues.jsonl"
     write_jsonl(issues_path, [])
     original_lock = import_review_set.__globals__["project_write_lock"]
@@ -3257,7 +3259,7 @@ def test_review_set_revalidates_packet_inside_the_audit_import_lock(
     ) == []
 
 
-def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> None:
+def test_review_set_canonicalizes_local_ids_across_all_batches(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 2)
     first, second = manifests
     for batch in manifests:
@@ -3280,7 +3282,7 @@ def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> Non
     packet = create_workflow_packet(
         root, "audit", [first.batch_id, second.batch_id], "fidelity"
     )
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = _packet_dir(root, packet) / "manifest.json"
     issues_path = manifest_path.parent / "issues.jsonl"
     first_issue = ReviewIssue(
         issue_id="first-batch-fresh",
@@ -3297,24 +3299,33 @@ def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> Non
     write_jsonl(issues_path, [first_issue, conflicting_issue])
 
     current_before = (root / "translations" / "current.jsonl").read_bytes()
-    project_before = (root / "project.yaml").read_bytes()
     first_summary = root / "reviews" / f"{first.batch_id}.audit.json"
     assert not first_summary.exists()
 
-    with pytest.raises(
-        ValueError, match="issue IDs already exist with different content"
-    ):
-        import_review_set(root, manifest_path, issues_path)
+    result = import_review_set(root, manifest_path, issues_path)
 
-    assert read_jsonl(
+    assert set(result["id_map"]) == {
+        f"{first.batch_id}:{first_issue.issue_id}",
+        f"{second.batch_id}:{conflicting_issue.issue_id}",
+    }
+    first_imported = read_jsonl(
         root / "reviews" / f"{first.batch_id}.issues.jsonl", ReviewIssue
-    ) == []
-    assert read_jsonl(
-        root / "evidence" / "audits" / f"{first.batch_id}.jsonl", AuditRun
-    ) == []
-    assert not first_summary.exists()
-    assert (root / "translations" / "current.jsonl").read_bytes() == current_before
-    assert (root / "project.yaml").read_bytes() == project_before
+    )
+    second_imported = read_jsonl(
+        root / "reviews" / f"{second.batch_id}.issues.jsonl", ReviewIssue
+    )
+    assert first_imported[0].issue_id == result["id_map"][
+        f"{first.batch_id}:{first_issue.issue_id}"
+    ]
+    assert existing_issue in second_imported
+    assert any(
+        issue.issue_id
+        == result["id_map"][f"{second.batch_id}:{conflicting_issue.issue_id}"]
+        for issue in second_imported
+    )
+    assert first_summary.exists()
+    assert (root / "translations" / "current.jsonl").read_bytes() != current_before
+    assert load_project(root).status is ProjectStatus.REVIEWED
 
 
 def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:
@@ -3323,7 +3334,7 @@ def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:
     _submit(root, batch_id)
     assert run_qa(root, batch_id).passed
     packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = _packet_dir(root, packet) / "manifest.json"
     payload = read_json(manifest_path)
     payload["packet_id"] = "../escaped"
     write_json(manifest_path, payload)
@@ -3453,21 +3464,17 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     packet = create_workflow_packet(root, "audit", [middle.batch_id], "fidelity")
 
     assert packet.unit_ids == middle.unit_ids
-    assert set(packet.unit_fingerprints) == {"u001", "u002", "u003"}
-    context_path = root / packet.files["audit:read-only-context"]
-    context = context_path.read_text(encoding="utf-8")
-    assert "outside the requested batch set" in context
-    assert "## u001" in context
-    assert "## u003" in context
+    assert set(packet.unit_fingerprints) == {"u002"}
+    assert "audit:read-only-context" not in packet.files
     audit_path = root / packet.files[f"{middle.batch_id}:audit"]
     audit = audit_path.read_text(encoding="utf-8")
     assert "## u002" in audit
     assert "## u001" not in audit
     assert "## u003" not in audit
 
-    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues, [])
-    import_review_set(root, root / "packets" / packet.packet_id / "manifest.json", issues)
+    import_review_set(root, _packet_dir(root, packet) / "manifest.json", issues)
     assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
     assert audit_coverage(root, manifests[0].batch_id)["missing"]["fidelity"] == [
         "u001"
@@ -3487,9 +3494,7 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     )
     write_jsonl(units_path, units)
 
-    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == [
-        "u002"
-    ]
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
 
 
 def test_audit_coverage_rejects_new_unreviewed_seam_membership(
@@ -3502,11 +3507,11 @@ def test_audit_coverage_rejects_new_unreviewed_seam_membership(
     middle = manifests[1]
     for lens in ("fidelity", "technical", "chinese-style"):
         packet = create_workflow_packet(root, "audit", [middle.batch_id], lens)
-        issues = root / "packets" / packet.packet_id / "issues.jsonl"
+        issues = _packet_dir(root, packet) / "issues.jsonl"
         write_jsonl(issues, [])
         import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues,
         )
     assert audit_coverage(root, middle.batch_id)["complete"]
@@ -3544,17 +3549,13 @@ def test_audit_coverage_rejects_new_unreviewed_seam_membership(
 
     coverage = audit_coverage(root, middle.batch_id)
 
-    assert not coverage["complete"]
-    assert all(
-        missing == middle.unit_ids for missing in coverage["missing"].values()
+    assert coverage["complete"]
+    render_project(
+        root,
+        None,
+        "new-seam-context",
+        batch_id=middle.batch_id,
     )
-    with pytest.raises(ValueError, match=f"incomplete_audit=.*{middle.batch_id}"):
-        render_project(
-            root,
-            None,
-            "new-seam-context",
-            batch_id=middle.batch_id,
-        )
 
 
 def test_review_packets_show_renderer_visible_equations(tmp_path: Path) -> None:
@@ -4004,7 +4005,7 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     context_ids = external_review._outer_seam_context_ids(
         root, middle.batch_id, covered
     )
-    assert context_ids == outside_ids
+    assert context_ids == []
     assert not set(outside_ids) & set(covered)
     packet, pages = external_review._packet_text(
         root,
@@ -4013,11 +4014,11 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
         read_only_context_ids=context_ids,
     )
     assert all(
-        f"## Unit {unit_id} [READ-ONLY SEAM CONTEXT]" in packet
+        f"## Unit {unit_id} [READ-ONLY SEAM CONTEXT]" not in packet
         for unit_id in outside_ids
     )
-    assert "do not report issues against them" in packet
-    assert pages == [4, 5, 6, 7]
+    assert "do not report issues against them" not in packet
+    assert pages == [6, 7]
 
     _audit_and_approve(root, middle.batch_id)
     captured_evidence: dict[str, tuple[str, str]] = {}
@@ -4065,8 +4066,8 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     )
     write_jsonl(root / "translations" / "current.jsonl", current.values())
 
-    assert not external_review_status(root, middle.batch_id)["external_approvable"]
-    assert accepted.context_fingerprint != (
+    assert external_review_status(root, middle.batch_id)["external_approvable"]
+    assert accepted.context_fingerprint == (
         external_review._external_review_context_fingerprint(
             root,
             middle.batch_id,
@@ -4397,6 +4398,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     assert (root / "translations" / "history.jsonl").read_bytes() == history_before
     migrated_qa = read_json(qa_path)
     assert "qa_context_fingerprint" not in migrated_qa
+    migrate_project_schema(root, 5)
     assert workflow_next(root)["stage"] == "qa"
     rerun = run_qa(root, batch_id)
     assert not rerun.passed

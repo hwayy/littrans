@@ -35,28 +35,33 @@ See `references/runtime.md` for launcher resolution from an installed skill, and
 6. Run `finalize-literature-translation` to enforce the configured release gate and render
    Markdown plus responsive bilingual HTML. Human approval is never inferred.
 
-For ongoing projects, `continue-literature-translation` coordinates at most three consecutive
-same-stage batches. It shares document context once, keeps one local writer per batch and one
-independent local reviewer per audit lens, and retains every quality gate. Do not use cloud or
-remote subagents for translation or review.
+For ongoing projects, `continue-literature-translation` freezes at most three consecutive
+same-stage batches as one wave. It uses compact batch-local packets, fresh local writers and
+independent audit lenses, consolidated revisions, and closure-only rechecks while retaining every
+quality gate. Do not use cloud or remote subagents for translation or review.
 
-Claude stdin prompt delivery is implemented but disabled by the v0.3 shadow quality gate.
-Production external review continues to use the file packet path.
+Claude stdin delivery remains disabled by the earlier shadow quality gate. The v0.5 minimal file
+protocol is independently gated until it passes the six-batch quality-and-efficiency A/B;
+production review otherwise retains the proven file packet protocol.
 
-Useful v0.3 commands:
+Useful v0.5 commands:
 
 ```text
-littrans project migrate PROJECT --to 4 --dry-run
-littrans project migrate PROJECT --to 4
+littrans project migrate PROJECT --to 5 --dry-run
+littrans project migrate PROJECT --to 5
 littrans workflow next PROJECT --limit 3
+littrans workflow status PROJECT --batch-ids ID1,ID2,ID3
 littrans workflow packet PROJECT --stage translate --batch-ids ID1,ID2,ID3
-littrans workflow packet PROJECT --stage audit --lens fidelity --batch-ids ID1,ID2,ID3
+littrans workflow packet PROJECT --stage audit --lens all --batch-ids ID1,ID2,ID3
 littrans review import-set PROJECT PACKET-MANIFEST ISSUES.jsonl
 littrans workflow metrics PROJECT --batch-ids ID1,ID2,ID3
+littrans workflow prune-packets PROJECT --dry-run
 littrans render PROJECT --batch-ids ID1,ID2,ID3 --name chapter-set
 ```
 
-See `MIGRATING.md` before opening an existing schema-v3 project with v0.3.
+Schema-v5 packets live under the ignored `.littrans/work` directory and are content-addressed for
+reuse. Imported evidence remains authoritative; use `workflow prune-packets --apply` to remove only
+work packets the CLI reports as safe. See `MIGRATING.md` before opening an older project with v0.5.
 
 Project state follows:
 

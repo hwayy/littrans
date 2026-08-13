@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from littrans.models import (
     AuditRun,
     BatchManifest,
+    ExternalReviewAttempt,
     ExternalReviewRun,
     PageVerificationReceipt,
     ProjectConfig,
@@ -23,6 +24,7 @@ from littrans.models import (
     WorkflowPacketManifest,
 )
 from littrans.storage import (
+    atomic_write_text,
     initialize_project_dirs,
     load_project,
     plugin_root,
@@ -66,6 +68,13 @@ def initialize_project(
         raise FileExistsError(f"Project already exists: {root}")
     load_profile(profile)
     initialize_project_dirs(root)
+    ignore_path = root / ".gitignore"
+    existing_ignore = (
+        ignore_path.read_text(encoding="utf-8") if ignore_path.is_file() else ""
+    )
+    if not any(line.strip() == "/.littrans/" for line in existing_ignore.splitlines()):
+        separator = "" if not existing_ignore or existing_ignore.endswith("\n") else "\n"
+        atomic_write_text(ignore_path, existing_ignore + separator + "/.littrans/\n")
     document = fitz.open(source)
     config = ProjectConfig(
         project_id=slugify(title or source.stem),
@@ -178,6 +187,7 @@ def schema_models() -> dict[str, type[BaseModel]]:
         "review-issue.schema.json": ReviewIssue,
         "batch-manifest.schema.json": BatchManifest,
         "external-review-run.schema.json": ExternalReviewRun,
+        "external-review-attempt.schema.json": ExternalReviewAttempt,
         "page-verification-receipt.schema.json": PageVerificationReceipt,
         "audit-run.schema.json": AuditRun,
         "workflow-packet-manifest.schema.json": WorkflowPacketManifest,

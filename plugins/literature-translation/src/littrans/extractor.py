@@ -5,6 +5,7 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import fitz
@@ -40,6 +41,7 @@ from littrans.semantics import (
 )
 from littrans.storage import (
     load_project,
+    project_write_lock,
     read_jsonl,
     save_project,
     sha256_text,
@@ -1101,7 +1103,13 @@ def _inserted_unit_from_override(override: dict[str, Any]) -> SourceUnit:
 
 
 def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
-    """Apply reviewed structural overrides while retaining reviewed unit identities."""
+    """Apply reviewed structural overrides as one validated project mutation."""
+    with project_write_lock(project_root):
+        return _apply_layout_overrides_locked(project_root)
+
+
+def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
+    """Build and validate the complete override result before replacing project files."""
     units_path = project_root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     if not units:
@@ -1148,95 +1156,132 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
         "continued_to_next",
         "figure_labels",
     )
-    updated: list[SourceUnit] = []
-    for unit in units:
-        revised = _apply_override(unit, overrides)
-        if revised is None:
-            if unit.unit_id in translated_ids:
-                removed_translation_ids.add(unit.unit_id)
-            continue
-        translation_changed = unit.unit_id in translated_ids and any(
-            getattr(revised, field) != getattr(unit, field)
-            for field in translation_affecting_fields
-        )
-        if translation_changed:
-            record = translation_by_id[unit.unit_id]
-            if not revised.translatable:
-                removed_translation_ids.add(unit.unit_id)
-            elif revised.source_hash != unit.source_hash:
-                if record.source_hash != revised.source_hash:
-                    removed_translation_ids.add(unit.unit_id)
-            else:
-                invalidated_translation_ids.add(unit.unit_id)
-        if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
-            config = load_project(project_root)
-            document = fitz.open(config.source(project_root))
-            asset_name = f"page-{revised.page:04}-equation-override-{revised.unit_id}.png"
-            _crop_asset(
-                document[revised.page - 1],
-                revised.bbox,
-                project_root / "derived" / "assets" / asset_name,
-            )
-            revised = revised.model_copy(
-                update={
-                    "asset_refs": [
-                        AssetRef(
-                            kind=UnitKind.EQUATION,
-                            path=f"derived/assets/{asset_name}",
-                            bbox=revised.bbox,
-                        )
-                    ]
-                }
-            )
-        updated.append(revised)
-        for insertion in insertions_by_anchor.get(unit.unit_id, []):
-            inserted_id = str(insertion["unit_id"])
-            if inserted_id in existing_ids:
-                continue
-            inserted = _inserted_unit_from_override(insertion)
-            if inserted.unit_id in {item.unit_id for item in updated}:
-                raise ValueError(f"Duplicate inserted unit_id: {inserted.unit_id}")
-            updated.append(inserted)
-            existing_ids.add(inserted.unit_id)
-    write_jsonl(units_path, updated)
-    if translations:
-        write_jsonl(
-            project_root / "translations" / "current.jsonl",
-            (
-                record.model_copy(update={"status": ProjectStatus.DRAFT})
-                if record.unit_id in invalidated_translation_ids
-                else record
-                for record in translations
-                if record.unit_id not in removed_translation_ids
-            ),
-        )
-        if invalidated_translation_ids or removed_translation_ids:
-            config = load_project(project_root)
-            config.status = ProjectStatus.DRAFT
-            save_project(project_root, config)
-    unit_by_id = {unit.unit_id: unit for unit in updated}
     issues_path = project_root / "derived" / "extraction-issues.jsonl"
     issues = read_jsonl(issues_path, ExtractionIssue)
-    if issues:
-        reconciled: list[ExtractionIssue] = []
-        for issue in issues:
-            candidate = unit_by_id.get(issue.unit_id or "")
-            resolved = candidate is None or (
-                issue.code == "math-needs-verification"
-                and candidate.math_status is SemanticStatus.VERIFIED
-            ) or (
-                issue.code == "table-needs-verification"
-                and candidate.verification_status is SemanticStatus.VERIFIED
-            ) or (
-                issue.code == "figure-text-needs-verification"
-                and candidate.visual_text_status is SemanticStatus.VERIFIED
-            )
-            reconciled.append(
-                issue.model_copy(update={"status": IssueStatus.RESOLVED})
-                if resolved
-                else issue
-            )
-        write_jsonl(issues_path, reconciled)
+    project_config = None
+    document = None
+    updated: list[SourceUnit] = []
+    pending_assets: list[tuple[Path, Path]] = []
+    with TemporaryDirectory(prefix=".littrans-overrides-", dir=project_root) as temp_name:
+        temp_root = Path(temp_name)
+        try:
+            for unit in units:
+                revised = _apply_override(unit, overrides)
+                if revised is None:
+                    if unit.unit_id in translated_ids:
+                        removed_translation_ids.add(unit.unit_id)
+                    continue
+                translation_changed = unit.unit_id in translated_ids and any(
+                    getattr(revised, field) != getattr(unit, field)
+                    for field in translation_affecting_fields
+                )
+                if translation_changed:
+                    record = translation_by_id[unit.unit_id]
+                    if not revised.translatable:
+                        removed_translation_ids.add(unit.unit_id)
+                    elif revised.source_hash != unit.source_hash:
+                        if record.source_hash != revised.source_hash:
+                            removed_translation_ids.add(unit.unit_id)
+                    else:
+                        invalidated_translation_ids.add(unit.unit_id)
+                if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
+                    if project_config is None:
+                        project_config = load_project(project_root)
+                    if document is None:
+                        document = fitz.open(project_config.source(project_root))
+                    asset_name = (
+                        f"page-{revised.page:04}-equation-override-{revised.unit_id}.png"
+                    )
+                    temporary_asset = temp_root / asset_name
+                    _crop_asset(document[revised.page - 1], revised.bbox, temporary_asset)
+                    destination = project_root / "derived" / "assets" / asset_name
+                    pending_assets.append((temporary_asset, destination))
+                    revised = revised.model_copy(
+                        update={
+                            "asset_refs": [
+                                AssetRef(
+                                    kind=UnitKind.EQUATION,
+                                    path=f"derived/assets/{asset_name}",
+                                    bbox=revised.bbox,
+                                )
+                            ]
+                        }
+                    )
+                # model_copy intentionally skips validation. Re-validate the staged
+                # object so a malformed override cannot partially update the ledger.
+                updated.append(
+                    SourceUnit.model_validate(revised.model_dump(mode="python"))
+                )
+                for insertion in insertions_by_anchor.get(unit.unit_id, []):
+                    inserted_id = str(insertion["unit_id"])
+                    if inserted_id in existing_ids:
+                        continue
+                    inserted = _inserted_unit_from_override(insertion)
+                    if inserted.unit_id in {item.unit_id for item in updated}:
+                        raise ValueError(f"Duplicate inserted unit_id: {inserted.unit_id}")
+                    updated.append(inserted)
+                    existing_ids.add(inserted.unit_id)
+
+            staged_translations = [
+                (
+                    record.model_copy(update={"status": ProjectStatus.DRAFT})
+                    if record.unit_id in invalidated_translation_ids
+                    else record
+                )
+                for record in translations
+                if record.unit_id not in removed_translation_ids
+            ]
+            staged_translations = [
+                TranslationRecord.model_validate(record.model_dump(mode="python"))
+                for record in staged_translations
+            ]
+            unit_by_id = {unit.unit_id: unit for unit in updated}
+            reconciled: list[ExtractionIssue] = []
+            for issue in issues:
+                candidate = unit_by_id.get(issue.unit_id or "")
+                resolved = candidate is None or (
+                    issue.code == "math-needs-verification"
+                    and candidate.math_status is SemanticStatus.VERIFIED
+                ) or (
+                    issue.code == "table-needs-verification"
+                    and candidate.verification_status is SemanticStatus.VERIFIED
+                ) or (
+                    issue.code == "figure-text-needs-verification"
+                    and candidate.visual_text_status is SemanticStatus.VERIFIED
+                )
+                staged_issue = (
+                    issue.model_copy(update={"status": IssueStatus.RESOLVED})
+                    if resolved
+                    else issue
+                )
+                reconciled.append(
+                    ExtractionIssue.model_validate(staged_issue.model_dump(mode="python"))
+                )
+
+            if translations and (invalidated_translation_ids or removed_translation_ids):
+                if project_config is None:
+                    project_config = load_project(project_root)
+                project_config.status = ProjectStatus.DRAFT
+
+            # No authoritative file is replaced until the complete staged snapshot,
+            # including derived issue state and generated crops, has validated.
+            write_jsonl(units_path, updated)
+            if translations:
+                write_jsonl(
+                    project_root / "translations" / "current.jsonl", staged_translations
+                )
+            if project_config is not None and (
+                invalidated_translation_ids or removed_translation_ids
+            ):
+                save_project(project_root, project_config)
+            if issues:
+                write_jsonl(issues_path, reconciled)
+            for temporary_asset, destination in pending_assets:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary_asset.replace(destination)
+        finally:
+            if document is not None:
+                document.close()
     return updated
 
 

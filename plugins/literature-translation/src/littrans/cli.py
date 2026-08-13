@@ -23,8 +23,10 @@ from littrans.verification import verify_extraction
 from littrans.workflow import (
     create_workflow_packet,
     import_review_set,
+    prune_workflow_packets,
     workflow_metrics,
     workflow_next,
+    workflow_status,
 )
 
 app = typer.Typer(no_args_is_help=True, help="Controlled literature translation tooling.")
@@ -273,8 +275,23 @@ def render_command(
 
 
 @workflow_app.command("next")
-def workflow_get_next(project: PathArg, limit: int = typer.Option(3)) -> None:
-    emit(workflow_next(project, limit))
+def workflow_get_next(
+    project: PathArg,
+    limit: int = typer.Option(3),
+    start_at: str | None = typer.Option(None),
+    through: str | None = typer.Option(None),
+) -> None:
+    emit(workflow_next(project, limit, start_at, through))
+
+
+@workflow_app.command("status")
+def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...)) -> None:
+    emit(
+        workflow_status(
+            project,
+            [value.strip() for value in batch_ids.split(",") if value.strip()],
+        )
+    )
 
 
 @workflow_app.command("packet")
@@ -284,12 +301,35 @@ def workflow_create_packet(
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
 ) -> None:
+    result = create_workflow_packet(
+        project,
+        stage,
+        [value.strip() for value in batch_ids.split(",") if value.strip()],
+        lens,
+    )
     emit(
-        create_workflow_packet(
+        [packet.model_dump(mode="json") for packet in result]
+        if isinstance(result, list)
+        else result
+    )
+
+
+@workflow_app.command("prune-packets")
+def workflow_prune_packets(
+    project: PathArg,
+    batch_ids: str | None = typer.Option(None),
+    apply: bool = typer.Option(False),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    if apply == dry_run:
+        raise typer.BadParameter("choose exactly one of --apply or --dry-run")
+    emit(
+        prune_workflow_packets(
             project,
-            stage,
-            [value.strip() for value in batch_ids.split(",") if value.strip()],
-            lens,
+            [value.strip() for value in batch_ids.split(",") if value.strip()]
+            if batch_ids
+            else None,
+            apply=apply,
         )
     )
 

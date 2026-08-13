@@ -1,40 +1,40 @@
 ---
 name: continue-literature-translation
-description: Coordinate continuation of an existing littrans project in sets of at most three consecutive batches while preserving independent writers, three internal audit lenses, deterministic QA, machine approval, external review, and exact-set rendering. Use when asked to continue, resume, or efficiently advance a prepared technical-book, paper, article, or chapter translation across multiple batches.
+description: Coordinate continuation of an existing littrans project in fixed waves of at most three consecutive batches while preserving deterministic QA, three independent audit lenses, machine approval, external review, required second opinions, and exact-set rendering. Use when asked to continue, resume, or efficiently advance a prepared technical book, paper, article, or chapter translation across multiple batches.
 ---
 
 # Continue Literature Translation
 
-Coordinate state transitions; keep translation and review judgment independent. Use the bundled launcher in `../../references/runtime.md` for every `littrans` command. Follow [host-runtimes.md](../../references/host-runtimes.md) when assigning writers and reviewers. Keep all translation, audit, and external-review work on the local host; do not use cloud or remote subagents.
+Use the launcher in `../../references/runtime.md` for every command and the local-agent rules in `../../references/host-runtimes.md`. Keep source material and model work on the local host.
 
-## Select work
+## Freeze a wave
 
-1. Run `workflow next PROJECT --limit 3`.
-2. Accept only its consecutive same-stage batch set. Finish that set before selecting another.
-3. Use `workflow metrics PROJECT --batch-ids ID1,ID2,ID3` for a compact progress and usage snapshot. Do not load whole-project history into model context.
-4. If the reported stage is `revise`, resolve, reject, or waive each open substantive issue, whether internal or external, revising the affected translation when required. Do not start another external review until `workflow next` advances past `revise`.
+1. Run `workflow next PROJECT --limit 3` once to select one consecutive same-stage wave.
+2. Keep those batch IDs fixed until completion. Use `workflow status PROJECT --batch-ids IDS` thereafter; do not rescan the project with `workflow next`.
+3. Give each writer or reviewer a fresh, minimal-context local task containing only its packet. Never pass prior findings, expected verdicts, or another agent's rationale.
 
-## Translate
+If status is `revise`, handle only the affected batches. Consolidate all current issues for a batch into one revision pass, resolve or waive them with evidence, then run the closure requested by `workflow status`; do not block clean batches in the wave.
 
-1. Create one packet with `workflow packet PROJECT --stage translate --batch-ids IDS`.
-2. Assign each batch to a different independent local writer. A writer may edit only that batch and must follow `translate-literature-section`. On Cursor, use the `literature-translator` agent.
-3. Submit each result and run deterministic QA. A semantic no-op submission is success; do not manufacture a revision.
-4. Do not let writers concurrently edit the glossary, source extraction, another batch, or shared evidence.
+## Translate and audit
 
-## Audit
+1. Create one translate packet per batch and run up to three independent writers in parallel. Each writer edits only its assigned batch. Submit once and run deterministic QA.
+2. Create the initial audit with `workflow packet PROJECT --stage audit --lens all --batch-ids IDS`. Run fidelity, technical, and Chinese-style reviews independently and in parallel; each lens receives only its compact packet.
+3. Import every returned lens result, including an empty result. Consolidate all findings, then perform at most one combined revision pass per affected batch.
+4. Freeze the revised translation snapshot. Ask `workflow status` for the missing local closure and review only that unit/dependency closure once. Do not regenerate full-wave packets or empty evidence.
+5. Machine-approve each batch only after deterministic QA and all three current lens coverages pass and every blocker/major issue is resolved, rejected with evidence, or explicitly waived.
 
-1. Create three isolated packets for the same set, one each with `--stage audit --lens fidelity`, `technical`, and `chinese-style`.
-2. Assign each lens to a different independent local reviewer. Give each reviewer its one packet and no prior findings. Each reviewer audits all selected batches in one pass. On Cursor, use `literature-fidelity-reviewer`, `literature-technical-reviewer`, and `literature-chinese-style-reviewer`.
-3. Import each JSONL set with `review import-set PROJECT PACKET_MANIFEST ISSUES_JSONL`, including an empty file when no issue exists. On Cursor, persist each read-only reviewer's returned JSONL before importing; do not ask those reviewers to write the file.
-4. After revisions, packet only the missing unit-level coverage. The CLI expands edits to continuation chains, complete sidebars/tables/figures, adjacent units, and batch seams.
-5. Do not approve until all three current lens coverages are complete and every blocker/major issue is resolved, rejected with evidence, or explicitly waived.
+## Review externally
 
-## Approve and review externally
+Advance batches independently after machine approval. Different configured external services may run in parallel; allow at most one active call per service and rely on the CLI's cross-process service lock. Preserve the configured model, effort, reviewer count, and second-opinion rule.
 
-For every batch, run machine approval before external review. Keep each external service to one active call at a time; calls to two different services may run concurrently. Preserve the configured model, effort, second-opinion rule, and reviewer count.
+Let the CLI choose full versus incremental review and the second-opinion dependency closure. On changes requested, consolidate that batch's external findings into one revision, run its local audit closure, and let the same reviewer perform the eligible incremental recheck. Never turn a failed provider attempt into a second opinion or override a forced full review.
 
-Allow the CLI to choose full versus incremental external review. Incremental review is valid only when source and structure are unchanged, at most three translated units changed, the changed share is at most 20%, and the original reviewer remains available. Never override a forced full review.
+## Finish
 
-## Render and finish
+Render the fixed wave only after every selected batch passes its configured gate:
 
-After external approval, render the exact set with `render PROJECT --batch-ids ID1,ID2,ID3 --name NAME`. Treat cross-batch seam QA as mandatory. Report the batch IDs, evidence coverage, unresolved issues, external verdicts, and output paths before starting the next set.
+```text
+littrans render PROJECT --batch-ids ID1,ID2,ID3 --name NAME
+```
+
+Report batch IDs, current lens coverage, unresolved issues, external verdicts, and output paths. Only then select another wave with `workflow next`.
