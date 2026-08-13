@@ -19,7 +19,7 @@ Use the bundled Python launcher described in `../../references/runtime.md` for e
 ## Procedure
 
 1. Read the batch manifest, source, context, submitted translation, approved glossary, and protected tokens.
-2. Compare every translatable unit under all three lenses. Use [issue-contract.md](references/issue-contract.md).
+2. Compare every translatable unit under all three lenses. Use [issue-contract.md](references/issue-contract.md). Preserve stable-unit source ownership: moving a clause into a neighboring target is an omission/addition pair, not an acceptable seam polish, and must never be proposed as a revision.
 3. Check non-translatable neighbors and structural metadata against the PDF: verify display and inline LaTeX, equation numbers, code indentation/language, figure-label translations, captions, paragraph continuation, titled sidebar grouping, and cross-references. Check every source/target table cell and its row/column alignment. Do not rewrite protected code or formulas.
 4. Write JSONL issues only. Use precise source and target spans, explain the actual defect, and propose a revision only when confident.
 5. Import each independent single-batch issue file with `review import --lenses <lens>` even when it is empty. Import a coordinated packet with `review import-set`; never claim lenses that the reviewer did not perform.

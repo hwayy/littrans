@@ -63,6 +63,30 @@ def test_minimal_claude_protocol_is_explicitly_quality_gated() -> None:
     assert external_review.CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED is False
 
 
+def test_external_result_rejects_a_noop_suggested_revision() -> None:
+    payload = {
+        "verdict": "changes-requested",
+        "summary": "A localized wording defect requires correction.",
+        "issues": [
+            {
+                "unit_id": "u1",
+                "severity": "minor",
+                "type": "style",
+                "source_span": "source",
+                "target_span": "换言之",
+                "explanation": "The wording should be changed.",
+                "suggested_revision": "换言之",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    with pytest.raises(
+        ValueError, match="suggested_revision must differ from target_span"
+    ):
+        external_review._validate_result(payload)
+
+
 def test_format_retry_uses_previous_output_not_the_full_packet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

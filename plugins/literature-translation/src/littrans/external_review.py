@@ -704,6 +704,12 @@ def _validate_result(payload: Any) -> dict[str, Any]:
         confidence = float(item["confidence"])
         if not 0 <= confidence <= 1:
             raise ValueError("External issue confidence must be between 0 and 1")
+        target_span = item["target_span"].strip()
+        suggested_revision = item["suggested_revision"].strip()
+        if target_span and suggested_revision == target_span:
+            raise ValueError(
+                "External suggested_revision must differ from target_span"
+            )
     substantive = any(item["severity"] != "suggestion" for item in payload["issues"])
     if payload["verdict"] == "accepted" and substantive:
         raise ValueError("accepted verdict cannot contain substantive issues")
