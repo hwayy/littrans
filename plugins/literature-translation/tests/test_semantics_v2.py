@@ -10,6 +10,7 @@ from littrans.models import SourceUnit, TableData, UnitKind
 from littrans.project import initialize_project
 from littrans.rendering import (
     _coalesce_code_units,
+    _coalesce_table_units,
     _continuation_separator,
     _continued_note_markdown,
     _inline_html,
@@ -152,6 +153,41 @@ def test_cross_page_code_fragments_keep_exact_indentation_in_one_fence() -> None
     assert len(combined) == 1
     assert combined[0].source_text == (
         '<Window\n    xmlns="urn:wpf"\n  <Grid>\n  </Grid>\n</Window>'
+    )
+    assert grouped[first.unit_id] == [first.unit_id, second.unit_id]
+
+
+def test_continued_table_half_rows_render_as_one_logical_row() -> None:
+    first = SourceUnit(
+        unit_id="p0001-u001-table",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=[1, 1, 2, 2],
+        source_text="PropertyName |",
+        source_hash="a" * 64,
+        translatable=True,
+        table=TableData(rows=[["PropertyName", ""]], header_rows=0, column_count=2),
+        continued_to_next=True,
+        confidence=1.0,
+    )
+    second = SourceUnit(
+        unit_id="p0001-u002-table",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=[2, 1, 3, 2],
+        source_text="| Property description.",
+        source_hash="b" * 64,
+        translatable=True,
+        table=TableData(rows=[["", "Property description."]], header_rows=0, column_count=2),
+        continues_from_previous=True,
+        confidence=1.0,
+    )
+    combined, grouped = _coalesce_table_units([first, second])
+    assert len(combined) == 1
+    assert combined[0].table == TableData(
+        rows=[["PropertyName", "Property description."]],
+        header_rows=0,
+        column_count=2,
     )
     assert grouped[first.unit_id] == [first.unit_id, second.unit_id]
 

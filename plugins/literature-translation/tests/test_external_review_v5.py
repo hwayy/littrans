@@ -16,6 +16,14 @@ from littrans.models import (
 
 
 def _reviewer(driver: str = "claude-code") -> ExternalReviewerConfig:
+    if driver == "cursor-cli":
+        return ExternalReviewerConfig(
+            id="reviewer",
+            driver=driver,
+            command="reviewer-cli",
+            model="cursor-grok-4.6-high-fast",
+            fallbacks=[{"model": "claude-sonnet-5-high"}, {"model": "auto"}],
+        )
     return ExternalReviewerConfig(
         id="reviewer",
         driver=driver,
@@ -24,6 +32,538 @@ def _reviewer(driver: str = "claude-code") -> ExternalReviewerConfig:
         effort="high",
         fast=False if driver == "claude-code" else None,
     )
+
+
+def _cursor_stream(
+    payload: dict[str, object],
+    model: str = "Cursor Grok 4.6 High Fast",
+    *,
+    success: bool = True,
+) -> str:
+    events = [
+        {
+            "type": "system",
+            "subtype": "init",
+            "model": model,
+            "session_id": "session",
+        },
+        {"type": "assistant", "message": {"role": "assistant"}},
+        {
+            "type": "result",
+            "subtype": "success" if success else "error",
+            "is_error": not success,
+            "result": json.dumps(payload),
+            "usage": {
+                "inputTokens": 10,
+                "outputTokens": 4,
+                "cacheReadTokens": 3,
+                "cacheWriteTokens": 2,
+            },
+        },
+    ]
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def _cursor_plan_stream(
+    plan: str,
+    model: str = "Cursor Grok 4.6 High Fast",
+    *,
+    completed: bool = True,
+    tool_success: bool = True,
+    outer_success: bool = True,
+    final_result: str = "The review result was recorded in the plan.",
+) -> str:
+    create_plan: dict[str, object] = {
+        "args": {"plan": plan},
+    }
+    if completed:
+        create_plan["result"] = (
+            {"success": {}, "planUri": ""}
+            if tool_success
+            else {"error": {"message": "plan rejected"}}
+        )
+    events: list[dict[str, object]] = [
+        {
+            "type": "system",
+            "subtype": "init",
+            "model": model,
+            "session_id": "session",
+        },
+        {
+            "type": "tool_call",
+            "subtype": "completed" if completed else "started",
+            "call_id": "plan-call",
+            "tool_call": {"createPlanToolCall": create_plan},
+        },
+        {
+            "type": "result",
+            "subtype": "success" if outer_success else "error",
+            "is_error": not outer_success,
+            "result": final_result,
+            "usage": {
+                "inputTokens": 12,
+                "outputTokens": 5,
+                "cacheReadTokens": 4,
+                "cacheWriteTokens": 3,
+            },
+        },
+    ]
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def test_cursor_command_and_stream_protocol() -> None:
+    reviewer = _reviewer("cursor-cli")
+    command = external_review.build_cursor_command(reviewer, "review")
+    assert command == [
+        "reviewer-cli",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--mode",
+        "plan",
+        "--trust",
+        "--model",
+        "cursor-grok-4.6-high-fast",
+        "review",
+    ]
+    assert "--sandbox" not in command
+    payload = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    raw = _cursor_stream(payload)
+    parsed, actual = external_review._parse_cursor(raw)
+    usage, cost = external_review._review_usage(raw, reviewer.driver)
+    assert parsed == payload
+    assert actual == "Cursor Grok 4.6 High Fast"
+    assert external_review._cursor_model_matches(reviewer.model, actual)
+    assert usage.model_dump() == {
+        "input_tokens": 10,
+        "cache_creation_input_tokens": 2,
+        "cache_read_input_tokens": 3,
+        "output_tokens": 4,
+        "provider_turns": 1,
+    }
+    assert cost is None
+
+
+def test_cursor_plan_mode_parses_accepted_create_plan_result() -> None:
+    payload = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    raw = _cursor_plan_stream(
+        "# Review result\n\n```json\n"
+        + json.dumps(payload)
+        + "\n```\n"
+    )
+
+    parsed, actual = external_review._parse_cursor(raw)
+
+    assert parsed == payload
+    assert actual == "Cursor Grok 4.6 High Fast"
+
+
+def test_cursor_plan_mode_parses_changes_requested_with_evidence() -> None:
+    issue = {
+        "unit_id": "u1",
+        "severity": "minor",
+        "type": "meaning",
+        "source_span": "source span",
+        "target_span": "目标片段",
+        "explanation": "The target loses a technical distinction.",
+        "suggested_revision": "修订后的目标片段",
+        "confidence": 0.9,
+    }
+    payload = {
+        "verdict": "changes-requested",
+        "summary": "One substantive defect requires correction.",
+        "issues": [issue],
+    }
+
+    parsed, _ = external_review._parse_cursor(
+        _cursor_plan_stream(json.dumps(payload, ensure_ascii=False))
+    )
+    external_review._validate_issue_evidence(
+        parsed, {"u1": ("full source span text", "完整目标片段文本")}
+    )
+
+    assert parsed == payload
+
+
+@pytest.mark.parametrize(
+    ("plan", "completed", "tool_success"),
+    [
+        ("Review complete; no defects were found.", True, True),
+        (
+            '```json\n{"verdict":"accepted","summary":"ok","issues":[]}\n```\n'
+            '```json\n{"verdict":"accepted","summary":"also ok","issues":[]}\n```',
+            True,
+            True,
+        ),
+        (
+            '```json\n{"verdict":"accepted","summary":"ok","issues":[]}\n```\n'
+            '{"verdict":"accepted","summary":"duplicate","issues":[]}',
+            True,
+            True,
+        ),
+        ('{"verdict":"accepted","summary":"ok","issues":[]}', False, True),
+        ('{"verdict":"accepted","summary":"ok","issues":[]}', True, False),
+    ],
+)
+def test_cursor_plan_mode_rejects_unsafe_plan_fallbacks(
+    plan: str, completed: bool, tool_success: bool
+) -> None:
+    with pytest.raises(ValueError):
+        external_review._parse_cursor(
+            _cursor_plan_stream(
+                plan,
+                completed=completed,
+                tool_success=tool_success,
+            )
+        )
+
+
+def test_cursor_plan_mode_requires_successful_outer_result() -> None:
+    payload = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    with pytest.raises(RuntimeError, match="error result"):
+        external_review._parse_cursor(
+            _cursor_plan_stream(json.dumps(payload), outer_success=False)
+        )
+
+
+def test_cursor_plan_mode_rejects_schema_invalid_payload() -> None:
+    with pytest.raises(ValueError):
+        external_review._parse_cursor(
+            _cursor_plan_stream('{"verdict":"accepted","issues":[]}')
+        )
+
+
+def test_cursor_prefers_valid_final_result_over_create_plan() -> None:
+    final_payload = {
+        "verdict": "accepted",
+        "summary": "The final result is authoritative.",
+        "issues": [],
+    }
+    plan_payload = {
+        "verdict": "inconclusive",
+        "summary": "This plan must not replace a valid final result.",
+        "issues": [],
+    }
+    raw = _cursor_plan_stream(
+        json.dumps(plan_payload), final_result=json.dumps(final_payload)
+    )
+
+    parsed, _ = external_review._parse_cursor(raw)
+
+    assert parsed == final_payload
+
+
+def test_cursor_does_not_hide_invalid_final_schema_with_create_plan() -> None:
+    plan_payload = {
+        "verdict": "accepted",
+        "summary": "The plan is valid but must not replace the final result.",
+        "issues": [],
+    }
+    raw = _cursor_plan_stream(
+        json.dumps(plan_payload),
+        final_result=json.dumps({"verdict": "accepted"}),
+    )
+
+    with pytest.raises(ValueError):
+        external_review._parse_cursor(raw)
+
+
+def test_cursor_auto_prefatory_fenced_final_result_remains_supported() -> None:
+    payload = {
+        "verdict": "accepted",
+        "summary": "Auto completed the review.",
+        "issues": [],
+    }
+    raw = _cursor_stream(payload, model="Auto")
+    events = [json.loads(line) for line in raw.splitlines()]
+    events[-1]["result"] = (
+        "Review complete.\n```json\n"
+        + json.dumps(payload)
+        + "\n```\n"
+    )
+
+    parsed, actual = external_review._parse_cursor(
+        "\n".join(json.dumps(event) for event in events)
+    )
+
+    assert parsed == payload
+    assert actual == "Auto"
+
+
+@pytest.mark.parametrize(
+    ("requested", "actual"),
+    [
+        ("cursor-grok-4.6-high-fast", "Cursor Grok 4.6 High Fast"),
+        ("claude-sonnet-5-high", "Sonnet 5 1M High"),
+        ("auto", "Auto"),
+    ],
+)
+def test_cursor_actual_model_identity(requested: str, actual: str) -> None:
+    assert external_review._cursor_model_matches(requested, actual)
+
+
+def test_cursor_requires_model_and_final_result_evidence() -> None:
+    payload = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    with pytest.raises(ValueError, match="actual model"):
+        external_review._parse_cursor(
+            json.dumps({"type": "result", "subtype": "success", "result": json.dumps(payload)})
+        )
+    with pytest.raises(ValueError, match="final result"):
+        external_review._parse_cursor(
+            json.dumps({"type": "system", "subtype": "init", "model": "Auto"})
+        )
+
+
+def test_cursor_quota_fallback_crosses_independent_pools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = _reviewer("cursor-cli")
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    models: list[str] = []
+
+    def quota_then_success(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        model = command[command.index("--model") + 1]
+        models.append(model)
+        if model != "auto":
+            pool = "first-party" if model.startswith("cursor-") else "third-party"
+            return subprocess.CompletedProcess(
+                command, 1, "", f"Cursor {pool} usage limit reached"
+            )
+        payload = {
+            "verdict": "accepted",
+            "summary": "No substantive defects found.",
+            "issues": [],
+        }
+        return subprocess.CompletedProcess(command, 0, _cursor_stream(payload, "Auto"), "")
+
+    monkeypatch.setattr(external_review.subprocess, "run", quota_then_success)
+    result = external_review._invoke(reviewer, packet, work, {})
+    assert models == [
+        "cursor-grok-4.6-high-fast",
+        "claude-sonnet-5-high",
+        "auto",
+    ]
+    assert result[2] == "auto"
+    attempts = [
+        json.loads(line)
+        for line in (work / "attempts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["failure_type"] for item in attempts] == ["quota", "quota", None]
+    assert [item["quota_pool"] for item in attempts] == [
+        "cursor-first-party",
+        "cursor-third-party",
+        "cursor-first-party",
+    ]
+
+
+def test_cursor_create_plan_does_not_bypass_actual_model_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="reviewer",
+        driver="cursor-cli",
+        command="reviewer-cli",
+        model="cursor-grok-4.6-high-fast",
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    payload = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    monkeypatch.setattr(
+        external_review.subprocess,
+        "run",
+        lambda command, *args, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            _cursor_plan_stream(json.dumps(payload), model="Unexpected Model"),
+            "",
+        ),
+    )
+
+    with pytest.raises(
+        external_review.ExternalInvocationError,
+        match="actual model could not be verified",
+    ):
+        external_review._invoke(reviewer, packet, work, {})
+
+
+def test_cursor_create_plan_does_not_bypass_issue_evidence_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="reviewer",
+        driver="cursor-cli",
+        command="reviewer-cli",
+        model="cursor-grok-4.6-high-fast",
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    payload = {
+        "verdict": "changes-requested",
+        "summary": "One issue requires correction.",
+        "issues": [
+            {
+                "unit_id": "u1",
+                "severity": "minor",
+                "type": "meaning",
+                "source_span": "fabricated source span",
+                "target_span": "真实目标",
+                "explanation": "The source span does not exist in the packet.",
+                "suggested_revision": "修订目标",
+                "confidence": 0.9,
+            }
+        ],
+    }
+    calls = 0
+
+    def same_invalid_evidence(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _cursor_plan_stream(json.dumps(payload, ensure_ascii=False)),
+            "",
+        )
+
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    monkeypatch.setattr(external_review.subprocess, "run", same_invalid_evidence)
+
+    with pytest.raises(external_review.ExternalInvocationError, match="source_span"):
+        external_review._invoke(
+            reviewer,
+            packet,
+            work,
+            {"u1": ("real source", "真实目标")},
+        )
+    assert calls == 2
+
+
+def test_cursor_valid_create_plan_avoids_redundant_targeted_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="reviewer",
+        driver="cursor-cli",
+        command="reviewer-cli",
+        model="cursor-grok-4.6-high-fast",
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    payload = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    calls = 0
+
+    def plan_success(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _cursor_plan_stream(
+                "# Review JSON\n```json\n"
+                + json.dumps(payload)
+                + "\n```"
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    monkeypatch.setattr(external_review.subprocess, "run", plan_success)
+
+    result = external_review._invoke(reviewer, packet, work, {})
+
+    assert result[0] == payload
+    assert calls == 1
+    telemetry = [
+        json.loads(line)
+        for line in (work / "attempts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert telemetry[0]["success"] is True
+
+
+def test_cursor_targeted_repair_uses_only_recognized_plan_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = ExternalReviewerConfig(
+        id="reviewer",
+        driver="cursor-cli",
+        command="reviewer-cli",
+        model="cursor-grok-4.6-high-fast",
+    )
+    packet = tmp_path / "review-packet.md"
+    packet.write_text("Review packet.", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    valid = {
+        "verdict": "accepted",
+        "summary": "No substantive defects found.",
+        "issues": [],
+    }
+    prompts: list[str] = []
+
+    def invalid_then_valid(
+        command: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        prompt_path = Path(command[-1].split("`", 2)[1])
+        prompts.append(prompt_path.read_text(encoding="utf-8"))
+        payload = {"verdict": "accepted"} if len(prompts) == 1 else valid
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _cursor_plan_stream(json.dumps(payload)),
+            "",
+        )
+
+    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
+    monkeypatch.setattr(external_review.subprocess, "run", invalid_then_valid)
+
+    result = external_review._invoke(reviewer, packet, work, {})
+
+    assert result[0] == valid
+    assert len(prompts) == 2
+    assert 'Previous response:\n{"verdict": "accepted"}' in prompts[1]
+    assert "createPlanToolCall" not in prompts[1]
+    assert '"type": "result"' not in prompts[1]
 
 
 @pytest.mark.parametrize(

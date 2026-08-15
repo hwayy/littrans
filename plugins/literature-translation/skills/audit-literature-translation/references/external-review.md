@@ -14,6 +14,17 @@ to keep a revision with its original reviewer. Add `--dry-run` to inspect the is
 prompt, and command without invoking a provider. Use `review external-status` to inspect the
 current translation fingerprint, actual model evidence, verdict, and open issues.
 
+Set `external_review.assignment_since` to a timezone-aware ISO 8601 timestamp when adding a new
+reviewer to an established project and a fresh balancing epoch is required. Historical telemetry
+remains intact, while least-used selection counts completed and active calls only from that time.
+Concurrent selections reserve their reviewer briefly so separate services can be used in parallel
+without choosing the same least-used reviewer in a race.
+
+For `cursor-cli`, use exact Cursor model IDs and omit separate `effort` and `fast` fields. Cursor
+first-party quota failures (including Grok, Composer, and Auto) and third-party quota failures
+(including Claude) are recorded separately per attempt. The CLI exhausts the reviewer's configured
+model chain before selecting a replacement reviewer.
+
 Each call receives only the current source, translation, checklist, style guide, approved terms,
 and relevant PDF page images. Prior review issues and translator rationale are excluded. The
 CLI runs read-only in a temporary directory. Preserve the normalized result, raw response,

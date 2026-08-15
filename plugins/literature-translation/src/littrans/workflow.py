@@ -34,6 +34,7 @@ from littrans.models import (
     WorkflowPacketManifest,
 )
 from littrans.project import translation_map
+from littrans.semantics import normalize_zh_caption
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     _apply_review_import_locked,
@@ -450,14 +451,16 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
         else unit.source_markdown or unit.source_text
     )
     if unit.table:
-        source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
+        source = "\n".join(" | ".join(row) for row in unit.table.rows)
     if unit.figure_labels:
         source += "\n\nFigure label sources:\n" + "\n".join(
             f"- {label.source}" for label in unit.figure_labels
         )
     target = record.target_text if record else "[source-only]"
+    if record and unit.kind is UnitKind.CAPTION:
+        target = normalize_zh_caption(target)
     if record and record.target_table:
-        target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
+        target = "\n".join(" | ".join(row) for row in record.target_table.rows)
     rendered_figure_labels = effective_figure_labels(unit, record)
     if rendered_figure_labels:
         target += "\n\nFigure label translations:\n" + "\n".join(

@@ -109,6 +109,7 @@ class IssueStatus(StrEnum):
 class ExternalReviewDriver(StrEnum):
     CLAUDE_CODE = "claude-code"
     ANTIGRAVITY = "antigravity"
+    CURSOR_CLI = "cursor-cli"
 
 
 class ExternalReviewVerdict(StrEnum):
@@ -150,10 +151,14 @@ class ExternalReviewerConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_driver_options(self) -> ExternalReviewerConfig:
-        if self.driver is ExternalReviewDriver.ANTIGRAVITY and self.fast is not None:
+        if self.driver is not ExternalReviewDriver.CLAUDE_CODE and self.fast is not None:
             raise ValueError("fast is only supported by the claude-code driver")
         if self.driver is ExternalReviewDriver.CLAUDE_CODE and self.fast is True:
             raise ValueError("external Claude Code review must not enable fast mode")
+        if self.driver is ExternalReviewDriver.CURSOR_CLI and self.effort is not None:
+            raise ValueError(
+                "cursor-cli model IDs encode effort; external reviewer effort must be omitted"
+            )
         for fallback in self.fallbacks:
             if (
                 self.driver is ExternalReviewDriver.ANTIGRAVITY
@@ -161,6 +166,13 @@ class ExternalReviewerConfig(StrictModel):
                 and fallback.effort is not None
             ):
                 raise ValueError("Antigravity claude-sonnet-4-6 fallback cannot set effort")
+            if (
+                self.driver is ExternalReviewDriver.CURSOR_CLI
+                and fallback.effort is not None
+            ):
+                raise ValueError(
+                    "cursor-cli fallback model IDs encode effort; fallback effort must be omitted"
+                )
         return self
 
 
@@ -180,6 +192,7 @@ class ExternalSecondOpinionConfig(StrictModel):
 class ExternalReviewConfig(StrictModel):
     enabled: bool = True
     assignment: str = "least-used"
+    assignment_since: str | None = None
     reviewers_per_batch: int = Field(default=1, ge=1)
     reviewers: list[ExternalReviewerConfig]
     second_opinion: ExternalSecondOpinionConfig = Field(default_factory=ExternalSecondOpinionConfig)
@@ -194,6 +207,19 @@ class ExternalReviewConfig(StrictModel):
         if not normalized:
             raise ValueError("external_review.domain_expertise must not be empty")
         return normalized
+
+    @field_validator("assignment_since")
+    @classmethod
+    def require_utc_assignment_since(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("external_review.assignment_since must be ISO 8601") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("external_review.assignment_since must include a UTC offset")
+        return value
 
     @model_validator(mode="after")
     def validate_external_review_config(self) -> ExternalReviewConfig:
@@ -429,7 +455,14 @@ class ExternalReviewRun(StrictModel):
     response_path: str | None = None
     attempts: int = Field(default=1, ge=1)
     failure_type: Literal[
-        "authentication", "network", "format", "model", "timeout", "provider", "unknown"
+        "authentication",
+        "network",
+        "format",
+        "model",
+        "quota",
+        "timeout",
+        "provider",
+        "unknown",
     ] | None = None
     fallback_of: str | None = None
     attempt_log_path: str | None = None
@@ -468,8 +501,16 @@ class ExternalReviewAttempt(StrictModel):
     duration_seconds: float = Field(ge=0)
     success: bool
     failure_type: Literal[
-        "authentication", "network", "format", "model", "timeout", "provider", "unknown"
+        "authentication",
+        "network",
+        "format",
+        "model",
+        "quota",
+        "timeout",
+        "provider",
+        "unknown",
     ] | None = None
+    quota_pool: Literal["cursor-first-party", "cursor-third-party"] | None = None
     error: str | None = None
     targeted_repair_scheduled: bool = False
     usage: ReviewUsage = Field(default_factory=ReviewUsage)

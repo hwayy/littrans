@@ -27,7 +27,9 @@ from littrans.external_review import (
     _packet_text,
     _parse_antigravity,
     _parse_claude,
+    _release_reviewer_reservation,
     _require_machine_reviewed,
+    _reserve_reviewer,
     _select_reviewer,
     _validate_issue_evidence,
     build_antigravity_command,
@@ -62,6 +64,7 @@ from littrans.models import (
     Severity,
     SidebarRole,
     SourceUnit,
+    TableData,
     TranslationRecord,
     UnitKind,
 )
@@ -105,6 +108,7 @@ from littrans.storage import (
     write_yaml,
 )
 from littrans.translation import submit_translation
+from littrans.workflow import _audit_unit_text
 from littrans.verification import (
     _semantic_context_units,
     _semantic_errors,
@@ -753,6 +757,55 @@ def test_external_review_packet_normalizes_chinese_captions(
     assert raw_target not in packet
     assert normalized_target in evidence[target_unit.unit_id][1]
     assert "figure and table captions" in packet
+
+
+def test_audit_packet_normalizes_chinese_caption_separator() -> None:
+    unit = SourceUnit(
+        unit_id="p0001-u001-caption",
+        kind=UnitKind.CAPTION,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text="Figure 1-1. Architecture",
+        source_hash=sha256_text("Figure 1-1. Architecture"),
+        confidence=1,
+    )
+    record = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="图 1-1　架构",
+        source_hash=unit.source_hash,
+    )
+
+    packet = _audit_unit_text(unit, record)
+
+    assert "图 1-1 架构" in packet
+    assert "图 1-1　架构" not in packet
+
+
+def test_audit_packet_does_not_duplicate_structured_table_rows() -> None:
+    source_rows = [["Property", "Description"], ["RowStyle", "Styles rows"]]
+    target_rows = [["属性", "说明"], ["`RowStyle`", "设置行的样式"]]
+    source_text = "\n".join(" | ".join(row) for row in source_rows)
+    unit = SourceUnit(
+        unit_id="p0001-u001-table",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text=source_text,
+        source_hash=sha256_text(source_text),
+        table=TableData(rows=source_rows, header_rows=1, column_count=2),
+        confidence=1,
+    )
+    record = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="",
+        target_table=TableData(rows=target_rows, header_rows=1, column_count=2),
+        source_hash=unit.source_hash,
+    )
+
+    packet = _audit_unit_text(unit, record)
+
+    assert packet.count("Property | Description") == 1
+    assert packet.count("属性 | 说明") == 1
 
 
 def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
@@ -1743,6 +1796,77 @@ def test_least_used_assignment_counts_primary_batches_not_retries(
     assert usage["claude"]["successful_calls"] == 2
     assert usage["agy"]["second_opinion_calls"] == 1
     assert _select_reviewer(prepared_project, None).id == "agy"
+
+
+def test_assignment_epoch_and_reservations_balance_concurrent_calls(
+    prepared_project: Path,
+) -> None:
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        assignment_since="2026-01-01T00:00:00+00:00",
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                fast=False,
+            ),
+            ExternalReviewerConfig(
+                id="agy",
+                driver="antigravity",
+                command="agy",
+                model="gemini-3.6-flash-high",
+            ),
+            ExternalReviewerConfig(
+                id="cursor",
+                driver="cursor-cli",
+                command="agent.cmd",
+                model="cursor-grok-4.6-high-fast",
+                fallbacks=[
+                    {"model": "claude-sonnet-5-high"},
+                    {"model": "auto"},
+                ],
+            ),
+        ],
+    )
+    save_project(prepared_project, config)
+    append_jsonl(
+        prepared_project / "reviews" / "old.external-runs.jsonl",
+        [
+            ExternalReviewRun(
+                run_id=f"old-{index}",
+                batch_id=f"old-{index}",
+                reviewer_id="claude" if index < 20 else "agy",
+                driver="claude-code" if index < 20 else "antigravity",
+                role="primary",
+                requested_model="old",
+                actual_model="old",
+                model_verified=True,
+                translation_fingerprint="f" * 64,
+                packet_sha256="a" * 64,
+                prompt_version="test",
+                verdict="accepted",
+                summary="Historical accepted review.",
+                reviewed_at="2020-01-01T00:00:00+00:00",
+            )
+            for index in range(30)
+        ],
+    )
+
+    reservations: list[str] = []
+    selected: list[str] = []
+    for _ in range(3):
+        reviewer, reservation_id = _reserve_reviewer(
+            prepared_project, None, None, reserve=True
+        )
+        selected.append(reviewer.id)
+        assert reservation_id is not None
+        reservations.append(reservation_id)
+
+    assert selected == ["claude", "agy", "cursor"]
+    for reservation_id in reservations:
+        _release_reviewer_reservation(prepared_project, reservation_id)
 
 
 def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:

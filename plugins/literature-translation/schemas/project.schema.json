@@ -13,6 +13,18 @@
           "title": "Assignment",
           "type": "string"
         },
+        "assignment_since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assignment Since"
+        },
         "reviewers_per_batch": {
           "default": 1,
           "minimum": 1,
@@ -51,7 +63,8 @@
     "ExternalReviewDriver": {
       "enum": [
         "claude-code",
-        "antigravity"
+        "antigravity",
+        "cursor-cli"
       ],
       "title": "ExternalReviewDriver",
       "type": "string"

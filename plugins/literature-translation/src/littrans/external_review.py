@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -70,6 +71,7 @@ from littrans.storage import (
 from littrans.verification import require_verified_extraction
 
 PROMPT_VERSION = "external-review-v3"
+ASSIGNMENT_RESERVATION_TTL_SECONDS = 7200.0
 # The 0.3.0 shadow gate showed excellent efficiency but missed a seeded major
 # technical defect. Keep the implementation available for future experiments,
 # while production reviews remain on the proven file-delivery path.
@@ -140,8 +142,16 @@ RESULT_SCHEMA: dict[str, Any] = {
 }
 
 FailureType = Literal[
-    "authentication", "network", "format", "model", "timeout", "provider", "unknown"
+    "authentication",
+    "network",
+    "format",
+    "model",
+    "quota",
+    "timeout",
+    "provider",
+    "unknown",
 ]
+QuotaPool = Literal["cursor-first-party", "cursor-third-party"]
 
 
 class ExternalInvocationError(RuntimeError):
@@ -245,6 +255,24 @@ def build_antigravity_command(
         ]
     )
     return command
+
+
+def build_cursor_command(
+    reviewer: ExternalReviewerConfig,
+    prompt: str,
+) -> list[str]:
+    return [
+        reviewer.command,
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--mode",
+        "plan",
+        "--trust",
+        "--model",
+        reviewer.model,
+        prompt,
+    ]
 
 
 def _outer_seam_context_ids(
@@ -669,6 +697,25 @@ def _antigravity_prompt(packet_path: Path) -> str:
     )
 
 
+def _cursor_prompt(packet_path: Path) -> str:
+    return (
+        "Independently review the English-to-Simplified-Chinese technical translation in "
+        f"`{packet_path}` and its adjacent page PNGs. Apply the expertise, quality checks, "
+        "including the subject-matter expertise declared in the review packet, severity "
+        "rules, and representation contract in the packet. Work read-only and report only "
+        "substantive defects with exact spans and valid unit IDs. Return only one JSON object "
+        "matching this schema: "
+        f"{json.dumps(RESULT_SCHEMA, ensure_ascii=False)}"
+    )
+
+
+def _cursor_file_prompt(prompt_path: Path) -> str:
+    return (
+        f"Read `{prompt_path}` and follow it exactly. Work read-only and return only the "
+        "requested review result."
+    )
+
+
 def _strip_json_wrapping(text: str) -> str:
     value = text.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", value, re.S | re.I)
@@ -764,6 +811,163 @@ def _parse_antigravity(stdout: str, log_text: str) -> tuple[dict[str, Any], str 
     return _validate_result(outer), actual
 
 
+def _cursor_events(stdout: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for number, line in enumerate(stdout.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Cursor stream-json line {number} is invalid JSON") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"Cursor stream-json line {number} must be an object")
+        events.append(cast(dict[str, Any], event))
+    if not events:
+        raise ValueError("Cursor stream-json output is empty")
+    return events
+
+
+def _successful_cursor_plan_text(events: list[dict[str, Any]]) -> str | None:
+    """Return the last successfully completed Cursor CreatePlan body, if any."""
+    for event in reversed(events):
+        if event.get("type") != "tool_call" or event.get("subtype") != "completed":
+            continue
+        tool_call = event.get("tool_call")
+        if not isinstance(tool_call, dict):
+            continue
+        create_plan = tool_call.get("createPlanToolCall")
+        if not isinstance(create_plan, dict):
+            continue
+        result = create_plan.get("result")
+        if not isinstance(result, dict) or "success" not in result:
+            continue
+        args = create_plan.get("args")
+        plan = args.get("plan") if isinstance(args, dict) else None
+        if isinstance(plan, str) and plan.strip():
+            return plan
+    return None
+
+
+def _strict_cursor_plan_json(plan: str) -> tuple[dict[str, Any], str]:
+    """Extract only a whole JSON object or one fenced JSON object from a plan."""
+    stripped = plan.strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return cast(dict[str, Any], payload), stripped
+    if payload is not None:
+        raise ValueError("Cursor CreatePlan JSON must be an object")
+
+    fences = list(re.finditer(r"```(?:json)?\s*(.*?)\s*```", stripped, re.S | re.I))
+    if len(fences) != 1:
+        raise ValueError(
+            "Cursor CreatePlan must contain exactly one fenced JSON object"
+        )
+    remainder = stripped[: fences[0].start()] + stripped[fences[0].end() :]
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(remainder):
+        if character != "{":
+            continue
+        try:
+            extra, _ = decoder.raw_decode(remainder[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(extra, dict):
+            raise ValueError("Cursor CreatePlan contains multiple JSON objects")
+    candidate = fences[0].group(1).strip()
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Cursor CreatePlan fence does not contain valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Cursor CreatePlan fenced JSON must be an object")
+    return cast(dict[str, Any], payload), candidate
+
+
+def _cursor_repair_candidate(stdout: str) -> str | None:
+    """Return only the recognized review candidate, never the stream-json log."""
+    try:
+        events = _cursor_events(stdout)
+    except ValueError:
+        return None
+    result = next(
+        (event for event in reversed(events) if event.get("type") == "result"),
+        None,
+    )
+    if (
+        result is None
+        or result.get("subtype") != "success"
+        or result.get("is_error") is True
+    ):
+        return None
+    structured = result.get("result")
+    if isinstance(structured, str):
+        try:
+            payload = json.loads(_strip_json_wrapping(structured))
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(payload, dict):
+                return json.dumps(payload, ensure_ascii=False)
+    plan = _successful_cursor_plan_text(events)
+    if plan is None:
+        return None
+    try:
+        _, candidate = _strict_cursor_plan_json(plan)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _parse_cursor(stdout: str) -> tuple[dict[str, Any], str]:
+    events = _cursor_events(stdout)
+    init = next(
+        (
+            event
+            for event in events
+            if event.get("type") == "system" and event.get("subtype") == "init"
+        ),
+        None,
+    )
+    actual_model = init.get("model") if init else None
+    if not isinstance(actual_model, str) or not actual_model.strip():
+        raise ValueError("Cursor stream-json did not report an actual model")
+    result = next(
+        (event for event in reversed(events) if event.get("type") == "result"),
+        None,
+    )
+    if result is None:
+        raise ValueError("Cursor stream-json did not contain a final result")
+    if result.get("subtype") != "success" or result.get("is_error") is True:
+        detail = str(result.get("result") or result.get("error") or result)
+        raise RuntimeError(f"Cursor CLI returned an error result: {detail[-1000:]}")
+    structured = result.get("result")
+    final_error: BaseException
+    if isinstance(structured, str):
+        try:
+            payload = json.loads(_strip_json_wrapping(structured))
+        except json.JSONDecodeError as exc:
+            final_error = exc
+        else:
+            # A parseable final result remains authoritative. Schema failures must
+            # not be hidden by a plan fallback.
+            return _validate_result(payload), actual_model.strip()
+    else:
+        final_error = ValueError("Cursor result payload must be a JSON string")
+
+    plan = _successful_cursor_plan_text(events)
+    if plan is None:
+        raise ValueError(
+            "Cursor final result did not contain valid JSON and no successfully "
+            "completed CreatePlan result was available"
+        ) from final_error
+    payload, _ = _strict_cursor_plan_json(plan)
+    return _validate_result(payload), actual_model.strip()
+
+
 def _normalized_model(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").casefold()).replace("thinking", "")
 
@@ -772,6 +976,46 @@ def _model_matches(requested: str | None, actual: str | None) -> bool:
     requested_norm = _normalized_model(requested)
     actual_norm = _normalized_model(actual)
     return bool(actual_norm and (requested_norm in actual_norm or actual_norm in requested_norm))
+
+
+def _cursor_model_identity(value: str | None) -> str:
+    normalized = _normalized_model(value)
+    for token in (
+        "cursor",
+        "claude",
+        "1m",
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "extrahigh",
+        "max",
+        "fast",
+    ):
+        normalized = normalized.replace(token, "")
+    return normalized
+
+
+def _cursor_model_matches(requested: str | None, actual: str | None) -> bool:
+    requested_identity = _cursor_model_identity(requested)
+    actual_identity = _cursor_model_identity(actual)
+    return bool(
+        actual_identity
+        and (
+            requested_identity in actual_identity
+            or actual_identity in requested_identity
+        )
+    )
+
+
+def _cursor_quota_pool(model: str) -> QuotaPool | None:
+    normalized = model.casefold()
+    if normalized == "auto" or normalized.startswith(("cursor-", "composer-")):
+        return "cursor-first-party"
+    if normalized.startswith("claude-"):
+        return "cursor-third-party"
+    return None
 
 
 def _command_version(command: str) -> str | None:
@@ -785,6 +1029,34 @@ def _command_version(command: str) -> str | None:
 
 
 def _review_usage(raw: str, driver: ExternalReviewDriver) -> tuple[ReviewUsage, float | None]:
+    if driver is ExternalReviewDriver.CURSOR_CLI:
+        try:
+            events = _cursor_events(raw)
+        except ValueError:
+            return ReviewUsage(), None
+        result = next(
+            (event for event in reversed(events) if event.get("type") == "result"),
+            {},
+        )
+        cursor_usage_payload = (
+            cast(dict[str, Any], result.get("usage"))
+            if isinstance(result.get("usage"), dict)
+            else {}
+        )
+        return (
+            ReviewUsage(
+                input_tokens=int(cursor_usage_payload.get("inputTokens") or 0),
+                cache_creation_input_tokens=int(
+                    cursor_usage_payload.get("cacheWriteTokens") or 0
+                ),
+                cache_read_input_tokens=int(
+                    cursor_usage_payload.get("cacheReadTokens") or 0
+                ),
+                output_tokens=int(cursor_usage_payload.get("outputTokens") or 0),
+                provider_turns=sum(1 for event in events if event.get("type") == "assistant"),
+            ),
+            None,
+        )
     try:
         outer = json.loads(_strip_json_wrapping(raw))
     except (json.JSONDecodeError, ValueError):
@@ -865,6 +1137,20 @@ def _classify_invocation_failure(error: BaseException | str) -> FailureType:
     text = str(error).casefold()
     if isinstance(error, subprocess.TimeoutExpired) or "timed out" in text:
         return "timeout"
+    if any(
+        token in text
+        for token in (
+            "quota",
+            "usage limit",
+            "usage_limit",
+            "credits exhausted",
+            "credit balance",
+            "out of credits",
+            "spending limit",
+            "limit reached",
+        )
+    ):
+        return "quota"
     if any(token in text for token in ("auth", "token expired", "unauthorized", "forbidden")):
         return "authentication"
     if any(
@@ -911,7 +1197,7 @@ def _record_local_attempt(work_dir: Path, record: dict[str, Any], raw: str) -> N
 
 
 def _targeted_format_repair_prompt(
-    raw: str,
+    candidate: str | None,
     error: BaseException,
     evidence: dict[str, tuple[str, str]],
 ) -> str | None:
@@ -920,10 +1206,12 @@ def _targeted_format_repair_prompt(
     Empty/non-JSON output is not safe to repair because it contains no findings to
     preserve; callers fall back to a normal packet retry in that case.
     """
-    stripped = _strip_json_wrapping(raw)
+    if candidate is None:
+        return None
+    stripped = _strip_json_wrapping(candidate)
     if not stripped or "{" not in stripped:
         return None
-    mentioned = [unit_id for unit_id in evidence if unit_id in raw]
+    mentioned = [unit_id for unit_id in evidence if unit_id in candidate]
     evidence_text = "\n\n".join(
         f"Unit {unit_id}\nSource: {evidence[unit_id][0]}\nTarget: {evidence[unit_id][1]}"
         for unit_id in mentioned[:3]
@@ -934,7 +1222,7 @@ def _targeted_format_repair_prompt(
         "and cited spans.\n"
         f"Validation error: {error}\n"
         f"Schema: {json.dumps(RESULT_SCHEMA, ensure_ascii=False)}\n"
-        f"Previous response:\n{raw[-20000:]}"
+        f"Previous response:\n{candidate[-20000:]}"
         + (f"\nRelevant evidence:\n{evidence_text}" if evidence_text else "")
     )
 
@@ -981,6 +1269,11 @@ def _invoke(
     )
     for model, effort in candidates:
         candidate = reviewer.model_copy(update={"model": model, "effort": effort})
+        quota_pool = (
+            _cursor_quota_pool(model)
+            if candidate.driver is ExternalReviewDriver.CURSOR_CLI
+            else None
+        )
         deliveries = (
             [forced_delivery]
             if forced_delivery is not None
@@ -995,32 +1288,35 @@ def _invoke(
         )
         for delivery in deliveries:
             last_delivery = delivery
-            prompt = (
-                (
-                    file_prompt
-                    or (
-                        _claude_minimal_file_prompt(packet_path)
-                        if minimal_file_protocol
-                        else _claude_prompt(packet_path)
-                    )
+            if candidate.driver is ExternalReviewDriver.CLAUDE_CODE:
+                prompt = file_prompt or (
+                    _claude_minimal_file_prompt(packet_path)
+                    if minimal_file_protocol
+                    else _claude_prompt(packet_path)
                 )
-                if candidate.driver is ExternalReviewDriver.CLAUDE_CODE
-                else _antigravity_prompt(packet_path)
-            )
+            elif candidate.driver is ExternalReviewDriver.ANTIGRAVITY:
+                prompt = _antigravity_prompt(packet_path)
+            else:
+                prompt = _cursor_prompt(packet_path)
             stdin_text = _claude_stdin(packet_path) if delivery is PromptDelivery.STDIN else None
             for format_attempt in range(2):
                 attempts += 1
                 attempt_started = time.perf_counter()
                 log_path = work_dir / f"driver-{attempts}.log"
-                command = (
-                    build_claude_command(
+                if candidate.driver is ExternalReviewDriver.CLAUDE_CODE:
+                    command = build_claude_command(
                         candidate,
                         "" if delivery is PromptDelivery.STDIN else prompt,
                         minimal_file_protocol=minimal_file_protocol,
                     )
-                    if candidate.driver is ExternalReviewDriver.CLAUDE_CODE
-                    else build_antigravity_command(candidate, prompt, log_path)
-                )
+                elif candidate.driver is ExternalReviewDriver.ANTIGRAVITY:
+                    command = build_antigravity_command(candidate, prompt, log_path)
+                else:
+                    cursor_prompt_path = work_dir / f"cursor-prompt-{attempts}.md"
+                    atomic_write_text(cursor_prompt_path, prompt)
+                    command = build_cursor_command(
+                        candidate, _cursor_file_prompt(cursor_prompt_path)
+                    )
                 try:
                     result = subprocess.run(
                         command,
@@ -1063,6 +1359,7 @@ def _invoke(
                             "duration_seconds": time.perf_counter() - attempt_started,
                             "success": False,
                             "failure_type": last_failure_type,
+                            "quota_pool": quota_pool,
                             "error": message,
                             "usage": ReviewUsage().model_dump(),
                             "cost_usd": None,
@@ -1095,11 +1392,16 @@ def _invoke(
                         )
                         verified = _model_matches(model, actual_model) and fast_mode == "off"
                         actual_label = actual_model
-                    else:
+                    elif candidate.driver is ExternalReviewDriver.ANTIGRAVITY:
                         payload, actual_label = _parse_antigravity(
                             result.stdout, log_text
                         )
                         verified = _model_matches(model, actual_label)
+                        actual_model = actual_label
+                        fast_mode = None
+                    else:
+                        payload, actual_label = _parse_cursor(result.stdout)
+                        verified = _cursor_model_matches(model, actual_label)
                         actual_model = actual_label
                         fast_mode = None
                     if not verified:
@@ -1121,6 +1423,7 @@ def _invoke(
                             "duration_seconds": time.perf_counter() - attempt_started,
                             "success": True,
                             "failure_type": None,
+                            "quota_pool": quota_pool,
                             "error": None,
                             "usage": attempt_usage.model_dump(),
                             "cost_usd": attempt_cost,
@@ -1143,8 +1446,13 @@ def _invoke(
                 except (json.JSONDecodeError, ValueError) as exc:
                     errors.append(str(exc))
                     last_failure_type = "format"
+                    repair_candidate = (
+                        _cursor_repair_candidate(result.stdout)
+                        if candidate.driver is ExternalReviewDriver.CURSOR_CLI
+                        else raw
+                    )
                     repair_prompt = (
-                        _targeted_format_repair_prompt(raw, exc, evidence)
+                        _targeted_format_repair_prompt(repair_candidate, exc, evidence)
                         if format_attempt == 0
                         else None
                     )
@@ -1160,6 +1468,7 @@ def _invoke(
                             "duration_seconds": time.perf_counter() - attempt_started,
                             "success": False,
                             "failure_type": last_failure_type,
+                            "quota_pool": quota_pool,
                             "error": str(exc),
                             "targeted_repair_scheduled": repair_prompt is not None,
                             "usage": attempt_usage.model_dump(),
@@ -1199,6 +1508,7 @@ def _invoke(
                             "duration_seconds": time.perf_counter() - attempt_started,
                             "success": False,
                             "failure_type": last_failure_type,
+                            "quota_pool": quota_pool,
                             "error": str(exc),
                             "usage": attempt_usage.model_dump(),
                             "cost_usd": attempt_cost,
@@ -1321,6 +1631,101 @@ def _all_runs(root: Path) -> list[ExternalReviewRun]:
     return runs
 
 
+def _timestamp(value: str) -> float:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+def _assignment_reservation_root(root: Path) -> Path:
+    return root / ".littrans" / "external-assignments"
+
+
+def _active_assignment_reservations(root: Path) -> list[dict[str, Any]]:
+    reservation_root = _assignment_reservation_root(root)
+    now = time.time()
+    reservations: list[dict[str, Any]] = []
+    for path in reservation_root.glob("*.json"):
+        try:
+            if now - path.stat().st_mtime >= ASSIGNMENT_RESERVATION_TTL_SECONDS:
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            reservations.append(cast(dict[str, Any], payload))
+    return reservations
+
+
+def _cleanup_stale_assignment_reservations(root: Path) -> None:
+    reservation_root = _assignment_reservation_root(root)
+    if not reservation_root.exists():
+        return
+    now = time.time()
+    for path in reservation_root.glob("*.json"):
+        try:
+            stale = now - path.stat().st_mtime >= ASSIGNMENT_RESERVATION_TTL_SECONDS
+        except OSError:
+            continue
+        if stale:
+            path.unlink(missing_ok=True)
+
+
+def _assignment_call_counts(root: Path) -> dict[str, int]:
+    config = _review_config(root)
+    counts = {reviewer.id: 0 for reviewer in config.reviewers}
+    since = _timestamp(config.assignment_since) if config.assignment_since else None
+    for run in _all_runs(root):
+        if run.reviewer_id not in counts:
+            continue
+        if since is not None and _timestamp(run.reviewed_at) < since:
+            continue
+        counts[run.reviewer_id] += 1
+    for reservation in _active_assignment_reservations(root):
+        reviewer_id = reservation.get("reviewer_id")
+        created_at = reservation.get("created_at")
+        if reviewer_id not in counts or not isinstance(created_at, str):
+            continue
+        if since is not None and _timestamp(created_at) < since:
+            continue
+        counts[reviewer_id] += 1
+    return counts
+
+
+def _reserve_reviewer(
+    root: Path,
+    requested_id: str | None,
+    exclude_id: str | None,
+    *,
+    reserve: bool,
+) -> tuple[ExternalReviewerConfig, str | None]:
+    with project_write_lock(root):
+        _cleanup_stale_assignment_reservations(root)
+        reviewer = _select_reviewer(root, requested_id, exclude_id)
+        if not reserve:
+            return reviewer, None
+        reservation_id = uuid.uuid4().hex
+        reservation_root = _assignment_reservation_root(root)
+        reservation_root.mkdir(parents=True, exist_ok=True)
+        write_json(
+            reservation_root / f"{reservation_id}.json",
+            {
+                "reservation_id": reservation_id,
+                "reviewer_id": reviewer.id,
+                "driver": reviewer.driver.value,
+                "created_at": utc_now(),
+            },
+        )
+        return reviewer, reservation_id
+
+
+def _release_reviewer_reservation(root: Path, reservation_id: str | None) -> None:
+    if reservation_id is None:
+        return
+    with project_write_lock(root):
+        (_assignment_reservation_root(root) / f"{reservation_id}.json").unlink(
+            missing_ok=True
+        )
+
+
 def external_reviewer_usage(root: Path) -> dict[str, dict[str, int]]:
     config = _review_config(root)
     usage = {
@@ -1364,11 +1769,11 @@ def _select_reviewer(
     candidates = [reviewer for reviewer in config.reviewers if reviewer.id != exclude_id]
     if not candidates:
         raise ValueError("No different external reviewer is available for a second opinion")
-    usage = external_reviewer_usage(root)
+    call_counts = _assignment_call_counts(root)
     return min(
         candidates,
         key=lambda reviewer: (
-            usage[reviewer.id]["assigned_primary_batches"],
+            call_counts[reviewer.id],
             config.reviewers.index(reviewer),
         ),
     )
@@ -1383,11 +1788,11 @@ def _select_replacement_reviewer(
     ]
     if not candidates:
         return None
-    usage = external_reviewer_usage(root)
+    call_counts = _assignment_call_counts(root)
     return min(
         candidates,
         key=lambda reviewer: (
-            usage[reviewer.id]["assigned_primary_batches"],
+            call_counts[reviewer.id],
             config.reviewers.index(reviewer),
         ),
     )
@@ -1764,10 +2169,11 @@ def run_external_review(
         scope, base_run, covered_unit_ids, selected_reviewer_id = _primary_review_scope(
             root, batch_id, reviewer_id
         )
-    reviewer = _select_reviewer(
+    reviewer, reservation_id = _reserve_reviewer(
         root,
         selected_reviewer_id,
         latest_primary.reviewer_id if second_opinion and latest_primary else None,
+        reserve=not dry_run,
     )
     with project_write_lock(root):
         read_only_context_ids = (
@@ -1790,15 +2196,16 @@ def run_external_review(
         evidence_snapshot = _evidence_map(
             root, batch_id, covered_unit_ids=covered_unit_ids
         )
-    prompt_builder = (
-        (
+    if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE:
+        prompt_builder = (
             _claude_minimal_file_prompt
             if CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED
             else _claude_prompt
         )
-        if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
-        else _antigravity_prompt
-    )
+    elif reviewer.driver is ExternalReviewDriver.ANTIGRAVITY:
+        prompt_builder = _antigravity_prompt
+    else:
+        prompt_builder = _cursor_prompt
     if dry_run:
         work_dir = (
             root
@@ -1810,11 +2217,16 @@ def run_external_review(
         packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)
         prompt = prompt_builder(packet_path)
         log_path = work_dir / "driver.log"
-        command = (
-            build_claude_command(reviewer, prompt)
-            if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
-            else build_antigravity_command(reviewer, prompt, log_path)
-        )
+        if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE:
+            command = build_claude_command(reviewer, prompt)
+        elif reviewer.driver is ExternalReviewDriver.ANTIGRAVITY:
+            command = build_antigravity_command(reviewer, prompt, log_path)
+        else:
+            cursor_prompt_path = work_dir / "cursor-prompt.md"
+            atomic_write_text(cursor_prompt_path, prompt)
+            command = build_cursor_command(
+                reviewer, _cursor_file_prompt(cursor_prompt_path)
+            )
         write_json(
             work_dir / "dry-run.json",
             {
@@ -1851,11 +2263,16 @@ def run_external_review(
         packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)
         prompt = prompt_builder(packet_path)
         log_path = work_dir / "driver.log"
-        command = (
-            build_claude_command(reviewer, prompt)
-            if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE
-            else build_antigravity_command(reviewer, prompt, log_path)
-        )
+        if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE:
+            command = build_claude_command(reviewer, prompt)
+        elif reviewer.driver is ExternalReviewDriver.ANTIGRAVITY:
+            command = build_antigravity_command(reviewer, prompt, log_path)
+        else:
+            cursor_prompt_path = work_dir / "cursor-prompt.md"
+            atomic_write_text(cursor_prompt_path, prompt)
+            command = build_cursor_command(
+                reviewer, _cursor_file_prompt(cursor_prompt_path)
+            )
         try:
             with _provider_call_lock(root, reviewer):
                 (
@@ -1921,6 +2338,8 @@ def run_external_review(
                 _append_fallback_lineage(root, batch_id, run_id, _fallback_of)
             status = external_review_status(root, batch_id)
             write_json(root / "reviews" / f"{batch_id}.external.json", status)
+            _release_reviewer_reservation(root, reservation_id)
+            reservation_id = None
             attempted = set(_attempted_reviewer_ids) | {reviewer.id}
             replacement = (
                 _select_replacement_reviewer(root, attempted)
@@ -1937,6 +2356,10 @@ def run_external_review(
                     _attempted_reviewer_ids=frozenset(attempted),
                 )
             return status
+        except BaseException:
+            _release_reviewer_reservation(root, reservation_id)
+            reservation_id = None
+            raise
     issues = _convert_issues(
         batch_id, reviewer, actual_model, fingerprint, run_id, payload
     )
@@ -1997,6 +2420,8 @@ def run_external_review(
         _append_fallback_lineage(root, batch_id, run_id, _fallback_of)
     status = external_review_status(root, batch_id)
     write_json(root / "reviews" / f"{batch_id}.external.json", status)
+    _release_reviewer_reservation(root, reservation_id)
+    reservation_id = None
     if not second_opinion and status["second_opinion_required"]:
         status = run_external_review(root, batch_id, second_opinion=True)
     return status

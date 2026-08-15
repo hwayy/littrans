@@ -27,6 +27,7 @@ from littrans.models import (
     Severity,
     SidebarRole,
     SourceUnit,
+    TableData,
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
@@ -293,6 +294,77 @@ def _coalesce_code_units(
     return rendered, grouped_ids
 
 
+def _merge_continued_table_data(tables: list[TableData]) -> TableData:
+    """Join complementary half-rows without moving their stable-unit text."""
+    if not tables:
+        raise ValueError("At least one table is required")
+    column_count = tables[0].column_count
+    rows = [list(row) for row in tables[0].rows]
+    for table in tables[1:]:
+        if table.column_count != column_count:
+            raise ValueError("Continued table fragments must have matching columns")
+        incoming = [list(row) for row in table.rows]
+        if rows and incoming:
+            left = rows[-1]
+            right = incoming[0]
+            complementary = (
+                any(not cell for cell in left)
+                and any(not cell for cell in right)
+                and all(not left[index] or not right[index] for index in range(column_count))
+            )
+            if complementary:
+                rows[-1] = [left[index] or right[index] for index in range(column_count)]
+                incoming = incoming[1:]
+        rows.extend(incoming)
+    return TableData(
+        rows=rows,
+        header_rows=tables[0].header_rows,
+        column_count=column_count,
+    )
+
+
+def _coalesce_table_units(
+    units: list[SourceUnit],
+) -> tuple[list[SourceUnit], dict[str, list[str]]]:
+    """Render explicitly continued table fragments as one logical table."""
+    rendered: list[SourceUnit] = []
+    grouped_ids: dict[str, list[str]] = {}
+    index = 0
+    while index < len(units):
+        first = units[index]
+        group = [first]
+        cursor = index + 1
+        while (
+            first.kind is UnitKind.TABLE
+            and first.table is not None
+            and group[-1].continued_to_next
+            and cursor < len(units)
+            and units[cursor].kind is UnitKind.TABLE
+            and units[cursor].table is not None
+            and units[cursor].continues_from_previous
+        ):
+            group.append(units[cursor])
+            cursor += 1
+        if len(group) == 1:
+            rendered.append(first)
+        else:
+            combined = first.model_copy(
+                update={
+                    "table": _merge_continued_table_data(
+                        [part.table for part in group if part.table is not None]
+                    ),
+                    "continued_to_next": False,
+                    "continues_from_previous": False,
+                    "fragments": [fragment for part in group for fragment in part.fragments],
+                    "asset_refs": [asset for part in group for asset in part.asset_refs],
+                }
+            )
+            rendered.append(combined)
+            grouped_ids[first.unit_id] = [part.unit_id for part in group]
+        index = cursor
+    return rendered, grouped_ids
+
+
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target or unit.source_text
     safe_text = escape_markdown_prose(text)
@@ -524,6 +596,8 @@ def render_project(
         units = [unit for unit in all_units if unit.page in pages]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
     render_units, grouped_code_ids = _coalesce_code_units(units)
+    render_units, grouped_table_ids = _coalesce_table_units(render_units)
+    grouped_unit_ids = {**grouped_code_ids, **grouped_table_ids}
     translations = translation_map(root)
     selected_ids = {unit.unit_id for unit in units}
     missing = [
@@ -715,8 +789,15 @@ def render_project(
         else:
             bilingual_target = "[尚未翻译]"
         render_unit = unit
-        if unit.kind is UnitKind.TABLE and record and record.target_table:
-            render_unit = unit.model_copy(update={"table": record.target_table})
+        target_table = record.target_table if record else None
+        if unit.unit_id in grouped_table_ids:
+            table_records = [translations.get(unit_id) for unit_id in grouped_table_ids[unit.unit_id]]
+            if all(item and item.target_table for item in table_records):
+                target_table = _merge_continued_table_data(
+                    [item.target_table for item in table_records if item and item.target_table]
+                )
+        if unit.kind is UnitKind.TABLE and target_table:
+            render_unit = unit.model_copy(update={"table": target_table})
         rendered_figure_labels = effective_figure_labels(unit, record)
         if rendered_figure_labels:
             render_unit = unit.model_copy(
@@ -725,7 +806,7 @@ def render_project(
         rendered = _target_markdown(render_unit, target)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
-            for unit_id in grouped_code_ids.get(unit.unit_id, [unit.unit_id])
+            for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])
         )
         if (
             unit.continues_from_previous
@@ -812,13 +893,13 @@ def render_project(
         target_html = _unit_html(
             render_unit,
             bilingual_target,
-            record.target_table if record else None,
+            target_table,
             source_view=False,
         )
-        if unit.unit_id in grouped_code_ids:
+        if unit.unit_id in grouped_unit_ids:
             extra_anchors = "".join(
                 f'<span id="{html.escape(unit_id)}"></span>'
-                for unit_id in grouped_code_ids[unit.unit_id][1:]
+                for unit_id in grouped_unit_ids[unit.unit_id][1:]
             )
             source_html = extra_anchors + source_html
         if (

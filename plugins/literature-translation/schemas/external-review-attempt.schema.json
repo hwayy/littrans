@@ -3,7 +3,8 @@
     "ExternalReviewDriver": {
       "enum": [
         "claude-code",
-        "antigravity"
+        "antigravity",
+        "cursor-cli"
       ],
       "title": "ExternalReviewDriver",
       "type": "string"
@@ -131,6 +132,7 @@
             "network",
             "format",
             "model",
+            "quota",
             "timeout",
             "provider",
             "unknown"
@@ -143,6 +145,22 @@
       ],
       "default": null,
       "title": "Failure Type"
+    },
+    "quota_pool": {
+      "anyOf": [
+        {
+          "enum": [
+            "cursor-first-party",
+            "cursor-third-party"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Quota Pool"
     },
     "error": {
       "anyOf": [

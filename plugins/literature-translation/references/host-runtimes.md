@@ -42,7 +42,14 @@ Resolve `<plugin-root>` from the installed skill directory (`../..` from a skill
 
 ## External review
 
-External review is a project-configured local CLI gate (`claude-code` or `antigravity`), not a
-Codex or Cursor subagent. Run `littrans review external` after machine approval. Do not substitute
-the host agent for that CLI. Separate services may run concurrently, but keep at most one active
-call per service; the CLI enforces that limit across processes.
+External review is a project-configured local CLI gate (`claude-code`, `antigravity`, or
+`cursor-cli`), not a Codex or Cursor subagent. Run `littrans review external` after machine
+approval. Do not substitute the host agent for that CLI. Separate services may run concurrently,
+but keep at most one active call per service; the CLI enforces that limit across processes.
+
+The `cursor-cli` driver runs Cursor Agent in plan mode inside the isolated temporary review
+workspace and consumes its `stream-json` protocol for actual-model and usage evidence. Cursor's
+sandbox flag is unavailable on Windows, so the driver relies on plan mode and the isolated
+workspace there. Exact Cursor model IDs encode effort and fast mode. Configured model fallbacks
+remain within one Cursor reviewer; quota failures advance through the configured chain before the
+workflow considers another reviewer.
