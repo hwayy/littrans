@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
+import littrans.external_review as external_review_module
 import littrans.workflow as workflow_module
 from littrans.batching import refresh_batch
 from littrans.models import (
@@ -15,6 +16,7 @@ from littrans.models import (
     Severity,
     SidebarRole,
     SourceUnit,
+    UnitKind,
 )
 from littrans.project import translation_map
 from littrans.quality import audit_coverage, import_review, run_qa
@@ -324,3 +326,52 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
 
     assert f"## {first.batch_id}" in summary
     assert f"## {second.batch_id}" in summary
+
+
+def test_full_external_packet_includes_cross_batch_sidebar_context(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first, second = manifests
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "external-sidebar",
+            "sidebar_role": SidebarRole.TITLE,
+        }
+    )
+    units[1] = units[1].model_copy(
+        update={"sidebar_id": "external-sidebar", "sidebar_role": SidebarRole.BODY}
+    )
+    write_jsonl(units_path, units)
+    for batch in manifests:
+        refresh_batch(root, batch.batch_id)
+        _submit(root, batch.batch_id)
+
+    context_ids = external_review_module._outer_seam_context_ids(
+        root, first.batch_id, list(first.unit_ids)
+    )
+    assert context_ids == list(second.unit_ids)
+    packet, pages = external_review_module._packet_text(
+        root,
+        first.batch_id,
+        list(first.unit_ids),
+        read_only_context_ids=context_ids,
+    )
+    assert f"## Unit {second.unit_ids[0]} [READ-ONLY SEAM CONTEXT]" in packet
+    assert pages == [1, 2]
+
+    before = external_review_module._external_review_context_fingerprint(
+        root, first.batch_id, list(first.unit_ids), external_review_module.ReviewScope.FULL
+    )
+    current = translation_map(root)
+    current[second.unit_ids[0]] = current[second.unit_ids[0]].model_copy(
+        update={"target_text": "更新后的跨批侧栏译文"}
+    )
+    write_jsonl(root / "translations" / "current.jsonl", current.values())
+    after = external_review_module._external_review_context_fingerprint(
+        root, first.batch_id, list(first.unit_ids), external_review_module.ReviewScope.FULL
+    )
+    assert after != before

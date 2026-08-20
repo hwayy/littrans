@@ -295,19 +295,16 @@ def _outer_seam_context_ids(
     all_units: list[SourceUnit] | None = None,
 ) -> list[str]:
     manifest = load_manifest(root, batch_id)
-    covered = set(covered_unit_ids)
-    reached_seams = [
-        unit_id
-        for unit_id in (manifest.unit_ids[0], manifest.unit_ids[-1])
-        if unit_id in covered
+    covered = [
+        unit_id for unit_id in covered_unit_ids if unit_id in set(manifest.unit_ids)
     ]
-    if not reached_seams:
+    if not covered:
         return []
     manifest_ids = set(manifest.unit_ids)
     return [
         unit_id
         for unit_id in dependency_closure(
-            root, [batch_id], reached_seams, all_units=all_units
+            root, [batch_id], covered, all_units=all_units
         )
         if unit_id not in manifest_ids
     ]
@@ -334,12 +331,8 @@ def _external_review_context_fingerprint(
 ) -> str:
     manifest = load_manifest(root, batch_id)
     covered = list(covered_unit_ids or manifest.unit_ids)
-    read_only = (
-        _outer_seam_context_ids(
-            root, batch_id, covered, all_units=all_units
-        )
-        if scope is ReviewScope.INCREMENTAL
-        else []
+    read_only = _outer_seam_context_ids(
+        root, batch_id, covered, all_units=all_units
     )
     selected_ids = set(covered) | set(read_only)
     current_units = (
@@ -2788,10 +2781,8 @@ def run_external_review(
     reservation_from_dry_run = False
     try:
         with project_write_lock(root):
-            read_only_context_ids = (
-                _outer_seam_context_ids(root, batch_id, covered_unit_ids)
-                if scope is ReviewScope.INCREMENTAL
-                else []
+            read_only_context_ids = _outer_seam_context_ids(
+                root, batch_id, covered_unit_ids
             )
             packet_text, pages = _packet_text(
                 root,
