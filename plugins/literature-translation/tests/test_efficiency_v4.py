@@ -1148,18 +1148,23 @@ def test_external_review_uses_a_per_run_import_file(
         project_root: Path,
         batch_id: str,
         input_path: Path,
-        *args: object,
-        **kwargs: object,
+        reviewer_id: str,
     ) -> list[ReviewIssue]:
         assert project_root == root
+        assert reviewer_id == reviewer.id
         assert input_path.exists()
         assert read_jsonl(input_path, ReviewIssue) == []
         import_paths.append(input_path)
         return []
 
+    def command_version(command: str) -> str:
+        assert command == reviewer.command
+        assert not (root / ".littrans-write-lock").exists()
+        return "test"
+
     monkeypatch.setattr(external_review, "_invoke", invoke)
-    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
-    monkeypatch.setattr(external_review, "import_review", capture_import)
+    monkeypatch.setattr(external_review, "_command_version", command_version)
+    monkeypatch.setattr(external_review, "_import_review_locked", capture_import)
 
     for manifest in manifests:
         status = external_review.run_external_review(root, manifest.batch_id)
@@ -1169,6 +1174,144 @@ def test_external_review_uses_a_per_run_import_file(
     assert len(set(import_paths)) == len(import_paths)
     assert all(path.name.startswith(".external-import-") for path in import_paths)
     assert all(not path.exists() for path in import_paths)
+
+
+def test_external_review_rejects_a_snapshot_changed_during_provider_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_id = manifests[0].batch_id
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    save_project(root, config)
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+
+    def invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        current = translation_map(root)
+        unit_id = manifests[0].translatable_unit_ids[0]
+        current[unit_id] = current[unit_id].model_copy(
+            update={"target_text": current[unit_id].target_text + "（并发修订）"}
+        )
+        write_jsonl(root / "translations" / "current.jsonl", current.values())
+        return (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=1),
+            0.01,
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", invoke)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+    original_scope = external_review._primary_review_scope
+
+    def primary_scope(*args: object, **kwargs: object) -> tuple[object, ...]:
+        assert (root / ".littrans-write-lock").is_dir()
+        return original_scope(*args, **kwargs)
+
+    monkeypatch.setattr(external_review, "_primary_review_scope", primary_scope)
+
+    with pytest.raises(ValueError, match="snapshot became stale"):
+        external_review.run_external_review(root, batch_id)
+
+    assert not (root / "reviews" / f"{batch_id}.external-runs.jsonl").exists()
+    assert read_jsonl(
+        root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
+    ) == []
+
+
+def test_external_review_releases_reservation_on_packet_or_version_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_id = manifests[0].batch_id
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    save_project(root, config)
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    reservation_root = root / ".littrans" / "external-assignments"
+
+    original_temporary_directory = external_review.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        external_review.tempfile,
+        "TemporaryDirectory",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("seeded temporary workspace failure")
+        ),
+    )
+    with pytest.raises(OSError, match="seeded temporary workspace failure"):
+        external_review.run_external_review(root, batch_id)
+    assert not list(reservation_root.glob("*.json"))
+    monkeypatch.setattr(
+        external_review.tempfile,
+        "TemporaryDirectory",
+        original_temporary_directory,
+    )
+
+    original_render = external_review._render_packet
+    monkeypatch.setattr(
+        external_review,
+        "_render_packet",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("seeded packet rendering failure")
+        ),
+    )
+    with pytest.raises(OSError, match="seeded packet rendering failure"):
+        external_review.run_external_review(root, batch_id)
+    assert not list(reservation_root.glob("*.json"))
+
+    monkeypatch.setattr(external_review, "_render_packet", original_render)
+    monkeypatch.setattr(
+        external_review,
+        "_invoke",
+        lambda *args, **kwargs: (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=1),
+            0.01,
+        ),
+    )
+    monkeypatch.setattr(
+        external_review,
+        "_command_version",
+        lambda command: (_ for _ in ()).throw(
+            OSError("seeded version probe failure")
+        ),
+    )
+    with pytest.raises(OSError, match="seeded version probe failure"):
+        external_review.run_external_review(root, batch_id)
+    assert not list(reservation_root.glob("*.json"))
 
 
 def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:

@@ -952,27 +952,28 @@ def resolve_issue(
         raise ValueError("Resolved review issue status must not be open")
     if not resolution.strip():
         raise ValueError("Review issue resolution must not be empty")
-    path = root / "reviews" / f"{batch_id}.issues.jsonl"
-    issues = read_jsonl(path, ReviewIssue)
-    resolved: ReviewIssue | None = None
-    updated: list[ReviewIssue] = []
-    for issue in issues:
-        if issue.issue_id == issue_id:
-            resolved = ReviewIssue.model_validate(
-                {
-                    **issue.model_dump(mode="json"),
-                    "status": status,
-                    "resolution": resolution.strip(),
-                    "resolved_at": utc_now(),
-                }
-            )
-            updated.append(resolved)
-        else:
-            updated.append(issue)
-    if resolved is None:
-        raise ValueError(f"Unknown review issue: {issue_id}")
-    write_jsonl(path, updated)
-    return resolved
+    with project_write_lock(root):
+        path = root / "reviews" / f"{batch_id}.issues.jsonl"
+        issues = read_jsonl(path, ReviewIssue)
+        resolved: ReviewIssue | None = None
+        updated: list[ReviewIssue] = []
+        for issue in issues:
+            if issue.issue_id == issue_id:
+                resolved = ReviewIssue.model_validate(
+                    {
+                        **issue.model_dump(mode="json"),
+                        "status": status,
+                        "resolution": resolution.strip(),
+                        "resolved_at": utc_now(),
+                    }
+                )
+                updated.append(resolved)
+            else:
+                updated.append(issue)
+        if resolved is None:
+            raise ValueError(f"Unknown review issue: {issue_id}")
+        write_jsonl(path, updated)
+        return resolved
 
 
 def review_status(root: Path, batch_id: str) -> dict[str, Any]:

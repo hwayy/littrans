@@ -238,7 +238,19 @@ def test_prune_requires_every_batch_of_legacy_partial_import(tmp_path: Path) -> 
     )
     assert packet.packet_id in prune_workflow_packets(root)["candidates"]
 
+    incomplete_mapping = packet.model_copy(
+        update={
+            "batch_unit_ids": {
+                first: packet.batch_unit_ids[first],
+            }
+        }
+    )
     packet_path = root / packet.storage_root / packet.packet_id / "manifest.json"
+    packet_path.write_text(
+        json.dumps(incomplete_mapping.model_dump(mode="json")), encoding="utf-8"
+    )
+    assert packet.packet_id not in prune_workflow_packets(root)["candidates"]
+
     legacy_packet = packet.model_copy(
         update={
             "schema_version": 1,
@@ -251,6 +263,44 @@ def test_prune_requires_every_batch_of_legacy_partial_import(tmp_path: Path) -> 
         json.dumps(legacy_packet.model_dump(mode="json")), encoding="utf-8"
     )
     assert packet.packet_id in prune_workflow_packets(root)["candidates"]
+
+    first_coverage = packet.batch_unit_ids[first]
+    legacy_partial_packet = legacy_packet.model_copy(
+        update={
+            "unit_ids": first_coverage,
+            "unit_fingerprints": {
+                unit_id: packet.unit_fingerprints[unit_id]
+                for unit_id in first_coverage
+            },
+        }
+    )
+    packet_path.write_text(
+        json.dumps(legacy_partial_packet.model_dump(mode="json")), encoding="utf-8"
+    )
+    write_jsonl(root / "evidence" / "audits" / f"{second}.jsonl", [])
+    assert packet.packet_id in prune_workflow_packets(root)["candidates"]
+
+    unknown_batch_packet = legacy_partial_packet.model_copy(
+        update={"batch_ids": [*batch_ids, "removed-batch"]}
+    )
+    packet_path.write_text(
+        json.dumps(unknown_batch_packet.model_dump(mode="json")), encoding="utf-8"
+    )
+    assert packet.packet_id not in prune_workflow_packets(root)["candidates"]
+
+    incomplete_fingerprints = dict(legacy_partial_packet.unit_fingerprints)
+    incomplete_fingerprints.pop(first_coverage[0])
+    incomplete_packet = legacy_partial_packet.model_copy(
+        update={"unit_fingerprints": incomplete_fingerprints}
+    )
+    packet_path.write_text(
+        json.dumps(incomplete_packet.model_dump(mode="json")), encoding="utf-8"
+    )
+    assert packet.packet_id not in prune_workflow_packets(root)["candidates"]
+
+    packet_path.write_text(
+        json.dumps(legacy_packet.model_dump(mode="json")), encoding="utf-8"
+    )
 
     mismatched = matching_run(second)
     mismatched_fingerprints = dict(mismatched.unit_fingerprints)

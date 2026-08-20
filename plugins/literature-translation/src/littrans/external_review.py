@@ -53,9 +53,10 @@ from littrans.models import (
 )
 from littrans.project import load_terms, translation_map
 from littrans.quality import (
+    _apply_review_import_locked,
+    _prepare_review_import_locked,
     audit_coverage,
     batch_translation_fingerprint,
-    import_review,
     qa_report_is_current,
 )
 from littrans.semantics import normalize_prose, normalize_zh_caption
@@ -77,6 +78,7 @@ PROMPT_VERSION = "external-review-v3"
 CURSOR_HOST_SUBAGENT_VERSION = "cursor-host-subagent"
 CURSOR_HOST_DRY_RUN_SCHEMA_VERSION = 4
 ASSIGNMENT_RESERVATION_TTL_SECONDS = 7200.0
+EXTERNAL_CLI_TIMEOUT_SECONDS = 330
 # The 0.3.0 shadow gate showed excellent efficiency but missed a seeded major
 # technical defect. Keep the implementation available for future experiments,
 # while production reviews remain on the proven file-delivery path.
@@ -1733,7 +1735,7 @@ def _invoke(
                         text=True,
                         encoding="utf-8",
                         errors="replace",
-                        timeout=330,
+                        timeout=EXTERNAL_CLI_TIMEOUT_SECONDS,
                         check=False,
                     )
                 except subprocess.TimeoutExpired as exc:
@@ -1941,43 +1943,19 @@ def _runs_path(root: Path, batch_id: str) -> Path:
     return root / "reviews" / f"{batch_id}.external-runs.jsonl"
 
 
-def _process_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _provider_lock_is_stale(lock_dir: Path, grace_seconds: float) -> bool:
-    try:
-        owner = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
-        pid = int(owner["pid"])
-    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        try:
-            return time.time() - lock_dir.stat().st_mtime > grace_seconds
-        except FileNotFoundError:
-            return True
-    return not _process_is_running(pid)
-
-
 @contextmanager
-def _provider_takeover_gate(
-    path: Path, timeout_seconds: float = 1.0
+def _os_file_lock(
+    path: Path, timeout_seconds: float | None = 1.0
 ) -> Iterator[bool]:
-    """Use an OS lock so a crashed takeover never leaves a wedged mutex."""
+    """Acquire one byte with an OS lock; the kernel releases it after a crash."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+b")
     if handle.seek(0, os.SEEK_END) == 0:
         handle.write(b"\0")
         handle.flush()
-    deadline = time.monotonic() + timeout_seconds
+    deadline = (
+        None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    )
     acquired = False
     try:
         while not acquired:
@@ -1992,7 +1970,7 @@ def _provider_takeover_gate(
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
             except OSError:
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     break
                 time.sleep(0.02)
         yield acquired
@@ -2009,121 +1987,39 @@ def _provider_takeover_gate(
         handle.close()
 
 
-def _reclaim_stale_provider_lock(
-    lock_dir: Path, takeover_path: Path, grace_seconds: float = 30.0
-) -> bool:
-    with _provider_takeover_gate(takeover_path) as acquired:
-        if not acquired:
-            return False
-        # Re-read under a separate atomic takeover mutex. A second waiter cannot
-        # act on an owner it observed before the first waiter acquired a new lock.
-        if not _provider_lock_is_stale(lock_dir, grace_seconds):
-            return False
-        quarantine = lock_dir.with_name(
-            f".{lock_dir.name}.stale-{uuid.uuid4().hex}"
-        )
-        try:
-            lock_dir.replace(quarantine)
-        except FileNotFoundError:
-            return True
-        # A crash during atomic_write_text can leave only its known temporary file.
-        # The quarantined directory no longer blocks acquisition; remove only files
-        # belonging to the lock protocol and leave unexpected contents quarantined.
-        for path in quarantine.iterdir():
-            if path.is_file() and (
-                path.name == "owner.json" or path.name.startswith(".owner.json.")
-            ):
-                path.unlink(missing_ok=True)
-        try:
-            quarantine.rmdir()
-        except OSError:
-            pass
-        return True
-
-
 @contextmanager
 def _provider_call_lock(
     root: Path,
     reviewer: ExternalReviewerConfig,
-    timeout_seconds: float = 900.0,
+    timeout_seconds: float | None = None,
 ) -> Iterator[None]:
     """Serialize calls to one provider while allowing different providers in parallel."""
     lock_root = root / ".littrans" / "external-provider-locks"
     lock_root.mkdir(parents=True, exist_ok=True)
     service = re.sub(r"[^a-z0-9._-]+", "-", reviewer.driver.value.casefold())
-    lock_dir = lock_root / f"{service}.lock"
-    takeover_path = lock_root / f"{service}.takeover.lock"
-    owner_path = lock_dir / "owner.json"
-    owner_token = uuid.uuid4().hex
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        try:
-            lock_dir.mkdir()
-            try:
-                atomic_write_text(
-                    owner_path,
-                    json.dumps(
-                        {
-                            "pid": os.getpid(),
-                            "token": owner_token,
-                            "created_at": time.time(),
-                        },
-                        sort_keys=True,
-                    )
-                    + "\n",
-                )
-            except BaseException:
-                owner_path.unlink(missing_ok=True)
-                lock_dir.rmdir()
-                raise
-            break
-        except FileExistsError:
-            if _reclaim_stale_provider_lock(lock_dir, takeover_path):
-                continue
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Timed out waiting for external provider lock: {lock_dir}"
-                ) from None
-            time.sleep(0.1)
-    try:
+    lock_path = lock_root / f"{service}.oslock"
+    with _os_file_lock(lock_path, timeout_seconds) as acquired:
+        if not acquired:
+            raise TimeoutError(
+                f"Timed out waiting for external provider lock: {lock_path}"
+            )
         yield
-    finally:
-        try:
-            owner = json.loads(owner_path.read_text(encoding="utf-8"))
-            if owner.get("token") == owner_token:
-                owner_path.unlink(missing_ok=True)
-                lock_dir.rmdir()
-        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
-            pass
 
 
-def _acquire_external_persistence_lock(
+@contextmanager
+def _external_persistence_lock(
     root: Path, batch_id: str, timeout_seconds: float = 30.0
-) -> Path:
+) -> Iterator[None]:
     lock_root = root / ".littrans" / "external-import-locks"
     lock_root.mkdir(parents=True, exist_ok=True)
     safe_batch_id = re.sub(r"[^A-Za-z0-9._-]+", "-", batch_id)
-    lock_dir = lock_root / f"{safe_batch_id}.lock"
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        try:
-            lock_dir.mkdir()
-            return lock_dir
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Timed out waiting for external persistence lock: {lock_dir}"
-                ) from None
-            time.sleep(0.05)
-
-
-def _release_external_persistence_lock(lock_dir: Path | None) -> None:
-    if lock_dir is None:
-        return
-    try:
-        lock_dir.rmdir()
-    except FileNotFoundError:
-        pass
+    lock_path = lock_root / f"{safe_batch_id}.oslock"
+    with _os_file_lock(lock_path, timeout_seconds) as acquired:
+        if not acquired:
+            raise TimeoutError(
+                f"Timed out waiting for external persistence lock: {lock_path}"
+            )
+        yield
 
 
 def _persist_attempt_telemetry(
@@ -2167,7 +2063,7 @@ def _persist_attempt_telemetry(
         atomic_write_text(path, existing + addition)
 
 
-def _append_fallback_lineage(
+def _append_fallback_lineage_locked(
     root: Path, batch_id: str, run_id: str, fallback_of: str
 ) -> None:
     path = root / "reviews" / f"{batch_id}.external-fallbacks.jsonl"
@@ -2177,12 +2073,18 @@ def _append_fallback_lineage(
         "fallback_of": fallback_of,
         "recorded_at": utc_now(),
     }
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    atomic_write_text(
+        path,
+        existing + json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+    )
+
+
+def _append_fallback_lineage(
+    root: Path, batch_id: str, run_id: str, fallback_of: str
+) -> None:
     with project_write_lock(root):
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        atomic_write_text(
-            path,
-            existing + json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
-        )
+        _append_fallback_lineage_locked(root, batch_id, run_id, fallback_of)
 
 
 def _all_runs(root: Path) -> list[ExternalReviewRun]:
@@ -2373,6 +2275,58 @@ def _restore_text_files(snapshots: dict[Path, str | None]) -> None:
             path.unlink(missing_ok=True)
         else:
             atomic_write_text(path, content)
+
+
+def _import_review_locked(
+    root: Path,
+    batch_id: str,
+    input_path: Path,
+    reviewer_id: str,
+) -> list[ReviewIssue]:
+    """Import a per-run issue file while the caller owns the project write lock."""
+    issues = read_jsonl(input_path, ReviewIssue)
+    plan = _prepare_review_import_locked(
+        root,
+        batch_id,
+        issues,
+        [f"external:{reviewer_id}"],
+        preserve_status=True,
+    )
+    return _apply_review_import_locked(root, plan)
+
+
+def _require_review_snapshot_current_locked(
+    root: Path,
+    batch_id: str,
+    covered_unit_ids: list[str],
+    scope: ReviewScope,
+    translation_fingerprint: str,
+    unit_fingerprints: dict[str, str],
+    source_fingerprint: str,
+    structure_fingerprint: str,
+    context_fingerprint: str,
+) -> None:
+    stale_inputs: list[str] = []
+    if batch_translation_fingerprint(root, batch_id) != translation_fingerprint:
+        stale_inputs.append("translation")
+    if batch_unit_fingerprints(root, batch_id) != unit_fingerprints:
+        stale_inputs.append("units")
+    if batch_source_fingerprint(root, batch_id) != source_fingerprint:
+        stale_inputs.append("source")
+    if batch_structure_fingerprint(root, batch_id) != structure_fingerprint:
+        stale_inputs.append("structure")
+    if (
+        _external_review_context_fingerprint(
+            root, batch_id, covered_unit_ids, scope
+        )
+        != context_fingerprint
+    ):
+        stale_inputs.append("context")
+    if stale_inputs:
+        raise ValueError(
+            "External review snapshot became stale while the provider was running; "
+            f"rerun the review (changed: {', '.join(stale_inputs)})"
+        )
 
 
 def external_reviewer_usage(root: Path) -> dict[str, dict[str, int]]:
@@ -2869,66 +2823,74 @@ def run_external_review(
                 "Cursor host dry-run reservation_id must be a non-empty string"
             )
         dry_run_reservation_id = recorded_reservation_id
-    _require_machine_reviewed(
-        root, batch_id, allow_external_issues=second_opinion
-    )
-    fingerprint = batch_translation_fingerprint(root, batch_id)
-    if not second_opinion and not dry_run and from_result is None:
-        current_status = external_review_status(root, batch_id)
-        if current_status["external_approvable"]:
-            return current_status
-    primary_runs = [
-        run
-        for run in read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
-        if run.translation_fingerprint == fingerprint
-        and _external_review_context_is_current(root, run)
-    ]
-    latest_primary = next(
-        (run for run in reversed(primary_runs) if run.role == "primary"), None
-    )
-    if second_opinion and latest_primary is None:
-        raise ValueError("A second opinion requires a current primary external review")
-    base_run: ExternalReviewRun | None
-    if second_opinion and latest_primary:
-        scope = latest_primary.scope
-        base_run = latest_primary
-        covered_unit_ids = _second_opinion_unit_ids(root, latest_primary)
-        selected_reviewer_id = reviewer_id
-    else:
-        scope, base_run, covered_unit_ids, selected_reviewer_id = _primary_review_scope(
-            root, batch_id, reviewer_id
+    with project_write_lock(root):
+        _require_machine_reviewed(
+            root, batch_id, allow_external_issues=second_opinion
         )
-    reviewer, reservation_id = _reserve_reviewer(
-        root,
-        selected_reviewer_id,
-        latest_primary.reviewer_id if second_opinion and latest_primary else None,
-        reserve=not dry_run and from_result is None,
-        reserve_cursor_dry_run=dry_run,
+        fingerprint = batch_translation_fingerprint(root, batch_id)
+        if not second_opinion and not dry_run and from_result is None:
+            current_status = external_review_status(root, batch_id)
+            if current_status["external_approvable"]:
+                return current_status
+        primary_runs = [
+            run
+            for run in read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
+            if run.translation_fingerprint == fingerprint
+            and _external_review_context_is_current(root, run)
+        ]
+        latest_primary = next(
+            (run for run in reversed(primary_runs) if run.role == "primary"), None
+        )
+        if second_opinion and latest_primary is None:
+            raise ValueError("A second opinion requires a current primary external review")
+        base_run: ExternalReviewRun | None
+        if second_opinion and latest_primary:
+            scope = latest_primary.scope
+            base_run = latest_primary
+            covered_unit_ids = _second_opinion_unit_ids(root, latest_primary)
+            selected_reviewer_id = reviewer_id
+        else:
+            scope, base_run, covered_unit_ids, selected_reviewer_id = (
+                _primary_review_scope(root, batch_id, reviewer_id)
+            )
+        read_only_context_ids = _outer_seam_context_ids(
+            root, batch_id, covered_unit_ids
+        )
+        packet_text, pages = _packet_text(
+            root,
+            batch_id,
+            covered_unit_ids,
+            read_only_context_ids=read_only_context_ids,
+        )
+        current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
+        source_fingerprint = batch_source_fingerprint(root, batch_id)
+        structure_fingerprint = batch_structure_fingerprint(root, batch_id)
+        context_fingerprint = _external_review_context_fingerprint(
+            root, batch_id, covered_unit_ids, scope
+        )
+        evidence_snapshot = _evidence_map(
+            root, batch_id, covered_unit_ids=covered_unit_ids
+        )
+    direct_workspace = (
+        tempfile.TemporaryDirectory(
+            prefix=f"littrans-{batch_id}-", ignore_cleanup_errors=True
+        )
+        if from_result is None and not dry_run
+        else None
     )
-    reservation_from_dry_run = False
     try:
-        with project_write_lock(root):
-            read_only_context_ids = _outer_seam_context_ids(
-                root, batch_id, covered_unit_ids
-            )
-            packet_text, pages = _packet_text(
-                root,
-                batch_id,
-                covered_unit_ids,
-                read_only_context_ids=read_only_context_ids,
-            )
-            current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
-            source_fingerprint = batch_source_fingerprint(root, batch_id)
-            structure_fingerprint = batch_structure_fingerprint(root, batch_id)
-            context_fingerprint = _external_review_context_fingerprint(
-                root, batch_id, covered_unit_ids, scope
-            )
-            evidence_snapshot = _evidence_map(
-                root, batch_id, covered_unit_ids=covered_unit_ids
-            )
+        reviewer, reservation_id = _reserve_reviewer(
+            root,
+            selected_reviewer_id,
+            latest_primary.reviewer_id if second_opinion and latest_primary else None,
+            reserve=not dry_run and from_result is None,
+            reserve_cursor_dry_run=dry_run,
+        )
     except BaseException:
-        _release_reviewer_reservation(root, reservation_id)
+        if direct_workspace is not None:
+            direct_workspace.cleanup()
         raise
+    reservation_from_dry_run = False
     if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE:
         prompt_builder = (
             _claude_minimal_file_prompt
@@ -3023,12 +2985,14 @@ def run_external_review(
             str, cast(dict[str, Any], dry_run_record)["packet_sha256"]
         )
     if from_result is None:
-        with tempfile.TemporaryDirectory(
-            prefix=f"littrans-{batch_id}-", ignore_cleanup_errors=True
-        ) as temp_name:
+        if direct_workspace is None:  # pragma: no cover - established above
+            raise AssertionError("Direct external review workspace was not created")
+        with direct_workspace as temp_name:
             work_dir = Path(temp_name)
-            packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)
             try:
+                packet_path = _render_packet(
+                    root, work_dir / "packet", packet_text, pages
+                )
                 with _provider_call_lock(root, reviewer):
                     (
                         payload,
@@ -3048,65 +3012,64 @@ def run_external_review(
                 _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
             except ExternalInvocationError as exc:
                 try:
-                    failure_persistence_lock: Path | None = None
-                    try:
-                        failure_persistence_lock = _acquire_external_persistence_lock(
-                            root, batch_id
-                        )
-                        _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
-                        response_dir = root / "reviews" / "external" / batch_id
-                        response_dir.mkdir(parents=True, exist_ok=True)
-                        raw_path = response_dir / f"{run_id}.raw.txt"
-                        atomic_write_text(raw_path, exc.raw)
-                        failed = ExternalReviewRun(
-                            run_id=run_id,
-                            batch_id=batch_id,
-                            reviewer_id=reviewer.id,
-                            driver=reviewer.driver,
-                            role="second-opinion" if second_opinion else "primary",
-                            requested_model=reviewer.model,
-                            model_verified=False,
-                            cli_version=_command_version(reviewer.command),
-                            effort=reviewer.effort,
-                            translation_fingerprint=fingerprint,
-                            packet_sha256=reviewed_packet_sha256,
-                            prompt_version=PROMPT_VERSION,
-                            scope=scope,
-                            base_run_id=base_run.run_id if base_run else None,
-                            covered_unit_ids=covered_unit_ids,
-                            unit_fingerprints=current_unit_fingerprints,
-                            source_fingerprint=source_fingerprint,
-                            structure_fingerprint=structure_fingerprint,
-                            context_fingerprint=context_fingerprint,
-                            prompt_delivery=exc.prompt_delivery,
-                            usage=exc.usage,
-                            cost_usd=exc.cost_usd,
-                            duration_seconds=exc.duration_seconds,
-                            verdict=ExternalReviewVerdict.INCONCLUSIVE,
-                            summary=f"[{exc.failure_type}] {exc}",
-                            response_path=str(raw_path.relative_to(root)).replace(
-                                "\\", "/"
-                            ),
-                            attempts=max(exc.attempts, 1),
-                            failure_type=exc.failure_type,
-                            fallback_of=_fallback_of,
-                            attempt_log_path=(
-                                f"reviews/{batch_id}.external-attempts.jsonl"
-                            ),
-                            success=False,
-                            reviewed_at=utc_now(),
-                        )
-                        append_jsonl(_runs_path(root, batch_id), [failed])
-                        if _fallback_of:
-                            _append_fallback_lineage(
-                                root, batch_id, run_id, _fallback_of
+                    failure_cli_version = _command_version(reviewer.command)
+                    _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
+                    with _external_persistence_lock(root, batch_id):
+                        with project_write_lock(root):
+                            response_dir = root / "reviews" / "external" / batch_id
+                            response_dir.mkdir(parents=True, exist_ok=True)
+                            raw_path = response_dir / f"{run_id}.raw.txt"
+                            atomic_write_text(raw_path, exc.raw)
+                            failed = ExternalReviewRun(
+                                run_id=run_id,
+                                batch_id=batch_id,
+                                reviewer_id=reviewer.id,
+                                driver=reviewer.driver,
+                                role=(
+                                    "second-opinion" if second_opinion else "primary"
+                                ),
+                                requested_model=reviewer.model,
+                                model_verified=False,
+                                cli_version=failure_cli_version,
+                                effort=reviewer.effort,
+                                translation_fingerprint=fingerprint,
+                                packet_sha256=reviewed_packet_sha256,
+                                prompt_version=PROMPT_VERSION,
+                                scope=scope,
+                                base_run_id=base_run.run_id if base_run else None,
+                                covered_unit_ids=covered_unit_ids,
+                                unit_fingerprints=current_unit_fingerprints,
+                                source_fingerprint=source_fingerprint,
+                                structure_fingerprint=structure_fingerprint,
+                                context_fingerprint=context_fingerprint,
+                                prompt_delivery=exc.prompt_delivery,
+                                usage=exc.usage,
+                                cost_usd=exc.cost_usd,
+                                duration_seconds=exc.duration_seconds,
+                                verdict=ExternalReviewVerdict.INCONCLUSIVE,
+                                summary=f"[{exc.failure_type}] {exc}",
+                                response_path=str(
+                                    raw_path.relative_to(root)
+                                ).replace("\\", "/"),
+                                attempts=max(exc.attempts, 1),
+                                failure_type=exc.failure_type,
+                                fallback_of=_fallback_of,
+                                attempt_log_path=(
+                                    f"reviews/{batch_id}.external-attempts.jsonl"
+                                ),
+                                success=False,
+                                reviewed_at=utc_now(),
                             )
-                        status = external_review_status(root, batch_id)
-                        write_json(
-                            root / "reviews" / f"{batch_id}.external.json", status
-                        )
-                    finally:
-                        _release_external_persistence_lock(failure_persistence_lock)
+                            append_jsonl(_runs_path(root, batch_id), [failed])
+                            if _fallback_of:
+                                _append_fallback_lineage_locked(
+                                    root, batch_id, run_id, _fallback_of
+                                )
+                            status = external_review_status(root, batch_id)
+                            write_json(
+                                root / "reviews" / f"{batch_id}.external.json",
+                                status,
+                            )
                 finally:
                     _release_reviewer_reservation(root, reservation_id)
                     reservation_id = None
@@ -3132,9 +3095,23 @@ def run_external_review(
                 raise
     response_dir = root / "reviews" / "external" / batch_id
     raw_path = response_dir / f"{run_id}.raw.json"
+    try:
+        cli_version = (
+            CURSOR_HOST_SUBAGENT_VERSION
+            if from_result is not None
+            else _command_version(reviewer.command)
+        )
+    except BaseException:
+        if reservation_from_dry_run:
+            _restore_reviewer_reservation(root, reservation_id, reviewer)
+        else:
+            _release_reviewer_reservation(root, reservation_id)
+        reservation_id = None
+        raise
     persistence_paths = [
         root / "reviews" / f"{batch_id}.issues.jsonl",
         root / "reviews" / f"{batch_id}.audit.json",
+        root / "evidence" / "audits" / f"{batch_id}.jsonl",
         _runs_path(root, batch_id),
         root / "reviews" / f"{batch_id}.external.json",
         raw_path,
@@ -3143,87 +3120,93 @@ def run_external_review(
         persistence_paths.append(
             root / "reviews" / f"{batch_id}.external-fallbacks.jsonl"
         )
-    persistence_lock: Path | None = None
     persistence_snapshots: dict[Path, str | None] = {}
+    import_path = root / "reviews" / f".external-import-{run_id}.jsonl"
     try:
-        persistence_lock = _acquire_external_persistence_lock(root, batch_id)
-        persistence_snapshots = _snapshot_text_files(persistence_paths)
-        issues = _convert_issues(
-            batch_id, reviewer, actual_model, fingerprint, run_id, payload
-        )
-        import_path = root / "reviews" / f".external-import-{run_id}.jsonl"
-        write_jsonl(import_path, issues)
-        try:
-            import_review(
-                root,
-                batch_id,
-                import_path,
-                [f"external:{reviewer.id}"],
-                preserve_status=True,
-            )
-        finally:
-            import_path.unlink(missing_ok=True)
-        response_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(raw_path, raw)
-        run = ExternalReviewRun(
-            run_id=run_id,
-            batch_id=batch_id,
-            reviewer_id=reviewer.id,
-            driver=reviewer.driver,
-            role="second-opinion" if second_opinion else "primary",
-            requested_model=requested_model,
-            actual_model=actual_model,
-            actual_model_label=actual_model,
-            model_verified=True,
-            cli_version=(
-                CURSOR_HOST_SUBAGENT_VERSION
-                if from_result is not None
-                else _command_version(reviewer.command)
-            ),
-            effort=requested_effort,
-            fast_mode=fast_mode,
-            translation_fingerprint=fingerprint,
-            packet_sha256=reviewed_packet_sha256,
-            prompt_version=PROMPT_VERSION,
-            scope=scope,
-            base_run_id=base_run.run_id if base_run else None,
-            covered_unit_ids=covered_unit_ids,
-            unit_fingerprints=current_unit_fingerprints,
-            source_fingerprint=source_fingerprint,
-            structure_fingerprint=structure_fingerprint,
-            context_fingerprint=context_fingerprint,
-            duration_seconds=duration_seconds,
-            usage=usage,
-            cost_usd=cost_usd,
-            prompt_delivery=prompt_delivery,
-            verdict=ExternalReviewVerdict(payload["verdict"]),
-            summary=payload["summary"],
-            issue_ids=[issue.issue_id for issue in issues],
-            response_path=str(raw_path.relative_to(root)).replace("\\", "/"),
-            attempts=attempts,
-            fallback_of=_fallback_of,
-            attempt_log_path=(
-                None
-                if from_result is not None
-                else f"reviews/{batch_id}.external-attempts.jsonl"
-            ),
-            reviewed_at=utc_now(),
-        )
-        append_jsonl(_runs_path(root, batch_id), [run])
-        if _fallback_of:
-            _append_fallback_lineage(root, batch_id, run_id, _fallback_of)
-        status = external_review_status(root, batch_id)
-        write_json(root / "reviews" / f"{batch_id}.external.json", status)
+        with _external_persistence_lock(root, batch_id):
+            with project_write_lock(root):
+                _require_review_snapshot_current_locked(
+                    root,
+                    batch_id,
+                    covered_unit_ids,
+                    scope,
+                    fingerprint,
+                    current_unit_fingerprints,
+                    source_fingerprint,
+                    structure_fingerprint,
+                    context_fingerprint,
+                )
+                persistence_snapshots = _snapshot_text_files(persistence_paths)
+                try:
+                    issues = _convert_issues(
+                        batch_id, reviewer, actual_model, fingerprint, run_id, payload
+                    )
+                    write_jsonl(import_path, issues)
+                    _import_review_locked(root, batch_id, import_path, reviewer.id)
+                    response_dir.mkdir(parents=True, exist_ok=True)
+                    atomic_write_text(raw_path, raw)
+                    run = ExternalReviewRun(
+                        run_id=run_id,
+                        batch_id=batch_id,
+                        reviewer_id=reviewer.id,
+                        driver=reviewer.driver,
+                        role="second-opinion" if second_opinion else "primary",
+                        requested_model=requested_model,
+                        actual_model=actual_model,
+                        actual_model_label=actual_model,
+                        model_verified=True,
+                        cli_version=cli_version,
+                        effort=requested_effort,
+                        fast_mode=fast_mode,
+                        translation_fingerprint=fingerprint,
+                        packet_sha256=reviewed_packet_sha256,
+                        prompt_version=PROMPT_VERSION,
+                        scope=scope,
+                        base_run_id=base_run.run_id if base_run else None,
+                        covered_unit_ids=covered_unit_ids,
+                        unit_fingerprints=current_unit_fingerprints,
+                        source_fingerprint=source_fingerprint,
+                        structure_fingerprint=structure_fingerprint,
+                        context_fingerprint=context_fingerprint,
+                        duration_seconds=duration_seconds,
+                        usage=usage,
+                        cost_usd=cost_usd,
+                        prompt_delivery=prompt_delivery,
+                        verdict=ExternalReviewVerdict(payload["verdict"]),
+                        summary=payload["summary"],
+                        issue_ids=[issue.issue_id for issue in issues],
+                        response_path=str(raw_path.relative_to(root)).replace(
+                            "\\", "/"
+                        ),
+                        attempts=attempts,
+                        fallback_of=_fallback_of,
+                        attempt_log_path=(
+                            None
+                            if from_result is not None
+                            else f"reviews/{batch_id}.external-attempts.jsonl"
+                        ),
+                        reviewed_at=utc_now(),
+                    )
+                    append_jsonl(_runs_path(root, batch_id), [run])
+                    if _fallback_of:
+                        _append_fallback_lineage_locked(
+                            root, batch_id, run_id, _fallback_of
+                        )
+                    status = external_review_status(root, batch_id)
+                    write_json(
+                        root / "reviews" / f"{batch_id}.external.json", status
+                    )
+                except BaseException:
+                    _restore_text_files(persistence_snapshots)
+                    raise
     except BaseException:
-        if persistence_snapshots:
-            _restore_text_files(persistence_snapshots)
         if reservation_from_dry_run:
             _restore_reviewer_reservation(root, reservation_id, reviewer)
         else:
             _release_reviewer_reservation(root, reservation_id)
         raise
     finally:
-        _release_external_persistence_lock(persistence_lock)
+        import_path.unlink(missing_ok=True)
     _release_reviewer_reservation(root, reservation_id)
     reservation_id = None
     if (

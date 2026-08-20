@@ -13,6 +13,7 @@ from reportlab.pdfgen import canvas
 import littrans.external_review as external_review
 import littrans.extractor as extractor_module
 import littrans.quality as quality_module
+import littrans.rendering as rendering_module
 import littrans.storage as storage_module
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
@@ -1477,6 +1478,52 @@ def test_single_batch_render_defaults_to_short_name_and_overwrites(
     assert Path(legacy_outputs["markdown"]) == markdown_path
 
 
+def test_first_default_render_rolls_back_interrupted_publication(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_batches(
+        prepared_project, "1", max_words=300, prefix="interrupted-render"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review = prepared_project / "reviews" / "interrupted-render-empty.jsonl"
+    review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, review)
+    approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    original_atomic_write = rendering_module.atomic_write_text
+
+    def interrupt_html(path: Path, text: str) -> None:
+        if path.name == "b001.bilingual.html":
+            raise KeyboardInterrupt("seeded render publication interruption")
+        original_atomic_write(path, text)
+
+    monkeypatch.setattr(rendering_module, "atomic_write_text", interrupt_html)
+    with pytest.raises(
+        KeyboardInterrupt, match="seeded render publication interruption"
+    ):
+        render_project(prepared_project, None, batch_id=manifest.batch_id)
+    assert not list((prepared_project / "output").glob("b001.*"))
+
+    monkeypatch.setattr(
+        rendering_module, "atomic_write_text", original_atomic_write
+    )
+    outputs = render_project(prepared_project, None, batch_id=manifest.batch_id)
+    render_qa_path = Path(outputs["render_qa"])
+    markdown_path = Path(outputs["markdown"])
+    assert render_qa_path.is_file()
+    published_markdown = markdown_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        rendering_module,
+        "_render_quality_errors",
+        lambda *args, **kwargs: ["seeded structural error"],
+    )
+    with pytest.raises(ValueError, match="seeded structural error"):
+        render_project(prepared_project, None, batch_id=manifest.batch_id)
+    assert markdown_path.read_text(encoding="utf-8") == published_markdown
+
+
 def test_single_batch_default_render_rejects_a_different_batch_owner(
     prepared_project: Path,
 ) -> None:
@@ -2227,25 +2274,19 @@ def test_cursor_host_dry_run_reservations_balance_assignments(
 def test_external_persistence_lock_serializes_one_batch(
     prepared_project: Path,
 ) -> None:
-    first = external_review._acquire_external_persistence_lock(
-        prepared_project, "batch-1"
-    )
-    try:
+    with external_review._external_persistence_lock(prepared_project, "batch-1"):
         with pytest.raises(TimeoutError, match="external persistence lock"):
-            external_review._acquire_external_persistence_lock(
+            with external_review._external_persistence_lock(
                 prepared_project, "batch-1", timeout_seconds=0.01
-            )
-        other = external_review._acquire_external_persistence_lock(
+            ):
+                pass
+        with external_review._external_persistence_lock(
             prepared_project, "batch-2"
-        )
-        external_review._release_external_persistence_lock(other)
-    finally:
-        external_review._release_external_persistence_lock(first)
+        ):
+            pass
 
-    reacquired = external_review._acquire_external_persistence_lock(
-        prepared_project, "batch-1"
-    )
-    external_review._release_external_persistence_lock(reacquired)
+    with external_review._external_persistence_lock(prepared_project, "batch-1"):
+        pass
 
 
 def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:
@@ -2924,6 +2965,7 @@ def test_cursor_host_subagent_from_result_skips_cli(
     original_snapshot_text_files = external_review._snapshot_text_files
 
     def fail_persistence_snapshot(*args: object, **kwargs: object) -> None:
+        assert (prepared_project / ".littrans-write-lock").is_dir()
         raise KeyboardInterrupt("seeded persistence snapshot interruption")
 
     monkeypatch.setattr(

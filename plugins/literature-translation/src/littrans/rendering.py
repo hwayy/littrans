@@ -49,6 +49,8 @@ from littrans.storage import (
     load_project,
     project_write_lock,
     read_jsonl,
+    restore_files,
+    snapshot_files,
 )
 from littrans.verification import require_verified_extraction
 
@@ -1194,33 +1196,57 @@ def render_project(
         allow_draft=allow_draft,
     )
     render_errors = _render_quality_errors(markdown_text, html_text, units)
+    if render_errors:
+        raise ValueError(f"Rendered output failed structural QA: {render_errors}")
     with project_write_lock(root):
         if name is None and batch_id is not None:
             _require_default_output_owner(output, output_name, batch_id)
-        atomic_write_text(markdown_path, markdown_text)
-        atomic_write_text(html_path, html_text)
-        _write_quality_summary(qa_path, root, units, missing, unapproved, open_severe)
-        _write_unresolved(unresolved_path, root, selected_ids)
-        atomic_write_text(
-            render_qa_path,
-            json.dumps(
-                {
-                    "passed": not render_errors,
-                    "selection": {
-                        "batch_id": batch_id,
-                        "batch_ids": selected_batch_ids or None,
-                        "pages": sorted(pages),
-                    },
-                    "unit_ids": [unit.unit_id for unit in units],
-                    "errors": render_errors,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
+        review_batch_ids = [manifest.batch_id for manifest in content_manifests]
+        external_path = (
+            output / f"{output_name}.external-review.md"
+            if config.external_review
+            and config.external_review.enabled
+            and review_batch_ids
+            else None
         )
-        if render_errors:
-            raise ValueError(f"Rendered output failed structural QA: {render_errors}")
+        publication_paths = [
+            markdown_path,
+            html_path,
+            qa_path,
+            unresolved_path,
+            render_qa_path,
+        ]
+        if external_path is not None:
+            publication_paths.append(external_path)
+        publication_snapshot = snapshot_files(publication_paths)
+        try:
+            atomic_write_text(markdown_path, markdown_text)
+            atomic_write_text(html_path, html_text)
+            _write_quality_summary(
+                qa_path, root, units, missing, unapproved, open_severe
+            )
+            _write_unresolved(unresolved_path, root, selected_ids)
+            atomic_write_text(
+                render_qa_path,
+                json.dumps(
+                    {
+                        "passed": not render_errors,
+                        "selection": {
+                            "batch_id": batch_id,
+                            "batch_ids": selected_batch_ids or None,
+                            "pages": sorted(pages),
+                        },
+                        "unit_ids": [unit.unit_id for unit in units],
+                        "errors": render_errors,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+            )
+        except BaseException:
+            restore_files(publication_snapshot)
+            raise
         outputs = {
             "markdown": str(markdown_path),
             "html": str(html_path),
@@ -1228,10 +1254,14 @@ def render_project(
             "unresolved": str(unresolved_path),
             "render_qa": str(render_qa_path),
         }
-        review_batch_ids = [manifest.batch_id for manifest in content_manifests]
-        if config.external_review and config.external_review.enabled and review_batch_ids:
-            external_path = output / f"{output_name}.external-review.md"
-            _write_external_review_summary_set(external_path, root, review_batch_ids)
+        if external_path is not None:
+            try:
+                _write_external_review_summary_set(
+                    external_path, root, review_batch_ids
+                )
+            except BaseException:
+                restore_files(publication_snapshot)
+                raise
             outputs["external_review"] = str(external_path)
     return outputs
 

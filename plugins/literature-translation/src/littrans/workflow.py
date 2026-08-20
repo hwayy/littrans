@@ -1185,30 +1185,50 @@ def prune_workflow_packets(
             continue
         for path in packet_root.glob("*/manifest.json"):
             manifest = WorkflowPacketManifest.model_validate(read_json(path))
+            packet_batches_resolved = all(
+                batch_id in known_manifests for batch_id in manifest.batch_ids
+            ) and (
+                not manifest.batch_unit_ids
+                or set(manifest.batch_unit_ids) == set(manifest.batch_ids)
+            )
+            batch_coverage = {
+                batch_id: (
+                    manifest.batch_unit_ids.get(batch_id, [])
+                    if manifest.batch_unit_ids
+                    else [
+                        unit_id
+                        for unit_id in known_manifests[batch_id].unit_ids
+                        if unit_id in manifest.unit_ids
+                    ]
+                )
+                for batch_id in manifest.batch_ids
+                if batch_id in known_manifests
+            }
             required_batches = [
                 batch_id
                 for batch_id in manifest.batch_ids
-                if manifest.batch_unit_ids.get(batch_id, manifest.unit_ids)
+                if batch_coverage.get(batch_id)
             ]
             expected_fingerprints = {
                 batch_id: {
                     unit_id: manifest.unit_fingerprints[unit_id]
-                    for unit_id in (
-                        manifest.batch_unit_ids.get(batch_id)
-                        or [
-                            unit_id
-                            for unit_id in known_manifests[batch_id].unit_ids
-                            if unit_id in manifest.unit_ids
-                        ]
-                    )
+                    for unit_id in batch_coverage[batch_id]
                     if unit_id in manifest.unit_fingerprints
                 }
                 for batch_id in required_batches
-                if batch_id in known_manifests
             }
+            fingerprints_complete = all(
+                all(
+                    unit_id in manifest.unit_fingerprints
+                    for unit_id in batch_coverage[batch_id]
+                )
+                for batch_id in required_batches
+            )
             completely_imported = (
                 manifest.stage == "audit"
+                and packet_batches_resolved
                 and bool(required_batches)
+                and fingerprints_complete
                 and len(expected_fingerprints) == len(required_batches)
                 and all(
                 any(
