@@ -2885,6 +2885,10 @@ def test_cursor_host_subagent_from_result_skips_cli(
     assert primary["model_verified"] is True
     assert primary["packet_sha256"] == dry_run["packet_sha256"]
     assert primary["packet_sha256"] != dry_run["base_packet_sha256"]
+    assert primary["attempt_log_path"] is None
+    assert not (
+        prepared_project / "reviews" / f"{manifest.batch_id}.external-attempts.jsonl"
+    ).exists()
     assert not reservation_path.exists()
 
     repeat_dry_run = external_review.run_external_review(

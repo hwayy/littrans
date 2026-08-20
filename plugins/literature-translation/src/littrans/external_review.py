@@ -3066,7 +3066,11 @@ def run_external_review(
             response_path=str(raw_path.relative_to(root)).replace("\\", "/"),
             attempts=attempts,
             fallback_of=_fallback_of,
-            attempt_log_path=f"reviews/{batch_id}.external-attempts.jsonl",
+            attempt_log_path=(
+                None
+                if from_result is not None
+                else f"reviews/{batch_id}.external-attempts.jsonl"
+            ),
             reviewed_at=utc_now(),
         )
         append_jsonl(_runs_path(root, batch_id), [run])
