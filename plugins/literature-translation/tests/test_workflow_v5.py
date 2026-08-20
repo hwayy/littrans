@@ -361,6 +361,32 @@ def test_resume_boundary_skips_retained_historic_manifests(tmp_path: Path) -> No
     assert bounded["batch_ids"] == active_ids
 
 
+def test_resume_boundary_skips_interleaved_overlapping_history(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=4, max_words=100)
+    active_ids = [batch.batch_id for batch in manifests[:3]]
+    overlapping = manifests[1].model_copy(
+        update={
+            "batch_id": "part-iii-final-b001",
+            "created_at": "2099-01-01T00:00:00+00:00",
+        }
+    )
+    overlapping_root = root / "batches" / overlapping.batch_id
+    overlapping_root.mkdir()
+    write_yaml(
+        overlapping_root / "manifest.yaml", overlapping.model_dump(mode="json")
+    )
+
+    bounded = workflow_module.workflow_next(
+        root,
+        start_at=active_ids[0],
+        through=active_ids[2],
+        host="cursor",
+    )
+
+    assert bounded["stage"] == "translate"
+    assert bounded["batch_ids"] == active_ids
+
+
 def test_workflow_status_rechecks_audit_packet_dependency_closure(
     tmp_path: Path,
 ) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections import Counter
 from collections.abc import Iterable
@@ -192,6 +193,36 @@ def _all_manifests(root: Path) -> list[BatchManifest]:
     )
 
 
+BATCH_SERIES_RE = re.compile(r"^(?P<series>.+)-b\d+$")
+
+
+def _batch_series(batch_id: str | None) -> str | None:
+    if batch_id is None:
+        return None
+    match = BATCH_SERIES_RE.fullmatch(batch_id)
+    return match.group("series") if match else None
+
+
+def _bounded_manifest_series(
+    manifests: list[BatchManifest], start_at: str | None, through: str | None
+) -> list[BatchManifest]:
+    """Keep a resumed range on the lineage identified by its boundary IDs."""
+    start_series = _batch_series(start_at)
+    through_series = _batch_series(through)
+    active_series = start_series or through_series
+    if active_series is None or (
+        start_series is not None
+        and through_series is not None
+        and start_series != through_series
+    ):
+        return manifests
+    return [
+        manifest
+        for manifest in manifests
+        if _batch_series(manifest.batch_id) == active_series
+    ]
+
+
 def _batch_stage(
     root: Path,
     batch_id: str,
@@ -285,7 +316,9 @@ def workflow_next(
     resolved_limit = resolve_wave_limit(resolved_host, limit)
     external_batch_ids: set[str] | None = None
     if start_at is not None or through is not None:
-        ordered = _all_manifests(root)
+        ordered = _bounded_manifest_series(
+            _all_manifests(root), start_at, through
+        )
         ordered_indexes = {
             manifest.batch_id: index for index, manifest in enumerate(ordered)
         }
@@ -303,6 +336,7 @@ def workflow_next(
     snapshot = _load_workflow_snapshot(root, external_batch_ids)
     manifests = list(snapshot.manifests)
     all_manifests = list(manifests)
+    manifests = _bounded_manifest_series(manifests, start_at, through)
     units = list(snapshot.units)
     unit_map = snapshot.unit_map
     indexes = {manifest.batch_id: index for index, manifest in enumerate(manifests)}
@@ -332,7 +366,7 @@ def workflow_next(
         manifest.batch_id: [
             unit_id for unit_id in manifest.unit_ids if unit_id not in unit_map
         ]
-        for manifest in all_manifests
+        for manifest in manifests
         if any(unit_id not in unit_map for unit_id in manifest.unit_ids)
     }
     if removed_manifest_units:
@@ -343,7 +377,7 @@ def workflow_next(
         )
     stale_translatability = [
         manifest.batch_id
-        for manifest in all_manifests
+        for manifest in manifests
         if manifest.translatable_unit_ids
         != [
             unit_id
@@ -356,7 +390,7 @@ def workflow_next(
             "Workflow manifests have stale translatable-unit scope; refresh the "
             f"affected batches before continuing: batch_ids={stale_translatability}"
         )
-    manifests = all_manifests[lower : upper + 1]
+    manifests = manifests[lower : upper + 1]
     context_cache: dict[
         tuple[str, ...], tuple[str, dict[str, str]] | None
     ] = {}
