@@ -1954,27 +1954,55 @@ def _process_is_running(pid: int) -> bool:
     return True
 
 
-def _reclaim_stale_provider_lock(lock_dir: Path, grace_seconds: float = 30.0) -> bool:
-    owner_path = lock_dir / "owner.json"
+def _provider_lock_is_stale(lock_dir: Path, grace_seconds: float) -> bool:
     try:
-        owner = json.loads(owner_path.read_text(encoding="utf-8"))
+        owner = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
         pid = int(owner["pid"])
     except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         try:
-            stale = time.time() - lock_dir.stat().st_mtime > grace_seconds
+            return time.time() - lock_dir.stat().st_mtime > grace_seconds
         except FileNotFoundError:
             return True
-        if not stale:
-            return False
-    else:
-        if _process_is_running(pid):
-            return False
+    return not _process_is_running(pid)
+
+
+def _reclaim_stale_provider_lock(
+    lock_dir: Path, takeover_dir: Path, grace_seconds: float = 30.0
+) -> bool:
     try:
-        owner_path.unlink(missing_ok=True)
-        lock_dir.rmdir()
-    except (FileNotFoundError, OSError):
-        return not lock_dir.exists()
-    return True
+        takeover_dir.mkdir()
+    except FileExistsError:
+        return False
+    try:
+        # Re-read under a separate atomic takeover mutex. A second waiter cannot
+        # act on an owner it observed before the first waiter acquired a new lock.
+        if not _provider_lock_is_stale(lock_dir, grace_seconds):
+            return False
+        quarantine = lock_dir.with_name(
+            f".{lock_dir.name}.stale-{uuid.uuid4().hex}"
+        )
+        try:
+            lock_dir.replace(quarantine)
+        except FileNotFoundError:
+            return True
+        # A crash during atomic_write_text can leave only its known temporary file.
+        # The quarantined directory no longer blocks acquisition; remove only files
+        # belonging to the lock protocol and leave unexpected contents quarantined.
+        for path in quarantine.iterdir():
+            if path.is_file() and (
+                path.name == "owner.json" or path.name.startswith(".owner.json.")
+            ):
+                path.unlink(missing_ok=True)
+        try:
+            quarantine.rmdir()
+        except OSError:
+            pass
+        return True
+    finally:
+        try:
+            takeover_dir.rmdir()
+        except FileNotFoundError:
+            pass
 
 
 @contextmanager
@@ -1988,6 +2016,7 @@ def _provider_call_lock(
     lock_root.mkdir(parents=True, exist_ok=True)
     service = re.sub(r"[^a-z0-9._-]+", "-", reviewer.driver.value.casefold())
     lock_dir = lock_root / f"{service}.lock"
+    takeover_dir = lock_root / f"{service}.takeover"
     owner_path = lock_dir / "owner.json"
     owner_token = uuid.uuid4().hex
     deadline = time.monotonic() + timeout_seconds
@@ -2013,7 +2042,7 @@ def _provider_call_lock(
                 raise
             break
         except FileExistsError:
-            if _reclaim_stale_provider_lock(lock_dir):
+            if _reclaim_stale_provider_lock(lock_dir, takeover_dir):
                 continue
             if time.monotonic() >= deadline:
                 raise TimeoutError(

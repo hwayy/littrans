@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -814,8 +815,45 @@ def test_provider_lock_reclaims_owner_from_terminated_process(tmp_path: Path) ->
         encoding="utf-8",
     )
 
+    active = 0
+    maximum = 0
+    guard = threading.Lock()
+    errors: list[BaseException] = []
+
+    def enter() -> None:
+        nonlocal active, maximum
+        try:
+            with external_review._provider_call_lock(tmp_path, reviewer, 2):
+                with guard:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.05)
+                with guard:
+                    active -= 1
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=enter) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert maximum == 1
+    assert not lock_dir.exists()
+
+
+def test_provider_lock_reclaims_half_written_owner_directory(tmp_path: Path) -> None:
+    reviewer = _reviewer()
+    lock_root = tmp_path / ".littrans" / "external-provider-locks"
+    lock_dir = lock_root / "claude-code.lock"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / ".owner.json.interrupted").write_text("partial", encoding="utf-8")
+    os.utime(lock_dir, (0, 0))
+
     with external_review._provider_call_lock(tmp_path, reviewer, 1):
-        owner = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
-        assert owner["token"] != "terminated-owner"
+        assert (lock_dir / "owner.json").is_file()
 
     assert not lock_dir.exists()
+    assert not list(lock_root.glob(".claude-code.lock.stale-*"))
