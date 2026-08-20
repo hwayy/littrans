@@ -9,9 +9,10 @@ Use the launcher in `../../references/runtime.md` for every command and the loca
 
 ## Freeze a wave
 
-1. Run `workflow next PROJECT` once to select one consecutive same-stage wave. The CLI auto-detects the coordinating host; pass `--host cursor` or `--host codex` to override. Codex defaults to `--limit 3` with a hard max of 3. Cursor defaults to `--limit 6` with a hard max of 9. Pass `--limit` only within that host's max, or when the user requests a different legal wave size.
-2. Keep those batch IDs fixed until completion. Use `workflow status PROJECT --batch-ids IDS` thereafter; do not rescan the project with `workflow next`.
-3. Give each writer or reviewer a fresh, minimal-context local task containing only its packet. Never pass prior findings, expected verdicts, or another agent's rationale.
+1. Establish the active resume boundary before selecting a wave. For a new project with no historic manifests, unbounded `workflow next PROJECT` is valid. For every resumed project that retains earlier manifests, recover the exact first in-scope batch ID from the user's durable checkpoint, the preceding wave handoff, or project-local continuation instructions, and run `workflow next PROJECT --start-at ID`. Add `--through ID` when the requested continuation has a fixed upper boundary. Never infer the boundary from the first globally incomplete manifest: historic batches can intentionally remain incomplete under the current translation ledger. If no durable boundary can be established, stop and ask the user instead of scanning from the beginning.
+2. Run that bounded `workflow next` once to select one consecutive same-stage wave. The CLI auto-detects the coordinating host; pass `--host cursor` or `--host codex` to override. Codex defaults to `--limit 3` with a hard max of 3. Cursor defaults to `--limit 6` with a hard max of 9. Pass `--limit` only within that host's max, or when the user requests a different legal wave size.
+3. Keep those batch IDs fixed until completion. Use `workflow status PROJECT --batch-ids IDS` thereafter; do not rescan the project with `workflow next`.
+4. Give each writer or reviewer a fresh, minimal-context local task containing only its packet. Never pass prior findings, expected verdicts, or another agent's rationale.
 
 If status is `revise`, handle only the affected batches. Consolidate all current issues for a batch into one revision pass, resolve or waive them with evidence, then run the closure requested by `workflow status`; do not block clean batches in the wave.
 
@@ -44,4 +45,4 @@ The default short name is ownership-checked through its render-QA record. Do not
 
 `--batch-ids` combined rendering (one to nine consecutive batches) and `--pages` remain available for later collection or whole-book reading artifacts. They are not required in the regular translation wave.
 
-Report batch IDs, current lens coverage, unresolved issues, external verdicts, and output paths. Only then select another wave with `workflow next`.
+Report batch IDs, current lens coverage, unresolved issues, external verdicts, and output paths. Record the first batch after the completed frozen wave as the next durable resume boundary, then select another wave with bounded `workflow next PROJECT --start-at ID`.

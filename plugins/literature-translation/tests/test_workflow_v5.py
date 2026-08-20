@@ -205,3 +205,17 @@ def test_next_and_status_load_translations_once_per_snapshot(
     assert calls == 1
     workflow_status(root, [batch.batch_id for batch in manifests])
     assert calls == 2
+
+
+def test_resume_boundary_skips_retained_historic_manifests(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=6, max_words=100)
+    historic_ids = [batch.batch_id for batch in manifests[:3]]
+    active_ids = [batch.batch_id for batch in manifests[3:6]]
+
+    assert workflow_module.workflow_next(root, host="codex")["batch_ids"] == historic_ids
+    bounded = workflow_module.workflow_next(
+        root, start_at=active_ids[0], host="codex"
+    )
+
+    assert bounded["stage"] == "translate"
+    assert bounded["batch_ids"] == active_ids
