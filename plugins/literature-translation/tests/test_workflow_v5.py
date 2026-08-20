@@ -7,11 +7,19 @@ from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 import littrans.workflow as workflow_module
 from littrans.batching import refresh_batch
-from littrans.models import IssueType, ReviewIssue, Severity, SourceUnit
+from littrans.models import (
+    ExternalReviewConfig,
+    ExternalReviewerConfig,
+    IssueType,
+    ReviewIssue,
+    Severity,
+    SidebarRole,
+    SourceUnit,
+)
 from littrans.project import translation_map
 from littrans.quality import audit_coverage, import_review, run_qa
 from littrans.rendering import render_project
-from littrans.storage import read_jsonl, write_jsonl
+from littrans.storage import load_project, read_jsonl, save_project, write_jsonl
 from littrans.verification import verify_extraction
 from littrans.workflow import (
     create_workflow_packet,
@@ -277,3 +285,42 @@ def test_single_batch_render_includes_cross_batch_continuation_chain(
     assert f'<a id="{units[1].unit_id}"></a>' in markdown
     assert "中文译文甲" in markdown
     assert "中文译文乙" in markdown
+
+
+def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first, second = manifests
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(
+        update={"sidebar_id": "cross-batch-sidebar", "sidebar_role": SidebarRole.BODY}
+    )
+    units[1] = units[1].model_copy(
+        update={"sidebar_id": "cross-batch-sidebar", "sidebar_role": SidebarRole.BODY}
+    )
+    write_jsonl(units_path, units)
+    for batch in manifests:
+        refresh_batch(root, batch.batch_id)
+        _submit(root, batch.batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+
+    outputs = render_project(root, None, batch_id=first.batch_id, allow_draft=True)
+    summary = Path(outputs["external_review"]).read_text(encoding="utf-8")
+
+    assert f"## {first.batch_id}" in summary
+    assert f"## {second.batch_id}" in summary

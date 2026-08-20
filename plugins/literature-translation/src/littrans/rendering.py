@@ -664,6 +664,24 @@ def render_project(
     grouped_unit_ids = {**grouped_code_ids, **grouped_table_ids}
     translations = translation_map(root)
     selected_ids = {unit.unit_id for unit in units}
+    content_manifests = manifests
+    if manifests:
+        covered_by_selected_manifests = {
+            unit_id for manifest in manifests for unit_id in manifest.unit_ids
+        }
+        if selected_ids - covered_by_selected_manifests:
+            dependency_manifests = [
+                manifest
+                for path in (root / "batches").iterdir()
+                if path.is_dir()
+                and (path / "manifest.yaml").is_file()
+                for manifest in [load_manifest(root, path.name)]
+                if selected_ids & set(manifest.unit_ids)
+            ]
+            content_manifests = (
+                _manifest_cover(selected_ids, dependency_manifests)
+                or dependency_manifests
+            )
     missing = [
         unit.unit_id for unit in units if unit.translatable and unit.unit_id not in translations
     ]
@@ -679,24 +697,8 @@ def render_project(
     stale_external: list[str] = []
     unbatched_units: list[str] = []
     if not allow_draft:
-        relevant_manifests = manifests
+        relevant_manifests = content_manifests
         gate_status: dict[str, tuple[bool, bool, bool]] = {}
-        covered_by_selected_manifests = {
-            unit_id for manifest in relevant_manifests for unit_id in manifest.unit_ids
-        }
-        if selected_ids - covered_by_selected_manifests:
-            dependency_manifests = [
-                manifest
-                for path in (root / "batches").iterdir()
-                if path.is_dir()
-                and (path / "manifest.yaml").is_file()
-                for manifest in [load_manifest(root, path.name)]
-                if selected_ids & set(manifest.unit_ids)
-            ]
-            relevant_manifests = (
-                _manifest_cover(selected_ids, dependency_manifests)
-                or dependency_manifests
-            )
         if not relevant_manifests:
             candidate_manifests = [
                 manifest
@@ -1191,9 +1193,10 @@ def render_project(
             "unresolved": str(unresolved_path),
             "render_qa": str(render_qa_path),
         }
-        if config.external_review and config.external_review.enabled and selected_batch_ids:
+        review_batch_ids = [manifest.batch_id for manifest in content_manifests]
+        if config.external_review and config.external_review.enabled and review_batch_ids:
             external_path = output / f"{output_name}.external-review.md"
-            _write_external_review_summary_set(external_path, root, selected_batch_ids)
+            _write_external_review_summary_set(external_path, root, review_batch_ids)
             outputs["external_review"] = str(external_path)
     return outputs
 
