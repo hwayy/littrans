@@ -128,6 +128,54 @@ def test_import_returns_stable_id_map_and_prune_requires_imported_packet(
     assert dry_run["removed"] == []
 
 
+def test_review_set_import_rolls_back_every_batch_on_late_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    batch_ids = [batch.batch_id for batch in manifests]
+    for batch_id in batch_ids:
+        _submit(root, batch_id)
+        assert run_qa(root, batch_id).passed
+    packet = create_workflow_packet(root, "audit", batch_ids, "fidelity")
+    assert not isinstance(packet, list)
+    issues = root / "reviews" / "empty-transaction.jsonl"
+    write_jsonl(issues, [])
+
+    tracked = [root / "translations" / "current.jsonl", root / "project.yaml"]
+    for batch_id in batch_ids:
+        tracked.extend(
+            [
+                root / "reviews" / f"{batch_id}.issues.jsonl",
+                root / "evidence" / "audits" / f"{batch_id}.jsonl",
+                root / "reviews" / f"{batch_id}.audit.json",
+            ]
+        )
+    before = {path: path.read_bytes() if path.exists() else None for path in tracked}
+    original_apply = workflow_module._apply_review_import_locked
+    calls = 0
+
+    def interrupt_after_persisting_later_batch(project: Path, plan: object) -> object:
+        nonlocal calls
+        result = original_apply(project, plan)  # type: ignore[arg-type]
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt("seeded later-batch interruption")
+        return result
+
+    monkeypatch.setattr(
+        workflow_module, "_apply_review_import_locked", interrupt_after_persisting_later_batch
+    )
+    with pytest.raises(KeyboardInterrupt, match="seeded later-batch interruption"):
+        import_review_set(
+            root,
+            root / packet.storage_root / packet.packet_id / "manifest.json",
+            issues,
+        )
+
+    after = {path: path.read_bytes() if path.exists() else None for path in tracked}
+    assert after == before
+
+
 def test_packet_issue_ids_are_stable_on_idempotent_import(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=1)
     batch = manifests[0]

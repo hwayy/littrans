@@ -45,8 +45,10 @@ from littrans.storage import (
     load_project,
     project_write_lock,
     read_jsonl,
+    restore_files,
     save_project,
     sha256_text,
+    snapshot_files,
     write_json,
     write_jsonl,
 )
@@ -1314,24 +1316,37 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                 project_config.status = ProjectStatus.DRAFT
 
             # No authoritative file is replaced until the complete staged snapshot,
-            # including derived issue state and generated crops, has validated.
-            # Publish new assets first: a later ledger failure can only leave an
-            # unreferenced crop, while an asset failure cannot leave ledgers that
-            # point at missing or stale bytes.
-            for temporary_asset, destination in pending_assets:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                temporary_asset.replace(destination)
-            write_jsonl(units_path, updated)
+            # including derived issue state and generated crops, has validated. Keep
+            # exact pre-mutation bytes so interruption or any later write failure
+            # restores the entire project view, including overwritten/new assets.
+            translations_path = project_root / "translations" / "current.jsonl"
+            mutation_paths = [units_path]
             if translations:
-                write_jsonl(
-                    project_root / "translations" / "current.jsonl", staged_translations
-                )
+                mutation_paths.append(translations_path)
             if project_config is not None and (
                 invalidated_translation_ids or removed_translation_ids
             ):
-                save_project(project_root, project_config)
+                mutation_paths.append(project_root / "project.yaml")
             if issues:
-                write_jsonl(issues_path, reconciled)
+                mutation_paths.append(issues_path)
+            mutation_paths.extend(destination for _, destination in pending_assets)
+            snapshots = snapshot_files(mutation_paths)
+            try:
+                for temporary_asset, destination in pending_assets:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    temporary_asset.replace(destination)
+                write_jsonl(units_path, updated)
+                if translations:
+                    write_jsonl(translations_path, staged_translations)
+                if project_config is not None and (
+                    invalidated_translation_ids or removed_translation_ids
+                ):
+                    save_project(project_root, project_config)
+                if issues:
+                    write_jsonl(issues_path, reconciled)
+            except BaseException:
+                restore_files(snapshots)
+                raise
         finally:
             if document is not None:
                 document.close()

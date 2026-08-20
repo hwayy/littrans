@@ -56,8 +56,10 @@ from littrans.storage import (
     read_json,
     read_jsonl,
     require_current_project_schema,
+    restore_files,
     sha256_file,
     sha256_text,
+    snapshot_files,
     write_json,
 )
 
@@ -1002,8 +1004,22 @@ def import_review_set(
                     context_unit_ids=context_ids,
                 )
             )
+        mutation_paths = [root / "translations" / "current.jsonl", root / "project.yaml"]
         for plan in plans:
-            _apply_review_import_locked(root, plan)
+            mutation_paths.extend(
+                [
+                    root / "reviews" / f"{plan.batch_id}.issues.jsonl",
+                    root / "evidence" / "audits" / f"{plan.batch_id}.jsonl",
+                    root / "reviews" / f"{plan.batch_id}.audit.json",
+                ]
+            )
+        snapshots = snapshot_files(mutation_paths)
+        try:
+            for plan in plans:
+                _apply_review_import_locked(root, plan)
+        except BaseException:
+            restore_files(snapshots)
+            raise
     return {
         "packet_id": manifest.packet_id,
         "lens": manifest.lens,

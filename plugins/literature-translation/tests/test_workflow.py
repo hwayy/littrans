@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 import littrans.external_review as external_review
+import littrans.extractor as extractor_module
 import littrans.quality as quality_module
 import littrans.storage as storage_module
 from littrans.batching import create_batches, load_manifest, refresh_batch
@@ -52,6 +53,7 @@ from littrans.models import (
     ExternalReviewerConfig,
     ExternalReviewRun,
     ExternalReviewVerdict,
+    ExtractionIssue,
     FigureLabel,
     IssueStatus,
     IssueType,
@@ -393,6 +395,83 @@ def test_equation_asset_failure_does_not_replace_authoritative_units(
         apply_layout_overrides(prepared_project)
 
     assert units_path.read_bytes() == before
+
+
+def test_late_override_interruption_restores_ledgers_and_published_asset(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    units_path = prepared_project / "derived" / "units.jsonl"
+    translations_path = prepared_project / "translations" / "current.jsonl"
+    issues_path = prepared_project / "derived" / "extraction-issues.jsonl"
+    project_path = prepared_project / "project.yaml"
+    unit = next(
+        item
+        for item in read_jsonl(units_path, SourceUnit)
+        if item.kind is UnitKind.PARAGRAPH and item.translatable
+    )
+    write_jsonl(
+        translations_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="事务回滚测试译文。",
+                source_hash=unit.source_hash,
+                status=ProjectStatus.EXTERNAL_REVIEWED,
+            )
+        ],
+    )
+    config = load_project(prepared_project)
+    config.status = ProjectStatus.EXTERNAL_REVIEWED
+    save_project(prepared_project, config)
+    write_jsonl(
+        issues_path,
+        [
+            ExtractionIssue(
+                issue_id="layout-transaction",
+                page=unit.page,
+                unit_id=unit.unit_id,
+                severity=Severity.MINOR,
+                code="math-needs-verification",
+                message="Verify the reclassified display equation.",
+            )
+        ],
+    )
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "kind": "equation",
+                    "latex": "a=b",
+                    "verified": True,
+                    "reason": "Verified display equation against the PDF.",
+                }
+            ]
+        },
+    )
+    asset_path = (
+        prepared_project
+        / "derived"
+        / "assets"
+        / f"page-{unit.page:04}-equation-override-{unit.unit_id}.png"
+    )
+    tracked = [units_path, translations_path, project_path, issues_path]
+    before = {path: path.read_bytes() for path in tracked}
+    assert not asset_path.exists()
+    original_write_jsonl = extractor_module.write_jsonl
+
+    def interrupt_issue_write(path: Path, records: object) -> None:
+        if path == issues_path:
+            raise KeyboardInterrupt("seeded late override interruption")
+        original_write_jsonl(path, records)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(extractor_module, "write_jsonl", interrupt_issue_write)
+    with pytest.raises(KeyboardInterrupt, match="seeded late override interruption"):
+        apply_layout_overrides(prepared_project)
+
+    assert {path: path.read_bytes() for path in tracked} == before
+    assert not asset_path.exists()
 
 
 def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
