@@ -638,6 +638,7 @@ def audit_coverage(
                     root,
                     [batch_id],
                     run.unit_fingerprints,
+                    all_units=list(all_units.values()),
                 )
             )
             if not required_context_ids.issubset(context_ids):

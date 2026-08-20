@@ -15,7 +15,11 @@ from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from littrans.batching import load_manifest
-from littrans.evidence import effective_figure_labels, equation_markdown
+from littrans.evidence import (
+    dependency_closure,
+    effective_figure_labels,
+    equation_markdown,
+)
 from littrans.extractor import parse_page_spec
 from littrans.hosts import WAVE_BATCH_SET_MAX
 from littrans.models import (
@@ -620,8 +624,6 @@ def render_project(
         if manifests
         else set(parse_page_spec(page_spec or "", config.source_pages))
     )
-    if not allow_draft:
-        require_verified_extraction(root, pages)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     if manifests:
         unit_map = {unit.unit_id: unit for unit in all_units}
@@ -642,11 +644,21 @@ def render_project(
         ]
         if missing_manifest_units:
             raise ValueError(f"Batch references missing source units: {missing_manifest_units}")
-        selected_set = set(selected_manifest_unit_ids)
+        selected_set = set(
+            dependency_closure(
+                root,
+                [manifest.batch_id for manifest in manifests],
+                selected_manifest_unit_ids,
+                all_units=all_units,
+            )
+        )
         units = [unit for unit in all_units if unit.unit_id in selected_set]
     else:
         units = [unit for unit in all_units if unit.page in pages]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
+    pages |= {unit.page for unit in units}
+    if not allow_draft:
+        require_verified_extraction(root, pages)
     render_units, grouped_code_ids = _coalesce_code_units(units)
     render_units, grouped_table_ids = _coalesce_table_units(render_units)
     grouped_unit_ids = {**grouped_code_ids, **grouped_table_ids}
@@ -669,6 +681,22 @@ def render_project(
     if not allow_draft:
         relevant_manifests = manifests
         gate_status: dict[str, tuple[bool, bool, bool]] = {}
+        covered_by_selected_manifests = {
+            unit_id for manifest in relevant_manifests for unit_id in manifest.unit_ids
+        }
+        if selected_ids - covered_by_selected_manifests:
+            dependency_manifests = [
+                manifest
+                for path in (root / "batches").iterdir()
+                if path.is_dir()
+                and (path / "manifest.yaml").is_file()
+                for manifest in [load_manifest(root, path.name)]
+                if selected_ids & set(manifest.unit_ids)
+            ]
+            relevant_manifests = (
+                _manifest_cover(selected_ids, dependency_manifests)
+                or dependency_manifests
+            )
         if not relevant_manifests:
             candidate_manifests = [
                 manifest

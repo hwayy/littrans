@@ -35,7 +35,7 @@ When the coordinating host is Cursor, a `cursor-cli` review may use a local host
 
 ## Finish
 
-As soon as a batch independently passes its configured formal-render gate, render that batch alone. Omit `--name` to use the short batch key (the final `-bNNN` segment), writing `output/bNNN.*`. Later updates to the same batch overwrite those files. If another batch already owns that short name, the CLI refuses to overwrite it; rerun with an explicit unique `--name`.
+As soon as a batch independently passes its configured formal-render gate, render that batch with `--batch-id`. Omit `--name` to use the short batch key (the final `-bNNN` segment), writing `output/bNNN.*`. The renderer automatically includes the full cross-batch continuation/sidebar dependency chain. A formal render can therefore wait for a dependency batch's gate even when the selected batch itself is complete; never bypass that gate or accept a truncated logical structure. Later updates to the same batch overwrite those files. If another batch already owns that short name, the CLI refuses to overwrite it; rerun with an explicit unique `--name`.
 
 ```text
 littrans render PROJECT --batch-id ID

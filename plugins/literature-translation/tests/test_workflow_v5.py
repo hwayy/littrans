@@ -3,14 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_efficiency_v4 import _make_project, _submit
+from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 import littrans.workflow as workflow_module
 from littrans.batching import refresh_batch
 from littrans.models import IssueType, ReviewIssue, Severity, SourceUnit
 from littrans.project import translation_map
 from littrans.quality import audit_coverage, import_review, run_qa
+from littrans.rendering import render_project
 from littrans.storage import read_jsonl, write_jsonl
+from littrans.verification import verify_extraction
 from littrans.workflow import (
     create_workflow_packet,
     import_review_set,
@@ -219,3 +221,59 @@ def test_resume_boundary_skips_retained_historic_manifests(tmp_path: Path) -> No
 
     assert bounded["stage"] == "translate"
     assert bounded["batch_ids"] == active_ids
+
+
+def test_workflow_status_rechecks_audit_packet_dependency_closure(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first = manifests[0]
+    _submit(root, first.batch_id)
+    assert run_qa(root, first.batch_id).passed
+    for lens in ("fidelity", "technical", "chinese-style"):
+        packet = create_workflow_packet(root, "audit", [first.batch_id], lens)
+        assert not isinstance(packet, list)
+        issues = root / packet.storage_root / packet.packet_id / "issues.jsonl"
+        write_jsonl(issues, [])
+        import_review_set(
+            root,
+            root / packet.storage_root / packet.packet_id / "manifest.json",
+            issues,
+        )
+    assert workflow_status(root, [first.batch_id])["stage"] == "machine-approve"
+
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[1] = units[1].model_copy(update={"continues_from_previous": True})
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+
+    assert not audit_coverage(root, first.batch_id)["complete"]
+    assert workflow_status(root, [first.batch_id])["stage"] == "audit"
+
+
+def test_single_batch_render_includes_cross_batch_continuation_chain(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first, second = manifests
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(update={"continued_to_next": True})
+    units[1] = units[1].model_copy(update={"continues_from_previous": True})
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+    for batch in manifests:
+        refresh_batch(root, batch.batch_id)
+    _submit(root, first.batch_id, suffix="甲")
+    _submit(root, second.batch_id, suffix="乙")
+    _audit_and_approve(root, first.batch_id)
+    _audit_and_approve(root, second.batch_id)
+
+    outputs = render_project(root, None, batch_id=first.batch_id)
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+
+    assert f'<a id="{units[0].unit_id}"></a>' in markdown
+    assert f'<a id="{units[1].unit_id}"></a>' in markdown
+    assert "中文译文甲" in markdown
+    assert "中文译文乙" in markdown

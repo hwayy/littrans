@@ -223,7 +223,6 @@ def _batch_stage(
         translations=translations,
         runs=snapshot.audit_runs[batch_id],
         context_cache=context_cache,
-        validate_packet_closure=False,
     )["complete"]:
         return "audit"
     open_issues = [
