@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1939,6 +1940,43 @@ def _runs_path(root: Path, batch_id: str) -> Path:
     return root / "reviews" / f"{batch_id}.external-runs.jsonl"
 
 
+def _process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _reclaim_stale_provider_lock(lock_dir: Path, grace_seconds: float = 30.0) -> bool:
+    owner_path = lock_dir / "owner.json"
+    try:
+        owner = json.loads(owner_path.read_text(encoding="utf-8"))
+        pid = int(owner["pid"])
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        try:
+            stale = time.time() - lock_dir.stat().st_mtime > grace_seconds
+        except FileNotFoundError:
+            return True
+        if not stale:
+            return False
+    else:
+        if _process_is_running(pid):
+            return False
+    try:
+        owner_path.unlink(missing_ok=True)
+        lock_dir.rmdir()
+    except (FileNotFoundError, OSError):
+        return not lock_dir.exists()
+    return True
+
+
 @contextmanager
 def _provider_call_lock(
     root: Path,
@@ -1950,12 +1988,33 @@ def _provider_call_lock(
     lock_root.mkdir(parents=True, exist_ok=True)
     service = re.sub(r"[^a-z0-9._-]+", "-", reviewer.driver.value.casefold())
     lock_dir = lock_root / f"{service}.lock"
+    owner_path = lock_dir / "owner.json"
+    owner_token = uuid.uuid4().hex
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             lock_dir.mkdir()
+            try:
+                atomic_write_text(
+                    owner_path,
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "token": owner_token,
+                            "created_at": time.time(),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n",
+                )
+            except BaseException:
+                owner_path.unlink(missing_ok=True)
+                lock_dir.rmdir()
+                raise
             break
         except FileExistsError:
+            if _reclaim_stale_provider_lock(lock_dir):
+                continue
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"Timed out waiting for external provider lock: {lock_dir}"
@@ -1965,8 +2024,11 @@ def _provider_call_lock(
         yield
     finally:
         try:
-            lock_dir.rmdir()
-        except FileNotFoundError:
+            owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            if owner.get("token") == owner_token:
+                owner_path.unlink(missing_ok=True)
+                lock_dir.rmdir()
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
             pass
 
 

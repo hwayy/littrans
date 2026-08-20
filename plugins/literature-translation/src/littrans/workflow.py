@@ -209,12 +209,14 @@ def _bounded_manifest_series(
     """Keep a resumed range on the lineage identified by its boundary IDs."""
     start_series = _batch_series(start_at)
     through_series = _batch_series(through)
-    active_series = start_series or through_series
-    if active_series is None or (
+    if (
         start_series is not None
         and through_series is not None
         and start_series != through_series
     ):
+        raise ValueError("workflow resume bounds belong to different batch series")
+    active_series = start_series or through_series
+    if active_series is None:
         return manifests
     return [
         manifest
@@ -525,7 +527,25 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
     if len(set(batch_ids)) != len(batch_ids):
         raise ValueError("workflow packet batch IDs must be unique")
     ordered = _all_manifests(root)
+    all_by_id = {manifest.batch_id: manifest for manifest in ordered}
+    missing = [batch_id for batch_id in batch_ids if batch_id not in all_by_id]
+    if missing:
+        raise ValueError(f"Unknown batch IDs: {missing}")
+    requested_unit_counts = Counter(
+        unit_id for batch_id in batch_ids for unit_id in all_by_id[batch_id].unit_ids
+    )
+    requested_overlaps = sorted(
+        unit_id for unit_id, count in requested_unit_counts.items() if count > 1
+    )
+    if requested_overlaps:
+        raise ValueError(
+            "Workflow packet batches contain overlapping source units: "
+            f"{requested_overlaps}"
+        )
     requested_series = {_batch_series(batch_id) for batch_id in batch_ids}
+    recognized_series = {series for series in requested_series if series is not None}
+    if len(recognized_series) > 1:
+        raise ValueError("workflow packet batch IDs belong to different batch series")
     if len(requested_series) == 1 and None not in requested_series:
         active_series = next(iter(requested_series))
         ordered = [
@@ -534,9 +554,6 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
             if _batch_series(manifest.batch_id) == active_series
         ]
     index = {manifest.batch_id: position for position, manifest in enumerate(ordered)}
-    missing = [batch_id for batch_id in batch_ids if batch_id not in index]
-    if missing:
-        raise ValueError(f"Unknown batch IDs: {missing}")
     positions = [index[batch_id] for batch_id in batch_ids]
     if positions != list(range(min(positions), min(positions) + len(positions))):
         raise ValueError("workflow packet batch IDs must be consecutive and ordered")
@@ -1149,7 +1166,10 @@ def prune_workflow_packets(
     """List or remove packets already represented by authoritative audit evidence."""
     require_current_project_schema(root, "Workflow packet pruning")
     selected = set(batch_ids or ())
-    known = {manifest.batch_id for manifest in _all_manifests(root)}
+    known_manifests = {
+        manifest.batch_id: manifest for manifest in _all_manifests(root)
+    }
+    known = set(known_manifests)
     missing = sorted(selected - known)
     if missing:
         raise ValueError(f"Unknown batch IDs: {missing}")
@@ -1170,15 +1190,34 @@ def prune_workflow_packets(
                 for batch_id in manifest.batch_ids
                 if manifest.batch_unit_ids.get(batch_id, manifest.unit_ids)
             ]
+            expected_fingerprints = {
+                batch_id: {
+                    unit_id: manifest.unit_fingerprints[unit_id]
+                    for unit_id in (
+                        manifest.batch_unit_ids.get(batch_id)
+                        or [
+                            unit_id
+                            for unit_id in known_manifests[batch_id].unit_ids
+                            if unit_id in manifest.unit_ids
+                        ]
+                    )
+                    if unit_id in manifest.unit_fingerprints
+                }
+                for batch_id in required_batches
+                if batch_id in known_manifests
+            }
             completely_imported = (
                 manifest.stage == "audit"
                 and bool(required_batches)
+                and len(expected_fingerprints) == len(required_batches)
                 and all(
                 any(
                     run.packet_id == manifest.packet_id
                     and run.lens == manifest.lens
-                    and set(run.unit_fingerprints)
-                    >= set(manifest.batch_unit_ids.get(batch_id, manifest.unit_ids))
+                    and all(
+                        run.unit_fingerprints.get(unit_id) == fingerprint
+                        for unit_id, fingerprint in expected_fingerprints[batch_id].items()
+                    )
                     for run in audit_runs.get(batch_id, [])
                 )
                 for batch_id in required_batches

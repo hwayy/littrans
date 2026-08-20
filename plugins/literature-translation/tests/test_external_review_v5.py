@@ -795,3 +795,27 @@ def test_provider_lock_serializes_same_driver_but_not_different_drivers(
     for thread in different:
         thread.join()
     assert maximum == 2
+
+
+def test_provider_lock_reclaims_owner_from_terminated_process(tmp_path: Path) -> None:
+    reviewer = _reviewer()
+    lock_dir = (
+        tmp_path / ".littrans" / "external-provider-locks" / "claude-code.lock"
+    )
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "owner.json").write_text(
+        json.dumps(
+            {
+                "pid": 2_147_483_647,
+                "token": "terminated-owner",
+                "created_at": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with external_review._provider_call_lock(tmp_path, reviewer, 1):
+        owner = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
+        assert owner["token"] != "terminated-owner"
+
+    assert not lock_dir.exists()

@@ -238,6 +238,29 @@ def test_prune_requires_every_batch_of_legacy_partial_import(tmp_path: Path) -> 
     )
     assert packet.packet_id in prune_workflow_packets(root)["candidates"]
 
+    packet_path = root / packet.storage_root / packet.packet_id / "manifest.json"
+    legacy_packet = packet.model_copy(
+        update={
+            "schema_version": 1,
+            "batch_unit_ids": {},
+            "batch_context_unit_ids": {},
+            "batch_context_fingerprints": {},
+        }
+    )
+    packet_path.write_text(
+        json.dumps(legacy_packet.model_dump(mode="json")), encoding="utf-8"
+    )
+    assert packet.packet_id in prune_workflow_packets(root)["candidates"]
+
+    mismatched = matching_run(second)
+    mismatched_fingerprints = dict(mismatched.unit_fingerprints)
+    mismatched_fingerprints[next(iter(mismatched_fingerprints))] = "0" * 64
+    write_jsonl(
+        root / "evidence" / "audits" / f"{second}.jsonl",
+        [mismatched.model_copy(update={"unit_fingerprints": mismatched_fingerprints})],
+    )
+    assert packet.packet_id not in prune_workflow_packets(root)["candidates"]
+
 
 def test_review_set_import_rolls_back_every_batch_on_late_interruption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -433,6 +456,16 @@ def test_resume_boundary_skips_interleaved_overlapping_history(tmp_path: Path) -
         batch_ids=bounded["batch_ids"],
     )
     assert Path(outputs["markdown"]).is_file()
+    with pytest.raises(ValueError, match="resume bounds belong to different batch series"):
+        workflow_module.workflow_next(
+            root,
+            start_at=active_ids[0],
+            through=overlapping.batch_id,
+        )
+    with pytest.raises(ValueError, match="belong to different batch series"):
+        create_workflow_packet(
+            root, "translate", [active_ids[0], overlapping.batch_id]
+        )
 
 
 def test_workflow_status_rechecks_audit_packet_dependency_closure(
