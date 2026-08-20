@@ -94,7 +94,14 @@ def _translation_fingerprint_from_snapshot(
     )
 
 
-def _load_workflow_snapshot(root: Path) -> WorkflowSnapshot:
+def _load_workflow_snapshot(
+    root: Path, external_batch_ids: set[str] | None = None
+) -> WorkflowSnapshot:
+    # Import lazily to avoid coupling the packet/review implementation at module
+    # import time.  The derived external.json file is a convenience cache, not
+    # authoritative evidence: rebuild each status from current runs and context.
+    from littrans.external_review import external_review_status
+
     config = load_project(root)
     units = tuple(read_jsonl(root / "derived" / "units.jsonl", SourceUnit))
     unit_map = {unit.unit_id: unit for unit in units}
@@ -129,9 +136,27 @@ def _load_workflow_snapshot(root: Path) -> WorkflowSnapshot:
         audit_runs[batch_id] = read_jsonl(
             root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
         )
-        external_path = root / "reviews" / f"{batch_id}.external.json"
         external_status[batch_id] = (
-            read_json(external_path) if external_path.is_file() else None
+            external_review_status(
+                root,
+                batch_id,
+                include_reviewer_usage=False,
+                current_fingerprint=sha256_text(
+                    "\n".join(
+                        f"{unit_id}:{translation_unit_fingerprint(unit_map[unit_id], translations.get(unit_id))}"
+                        for unit_id in manifest.unit_ids
+                        if unit_id in unit_map
+                    )
+                ),
+                all_units=list(units),
+                translations=translations,
+            )
+            if (
+                config.external_review
+                and config.external_review.enabled
+                and (external_batch_ids is None or batch_id in external_batch_ids)
+            )
+            else None
         )
     return WorkflowSnapshot(
         root=root,
@@ -257,7 +282,24 @@ def workflow_next(
     require_current_project_schema(root, "Workflow coordination")
     resolved_host = resolve_coordination_host(host)
     resolved_limit = resolve_wave_limit(resolved_host, limit)
-    snapshot = _load_workflow_snapshot(root)
+    external_batch_ids: set[str] | None = None
+    if start_at is not None or through is not None:
+        ordered = _all_manifests(root)
+        ordered_indexes = {
+            manifest.batch_id: index for index, manifest in enumerate(ordered)
+        }
+        if (start_at is None or start_at in ordered_indexes) and (
+            through is None or through in ordered_indexes
+        ):
+            external_lower = ordered_indexes[start_at] if start_at else 0
+            external_upper = (
+                ordered_indexes[through] if through else len(ordered) - 1
+            )
+            external_batch_ids = {
+                manifest.batch_id
+                for manifest in ordered[external_lower : external_upper + 1]
+            }
+    snapshot = _load_workflow_snapshot(root, external_batch_ids)
     manifests = list(snapshot.manifests)
     all_manifests = list(manifests)
     units = list(snapshot.units)
@@ -373,7 +415,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
         raise ValueError(
             f"workflow status requires 1 to {WAVE_BATCH_SET_MAX} unique batch IDs"
         )
-    snapshot = _load_workflow_snapshot(root)
+    snapshot = _load_workflow_snapshot(root, set(requested))
     known = {manifest.batch_id for manifest in snapshot.manifests}
     missing = sorted(set(requested) - known)
     if missing:
@@ -636,36 +678,9 @@ def create_workflow_packet(
         for manifest in manifests
         if stage == "audit"
     }
-    identity = sha256_text(
-        json.dumps(
-            {
-                "version": 2,
-                "stage": stage,
-                "lens": lens,
-                "batch_unit_ids": batch_unit_ids,
-                "batch_context_unit_ids": batch_context_unit_ids,
-                "batch_context_fingerprints": batch_context_fingerprints,
-                "unit_fingerprints": fingerprints,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-    packet_id = f"{stage}-{identity[:16]}"
-    storage_root = ".littrans/work"
-    packet_dir = root / storage_root / packet_id
-    existing_path = packet_dir / "manifest.json"
-    if existing_path.is_file():
-        existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
-        if existing.packet_id == packet_id:
-            return existing
-    files: dict[str, str] = {}
-    if stage == "audit":
-        shared_path = packet_dir / "shared.md"
-        atomic_write_text(shared_path, _shared_context(root, selected_units))
-        files["shared"] = str(shared_path.relative_to(root)).replace("\\", "/")
-
+    planned_files: dict[str, tuple[str, str]] = {
+        "shared": ("shared.md", _shared_context(root, selected_units))
+    }
     for manifest in manifests:
         batch_units = [
             unit_map[unit_id]
@@ -673,9 +688,8 @@ def create_workflow_packet(
             if unit_id in unit_map
         ]
         if stage == "translate":
-            target_path = packet_dir / f"{manifest.batch_id}.source.md"
-            atomic_write_text(
-                target_path,
+            planned_files[f"{manifest.batch_id}:source"] = (
+                f"{manifest.batch_id}.source.md",
                 batch_source_markdown(root, batch_units),
             )
             memory = translation_memory(root, manifest.unit_ids, limit=6)
@@ -705,14 +719,10 @@ def create_workflow_packet(
             context.extend(
                 f"- {unit.unit_id}: {unit.source_text}" for unit in adjacent
             )
-            context_path = packet_dir / f"{manifest.batch_id}.context.md"
-            atomic_write_text(context_path, "\n".join(context).rstrip() + "\n")
-            files[f"{manifest.batch_id}:source"] = str(
-                target_path.relative_to(root)
-            ).replace("\\", "/")
-            files[f"{manifest.batch_id}:context"] = str(
-                context_path.relative_to(root)
-            ).replace("\\", "/")
+            planned_files[f"{manifest.batch_id}:context"] = (
+                f"{manifest.batch_id}.context.md",
+                "\n".join(context).rstrip() + "\n",
+            )
         else:
             context_ids = batch_context_unit_ids[manifest.batch_id]
             read_only_units = [
@@ -720,38 +730,62 @@ def create_workflow_packet(
                 for unit_id in context_ids
                 if unit_id not in set(batch_unit_ids[manifest.batch_id])
             ]
-            read_only_context_path: Path | None = None
+            has_read_only_context = bool(read_only_units)
             if read_only_units:
-                read_only_context_path = (
-                    packet_dir / f"{manifest.batch_id}.read-only-context.md"
+                context_key = (
+                    "audit:read-only-context"
+                    if len(manifests) == 1
+                    else f"{manifest.batch_id}:read-only-context"
                 )
-                atomic_write_text(
-                    read_only_context_path,
+                planned_files[context_key] = (
+                    f"{manifest.batch_id}.read-only-context.md",
                     _audit_read_only_context(read_only_units, translations),
                 )
-                context_file = str(read_only_context_path.relative_to(root)).replace(
-                    "\\", "/"
-                )
-                if len(manifests) == 1:
-                    # Compatibility alias for callers that consumed v1's single
-                    # shared seam-context key.
-                    files["audit:read-only-context"] = context_file
-                else:
-                    files[f"{manifest.batch_id}:read-only-context"] = context_file
-            audit_path = packet_dir / f"{manifest.batch_id}.audit.md"
-            atomic_write_text(
-                audit_path,
+            planned_files[f"{manifest.batch_id}:audit"] = (
+                f"{manifest.batch_id}.audit.md",
                 _audit_packet_text(
                     manifest.batch_id,
                     lens or "fidelity",
                     batch_units,
                     translations,
-                    read_only_context_path is not None,
+                    has_read_only_context,
                 ),
             )
-            files[f"{manifest.batch_id}:audit"] = str(
-                audit_path.relative_to(root)
-            ).replace("\\", "/")
+
+    planned_file_sha256 = {
+        file_id: sha256_text(content)
+        for file_id, (_, content) in planned_files.items()
+    }
+    identity = sha256_text(
+        json.dumps(
+            {
+                "version": 3,
+                "stage": stage,
+                "lens": lens,
+                "batch_unit_ids": batch_unit_ids,
+                "batch_context_unit_ids": batch_context_unit_ids,
+                "batch_context_fingerprints": batch_context_fingerprints,
+                "unit_fingerprints": fingerprints,
+                "file_sha256": planned_file_sha256,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    packet_id = f"{stage}-{identity[:16]}"
+    storage_root = ".littrans/work"
+    packet_dir = root / storage_root / packet_id
+    existing_path = packet_dir / "manifest.json"
+    if existing_path.is_file():
+        existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
+        if existing.packet_id == packet_id:
+            return existing
+    files: dict[str, str] = {}
+    for file_id, (filename, content) in planned_files.items():
+        path = packet_dir / filename
+        atomic_write_text(path, content)
+        files[file_id] = str(path.relative_to(root)).replace("\\", "/")
     total_bytes = sum((root / path).stat().st_size for path in files.values())
     file_sha256 = {
         file_id: sha256_file(root / path) for file_id, path in files.items()

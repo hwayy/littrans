@@ -226,12 +226,16 @@ def changed_units(
 
 
 def dependency_closure(
-    root: Path, batch_ids: Iterable[str], changed: Iterable[str]
+    root: Path,
+    batch_ids: Iterable[str],
+    changed: Iterable[str],
+    *,
+    all_units: list[SourceUnit] | None = None,
 ) -> list[str]:
     """Expand edits to local semantic dependencies and batch seams."""
     from littrans.batching import load_manifest
 
-    units = project_units(root)
+    units = project_units(root) if all_units is None else all_units
     positions = {unit.unit_id: index for index, unit in enumerate(units)}
     batch_scope = {
         unit_id

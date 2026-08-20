@@ -842,12 +842,16 @@ def render_project(
             bilingual_target = "[尚未翻译]"
         render_unit = unit
         target_table = record.target_table if record else None
+        reader_notes = [record.reader_note] if record and record.reader_note else []
         if unit.unit_id in grouped_table_ids:
             table_records = [translations.get(unit_id) for unit_id in grouped_table_ids[unit.unit_id]]
             if all(item and item.target_table for item in table_records):
                 target_table = _merge_continued_table_data(
                     [item.target_table for item in table_records if item and item.target_table]
                 )
+            reader_notes = [
+                item.reader_note for item in table_records if item and item.reader_note
+            ]
         if unit.kind is UnitKind.TABLE and target_table:
             render_unit = unit.model_copy(update={"table": target_table})
         rendered_figure_labels = effective_figure_labels(unit, record)
@@ -912,8 +916,7 @@ def render_project(
             markdown.append("")
         else:
             markdown.extend([anchor, rendered, ""])
-        if record and record.reader_note:
-            pending_markdown_reader_notes.append(record.reader_note)
+        pending_markdown_reader_notes.extend(reader_notes)
         # A reader note attached to any fragment of a continued paragraph or
         # callout belongs after the complete logical unit.  Emitting it here
         # would interrupt the sentence at a physical page boundary.
@@ -973,8 +976,7 @@ def render_project(
             if source_note is not None and target_note is not None:
                 rows[-1]["source_html"] = source_note
                 rows[-1]["target_html"] = target_note
-                if record and record.reader_note:
-                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["reader_notes"].extend(reader_notes)
                 rows[-1]["last_page"] = unit_last_page
             else:
                 rows.append(
@@ -985,9 +987,7 @@ def render_project(
                         "target_html": target_html,
                         "assets": assets,
                         "record": record,
-                        "reader_notes": [record.reader_note]
-                        if record and record.reader_note
-                        else [],
+                        "reader_notes": list(reader_notes),
                     }
                 )
         elif (
@@ -1009,8 +1009,7 @@ def render_project(
             if source_list is not None and target_list is not None:
                 rows[-1]["source_html"] = source_list
                 rows[-1]["target_html"] = target_list
-                if record and record.reader_note:
-                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["reader_notes"].extend(reader_notes)
                 rows[-1]["last_page"] = unit_last_page
             else:
                 rows.append(
@@ -1021,9 +1020,7 @@ def render_project(
                         "target_html": target_html,
                         "assets": assets,
                         "record": record,
-                        "reader_notes": [record.reader_note]
-                        if record and record.reader_note
-                        else [],
+                        "reader_notes": list(reader_notes),
                     }
                 )
         elif (
@@ -1047,8 +1044,7 @@ def render_project(
             if source_sidebar is not None and target_sidebar is not None:
                 rows[-1]["source_html"] = source_sidebar
                 rows[-1]["target_html"] = target_sidebar
-                if record and record.reader_note:
-                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["reader_notes"].extend(reader_notes)
                 rows[-1]["last_page"] = unit_last_page
             else:
                 rows.append(
@@ -1059,9 +1055,7 @@ def render_project(
                         "target_html": target_html,
                         "assets": assets,
                         "record": record,
-                        "reader_notes": [record.reader_note]
-                        if record and record.reader_note
-                        else [],
+                        "reader_notes": list(reader_notes),
                     }
                 )
         elif (
@@ -1087,8 +1081,7 @@ def render_project(
                 rows[-1]["target_html"].removesuffix("</p>")
                 + f'{target_separator}<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>{inline_target}</p>'
             )
-            if record and record.reader_note:
-                rows[-1]["reader_notes"].append(record.reader_note)
+            rows[-1]["reader_notes"].extend(reader_notes)
             rows[-1]["last_page"] = unit_last_page
         else:
             rows.append(
@@ -1099,9 +1092,7 @@ def render_project(
                     "target_html": target_html,
                     "assets": assets,
                     "record": record,
-                    "reader_notes": [record.reader_note]
-                    if record and record.reader_note
-                    else [],
+                    "reader_notes": list(reader_notes),
                 }
             )
         previous_page = unit_last_page

@@ -2246,6 +2246,7 @@ def test_external_review_context_change_requires_a_new_run(
     import_review(root, batch_id, empty)
 
     assert not external_review_status(root, batch_id)["external_approvable"]
+    assert workflow_next(root)["stage"] == "external-review"
     assert external_review.run_external_review(root, batch_id)[
         "external_approvable"
     ]
@@ -2256,6 +2257,76 @@ def test_external_review_context_change_requires_a_new_run(
     assert calls == 2
     assert len(runs) == 2
     assert runs[0].context_fingerprint != runs[1].context_fingerprint
+
+
+def test_stale_changes_requested_run_cannot_anchor_incremental_review(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch = manifests[0]
+    _submit(root, batch.batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    issue = ReviewIssue(
+        issue_id="resolved-external-minor",
+        batch_id=batch.batch_id,
+        unit_id=batch.unit_ids[0],
+        severity=Severity.MINOR,
+        type=IssueType.STYLE,
+        explanation="A localized wording defect was corrected.",
+        confidence=0.95,
+        reviewer="external:claude:claude-sonnet-5",
+        status=IssueStatus.RESOLVED,
+        resolution="Corrected in the current translation.",
+        resolved_at="2026-08-20T00:00:00Z",
+    )
+    write_jsonl(root / "reviews" / f"{batch.batch_id}.issues.jsonl", [issue])
+    base = ExternalReviewRun(
+        run_id="resolved-full-base",
+        batch_id=batch.batch_id,
+        reviewer_id="claude",
+        driver="claude-code",
+        role="primary",
+        requested_model="claude-sonnet-5",
+        actual_model="claude-sonnet-5",
+        model_verified=True,
+        translation_fingerprint=external_review.batch_translation_fingerprint(
+            root, batch.batch_id
+        ),
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.CHANGES_REQUESTED,
+        summary="One localized issue was found and later resolved.",
+        issue_ids=[issue.issue_id],
+        covered_unit_ids=list(batch.unit_ids),
+        unit_fingerprints=batch_unit_fingerprints(root, batch.batch_id),
+        source_fingerprint=batch_source_fingerprint(root, batch.batch_id),
+        structure_fingerprint=batch_structure_fingerprint(root, batch.batch_id),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            root, batch.batch_id, list(batch.unit_ids), ReviewScope.FULL
+        ),
+    )
+    assert external_review._resolved_changes_requested_base(root, [base], base)
+
+    style_path = root / "context" / "style-guide.md"
+    atomic_write_text(
+        style_path,
+        style_path.read_text(encoding="utf-8").rstrip()
+        + "\n\n- Newly mandatory review instruction.\n",
+    )
+    assert not external_review._resolved_changes_requested_base(root, [base], base)
 
 
 def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> None:

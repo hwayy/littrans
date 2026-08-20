@@ -61,6 +61,7 @@ from littrans.models import (
     RenderPolicy,
     ReviewIssue,
     ReviewScope,
+    SemanticStatus,
     Severity,
     SidebarRole,
     SourceUnit,
@@ -354,6 +355,44 @@ def test_reviewed_protected_token_override_can_correct_a_source_typo(
     updated = next(item for item in revised if item.unit_id == unit.unit_id)
     assert updated.source_text == unit.source_text
     assert updated.protected_tokens == ["CorrectedApiName"]
+
+
+def test_equation_asset_failure_does_not_replace_authoritative_units(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    units_path = prepared_project / "derived" / "units.jsonl"
+    before = units_path.read_bytes()
+    unit = next(
+        item
+        for item in read_jsonl(units_path, SourceUnit)
+        if item.kind is UnitKind.PARAGRAPH
+    )
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "kind": "equation",
+                    "latex": "a=b",
+                    "verified": True,
+                    "reason": "Verified display equation against the PDF.",
+                }
+            ]
+        },
+    )
+    real_replace = Path.replace
+
+    def fail_asset_replace(source: Path, destination: Path) -> Path:
+        if "equation-override" in destination.name:
+            raise PermissionError("seeded asset replace failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_asset_replace)
+    with pytest.raises(PermissionError, match="seeded asset replace failure"):
+        apply_layout_overrides(prepared_project)
+
+    assert units_path.read_bytes() == before
 
 
 def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
@@ -894,6 +933,63 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     html = Path(outputs["html"]).read_text(encoding="utf-8")
     assert "读者注：The source" not in html
     assert "访问日期 未记录" not in html
+
+
+def test_reader_notes_from_all_continued_table_fragments_are_rendered(
+    prepared_project: Path,
+) -> None:
+    units_path = prepared_project / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    candidates = [
+        unit
+        for unit in units
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+    ][:2]
+    assert len(candidates) == 2
+    replacements: dict[str, SourceUnit] = {}
+    records: list[TranslationRecord] = []
+    for index, unit in enumerate(candidates):
+        source_table = TableData(
+            rows=[["Name", f"Part {index + 1}"]],
+            header_rows=1 if index == 0 else 0,
+            column_count=2,
+        )
+        replacements[unit.unit_id] = unit.model_copy(
+            update={
+                "kind": UnitKind.TABLE,
+                "table": source_table,
+                "verification_status": SemanticStatus.VERIFIED,
+                "continues_from_previous": index == 1,
+                "continued_to_next": index == 0,
+            }
+        )
+        records.append(
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text=f"表格片段 {index + 1}",
+                target_table=TableData(
+                    rows=[["名称", f"部分 {index + 1}"]],
+                    header_rows=1 if index == 0 else 0,
+                    column_count=2,
+                ),
+                reader_note=ReaderNote(text=f"第 {index + 1} 个片段注记。"),
+                source_hash=unit.source_hash,
+            )
+        )
+    write_jsonl(
+        units_path,
+        [replacements.get(unit.unit_id, unit) for unit in units],
+    )
+    write_jsonl(prepared_project / "translations" / "current.jsonl", records)
+
+    outputs = render_project(
+        prepared_project, "1", "continued-table-notes", allow_draft=True
+    )
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    rendered_html = Path(outputs["html"]).read_text(encoding="utf-8")
+    for index in (1, 2):
+        assert f"第 {index} 个片段注记。" in markdown
+        assert f"第 {index} 个片段注记。" in rendered_html
 
 
 def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None:

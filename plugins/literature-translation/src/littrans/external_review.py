@@ -56,7 +56,7 @@ from littrans.quality import (
     import_review,
     qa_report_is_current,
 )
-from littrans.semantics import normalize_zh_caption
+from littrans.semantics import normalize_prose, normalize_zh_caption
 from littrans.storage import (
     append_jsonl,
     atomic_write_text,
@@ -288,7 +288,11 @@ def build_cursor_command(
 
 
 def _outer_seam_context_ids(
-    root: Path, batch_id: str, covered_unit_ids: list[str]
+    root: Path,
+    batch_id: str,
+    covered_unit_ids: list[str],
+    *,
+    all_units: list[SourceUnit] | None = None,
 ) -> list[str]:
     manifest = load_manifest(root, batch_id)
     covered = set(covered_unit_ids)
@@ -302,7 +306,9 @@ def _outer_seam_context_ids(
     manifest_ids = set(manifest.unit_ids)
     return [
         unit_id
-        for unit_id in dependency_closure(root, [batch_id], reached_seams)
+        for unit_id in dependency_closure(
+            root, [batch_id], reached_seams, all_units=all_units
+        )
         if unit_id not in manifest_ids
     ]
 
@@ -322,23 +328,32 @@ def _external_review_context_fingerprint(
     batch_id: str,
     covered_unit_ids: list[str],
     scope: ReviewScope,
+    *,
+    all_units: list[SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
 ) -> str:
     manifest = load_manifest(root, batch_id)
     covered = list(covered_unit_ids or manifest.unit_ids)
     read_only = (
-        _outer_seam_context_ids(root, batch_id, covered)
+        _outer_seam_context_ids(
+            root, batch_id, covered, all_units=all_units
+        )
         if scope is ReviewScope.INCREMENTAL
         else []
     )
     selected_ids = set(covered) | set(read_only)
-    all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    selected_units = [unit for unit in all_units if unit.unit_id in selected_ids]
+    current_units = (
+        read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        if all_units is None
+        else all_units
+    )
+    selected_units = [unit for unit in current_units if unit.unit_id in selected_ids]
     read_only_ids = set(read_only)
-    translations = translation_map(root)
+    current_translations = translation_map(root) if translations is None else translations
     read_only_fingerprint = sha256_text(
         "\n".join(
-            f"{unit.unit_id}:{translation_unit_fingerprint(unit, translations.get(unit.unit_id))}"
-            for unit in all_units
+            f"{unit.unit_id}:{translation_unit_fingerprint(unit, current_translations.get(unit.unit_id))}"
+            for unit in current_units
             if unit.unit_id in read_only_ids
         )
     )
@@ -355,7 +370,11 @@ def _external_review_context_fingerprint(
 
 
 def _external_review_context_is_current(
-    root: Path, run: ExternalReviewRun
+    root: Path,
+    run: ExternalReviewRun,
+    *,
+    all_units: list[SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
 ) -> bool:
     if not run.context_fingerprint:
         return False
@@ -365,6 +384,8 @@ def _external_review_context_is_current(
             run.batch_id,
             run.covered_unit_ids,
             run.scope,
+            all_units=all_units,
+            translations=translations,
         )
     except (KeyError, OSError, ValueError):
         return False
@@ -647,6 +668,12 @@ def _validate_issue_evidence(
         if issue["target_span"] and issue["target_span"] not in target:
             raise ValueError(
                 f"External target_span is not present in {unit_id}: {issue['target_span']}"
+            )
+        suggested_revision = normalize_prose(str(issue.get("suggested_revision", "")))
+        if suggested_revision and suggested_revision == normalize_prose(target):
+            raise ValueError(
+                "External suggested_revision must differ from the current "
+                f"renderer-effective target for {unit_id}"
             )
 
 
@@ -2363,7 +2390,12 @@ def _matching_second_opinion(
 
 
 def _resolved_changes_requested_base(
-    root: Path, runs: list[ExternalReviewRun], base: ExternalReviewRun
+    root: Path,
+    runs: list[ExternalReviewRun],
+    base: ExternalReviewRun,
+    *,
+    all_units: list[SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
 ) -> bool:
     if (
         base.role != "primary"
@@ -2372,6 +2404,9 @@ def _resolved_changes_requested_base(
         or not base.model_verified
         or base.verdict is not ExternalReviewVerdict.CHANGES_REQUESTED
         or not base.unit_fingerprints
+        or not _external_review_context_is_current(
+            root, base, all_units=all_units, translations=translations
+        )
     ):
         return False
     issues = {
@@ -2396,7 +2431,9 @@ def _resolved_changes_requested_base(
             or not second.success
             or not second.model_verified
             or second.verdict is not base.verdict
-            or not _external_review_context_is_current(root, second)
+            or not _external_review_context_is_current(
+                root, second, all_units=all_units, translations=translations
+            )
         ):
             return False
     return True
@@ -2434,6 +2471,9 @@ def _primary_chain_approvable(
     runs: list[ExternalReviewRun],
     primary: ExternalReviewRun,
     seen: set[str] | None = None,
+    *,
+    all_units: list[SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
 ) -> bool:
     """Require each incremental primary and its inherited chain to satisfy the gate."""
     visited = set(seen or ())
@@ -2446,7 +2486,9 @@ def _primary_chain_approvable(
         or not primary.model_verified
         or primary.verdict is not ExternalReviewVerdict.ACCEPTED
         or not primary.unit_fingerprints
-        or not _external_review_context_is_current(root, primary)
+        or not _external_review_context_is_current(
+            root, primary, all_units=all_units, translations=translations
+        )
     ):
         return False
     if _needs_second_opinion(root, primary):
@@ -2464,7 +2506,9 @@ def _primary_chain_approvable(
             or not second.success
             or not second.model_verified
             or second.verdict is not primary.verdict
-            or not _external_review_context_is_current(root, second)
+            or not _external_review_context_is_current(
+                root, second, all_units=all_units, translations=translations
+            )
         ):
             return False
     if primary.scope is ReviewScope.INCREMENTAL:
@@ -2479,8 +2523,21 @@ def _primary_chain_approvable(
         if inherited is None:
             return False
         if inherited.verdict is ExternalReviewVerdict.CHANGES_REQUESTED:
-            return _resolved_changes_requested_base(root, runs, inherited)
-        return _primary_chain_approvable(root, runs, inherited, visited)
+            return _resolved_changes_requested_base(
+                root,
+                runs,
+                inherited,
+                all_units=all_units,
+                translations=translations,
+            )
+        return _primary_chain_approvable(
+            root,
+            runs,
+            inherited,
+            visited,
+            all_units=all_units,
+            translations=translations,
+        )
     return True
 
 
@@ -2531,15 +2588,25 @@ def _require_machine_reviewed(
         )
 
 
-def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
+def external_review_status(
+    root: Path,
+    batch_id: str,
+    *,
+    include_reviewer_usage: bool = True,
+    current_fingerprint: str | None = None,
+    all_units: list[SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
+) -> dict[str, Any]:
     _review_config(root)
-    fingerprint = batch_translation_fingerprint(root, batch_id)
+    fingerprint = current_fingerprint or batch_translation_fingerprint(root, batch_id)
     all_runs = read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
     runs = [
         run
         for run in all_runs
         if run.translation_fingerprint == fingerprint
-        and _external_review_context_is_current(root, run)
+        and _external_review_context_is_current(
+            root, run, all_units=all_units, translations=translations
+        )
     ]
     primary = next((run for run in reversed(runs) if run.role == "primary"), None)
     second = next(
@@ -2555,7 +2622,13 @@ def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
     needs_second = bool(primary and primary.success and _needs_second_opinion(root, primary))
     if primary is None:
         verdict = "missing"
-    elif not _primary_chain_approvable(root, all_runs, primary):
+    elif not _primary_chain_approvable(
+        root,
+        all_runs,
+        primary,
+        all_units=all_units,
+        translations=translations,
+    ):
         verdict = ExternalReviewVerdict.INCONCLUSIVE.value
     elif not primary.model_verified:
         verdict = ExternalReviewVerdict.INCONCLUSIVE.value
@@ -2584,7 +2657,7 @@ def external_review_status(root: Path, batch_id: str) -> dict[str, Any]:
         "second_opinion_required": needs_second,
         "open_substantive_issues": open_substantive,
         "external_approvable": verdict == "accepted" and not open_substantive,
-        "reviewer_usage": external_reviewer_usage(root),
+        "reviewer_usage": external_reviewer_usage(root) if include_reviewer_usage else {},
     }
     return payload
 

@@ -642,6 +642,30 @@ def test_external_result_rejects_a_noop_suggested_revision() -> None:
         external_review._validate_result(payload)
 
 
+def test_external_evidence_rejects_noop_against_full_effective_target() -> None:
+    payload = {
+        "verdict": "changes-requested",
+        "summary": "A localized wording defect requires correction.",
+        "issues": [
+            {
+                "unit_id": "u1",
+                "severity": "minor",
+                "type": "style",
+                "source_span": "source",
+                "target_span": "换言之",
+                "explanation": "The wording should be changed.",
+                "suggested_revision": "换言之。",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="renderer-effective target"):
+        external_review._validate_issue_evidence(
+            payload, {"u1": ("source", "换言之。")}
+        )
+
+
 def test_format_retry_uses_previous_output_not_the_full_packet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

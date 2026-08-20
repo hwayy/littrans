@@ -1315,6 +1315,12 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
 
             # No authoritative file is replaced until the complete staged snapshot,
             # including derived issue state and generated crops, has validated.
+            # Publish new assets first: a later ledger failure can only leave an
+            # unreferenced crop, while an asset failure cannot leave ledgers that
+            # point at missing or stale bytes.
+            for temporary_asset, destination in pending_assets:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary_asset.replace(destination)
             write_jsonl(units_path, updated)
             if translations:
                 write_jsonl(
@@ -1326,9 +1332,6 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                 save_project(project_root, project_config)
             if issues:
                 write_jsonl(issues_path, reconciled)
-            for temporary_asset, destination in pending_assets:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                temporary_asset.replace(destination)
         finally:
             if document is not None:
                 document.close()

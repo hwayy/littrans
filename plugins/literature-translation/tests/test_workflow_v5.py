@@ -58,6 +58,36 @@ def test_wave_status_is_compact_and_packet_is_content_addressed(tmp_path: Path) 
     ) == 1
 
 
+def test_translation_packet_includes_shared_writer_instructions(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    packet = create_workflow_packet(root, "translate", [manifests[0].batch_id])
+    assert not isinstance(packet, list)
+
+    shared = (root / packet.files["shared"]).read_text(encoding="utf-8")
+    assert "# Document brief" in shared
+    assert "# Translation style" in shared
+    assert "# Relevant approved terminology" in shared
+
+
+def test_translation_packet_identity_changes_with_writer_context(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_id = manifests[0].batch_id
+    first = create_workflow_packet(root, "translate", [batch_id])
+    assert not isinstance(first, list)
+
+    style_path = root / "context" / "style-guide.md"
+    style_path.write_text(
+        style_path.read_text(encoding="utf-8").rstrip()
+        + "\n\n- Preserve the new project-specific voice.\n",
+        encoding="utf-8",
+    )
+    second = create_workflow_packet(root, "translate", [batch_id])
+    assert not isinstance(second, list)
+
+    assert second.packet_id != first.packet_id
+    assert second.file_sha256["shared"] != first.file_sha256["shared"]
+
+
 def test_import_returns_stable_id_map_and_prune_requires_imported_packet(
     tmp_path: Path,
 ) -> None:
