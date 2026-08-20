@@ -800,15 +800,19 @@ def create_workflow_packet(
     )
     existing_path = packet_dir / "manifest.json"
     if existing_path.is_file():
-        existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
-        manifest = manifest.model_copy(update={"created_at": existing.created_at})
-        if existing == manifest and all(
-            (path := root / files[file_id]).is_file()
-            and path.stat().st_size == len(content.encode("utf-8"))
-            and sha256_file(path) == planned_file_sha256[file_id]
-            for file_id, (_, content) in planned_files.items()
-        ):
-            return existing
+        try:
+            existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
+        except (OSError, ValueError):
+            existing = None
+        if existing is not None:
+            manifest = manifest.model_copy(update={"created_at": existing.created_at})
+            if existing == manifest and all(
+                (path := root / files[file_id]).is_file()
+                and path.stat().st_size == len(content.encode("utf-8"))
+                and sha256_file(path) == planned_file_sha256[file_id]
+                for file_id, (_, content) in planned_files.items()
+            ):
+                return existing
     for filename, content in planned_files.values():
         path = packet_dir / filename
         atomic_write_text(path, content)

@@ -18,6 +18,7 @@ from littrans.models import (
     SidebarRole,
     SourceUnit,
     UnitKind,
+    WorkflowPacketManifest,
 )
 from littrans.project import translation_map
 from littrans.quality import audit_coverage, import_review, run_qa
@@ -139,6 +140,14 @@ def test_cached_packet_is_repaired_when_files_or_manifest_are_tampered(
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["total_bytes"] == (
         first.total_bytes
     )
+
+    manifest_path.write_text('{"packet_id":', encoding="utf-8")
+    rebuilt = create_workflow_packet(root, "translate", [manifests[0].batch_id])
+    assert not isinstance(rebuilt, list)
+    assert rebuilt.packet_id == first.packet_id
+    assert WorkflowPacketManifest.model_validate(
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+    ).packet_id == first.packet_id
 
 
 def test_import_returns_stable_id_map_and_prune_requires_imported_packet(
