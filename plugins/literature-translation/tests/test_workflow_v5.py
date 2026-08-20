@@ -351,7 +351,11 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     units_path = root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(
-        update={"sidebar_id": "cross-batch-sidebar", "sidebar_role": SidebarRole.BODY}
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "cross-batch-sidebar",
+            "sidebar_role": SidebarRole.TITLE,
+        }
     )
     units[1] = units[1].model_copy(
         update={"sidebar_id": "cross-batch-sidebar", "sidebar_role": SidebarRole.BODY}
@@ -360,6 +364,8 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
+    for batch in manifests:
+        _audit_and_approve(root, batch.batch_id)
     current_first = load_manifest(root, first.batch_id)
     current_second = load_manifest(root, second.batch_id)
     historic = current_first.model_copy(
@@ -380,6 +386,12 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     write_yaml(
         historic_root / "manifest.yaml", historic.model_dump(mode="json")
     )
+
+    # Formal rendering must use the current adjacent batch as dependency evidence,
+    # not the retained historic overlap (which deliberately has no current gates).
+    formal = render_project(root, None, batch_id=first.batch_id)
+    assert Path(formal["markdown"]).exists()
+
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
         reviewers=[
@@ -399,7 +411,8 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     summary = Path(outputs["external_review"]).read_text(encoding="utf-8")
 
     assert f"## {first.batch_id}" in summary
-    assert f"## {historic.batch_id}" in summary
+    assert f"## {second.batch_id}" in summary
+    assert f"## {historic.batch_id}" not in summary
 
 
 def test_full_external_packet_includes_cross_batch_sidebar_context(

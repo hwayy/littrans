@@ -73,8 +73,14 @@ def _manifest_cover(
                 for manifest in candidates
                 if remaining & set(manifest.unit_ids)
             ),
-            key=lambda item: (-item[0], item[1].created_at, item[1].batch_id),
+            key=lambda item: item[1].batch_id,
         )
+        # Stable sorts retain a deterministic batch-id tie-breaker while preferring
+        # the broadest and newest evidence. Long-running projects intentionally keep
+        # historic overlapping manifests, but those must not displace the current
+        # adjacent batch when a render expands through a semantic dependency.
+        ranked.sort(key=lambda item: item[1].created_at, reverse=True)
+        ranked.sort(key=lambda item: item[0], reverse=True)
         if not ranked:
             return None
         _, selected = ranked[0]
