@@ -2804,6 +2804,8 @@ def test_cursor_host_subagent_from_result_skips_cli(
     assert primary["requested_model"] == "claude-sonnet-5-high"
     assert primary["actual_model"] == "Sonnet 5 1M High"
     assert primary["model_verified"] is True
+    assert primary["packet_sha256"] == dry_run["packet_sha256"]
+    assert primary["packet_sha256"] != dry_run["base_packet_sha256"]
     assert not reservation_path.exists()
 
     repeat_dry_run = external_review.run_external_review(

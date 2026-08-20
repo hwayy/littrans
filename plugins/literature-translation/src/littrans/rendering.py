@@ -669,19 +669,29 @@ def render_project(
         covered_by_selected_manifests = {
             unit_id for manifest in manifests for unit_id in manifest.unit_ids
         }
-        if selected_ids - covered_by_selected_manifests:
+        dependency_ids = selected_ids - covered_by_selected_manifests
+        if dependency_ids:
+            explicit_batch_ids = {manifest.batch_id for manifest in manifests}
             dependency_manifests = [
                 manifest
                 for path in (root / "batches").iterdir()
                 if path.is_dir()
                 and (path / "manifest.yaml").is_file()
                 for manifest in [load_manifest(root, path.name)]
-                if selected_ids & set(manifest.unit_ids)
+                if manifest.batch_id not in explicit_batch_ids
+                and dependency_ids & set(manifest.unit_ids)
             ]
-            content_manifests = (
-                _manifest_cover(selected_ids, dependency_manifests)
-                or dependency_manifests
+            dependency_cover = _manifest_cover(
+                dependency_ids, dependency_manifests
             )
+            if dependency_cover:
+                content_manifests = sorted(
+                    [*manifests, *dependency_cover],
+                    key=lambda manifest: min(
+                        positions.get(unit_id, 10**12)
+                        for unit_id in manifest.unit_ids
+                    ),
+                )
     missing = [
         unit.unit_id for unit in units if unit.translatable and unit.unit_id not in translations
     ]

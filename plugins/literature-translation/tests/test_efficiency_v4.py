@@ -1078,6 +1078,25 @@ def test_failed_external_review_records_actual_prompt_delivery(
 
     monkeypatch.setattr(external_review, "_invoke", fail_invoke)
     monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+
+    original_persist_telemetry = external_review._persist_attempt_telemetry
+
+    def fail_persist_telemetry(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("seeded failure telemetry persistence error")
+
+    monkeypatch.setattr(
+        external_review, "_persist_attempt_telemetry", fail_persist_telemetry
+    )
+    with pytest.raises(
+        RuntimeError, match="seeded failure telemetry persistence error"
+    ):
+        external_review.run_external_review(root, batch_id)
+    assignment_root = root / ".littrans" / "external-assignments"
+    assert not list(assignment_root.glob("*.json"))
+    monkeypatch.setattr(
+        external_review, "_persist_attempt_telemetry", original_persist_telemetry
+    )
+
     status = external_review.run_external_review(root, batch_id)
     runs = read_jsonl(
         root / "reviews" / f"{batch_id}.external-runs.jsonl", ExternalReviewRun

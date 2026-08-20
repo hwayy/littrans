@@ -7,7 +7,7 @@ from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 import littrans.external_review as external_review_module
 import littrans.workflow as workflow_module
-from littrans.batching import refresh_batch
+from littrans.batching import load_manifest, refresh_batch
 from littrans.models import (
     ExternalReviewConfig,
     ExternalReviewerConfig,
@@ -21,7 +21,13 @@ from littrans.models import (
 from littrans.project import translation_map
 from littrans.quality import audit_coverage, import_review, run_qa
 from littrans.rendering import render_project
-from littrans.storage import load_project, read_jsonl, save_project, write_jsonl
+from littrans.storage import (
+    load_project,
+    read_jsonl,
+    save_project,
+    write_jsonl,
+    write_yaml,
+)
 from littrans.verification import verify_extraction
 from littrans.workflow import (
     create_workflow_packet,
@@ -306,6 +312,26 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
+    current_first = load_manifest(root, first.batch_id)
+    current_second = load_manifest(root, second.batch_id)
+    historic = current_first.model_copy(
+        update={
+            "batch_id": "historic-overlap",
+            "pages": [*current_first.pages, *current_second.pages],
+            "unit_ids": [*current_first.unit_ids, *current_second.unit_ids],
+            "translatable_unit_ids": [
+                *current_first.translatable_unit_ids,
+                *current_second.translatable_unit_ids,
+            ],
+            "source_words": current_first.source_words + current_second.source_words,
+            "created_at": "2000-01-01T00:00:00+00:00",
+        }
+    )
+    historic_root = root / "batches" / historic.batch_id
+    historic_root.mkdir()
+    write_yaml(
+        historic_root / "manifest.yaml", historic.model_dump(mode="json")
+    )
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
         reviewers=[
@@ -325,7 +351,7 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     summary = Path(outputs["external_review"]).read_text(encoding="utf-8")
 
     assert f"## {first.batch_id}" in summary
-    assert f"## {second.batch_id}" in summary
+    assert f"## {historic.batch_id}" in summary
 
 
 def test_full_external_packet_includes_cross_batch_sidebar_context(
