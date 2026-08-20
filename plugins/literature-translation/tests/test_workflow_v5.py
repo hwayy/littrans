@@ -78,6 +78,36 @@ def test_wave_status_is_compact_and_packet_is_content_addressed(tmp_path: Path) 
     ) == 1
 
 
+def test_wave_status_rejects_stale_or_unbatched_layout_results(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    batch_ids = [batch.batch_id for batch in manifests]
+    assert workflow_status(root, batch_ids)["stage"] == "translate"
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+
+    units[0] = units[0].model_copy(update={"translatable": False})
+    write_jsonl(units_path, units)
+    with pytest.raises(ValueError, match="stale translatable-unit scope"):
+        workflow_status(root, batch_ids)
+
+    units[0] = units[0].model_copy(update={"translatable": True})
+    write_jsonl(units_path, units[:-1])
+    with pytest.raises(ValueError, match="reference removed source units"):
+        workflow_status(root, batch_ids)
+
+    inserted = units[-1].model_copy(
+        update={
+            "unit_id": "p9999-u999-inserted",
+            "page": units[-1].page,
+            "source_text": "Newly recovered source paragraph.",
+            "source_hash": "f" * 64,
+        }
+    )
+    write_jsonl(units_path, [*units, inserted])
+    with pytest.raises(ValueError, match="do not cover current renderable source units"):
+        workflow_status(root, batch_ids)
+
+
 def test_translation_packet_includes_shared_writer_instructions(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=1)
     packet = create_workflow_packet(root, "translate", [manifests[0].batch_id])
@@ -422,7 +452,7 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
                 *current_second.translatable_unit_ids,
             ],
             "source_words": current_first.source_words + current_second.source_words,
-            "created_at": "2000-01-01T00:00:00+00:00",
+            "created_at": "2099-01-01T00:00:00+00:00",
         }
     )
     historic_root = root / "batches" / historic.batch_id

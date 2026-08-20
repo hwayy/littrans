@@ -421,6 +421,52 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
     missing = sorted(set(requested) - known)
     if missing:
         raise ValueError(f"Unknown batch IDs: {missing}")
+    requested_manifests = [
+        manifest for manifest in snapshot.manifests if manifest.batch_id in set(requested)
+    ]
+    removed_units = {
+        manifest.batch_id: [
+            unit_id for unit_id in manifest.unit_ids if unit_id not in snapshot.unit_map
+        ]
+        for manifest in requested_manifests
+        if any(unit_id not in snapshot.unit_map for unit_id in manifest.unit_ids)
+    }
+    if removed_units:
+        raise ValueError(
+            "Workflow manifests reference removed source units; recreate the "
+            f"affected batches before continuing: removed_units={removed_units}"
+        )
+    stale_translatability = [
+        manifest.batch_id
+        for manifest in requested_manifests
+        if manifest.translatable_unit_ids
+        != [
+            unit_id
+            for unit_id in manifest.unit_ids
+            if snapshot.unit_map[unit_id].translatable
+        ]
+    ]
+    if stale_translatability:
+        raise ValueError(
+            "Workflow manifests have stale translatable-unit scope; refresh the "
+            "affected batches before continuing: "
+            f"batch_ids={stale_translatability}"
+        )
+    covered_unit_ids = {
+        unit_id for manifest in snapshot.manifests for unit_id in manifest.unit_ids
+    }
+    unbatched_units = sorted(
+        unit.unit_id
+        for unit in snapshot.units
+        if unit.render_policy is RenderPolicy.INCLUDE
+        and unit.unit_id not in covered_unit_ids
+    )
+    if unbatched_units:
+        raise ValueError(
+            "Workflow manifests do not cover current renderable source units; "
+            "refresh or create batches before continuing: "
+            f"unbatched_units={unbatched_units}"
+        )
     context_cache: dict[
         tuple[str, ...], tuple[str, dict[str, str]] | None
     ] = {}

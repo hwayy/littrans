@@ -58,6 +58,13 @@ LEGACY_PUBLISHABLE = {
     ProjectStatus.HUMAN_APPROVED,
 }
 
+BATCH_SERIES_RE = re.compile(r"^(?P<series>.+)-b\d+$")
+
+
+def _batch_series(batch_id: str) -> str | None:
+    match = BATCH_SERIES_RE.fullmatch(batch_id)
+    return match.group("series") if match else None
+
 
 def _manifest_cover(
     selected_ids: set[str], manifests: list[BatchManifest]
@@ -687,7 +694,19 @@ def render_project(
                 if manifest.batch_id not in explicit_batch_ids
                 and dependency_ids & set(manifest.unit_ids)
             ]
+            explicit_series = {
+                series
+                for manifest in manifests
+                if (series := _batch_series(manifest.batch_id)) is not None
+            }
+            same_series_manifests = [
+                manifest
+                for manifest in dependency_manifests
+                if _batch_series(manifest.batch_id) in explicit_series
+            ]
             dependency_cover = _manifest_cover(
+                dependency_ids, same_series_manifests
+            ) or _manifest_cover(
                 dependency_ids, dependency_manifests
             )
             if dependency_cover:
