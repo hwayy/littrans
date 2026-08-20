@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -1966,14 +1967,54 @@ def _provider_lock_is_stale(lock_dir: Path, grace_seconds: float) -> bool:
     return not _process_is_running(pid)
 
 
+@contextmanager
+def _provider_takeover_gate(
+    path: Path, timeout_seconds: float = 1.0
+) -> Iterator[bool]:
+    """Use an OS lock so a crashed takeover never leaves a wedged mutex."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    if handle.seek(0, os.SEEK_END) == 0:
+        handle.write(b"\0")
+        handle.flush()
+    deadline = time.monotonic() + timeout_seconds
+    acquired = False
+    try:
+        while not acquired:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl = importlib.import_module("fcntl")
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+        yield acquired
+    finally:
+        if acquired:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl = importlib.import_module("fcntl")
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
 def _reclaim_stale_provider_lock(
-    lock_dir: Path, takeover_dir: Path, grace_seconds: float = 30.0
+    lock_dir: Path, takeover_path: Path, grace_seconds: float = 30.0
 ) -> bool:
-    try:
-        takeover_dir.mkdir()
-    except FileExistsError:
-        return False
-    try:
+    with _provider_takeover_gate(takeover_path) as acquired:
+        if not acquired:
+            return False
         # Re-read under a separate atomic takeover mutex. A second waiter cannot
         # act on an owner it observed before the first waiter acquired a new lock.
         if not _provider_lock_is_stale(lock_dir, grace_seconds):
@@ -1998,11 +2039,6 @@ def _reclaim_stale_provider_lock(
         except OSError:
             pass
         return True
-    finally:
-        try:
-            takeover_dir.rmdir()
-        except FileNotFoundError:
-            pass
 
 
 @contextmanager
@@ -2016,7 +2052,7 @@ def _provider_call_lock(
     lock_root.mkdir(parents=True, exist_ok=True)
     service = re.sub(r"[^a-z0-9._-]+", "-", reviewer.driver.value.casefold())
     lock_dir = lock_root / f"{service}.lock"
-    takeover_dir = lock_root / f"{service}.takeover"
+    takeover_path = lock_root / f"{service}.takeover.lock"
     owner_path = lock_dir / "owner.json"
     owner_token = uuid.uuid4().hex
     deadline = time.monotonic() + timeout_seconds
@@ -2042,7 +2078,7 @@ def _provider_call_lock(
                 raise
             break
         except FileExistsError:
-            if _reclaim_stale_provider_lock(lock_dir, takeover_dir):
+            if _reclaim_stale_provider_lock(lock_dir, takeover_path):
                 continue
             if time.monotonic() >= deadline:
                 raise TimeoutError(

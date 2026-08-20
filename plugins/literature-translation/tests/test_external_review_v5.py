@@ -804,6 +804,7 @@ def test_provider_lock_reclaims_owner_from_terminated_process(tmp_path: Path) ->
         tmp_path / ".littrans" / "external-provider-locks" / "claude-code.lock"
     )
     lock_dir.mkdir(parents=True)
+    (lock_dir.parent / "claude-code.takeover.lock").write_bytes(b"\0")
     (lock_dir / "owner.json").write_text(
         json.dumps(
             {
