@@ -2589,6 +2589,103 @@ def test_external_issue_does_not_block_second_opinion_gate(
     )
 
 
+def test_failed_external_runs_persist_serially_across_drivers(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="race")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "race-internal.jsonl"
+    write_jsonl(empty_review, [])
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+            ),
+            ExternalReviewerConfig(
+                id="antigravity",
+                driver="antigravity",
+                command="agy",
+                model="gemini-3.6-flash-high",
+            ),
+        ]
+    )
+    save_project(prepared_project, config)
+
+    invocation_barrier = threading.Barrier(2)
+
+    def fail_together(*args: object, **kwargs: object) -> None:
+        invocation_barrier.wait(timeout=5)
+        raise external_review.ExternalInvocationError(
+            "seeded provider failure",
+            attempts=1,
+            raw="provider failure",
+            failure_type="provider",
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", fail_together)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+    original_append = external_review.append_jsonl
+    append_guard = threading.Lock()
+    active_appends = 0
+    maximum_active_appends = 0
+
+    def delayed_append(path: Path, records: object) -> None:
+        nonlocal active_appends, maximum_active_appends
+        if path.name.endswith(".external-runs.jsonl"):
+            with append_guard:
+                active_appends += 1
+                maximum_active_appends = max(maximum_active_appends, active_appends)
+            time.sleep(0.05)
+            try:
+                original_append(path, records)  # type: ignore[arg-type]
+            finally:
+                with append_guard:
+                    active_appends -= 1
+            return
+        original_append(path, records)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external_review, "append_jsonl", delayed_append)
+    errors: list[BaseException] = []
+
+    def run_failed(reviewer_id: str, other_id: str) -> None:
+        try:
+            external_review.run_external_review(
+                prepared_project,
+                manifest.batch_id,
+                reviewer_id=reviewer_id,
+                _attempted_reviewer_ids=frozenset({other_id}),
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run_failed, args=("claude", "antigravity")),
+        threading.Thread(target=run_failed, args=("antigravity", "claude")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert maximum_active_appends == 1
+    runs = read_jsonl(
+        prepared_project / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+        ExternalReviewRun,
+    )
+    assert {run.reviewer_id for run in runs} == {"claude", "antigravity"}
+    assert all(not run.success for run in runs)
+
+
 def test_cursor_host_subagent_from_result_skips_cli(
     prepared_project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

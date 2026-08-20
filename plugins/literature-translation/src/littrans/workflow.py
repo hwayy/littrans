@@ -777,19 +777,9 @@ def create_workflow_packet(
     packet_id = f"{stage}-{identity[:16]}"
     storage_root = ".littrans/work"
     packet_dir = root / storage_root / packet_id
-    existing_path = packet_dir / "manifest.json"
-    if existing_path.is_file():
-        existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
-        if existing.packet_id == packet_id:
-            return existing
-    files: dict[str, str] = {}
-    for file_id, (filename, content) in planned_files.items():
-        path = packet_dir / filename
-        atomic_write_text(path, content)
-        files[file_id] = str(path.relative_to(root)).replace("\\", "/")
-    total_bytes = sum((root / path).stat().st_size for path in files.values())
-    file_sha256 = {
-        file_id: sha256_file(root / path) for file_id, path in files.items()
+    files = {
+        file_id: str((packet_dir / filename).relative_to(root)).replace("\\", "/")
+        for file_id, (filename, _) in planned_files.items()
     }
     manifest = WorkflowPacketManifest(
         packet_id=packet_id,
@@ -803,9 +793,25 @@ def create_workflow_packet(
         batch_context_fingerprints=batch_context_fingerprints,
         storage_root=storage_root,
         files=files,
-        file_sha256=file_sha256,
-        total_bytes=total_bytes,
+        file_sha256=planned_file_sha256,
+        total_bytes=sum(
+            len(content.encode("utf-8")) for _, content in planned_files.values()
+        ),
     )
+    existing_path = packet_dir / "manifest.json"
+    if existing_path.is_file():
+        existing = WorkflowPacketManifest.model_validate(read_json(existing_path))
+        manifest = manifest.model_copy(update={"created_at": existing.created_at})
+        if existing == manifest and all(
+            (path := root / files[file_id]).is_file()
+            and path.stat().st_size == len(content.encode("utf-8"))
+            and sha256_file(path) == planned_file_sha256[file_id]
+            for file_id, (_, content) in planned_files.items()
+        ):
+            return existing
+    for filename, content in planned_files.values():
+        path = packet_dir / filename
+        atomic_write_text(path, content)
     manifest_path = packet_dir / "manifest.json"
     write_json(manifest_path, manifest.model_dump(mode="json"))
     return manifest

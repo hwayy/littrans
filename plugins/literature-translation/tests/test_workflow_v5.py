@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,40 @@ def test_translation_packet_identity_changes_with_writer_context(tmp_path: Path)
 
     assert second.packet_id != first.packet_id
     assert second.file_sha256["shared"] != first.file_sha256["shared"]
+
+
+def test_cached_packet_is_repaired_when_files_or_manifest_are_tampered(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    first = create_workflow_packet(root, "translate", [manifests[0].batch_id])
+    assert not isinstance(first, list)
+    shared_path = root / first.files["shared"]
+    original_shared = shared_path.read_text(encoding="utf-8")
+    shared_path.write_text("tampered packet\n", encoding="utf-8")
+
+    repaired = create_workflow_packet(root, "translate", [manifests[0].batch_id])
+    assert not isinstance(repaired, list)
+    assert repaired == first
+    assert shared_path.read_text(encoding="utf-8") == original_shared
+
+    context_key = f"{manifests[0].batch_id}:context"
+    context_path = root / first.files[context_key]
+    context_path.unlink()
+    restored = create_workflow_packet(root, "translate", [manifests[0].batch_id])
+    assert not isinstance(restored, list)
+    assert context_path.is_file()
+
+    manifest_path = root / first.storage_root / first.packet_id / "manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["total_bytes"] += 1
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    validated = create_workflow_packet(root, "translate", [manifests[0].batch_id])
+    assert not isinstance(validated, list)
+    assert validated == first
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["total_bytes"] == (
+        first.total_bytes
+    )
 
 
 def test_import_returns_stable_id_map_and_prune_requires_imported_packet(

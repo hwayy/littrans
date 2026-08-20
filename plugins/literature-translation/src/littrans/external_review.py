@@ -2921,56 +2921,65 @@ def run_external_review(
                 _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
             except ExternalInvocationError as exc:
                 try:
-                    _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
-                    response_dir = root / "reviews" / "external" / batch_id
-                    response_dir.mkdir(parents=True, exist_ok=True)
-                    raw_path = response_dir / f"{run_id}.raw.txt"
-                    atomic_write_text(raw_path, exc.raw)
-                    failed = ExternalReviewRun(
-                        run_id=run_id,
-                        batch_id=batch_id,
-                        reviewer_id=reviewer.id,
-                        driver=reviewer.driver,
-                        role="second-opinion" if second_opinion else "primary",
-                        requested_model=reviewer.model,
-                        model_verified=False,
-                        cli_version=_command_version(reviewer.command),
-                        effort=reviewer.effort,
-                        translation_fingerprint=fingerprint,
-                        packet_sha256=reviewed_packet_sha256,
-                        prompt_version=PROMPT_VERSION,
-                        scope=scope,
-                        base_run_id=base_run.run_id if base_run else None,
-                        covered_unit_ids=covered_unit_ids,
-                        unit_fingerprints=current_unit_fingerprints,
-                        source_fingerprint=source_fingerprint,
-                        structure_fingerprint=structure_fingerprint,
-                        context_fingerprint=context_fingerprint,
-                        prompt_delivery=exc.prompt_delivery,
-                        usage=exc.usage,
-                        cost_usd=exc.cost_usd,
-                        duration_seconds=exc.duration_seconds,
-                        verdict=ExternalReviewVerdict.INCONCLUSIVE,
-                        summary=f"[{exc.failure_type}] {exc}",
-                        response_path=str(raw_path.relative_to(root)).replace(
-                            "\\", "/"
-                        ),
-                        attempts=max(exc.attempts, 1),
-                        failure_type=exc.failure_type,
-                        fallback_of=_fallback_of,
-                        attempt_log_path=(
-                            f"reviews/{batch_id}.external-attempts.jsonl"
-                        ),
-                        success=False,
-                        reviewed_at=utc_now(),
-                    )
-                    append_jsonl(_runs_path(root, batch_id), [failed])
-                    if _fallback_of:
-                        _append_fallback_lineage(root, batch_id, run_id, _fallback_of)
-                    status = external_review_status(root, batch_id)
-                    write_json(
-                        root / "reviews" / f"{batch_id}.external.json", status
-                    )
+                    failure_persistence_lock: Path | None = None
+                    try:
+                        failure_persistence_lock = _acquire_external_persistence_lock(
+                            root, batch_id
+                        )
+                        _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
+                        response_dir = root / "reviews" / "external" / batch_id
+                        response_dir.mkdir(parents=True, exist_ok=True)
+                        raw_path = response_dir / f"{run_id}.raw.txt"
+                        atomic_write_text(raw_path, exc.raw)
+                        failed = ExternalReviewRun(
+                            run_id=run_id,
+                            batch_id=batch_id,
+                            reviewer_id=reviewer.id,
+                            driver=reviewer.driver,
+                            role="second-opinion" if second_opinion else "primary",
+                            requested_model=reviewer.model,
+                            model_verified=False,
+                            cli_version=_command_version(reviewer.command),
+                            effort=reviewer.effort,
+                            translation_fingerprint=fingerprint,
+                            packet_sha256=reviewed_packet_sha256,
+                            prompt_version=PROMPT_VERSION,
+                            scope=scope,
+                            base_run_id=base_run.run_id if base_run else None,
+                            covered_unit_ids=covered_unit_ids,
+                            unit_fingerprints=current_unit_fingerprints,
+                            source_fingerprint=source_fingerprint,
+                            structure_fingerprint=structure_fingerprint,
+                            context_fingerprint=context_fingerprint,
+                            prompt_delivery=exc.prompt_delivery,
+                            usage=exc.usage,
+                            cost_usd=exc.cost_usd,
+                            duration_seconds=exc.duration_seconds,
+                            verdict=ExternalReviewVerdict.INCONCLUSIVE,
+                            summary=f"[{exc.failure_type}] {exc}",
+                            response_path=str(raw_path.relative_to(root)).replace(
+                                "\\", "/"
+                            ),
+                            attempts=max(exc.attempts, 1),
+                            failure_type=exc.failure_type,
+                            fallback_of=_fallback_of,
+                            attempt_log_path=(
+                                f"reviews/{batch_id}.external-attempts.jsonl"
+                            ),
+                            success=False,
+                            reviewed_at=utc_now(),
+                        )
+                        append_jsonl(_runs_path(root, batch_id), [failed])
+                        if _fallback_of:
+                            _append_fallback_lineage(
+                                root, batch_id, run_id, _fallback_of
+                            )
+                        status = external_review_status(root, batch_id)
+                        write_json(
+                            root / "reviews" / f"{batch_id}.external.json", status
+                        )
+                    finally:
+                        _release_external_persistence_lock(failure_persistence_lock)
                 finally:
                     _release_reviewer_reservation(root, reservation_id)
                     reservation_id = None
