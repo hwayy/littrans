@@ -10,6 +10,7 @@ import littrans.external_review as external_review_module
 import littrans.workflow as workflow_module
 from littrans.batching import load_manifest, refresh_batch
 from littrans.models import (
+    AuditRun,
     ExternalReviewConfig,
     ExternalReviewerConfig,
     IssueType,
@@ -200,6 +201,42 @@ def test_import_returns_stable_id_map_and_prune_requires_imported_packet(
     dry_run = prune_workflow_packets(root)
     assert packet.packet_id in dry_run["candidates"]
     assert dry_run["removed"] == []
+
+
+def test_prune_requires_every_batch_of_legacy_partial_import(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    batch_ids = [batch.batch_id for batch in manifests]
+    for batch_id in batch_ids:
+        _submit(root, batch_id)
+        assert run_qa(root, batch_id).passed
+    packet = create_workflow_packet(root, "audit", batch_ids, "fidelity")
+    assert not isinstance(packet, list)
+
+    def matching_run(batch_id: str) -> AuditRun:
+        coverage = packet.batch_unit_ids[batch_id]
+        return AuditRun(
+            run_id=f"legacy-partial-{batch_id}",
+            batch_ids=[batch_id],
+            reviewer="legacy-fidelity-auditor",
+            lens="fidelity",
+            packet_id=packet.packet_id,
+            unit_fingerprints={
+                unit_id: packet.unit_fingerprints[unit_id] for unit_id in coverage
+            },
+        )
+
+    first, second = batch_ids
+    write_jsonl(
+        root / "evidence" / "audits" / f"{first}.jsonl",
+        [matching_run(first)],
+    )
+    assert packet.packet_id not in prune_workflow_packets(root)["candidates"]
+
+    write_jsonl(
+        root / "evidence" / "audits" / f"{second}.jsonl",
+        [matching_run(second)],
+    )
+    assert packet.packet_id in prune_workflow_packets(root)["candidates"]
 
 
 def test_review_set_import_rolls_back_every_batch_on_late_interruption(

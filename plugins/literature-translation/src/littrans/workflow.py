@@ -1153,13 +1153,11 @@ def prune_workflow_packets(
     missing = sorted(selected - known)
     if missing:
         raise ValueError(f"Unknown batch IDs: {missing}")
-    imported_ids = {
-        run.packet_id
-        for batch_id in known
-        for run in read_jsonl(
+    audit_runs = {
+        batch_id: read_jsonl(
             root / "evidence" / "audits" / f"{batch_id}.jsonl", AuditRun
         )
-        if run.packet_id
+        for batch_id in known
     }
     candidates: dict[str, tuple[WorkflowPacketManifest, list[Path], int]] = {}
     for packet_root in (root / ".littrans" / "work", root / "packets"):
@@ -1167,7 +1165,26 @@ def prune_workflow_packets(
             continue
         for path in packet_root.glob("*/manifest.json"):
             manifest = WorkflowPacketManifest.model_validate(read_json(path))
-            if manifest.packet_id not in imported_ids:
+            required_batches = [
+                batch_id
+                for batch_id in manifest.batch_ids
+                if manifest.batch_unit_ids.get(batch_id, manifest.unit_ids)
+            ]
+            completely_imported = (
+                manifest.stage == "audit"
+                and bool(required_batches)
+                and all(
+                any(
+                    run.packet_id == manifest.packet_id
+                    and run.lens == manifest.lens
+                    and set(run.unit_fingerprints)
+                    >= set(manifest.batch_unit_ids.get(batch_id, manifest.unit_ids))
+                    for run in audit_runs.get(batch_id, [])
+                )
+                for batch_id in required_batches
+                )
+            )
+            if not completely_imported:
                 continue
             if selected and not selected.intersection(manifest.batch_ids):
                 continue
