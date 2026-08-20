@@ -236,9 +236,27 @@ def review_external(
     reviewer: str | None = typer.Option(None),
     second_opinion: bool = typer.Option(False),
     dry_run: bool = typer.Option(False),
+    from_result: Path | None = typer.Option(None, "--from-result"),
+    from_dry_run: Path | None = typer.Option(None, "--from-dry-run"),
+    actual_model: str | None = typer.Option(
+        None,
+        "--actual-model",
+        help="Actual model label attested by the trusted Cursor host coordinator.",
+    ),
 ) -> None:
     """Run one isolated, read-only external translation review."""
-    emit(run_external_review(project, batch_id, reviewer, second_opinion, dry_run))
+    emit(
+        run_external_review(
+            project,
+            batch_id,
+            reviewer,
+            second_opinion,
+            dry_run,
+            from_result=from_result,
+            from_dry_run=from_dry_run,
+            host_actual_model=actual_model,
+        )
+    )
 
 
 @review_app.command("external-status")
@@ -263,7 +281,7 @@ def render_command(
     pages: str | None = typer.Option(None),
     batch_id: str | None = typer.Option(None),
     batch_ids: str | None = typer.Option(None),
-    name: str = typer.Option(...),
+    name: str | None = typer.Option(None),
     allow_draft: bool = typer.Option(False),
 ) -> None:
     parsed_batch_ids = (
@@ -277,11 +295,18 @@ def render_command(
 @workflow_app.command("next")
 def workflow_get_next(
     project: PathArg,
-    limit: int = typer.Option(3),
+    limit: int | None = typer.Option(
+        None,
+        help="Wave size. Defaults to 3 on Codex and 6 on Cursor.",
+    ),
     start_at: str | None = typer.Option(None),
     through: str | None = typer.Option(None),
+    host: str = typer.Option(
+        "auto",
+        help="Coordination host: auto, codex, or cursor.",
+    ),
 ) -> None:
-    emit(workflow_next(project, limit, start_at, through))
+    emit(workflow_next(project, limit, start_at, through, host))
 
 
 @workflow_app.command("status")

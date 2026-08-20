@@ -17,6 +17,7 @@ from pygments.util import ClassNotFound
 from littrans.batching import load_manifest
 from littrans.evidence import effective_figure_labels, equation_markdown
 from littrans.extractor import parse_page_spec
+from littrans.hosts import WAVE_BATCH_SET_MAX
 from littrans.models import (
     BatchManifest,
     CalloutKind,
@@ -39,7 +40,12 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
-from littrans.storage import load_project, read_jsonl
+from littrans.storage import (
+    atomic_write_text,
+    load_project,
+    project_write_lock,
+    read_jsonl,
+)
 from littrans.verification import require_verified_extraction
 
 LEGACY_PUBLISHABLE = {
@@ -209,6 +215,42 @@ def _safe_name(value: str) -> str:
     if not cleaned:
         raise ValueError("Output name must include a letter or digit")
     return cleaned
+
+
+def default_batch_output_name(batch_id: str) -> str:
+    """Use the short batch key (`bNNN`) as the canonical single-batch output stem."""
+    return _safe_name(batch_id.rsplit("-", 1)[-1])
+
+
+def _require_default_output_owner(output: Path, output_name: str, batch_id: str) -> None:
+    existing = list(output.glob(f"{output_name}.*"))
+    if not existing:
+        return
+    render_qa_path = output / f"{output_name}.render-qa.json"
+    try:
+        payload = json.loads(render_qa_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ValueError(
+            f"Default output name {output_name!r} is already in use without an "
+            "ownership report; pass --name explicitly"
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Default output name {output_name!r} has an invalid ownership report; "
+            "pass --name explicitly"
+        ) from exc
+    selection = payload.get("selection") if isinstance(payload, dict) else None
+    owned_by_batch = (
+        isinstance(selection, dict)
+        and selection.get("batch_id") == batch_id
+        and selection.get("batch_ids") in (None, [batch_id])
+    )
+    if not owned_by_batch:
+        owner = selection.get("batch_id") if isinstance(selection, dict) else None
+        raise ValueError(
+            f"Default output name {output_name!r} is already owned by batch "
+            f"{owner or 'unknown'}; pass --name explicitly"
+        )
 
 
 def _render_target_text(unit: SourceUnit, target: str | None) -> str | None:
@@ -541,7 +583,7 @@ def _unit_html(
 def render_project(
     root: Path,
     page_spec: str | None,
-    name: str,
+    name: str | None = None,
     allow_draft: bool = False,
     batch_id: str | None = None,
     batch_ids: list[str] | None = None,
@@ -555,8 +597,18 @@ def render_project(
     selectors = sum(value is not None for value in (page_spec, batch_id, batch_ids))
     if selectors != 1:
         raise ValueError("Specify exactly one of page_spec, batch_id, or batch_ids")
-    if batch_ids is not None and (not batch_ids or len(batch_ids) > 3):
-        raise ValueError("batch_ids must contain one to three exact batch IDs")
+    if name is not None:
+        output_name = _safe_name(name)
+    elif batch_id:
+        output_name = default_batch_output_name(batch_id)
+    else:
+        raise ValueError("Specify name unless rendering a single batch_id")
+    if batch_ids is not None and (
+        not batch_ids or len(batch_ids) > WAVE_BATCH_SET_MAX
+    ):
+        raise ValueError(
+            f"batch_ids must contain 1 to {WAVE_BATCH_SET_MAX} exact batch IDs"
+        )
     if batch_ids is not None:
         from littrans.workflow import _validate_batch_set
 
@@ -749,13 +801,13 @@ def render_project(
             f"open_severe={open_severe}"
         )
 
-    output_name = _safe_name(name)
     output = root / "output"
     output.mkdir(parents=True, exist_ok=True)
     markdown_path = output / f"{output_name}.zh.md"
     html_path = output / f"{output_name}.bilingual.html"
     qa_path = output / f"{output_name}.quality.md"
     unresolved_path = output / f"{output_name}.unresolved.md"
+    render_qa_path = output / f"{output_name}.render-qa.json"
 
     markdown: list[str] = [
         f"# {config.title}",
@@ -1066,7 +1118,6 @@ def render_project(
             and (index == len(rows) - 1 or rows[index + 1]["unit"].sidebar_id != sidebar_id)
         )
     markdown_text = "\n".join(markdown).rstrip() + "\n"
-    markdown_path.write_text(markdown_text, encoding="utf-8")
 
     environment = Environment(
         autoescape=select_autoescape(["html", "xml"]),
@@ -1086,43 +1137,45 @@ def render_project(
         pdf_uri=config.source(root).as_uri(),
         allow_draft=allow_draft,
     )
-    html_path.write_text(html_text, encoding="utf-8")
-
-    _write_quality_summary(qa_path, root, units, missing, unapproved, open_severe)
-    _write_unresolved(unresolved_path, root, selected_ids)
-    render_qa_path = output / f"{output_name}.render-qa.json"
     render_errors = _render_quality_errors(markdown_text, html_text, units)
-    render_qa_path.write_text(
-        json.dumps(
-            {
-                "passed": not render_errors,
-                "selection": {
-                    "batch_id": batch_id,
-                    "batch_ids": selected_batch_ids or None,
-                    "pages": sorted(pages),
+    with project_write_lock(root):
+        if name is None and batch_id is not None:
+            _require_default_output_owner(output, output_name, batch_id)
+        atomic_write_text(markdown_path, markdown_text)
+        atomic_write_text(html_path, html_text)
+        _write_quality_summary(qa_path, root, units, missing, unapproved, open_severe)
+        _write_unresolved(unresolved_path, root, selected_ids)
+        atomic_write_text(
+            render_qa_path,
+            json.dumps(
+                {
+                    "passed": not render_errors,
+                    "selection": {
+                        "batch_id": batch_id,
+                        "batch_ids": selected_batch_ids or None,
+                        "pages": sorted(pages),
+                    },
+                    "unit_ids": [unit.unit_id for unit in units],
+                    "errors": render_errors,
                 },
-                "unit_ids": [unit.unit_id for unit in units],
-                "errors": render_errors,
-            },
-            ensure_ascii=False,
-            indent=2,
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    if render_errors:
-        raise ValueError(f"Rendered output failed structural QA: {render_errors}")
-    outputs = {
-        "markdown": str(markdown_path),
-        "html": str(html_path),
-        "quality": str(qa_path),
-        "unresolved": str(unresolved_path),
-        "render_qa": str(render_qa_path),
-    }
-    if config.external_review and config.external_review.enabled and selected_batch_ids:
-        external_path = output / f"{output_name}.external-review.md"
-        _write_external_review_summary_set(external_path, root, selected_batch_ids)
-        outputs["external_review"] = str(external_path)
+        if render_errors:
+            raise ValueError(f"Rendered output failed structural QA: {render_errors}")
+        outputs = {
+            "markdown": str(markdown_path),
+            "html": str(html_path),
+            "quality": str(qa_path),
+            "unresolved": str(unresolved_path),
+            "render_qa": str(render_qa_path),
+        }
+        if config.external_review and config.external_review.enabled and selected_batch_ids:
+            external_path = output / f"{output_name}.external-review.md"
+            _write_external_review_summary_set(external_path, root, selected_batch_ids)
+            outputs["external_review"] = str(external_path)
     return outputs
 
 
@@ -1164,7 +1217,7 @@ def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> Non
         [f"- `{issue_id}`" for issue_id in status["open_substantive_issues"]]
         or ["None."]
     )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")
 
 
 def _write_external_review_summary_set(
@@ -1188,7 +1241,7 @@ def _write_external_review_summary_set(
                 "",
             ]
         )
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
 
 
 def _render_quality_errors(
@@ -1249,7 +1302,7 @@ def _write_quality_summary(
         f"- Review issues: {len(review_issues)} ({sum(issue.status is IssueStatus.OPEN for issue in review_issues)} open)",
         "",
     ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines))
 
 
 def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
@@ -1284,4 +1337,4 @@ def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
     )
     if not issues:
         lines.append("None.")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")

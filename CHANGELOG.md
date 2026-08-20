@@ -3,6 +3,53 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [Unreleased]
+
+### Added
+
+- When Cursor is the coordinating host, a local host subagent can review an isolated `cursor-cli`
+  dry-run packet and record the result with paired `--from-result` and `--from-dry-run` inputs,
+  without nesting Cursor CLI. The CLI binds the result to the current batch, model, translation
+  fingerprint, review scope, and packet hash. Required second opinions use a separate dry-run and
+  import. Claude Code and Antigravity reviews still use their CLIs.
+
+### Changed
+
+- Clarified continuation closure: the single combined revision pass consolidates the initial
+  three-lens findings only. Coordinators must still accept remaining fluency defects found on
+  closure, including follow-ons from that revision. Do not reject a valid style finding solely to
+  avoid another cycle, and do not treat typical-wave counts as a cap against that extra revision.
+- Made `workflow next` host-aware. Codex keeps default 3 / hard max 3. Cursor defaults to 6 and
+  allows up to 9 so more local writers can run in parallel. Status, packets, metrics, and
+  combined `--batch-ids` renders accept up to nine consecutive batches; audit-lens assignment
+  still chunks at most three consecutive batches per reviewer.
+
+### Fixed
+
+- Bind Cursor host-subagent result JSON to the exact dry-run packet before recording an
+  external approval, and reject missing, stale, tampered, or cross-packet bindings.
+- Require the trusted Cursor host coordinator to attest the actual model when importing a
+  host-subagent result, and reject missing or mismatched model labels instead of treating the
+  configured requested model as runtime evidence.
+- Record a supplied host-subagent result even when an earlier external run is already approvable,
+  so a newly reported substantive defect cannot be silently discarded.
+- Serialize ownership checks and atomic writes for default `bNNN` render outputs so concurrent
+  batches cannot overwrite one another.
+- Split short prose lead-ins such as `For example:` and `Use this:` from an immediately glued
+  method or control-flow listing.
+- Classify C# and XAML listings that use the body font or omit a trailing semicolon, including
+  `while`/`for` snippets, method fragments, and `xmlns` continuations, as non-translatable code.
+- Leave ambiguous dotted calls such as JavaScript `console.log()` and Java
+  `System.out.println()` language-neutral instead of labeling them as C#.
+- Do not join a prose paragraph to a following code listing across a page break.
+- Merge same-page code fragments with the book's ~13pt listing gap, and restore indented listing
+  text from the PDF when a layout override changes a unit's kind to code.
+- Split a PDF text block that glues a body sentence onto the first lines of a C# or XAML listing
+  so the prose stays a paragraph and the listing can merge with the following code fragment.
+- Refuse to overwrite a short `bNNN` render owned by a different batch unless `--name` is supplied.
+- Enforce the three-consecutive-batch cap in audit packet creation while keeping Cursor waves,
+  translation packets, status, and combined rendering at up to nine batches.
+
 ## [0.5.0] - 2026-08-13
 
 ### Added

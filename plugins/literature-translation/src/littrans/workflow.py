@@ -18,6 +18,12 @@ from littrans.evidence import (
     translation_unit_fingerprint,
     translations_semantically_equal,
 )
+from littrans.hosts import (
+    LENS_REVIEWER_BATCH_MAX,
+    WAVE_BATCH_SET_MAX,
+    resolve_coordination_host,
+    resolve_wave_limit,
+)
 from littrans.models import (
     AuditRun,
     BatchManifest,
@@ -34,7 +40,6 @@ from littrans.models import (
     WorkflowPacketManifest,
 )
 from littrans.project import translation_map
-from littrans.semantics import normalize_zh_caption
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     _apply_review_import_locked,
@@ -43,6 +48,7 @@ from littrans.quality import (
     audit_evidence_context_fingerprint,
     current_qa_context_fingerprint,
 )
+from littrans.semantics import normalize_zh_caption
 from littrans.storage import (
     atomic_write_text,
     load_project,
@@ -243,13 +249,14 @@ def _batch_stage(
 
 def workflow_next(
     root: Path,
-    limit: int = 3,
+    limit: int | None = None,
     start_at: str | None = None,
     through: str | None = None,
+    host: str | None = None,
 ) -> dict[str, Any]:
     require_current_project_schema(root, "Workflow coordination")
-    if not 1 <= limit <= 3:
-        raise ValueError("workflow next limit must be between 1 and 3")
+    resolved_host = resolve_coordination_host(host)
+    resolved_limit = resolve_wave_limit(resolved_host, limit)
     snapshot = _load_workflow_snapshot(root)
     manifests = list(snapshot.manifests)
     all_manifests = list(manifests)
@@ -322,7 +329,8 @@ def workflow_next(
         return {
             "stage": "complete",
             "batch_ids": [],
-            "limit": limit,
+            "host": resolved_host,
+            "limit": resolved_limit,
             "start_at": start_at,
             "through": through,
         }
@@ -332,7 +340,7 @@ def workflow_next(
     for manifest, (batch_id, candidate_stage) in zip(
         manifests[start:], stages[start:], strict=True
     ):
-        if candidate_stage != stage or len(batch_ids) >= limit:
+        if candidate_stage != stage or len(batch_ids) >= resolved_limit:
             break
         candidate_ids = set(manifest.unit_ids)
         if len(candidate_ids) != len(manifest.unit_ids):
@@ -346,7 +354,8 @@ def workflow_next(
     return {
         "stage": stage,
         "batch_ids": batch_ids,
-        "limit": limit,
+        "host": resolved_host,
+        "limit": resolved_limit,
         "start_at": start_at,
         "through": through,
     }
@@ -356,8 +365,14 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
     """Return a compact status for an already-selected wave."""
     require_current_project_schema(root, "Workflow coordination")
     requested = list(batch_ids)
-    if not requested or len(requested) > 3 or len(set(requested)) != len(requested):
-        raise ValueError("workflow status requires one to three unique batch IDs")
+    if (
+        not requested
+        or len(requested) > WAVE_BATCH_SET_MAX
+        or len(set(requested)) != len(requested)
+    ):
+        raise ValueError(
+            f"workflow status requires 1 to {WAVE_BATCH_SET_MAX} unique batch IDs"
+        )
     snapshot = _load_workflow_snapshot(root)
     known = {manifest.batch_id for manifest in snapshot.manifests}
     missing = sorted(set(requested) - known)
@@ -380,8 +395,10 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
 
 
 def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
-    if not 1 <= len(batch_ids) <= 3:
-        raise ValueError("workflow packets require one to three batch IDs")
+    if not 1 <= len(batch_ids) <= WAVE_BATCH_SET_MAX:
+        raise ValueError(
+            f"workflow packets require 1 to {WAVE_BATCH_SET_MAX} batch IDs"
+        )
     if len(set(batch_ids)) != len(batch_ids):
         raise ValueError("workflow packet batch IDs must be unique")
     ordered = _all_manifests(root)
@@ -527,6 +544,12 @@ def create_workflow_packet(
     require_current_project_schema(root, "Workflow packet creation")
     if stage not in {"translate", "audit"}:
         raise ValueError("workflow packet stage must be translate or audit")
+    if stage == "audit" and len(batch_ids) > LENS_REVIEWER_BATCH_MAX:
+        raise ValueError(
+            "audit packets require at most "
+            f"{LENS_REVIEWER_BATCH_MAX} consecutive batch IDs; split larger waves "
+            "into consecutive groups"
+        )
     if stage == "audit" and lens == "all":
         packets: list[WorkflowPacketManifest] = []
         for selected_lens in sorted(REQUIRED_AUDIT_LENSES):

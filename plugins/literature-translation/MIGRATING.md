@@ -35,10 +35,27 @@ translations, issues, audit evidence, external-review runs, or approvals.
 After migration, select one wave once and use its compact status until it completes:
 
 ```text
-littrans workflow next PROJECT --limit 3
+littrans workflow next PROJECT
+littrans workflow next PROJECT --host cursor
+littrans workflow next PROJECT --host codex --limit 3
 littrans workflow status PROJECT --batch-ids ID1,ID2,ID3
 ```
 
+`workflow next` auto-detects the coordinating host. Codex remains default 3 / max 3. Cursor
+defaults to 6 and allows up to 9. Status and packets accept up to nine consecutive batch IDs so
+a Cursor wave can be coordinated as one set.
+
 Re-run only the missing batch-local QA, audit closure, or external review reported by status. Formal
-rendering remains blocked until every selected batch has current source verification, deterministic
-QA, all three audit lenses, machine approval, and any configured external approval.
+rendering remains blocked until that batch has current source verification, deterministic
+QA, all three audit lenses, machine approval, and any configured external approval. Render each
+ready batch with `render --batch-id ID`; do not wait for a combined `--batch-ids` artifact. The
+default short output name is overwritten only for the same owning batch; use an explicit unique
+`--name` when another batch already owns that suffix.
+
+Cursor host-subagent external results now require the `dry_run_path` emitted by a fresh
+`review external --dry-run`: pass it with `--from-result RESULT.json --from-dry-run DRY_RUN.json
+--actual-model "ACTUAL MODEL LABEL"`. The trusted Cursor host coordinator must take the actual
+model label from host task metadata; the reviewer must not self-report it. The reviewer result
+must echo the packet's `review_binding`. Old or unbound dry-run records are intentionally rejected
+and must be regenerated. Required second opinions use a separate `--second-opinion --dry-run` and
+paired import with that task's actual model label.

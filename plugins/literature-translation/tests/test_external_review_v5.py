@@ -314,6 +314,21 @@ def test_cursor_actual_model_identity(requested: str, actual: str) -> None:
     assert external_review._cursor_model_matches(requested, actual)
 
 
+@pytest.mark.parametrize(
+    ("requested", "actual"),
+    [
+        ("cursor-grok-4.6-high", "Grok"),
+        ("cursor-grok-4.6-high", "Grok 4"),
+        ("cursor-grok-4.6-high", "Cursor Grok 4.6 Low"),
+        ("cursor-grok-4.6-high-fast", "Cursor Grok 4.6 High"),
+    ],
+)
+def test_cursor_actual_model_identity_rejects_loose_matches(
+    requested: str, actual: str
+) -> None:
+    assert not external_review._cursor_model_matches(requested, actual)
+
+
 def test_cursor_requires_model_and_final_result_evidence() -> None:
     payload = {
         "verdict": "accepted",

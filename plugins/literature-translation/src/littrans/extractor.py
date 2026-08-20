@@ -34,8 +34,10 @@ from littrans.semantics import (
     detect_code_language,
     inline_math_markdown,
     looks_like_continuation,
+    looks_like_program_code,
     normalize_prose,
     prose_from_block,
+    split_mixed_pdf_block,
     table_from_rows,
     unicode_math_to_latex,
 )
@@ -59,7 +61,9 @@ LIST_RE = re.compile(r"^(?:[•▪■●○◦–—-]|\(?\d+[.)]|[a-z][.)])\s+"
 CODE_RE = re.compile(
     r"(?:^\s*using\s+[\w.]+\s*;\s*$|"
     r"^\s*(?:(?:public|private|protected|internal)\s+)?(?:class|interface|enum|namespace)\s+\w+|"
-    r"^\s*(?:public|private|protected|internal)\s+[^.!?\n]+[;{]\s*$)",
+    r"^\s*(?:public|private|protected|internal)\s+[^.!?\n]+[;{]\s*$|"
+    r"^\s*(?:while|for|foreach|if)\s*\(|"
+    r"^\s*(?:xmlns[:A-Za-z0-9]*|x:(?:Class|TypeArguments))\s*=)",
     re.MULTILINE,
 )
 EQUATION_RE = re.compile(r"[=∑∫√∂∇±≤≥∞ρτλσνε]|\b(?:Re|PDF)\s*[=<>]")
@@ -72,6 +76,17 @@ PROTECTED_PATTERNS = (
     re.compile(r"\[(?:\d+(?:\s*[-,]\s*\d+)*)\]"),
 )
 PROTECTED_STOPWORDS = {"EG", "IE", "E.G", "I.E", "THE", "AND", "USING", "MORE"}
+
+
+def _fonts_are_monospace(fonts: set[str]) -> bool:
+    lowered = " ".join(fonts).casefold()
+    return bool(
+        "courier" in lowered
+        or "consol" in lowered
+        or "typewriter" in lowered
+        or "lucida console" in lowered
+        or re.search(r"mono(?:space(?:d)?|[-_ ]|$)", lowered)
+    )
 
 
 @dataclass
@@ -310,14 +325,6 @@ def _merge_note_fragments(candidates: list[BlockCandidate]) -> list[BlockCandida
     return sorted(result, key=lambda item: (round(item.bbox[1], 1), item.bbox[0]))
 
 
-def _looks_like_program_code(text: str) -> bool:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    semicolon_lines = sum(line.endswith(";") for line in lines)
-    return semicolon_lines >= 1 and bool(
-        re.search(r"(?:\bnew\s+[A-Za-z_]|\w+\.\w+\s*=|\w+\.\w+\()", text)
-    )
-
-
 def _classify_text(
     text: str,
     bbox: tuple[float, float, float, float],
@@ -327,7 +334,6 @@ def _classify_text(
     fonts: set[str],
     outline_titles: list[str],
 ) -> tuple[UnitKind, float, bool]:
-    lowered_fonts = " ".join(fonts).casefold()
     one_line = " ".join(text.splitlines())
     if _is_caption(one_line):
         return UnitKind.CAPTION, 0.97, True
@@ -338,11 +344,10 @@ def _classify_text(
     ):
         return UnitKind.NOTE, 0.95, True
     if (
-        "courier" in lowered_fonts
-        or "consol" in lowered_fonts
+        _fonts_are_monospace(fonts)
         or text.lstrip().startswith("<")
         or CODE_RE.search(text)
-        or _looks_like_program_code(text)
+        or looks_like_program_code(text)
     ):
         return UnitKind.CODE, 0.96, False
     if bbox[1] > page.rect.height * 0.80 and font_size < median_size * 0.83:
@@ -836,7 +841,7 @@ def _merge_code_fragments(candidates: list[BlockCandidate]) -> list[BlockCandida
             result
             and candidate.kind is UnitKind.CODE
             and result[-1].kind is UnitKind.CODE
-            and 0 <= candidate.bbox[1] - result[-1].bbox[3] < 9
+            and 0 <= candidate.bbox[1] - result[-1].bbox[3] < 16
             and abs(candidate.bbox[0] - result[-1].bbox[0]) < 30
         ):
             previous = result.pop()
@@ -919,6 +924,27 @@ def _load_overrides(project_root: Path) -> list[dict[str, Any]]:
         position = unit_positions[unit_id]
         merged[position] = {**merged[position], **override}
     return merged
+
+
+def _code_text_from_page(
+    page: fitz.Page, bbox: tuple[float, float, float, float]
+) -> str:
+    """Rebuild listing whitespace from the original PDF block for a code override."""
+    padded = (
+        bbox[0] - 1,
+        bbox[1] - 1,
+        bbox[2] + 1,
+        bbox[3] + 1,
+    )
+    raw = page.get_text("dict", clip=fitz.Rect(padded), sort=True)
+    chunks: list[str] = []
+    for block in raw.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        text = code_from_block(block)
+        if text.strip():
+            chunks.append(text)
+    return "\n".join(chunks).rstrip()
 
 
 def _apply_override(
@@ -1171,6 +1197,30 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                     if unit.unit_id in translated_ids:
                         removed_translation_ids.add(unit.unit_id)
                     continue
+                if (
+                    revised.kind is UnitKind.CODE
+                    and unit.kind is not UnitKind.CODE
+                    and revised.source_text == unit.source_text
+                ):
+                    if project_config is None:
+                        project_config = load_project(project_root)
+                    if document is None:
+                        document = fitz.open(project_config.source(project_root))
+                    restored = _code_text_from_page(
+                        document[revised.page - 1], revised.bbox
+                    )
+                    if restored.strip() and restored != revised.source_text:
+                        revised = revised.model_copy(
+                            update={
+                                "source_text": restored,
+                                "source_hash": sha256_text(restored),
+                                "protected_tokens": protected_tokens(restored),
+                                "code_language": revised.code_language
+                                or detect_code_language(restored),
+                                "translatable": False,
+                                "source_markdown": None,
+                            }
+                        )
                 translation_changed = unit.unit_id in translated_ids and any(
                     getattr(revised, field) != getattr(unit, field)
                     for field in translation_affecting_fields
@@ -1423,50 +1473,58 @@ def extract_source(
                 _rect_overlap(bbox, region) > 0.55 for region in occupied
             ):
                 continue
-            text, font_size, fonts = _block_text(block)
-            if not text or _is_marginal(bbox, text, page, repeated):
-                continue
-            kind, confidence, translatable = _classify_text(
-                text, bbox, page, font_size, median_size, fonts, outline.get(page_number, [])
-            )
-            source_markdown: str | None = None
-            latex: str | None = None
-            math_status: SemanticStatus | None = None
-            code_language: str | None = None
-            if kind is UnitKind.CODE:
-                text = code_from_block(block)
-                code_language = detect_code_language(text)
-            elif kind in {
-                UnitKind.PARAGRAPH,
-                UnitKind.CAPTION,
-                UnitKind.FOOTNOTE,
-                UnitKind.NOTE,
-            }:
-                marked = inline_math_markdown(block, text)
-                source_markdown = marked if marked != text else None
-                if source_markdown:
-                    math_status = SemanticStatus.UNVERIFIED
-            elif kind is UnitKind.EQUATION:
-                latex = unicode_math_to_latex(text)
-                math_status = SemanticStatus.UNVERIFIED
-            asset_path: str | None = None
-            candidates.append(
-                BlockCandidate(
-                    bbox=bbox,
-                    text=text,
-                    kind=kind,
-                    confidence=confidence,
-                    translatable=translatable,
-                    font_size=font_size,
-                    font_names=fonts,
-                    asset_path=asset_path,
-                    source_markdown=source_markdown,
-                    latex=latex,
-                    math_status=math_status,
-                    code_language=code_language,
-                    callout_kind=_callout_kind(text) if kind is UnitKind.NOTE else None,
+            for subblock in split_mixed_pdf_block(block):
+                bbox = _bbox(subblock.get("bbox", block.get("bbox", (0, 0, 0, 0))))
+                text, font_size, fonts = _block_text(subblock)
+                if not text or _is_marginal(bbox, text, page, repeated):
+                    continue
+                kind, confidence, translatable = _classify_text(
+                    text,
+                    bbox,
+                    page,
+                    font_size,
+                    median_size,
+                    fonts,
+                    outline.get(page_number, []),
                 )
-            )
+                source_markdown: str | None = None
+                latex: str | None = None
+                math_status: SemanticStatus | None = None
+                code_language: str | None = None
+                if kind is UnitKind.CODE:
+                    text = code_from_block(subblock)
+                    code_language = detect_code_language(text)
+                elif kind in {
+                    UnitKind.PARAGRAPH,
+                    UnitKind.CAPTION,
+                    UnitKind.FOOTNOTE,
+                    UnitKind.NOTE,
+                }:
+                    marked = inline_math_markdown(subblock, text)
+                    source_markdown = marked if marked != text else None
+                    if source_markdown:
+                        math_status = SemanticStatus.UNVERIFIED
+                elif kind is UnitKind.EQUATION:
+                    latex = unicode_math_to_latex(text)
+                    math_status = SemanticStatus.UNVERIFIED
+                asset_path: str | None = None
+                candidates.append(
+                    BlockCandidate(
+                        bbox=bbox,
+                        text=text,
+                        kind=kind,
+                        confidence=confidence,
+                        translatable=translatable,
+                        font_size=font_size,
+                        font_names=fonts,
+                        asset_path=asset_path,
+                        source_markdown=source_markdown,
+                        latex=latex,
+                        math_status=math_status,
+                        code_language=code_language,
+                        callout_kind=_callout_kind(text) if kind is UnitKind.NOTE else None,
+                    )
+                )
 
         candidates = _merge_code_fragments(candidates)
         candidates = _merge_note_fragments(candidates)

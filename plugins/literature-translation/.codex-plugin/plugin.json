@@ -1,6 +1,6 @@
 {
   "name": "literature-translation",
-  "version": "0.5.0+codex.20260814180722",
+  "version": "0.5.0",
   "description": "A controlled, resumable workflow for high-quality literature translation.",
   "author": {
     "name": "Hwa",

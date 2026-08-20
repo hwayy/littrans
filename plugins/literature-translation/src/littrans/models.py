@@ -8,6 +8,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from littrans.hosts import WAVE_BATCH_SET_MAX
+
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
 PROJECT_SCHEMA_VERSION = 5
@@ -560,7 +562,7 @@ class WorkflowPacketManifest(StrictModel):
     schema_version: int = 2
     packet_id: BatchId
     stage: str
-    batch_ids: list[BatchId] = Field(min_length=1, max_length=3)
+    batch_ids: list[BatchId] = Field(min_length=1, max_length=WAVE_BATCH_SET_MAX)
     lens: str | None = None
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]

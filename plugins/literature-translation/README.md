@@ -35,10 +35,12 @@ See `references/runtime.md` for launcher resolution from an installed skill, and
 6. Run `finalize-literature-translation` to enforce the configured release gate and render
    Markdown plus responsive bilingual HTML. Human approval is never inferred.
 
-For ongoing projects, `continue-literature-translation` freezes at most three consecutive
-same-stage batches as one wave. It uses compact batch-local packets, fresh local writers and
-independent audit lenses, consolidated revisions, and closure-only rechecks while retaining every
-quality gate. Do not use cloud or remote subagents for translation or review.
+For ongoing projects, `continue-literature-translation` freezes one consecutive same-stage wave.
+Codex stays at three batches. Cursor defaults to six and may select up to nine. It uses compact
+batch-local packets, fresh local writers and independent audit lenses, consolidated revisions,
+and closure rechecks while retaining every quality gate. A second consolidated revision after
+closure is expected when remaining fluency defects are accepted; do not skip that pass to stay
+inside a typical-wave count. Do not use cloud or remote subagents for translation or review.
 
 Claude stdin delivery remains disabled by the earlier shadow quality gate. The v0.5 minimal file
 protocol is independently gated until it passes the six-batch quality-and-efficiency A/B;
@@ -49,14 +51,16 @@ Useful v0.5 commands:
 ```text
 littrans project migrate PROJECT --to 5 --dry-run
 littrans project migrate PROJECT --to 5
-littrans workflow next PROJECT --limit 3
+littrans workflow next PROJECT
+littrans workflow next PROJECT --host cursor
+littrans workflow next PROJECT --host codex --limit 3
 littrans workflow status PROJECT --batch-ids ID1,ID2,ID3
 littrans workflow packet PROJECT --stage translate --batch-ids ID1,ID2,ID3
 littrans workflow packet PROJECT --stage audit --lens all --batch-ids ID1,ID2,ID3
 littrans review import-set PROJECT PACKET-MANIFEST ISSUES.jsonl
 littrans workflow metrics PROJECT --batch-ids ID1,ID2,ID3
 littrans workflow prune-packets PROJECT --dry-run
-littrans render PROJECT --batch-ids ID1,ID2,ID3 --name chapter-set
+littrans render PROJECT --batch-id ID
 ```
 
 Schema-v5 packets live under the ignored `.littrans/work` directory and are content-addressed for
@@ -82,9 +86,13 @@ open minor issues.
   units but may use `render_policy: omit`; omitted units are neither batched nor rendered.
 - `target_text` contains semantic body text only. The renderer owns heading, list, note,
   caption, and footnote wrappers, and deterministic QA rejects duplicated structural markup.
-- Use `render --batch-id <id>` for a batch-exact artifact. Page rendering remains available
-  for intentionally page-scoped collections and can include units from several batches.
-- Use `render --batch-ids <id1,id2,id3>` for an exact consecutive set with cross-batch seam QA.
+- The regular translation wave renders one canonical single-batch artifact:
+  `render --batch-id <id>`. `--name` defaults to the short batch key (`bNNN`) and
+  overwrites `output/bNNN.*` only when the existing render-QA record belongs to the same batch.
+  If another batch already owns that short name, pass an explicit unique `--name`.
+- Keep `render --batch-ids` (one to nine consecutive batches) and `--pages` for later
+  large-set or intentionally page-scoped collections. Combined rendering is not a required
+  wave step.
 - Tables are rectangular local structures and are translated cell by cell.
 - Code retains exact whitespace and gains a language fence/highlighter when known.
 - Figure images remain local; meaningful internal labels are translated alongside them.

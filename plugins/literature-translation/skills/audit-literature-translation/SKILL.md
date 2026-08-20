@@ -12,7 +12,7 @@ Use the bundled Python launcher described in `../../references/runtime.md` for e
 ## Independence
 
 - Prefer a fresh local session or independent subagent that receives only the raw batch artifacts. Do not provide the expected verdict, prior reviewer conclusions, or translator rationale beyond recorded uncertainties. Follow [host-runtimes.md](../../references/host-runtimes.md) for host-specific invocation.
-- When independent subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish. For a coordinated set, let `continue-literature-translation` assign one lens reviewer across at most three batches. If a reviewer cannot write files, take its returned JSONL and persist it before import.
+- When independent subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish. For a coordinated set, let `continue-literature-translation` assign one lens reviewer across at most three consecutive batches, even when the frozen Cursor wave is larger; the coordinator splits the wave into consecutive groups. If a reviewer cannot write files, take its returned JSONL and persist it before import.
 - Keep all audit work on the local host. Do not hand packets, PDFs, or review judgment to a cloud or remote subagent.
 - When independent execution is unavailable, perform the three passes sequentially and disclose that limitation.
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "Continue Literature Translation"
   short_description: "Coordinate fixed translation waves efficiently"
-  default_prompt: "Use $continue-literature-translation to continue the next fixed wave with compact status and local quality gates."
+  default_prompt: "Use $continue-literature-translation to continue the next Codex three-batch wave with compact status and local quality gates."

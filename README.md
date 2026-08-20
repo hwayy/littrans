@@ -79,14 +79,17 @@ marketplace without running `marketplace upgrade`.
 
 Enable **Include third-party Plugins, Skills, and other configs** in Cursor settings. Load the
 plugin from `~/.cursor/plugins/local/literature-translation`, then reload the window
-(**Developer: Reload Window**). Confirm the skills and the four local agents in **Customize**.
+(**Developer: Reload Window**). Confirm the skills and the five local agents in **Customize**.
 
 Keep source PDFs and translation workspaces on the local machine. Do not run this workflow through
 Cursor Cloud Agents or `/in-cloud`.
 
+Cursor rejects local plugins whose path is a junction or symlink into another tree. Copy the plugin
+directory into `~/.cursor/plugins/local` instead of linking it.
+
 ### Consumer clients
 
-Clone or update the `stable` branch, then copy or link the plugin directory:
+Clone or update the `stable` branch, then copy the plugin directory:
 
 ```powershell
 git clone --branch stable git@github.com:hwayy/littrans.git
@@ -94,8 +97,8 @@ $repo = Join-Path (Get-Location) "littrans"
 $src = Join-Path $repo "plugins\literature-translation"
 $dest = Join-Path $env:USERPROFILE ".cursor\plugins\local\literature-translation"
 New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
-if (Test-Path $dest) { Remove-Item $dest -Force }
-New-Item -ItemType Junction -Path $dest -Target $src
+if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
 Use the HTTPS repository URL instead when the client is configured for HTTPS authentication.
@@ -103,15 +106,14 @@ Start a new Cursor agent session after installation.
 
 ### Primary development client
 
-Junction the local plugin checkout so Cursor loads the same files Codex uses. From the
-repository root:
+Copy the local plugin checkout into Cursor's local plugin directory. From the repository root:
 
 ```powershell
 $src = Join-Path (Get-Location) "plugins\literature-translation"
 $dest = Join-Path $env:USERPROFILE ".cursor\plugins\local\literature-translation"
 New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
-if (Test-Path $dest) { Remove-Item $dest -Force }
-New-Item -ItemType Junction -Path $dest -Target $src
+if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
 A Teams or Enterprise plan may also import this repository as a Cursor team marketplace from
@@ -120,9 +122,9 @@ A Teams or Enterprise plan may also import this repository as a Cursor team mark
 ### Update a Cursor client
 
 Published plugin changes always receive a new semantic version. Finish or checkpoint any running
-session first. On a consumer client, update the `stable` checkout and recreate the local plugin
-junction if needed. On the primary development client, the existing junction already points at the
-checkout; reload the window after the release commit is present. Then start a new agent session.
+session first. Recopy the plugin directory into `~/.cursor/plugins/local/literature-translation`,
+reload the window, and start a new agent session. A leftover junction from an older install will
+be ignored.
 
 ## Development and release
 

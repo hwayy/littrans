@@ -11,8 +11,16 @@ document brief. Provider prompts remain domain-neutral.
 
 Run `review external <project> <batch-id>` for least-used assignment, or add `--reviewer <id>`
 to keep a revision with its original reviewer. Add `--dry-run` to inspect the isolated packet,
-prompt, and command without invoking a provider. Use `review external-status` to inspect the
-current translation fingerprint, actual model evidence, verdict, and open issues.
+prompt, and command without invoking a provider. When the coordinating host is Cursor, a
+`cursor-cli` review may be executed by a local host subagent against that dry-run packet and
+recorded with paired `--from-result RESULT.json --from-dry-run DRY_RUN.json --actual-model
+"ACTUAL MODEL LABEL"` inputs. Use the `dry_run_path` returned by the dry-run command. The trusted
+host coordinator obtains the actual label from Cursor task metadata; never accept the reviewer
+model's self-report as model evidence. The packet supplies a `review_binding` that the host reviewer
+must copy unchanged into its top-level result JSON; stale, tampered, unbound, mismatched, or
+incorrectly attested records are rejected. A required second opinion gets its own dry-run and
+paired import. Use `review external-status` to inspect the current translation fingerprint, actual
+model evidence, verdict, and open issues.
 
 Set `external_review.assignment_since` to a timezone-aware ISO 8601 timestamp when adding a new
 reviewer to an established project and a fresh balancing epoch is required. Historical telemetry
