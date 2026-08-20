@@ -525,6 +525,14 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
     if len(set(batch_ids)) != len(batch_ids):
         raise ValueError("workflow packet batch IDs must be unique")
     ordered = _all_manifests(root)
+    requested_series = {_batch_series(batch_id) for batch_id in batch_ids}
+    if len(requested_series) == 1 and None not in requested_series:
+        active_series = next(iter(requested_series))
+        ordered = [
+            manifest
+            for manifest in ordered
+            if _batch_series(manifest.batch_id) == active_series
+        ]
     index = {manifest.batch_id: position for position, manifest in enumerate(ordered)}
     missing = [batch_id for batch_id in batch_ids if batch_id not in index]
     if missing:

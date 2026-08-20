@@ -385,6 +385,17 @@ def test_resume_boundary_skips_interleaved_overlapping_history(tmp_path: Path) -
 
     assert bounded["stage"] == "translate"
     assert bounded["batch_ids"] == active_ids
+    packet = create_workflow_packet(root, "translate", bounded["batch_ids"])
+    assert not isinstance(packet, list)
+    assert packet.batch_ids == active_ids
+    outputs = render_project(
+        root,
+        None,
+        name="active-series-wave",
+        allow_draft=True,
+        batch_ids=bounded["batch_ids"],
+    )
+    assert Path(outputs["markdown"]).is_file()
 
 
 def test_workflow_status_rechecks_audit_packet_dependency_closure(
