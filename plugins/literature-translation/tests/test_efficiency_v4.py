@@ -57,6 +57,7 @@ from littrans.models import (
     TranslationRecord,
     UnitKind,
     WorkflowPacketManifest,
+    utc_now,
 )
 from littrans.project import initialize_project, translation_map
 from littrans.quality import (
@@ -4734,6 +4735,142 @@ def test_v3_migration_reconstructs_legacy_figure_label_packets(
     migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
     assert migrated.run_id == "legacy-figure-run-v4"
     assert migrated.context_fingerprint
+
+
+def test_v4_to_v5_preserves_legacy_full_review_context_without_seams(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first, second = manifests
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "legacy-cross-batch-sidebar",
+            "sidebar_role": SidebarRole.TITLE,
+        }
+    )
+    units[1] = units[1].model_copy(
+        update={
+            "sidebar_id": "legacy-cross-batch-sidebar",
+            "sidebar_role": SidebarRole.BODY,
+        }
+    )
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+    for manifest in manifests:
+        refresh_batch(root, manifest.batch_id)
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+
+    config = load_project(root)
+    config.schema_version = 4
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+
+    legacy_runs: list[ExternalReviewRun] = []
+    for manifest in manifests:
+        current_manifest = load_manifest(root, manifest.batch_id)
+        covered = list(current_manifest.unit_ids)
+        run = ExternalReviewRun(
+            run_id=f"legacy-v4-{manifest.batch_id}",
+            batch_id=manifest.batch_id,
+            reviewer_id="claude",
+            driver="claude-code",
+            role="primary",
+            requested_model="claude-sonnet-5",
+            actual_model="claude-sonnet-5",
+            model_verified=True,
+            translation_fingerprint=external_review.batch_translation_fingerprint(
+                root, manifest.batch_id
+            ),
+            packet_sha256="0" * 64,
+            prompt_version=external_review.PROMPT_VERSION,
+            verdict=ExternalReviewVerdict.ACCEPTED,
+            summary="No substantive defects found in the legacy full review.",
+            scope=ReviewScope.FULL,
+            covered_unit_ids=covered,
+            unit_fingerprints=batch_unit_fingerprints(root, manifest.batch_id),
+            source_fingerprint=batch_source_fingerprint(root, manifest.batch_id),
+            structure_fingerprint=batch_structure_fingerprint(root, manifest.batch_id),
+            context_fingerprint=(
+                external_review._external_review_context_fingerprint(
+                    root,
+                    manifest.batch_id,
+                    covered,
+                    ReviewScope.FULL,
+                    _legacy_v4_full_scope=True,
+                )
+            ),
+        )
+        append_jsonl(
+            root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+            [run],
+        )
+        legacy_runs.append(run)
+
+    migrate_project_schema(root, 5)
+
+    assert all(
+        external_review._external_review_context_is_current(root, run)
+        for run in legacy_runs
+    )
+    assert all(
+        external_review_status(root, manifest.batch_id)["external_approvable"]
+        for manifest in manifests
+    )
+    for manifest in manifests:
+        approve_batch(root, manifest.batch_id, "external")
+    formal = render_project(root, None, batch_id=first.batch_id)
+    assert Path(formal["markdown"]).is_file()
+
+    current_v5_run = legacy_runs[0].model_copy(
+        update={
+            "run_id": "current-v5-full-review",
+            "reviewed_at": utc_now(),
+            "context_fingerprint": (
+                external_review._external_review_context_fingerprint(
+                    root,
+                    first.batch_id,
+                    list(load_manifest(root, first.batch_id).unit_ids),
+                    ReviewScope.FULL,
+                )
+            ),
+        }
+    )
+    translations = translation_map(root)
+    seam_unit_id = load_manifest(root, second.batch_id).unit_ids[0]
+    translations[seam_unit_id] = translations[seam_unit_id].model_copy(
+        update={"target_text": "迁移后的跨批侧栏译文", "revision": 2}
+    )
+    assert external_review._external_review_context_is_current(
+        root, legacy_runs[0], translations=translations
+    )
+    assert not external_review._external_review_context_is_current(
+        root, current_v5_run, translations=translations
+    )
+
+    style_path = root / "context" / "style-guide.md"
+    style_path.write_text(
+        style_path.read_text(encoding="utf-8") + "\nUse a newly revised style rule.\n",
+        encoding="utf-8",
+    )
+    assert not external_review._external_review_context_is_current(
+        root, legacy_runs[0]
+    )
 
 
 def test_v3_migration_reconstructs_legacy_equation_packets(tmp_path: Path) -> None:

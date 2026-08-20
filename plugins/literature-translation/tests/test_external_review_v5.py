@@ -644,6 +644,32 @@ def test_external_result_rejects_a_noop_suggested_revision() -> None:
         external_review._validate_result(payload)
 
 
+@pytest.mark.parametrize("field", ["target_span", "suggested_revision"])
+@pytest.mark.parametrize("invalid_value", [None, 7, [], {}])
+def test_external_result_rejects_non_string_revision_spans(
+    field: str, invalid_value: object
+) -> None:
+    issue = {
+        "unit_id": "u1",
+        "severity": "minor",
+        "type": "style",
+        "source_span": "source",
+        "target_span": "现有译文",
+        "explanation": "The wording should be changed.",
+        "suggested_revision": "修订译文",
+        "confidence": 0.9,
+    }
+    issue[field] = invalid_value
+    payload = {
+        "verdict": "changes-requested",
+        "summary": "A localized wording defect requires correction.",
+        "issues": [issue],
+    }
+
+    with pytest.raises(ValueError, match=rf"External issue {field} must be a string"):
+        external_review._validate_result(payload)
+
+
 def test_external_evidence_rejects_noop_against_full_effective_target() -> None:
     payload = {
         "verdict": "changes-requested",
@@ -684,7 +710,22 @@ def test_format_retry_uses_previous_output_not_the_full_packet(
     ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         payload = (
-            {"verdict": "accepted"}
+            {
+                "verdict": "changes-requested",
+                "summary": "A localized wording defect requires correction.",
+                "issues": [
+                    {
+                        "unit_id": "u1",
+                        "severity": "minor",
+                        "type": "style",
+                        "source_span": "source",
+                        "target_span": None,
+                        "explanation": "The wording should be changed.",
+                        "suggested_revision": "修订译文",
+                        "confidence": 0.9,
+                    }
+                ],
+            }
             if len(commands) == 1
             else {
                 "verdict": "accepted",

@@ -332,11 +332,18 @@ def _external_review_context_fingerprint(
     *,
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
+    _legacy_v4_full_scope: bool = False,
 ) -> str:
     manifest = load_manifest(root, batch_id)
     covered = list(covered_unit_ids or manifest.unit_ids)
-    read_only = _outer_seam_context_ids(
-        root, batch_id, covered, all_units=all_units
+    if _legacy_v4_full_scope and scope is not ReviewScope.FULL:
+        raise ValueError("Legacy v4 context fingerprints apply only to full reviews")
+    read_only = (
+        []
+        if _legacy_v4_full_scope
+        else _outer_seam_context_ids(
+            root, batch_id, covered, all_units=all_units
+        )
     )
     selected_ids = set(covered) | set(read_only)
     current_units = (
@@ -366,6 +373,36 @@ def _external_review_context_fingerprint(
     )
 
 
+def _is_pre_v5_migration_review(root: Path, run: ExternalReviewRun) -> bool:
+    if run.scope is not ReviewScope.FULL:
+        return False
+    migration_path = root / "evidence" / "migration-v4-v5.json"
+    try:
+        migration = json.loads(migration_path.read_text(encoding="utf-8"))
+        if not isinstance(migration, dict) or load_project(root).schema_version != 5:
+            return False
+        migrated_at = migration.get("migrated_at")
+        if (
+            migration.get("from") != 4
+            or migration.get("to") != 5
+            or migration.get("dry_run") is not False
+            or migration.get("changed") is not True
+            or migration.get("evidence_policy")
+            != "legacy-v4-readable-until-locally-invalidated"
+            or not isinstance(migrated_at, str)
+        ):
+            return False
+        reviewed_timestamp = datetime.fromisoformat(
+            run.reviewed_at.replace("Z", "+00:00")
+        ).timestamp()
+        migrated_timestamp = datetime.fromisoformat(
+            migrated_at.replace("Z", "+00:00")
+        ).timestamp()
+        return reviewed_timestamp <= migrated_timestamp
+    except (json.JSONDecodeError, OSError, ValueError):
+        return False
+
+
 def _external_review_context_is_current(
     root: Path,
     run: ExternalReviewRun,
@@ -376,7 +413,7 @@ def _external_review_context_is_current(
     if not run.context_fingerprint:
         return False
     try:
-        return run.context_fingerprint == _external_review_context_fingerprint(
+        current_fingerprint = _external_review_context_fingerprint(
             root,
             run.batch_id,
             run.covered_unit_ids,
@@ -384,6 +421,23 @@ def _external_review_context_is_current(
             all_units=all_units,
             translations=translations,
         )
+        if run.context_fingerprint == current_fingerprint:
+            return True
+        # Schema-v4 full reviews deliberately omitted read-only seam units. Preserve
+        # that exact historical scope only for evidence that predates a recorded v5
+        # migration; newly issued v5 reviews must always match the expanded context.
+        if not _is_pre_v5_migration_review(root, run):
+            return False
+        legacy_fingerprint = _external_review_context_fingerprint(
+            root,
+            run.batch_id,
+            run.covered_unit_ids,
+            run.scope,
+            all_units=all_units,
+            translations=translations,
+            _legacy_v4_full_scope=True,
+        )
+        return run.context_fingerprint == legacy_fingerprint
     except (KeyError, OSError, ValueError):
         return False
 
@@ -1175,6 +1229,9 @@ def _validate_result(payload: Any) -> dict[str, Any]:
         confidence = float(item["confidence"])
         if not 0 <= confidence <= 1:
             raise ValueError("External issue confidence must be between 0 and 1")
+        for field in ("target_span", "suggested_revision"):
+            if not isinstance(item[field], str):
+                raise ValueError(f"External issue {field} must be a string")
         target_span = item["target_span"].strip()
         suggested_revision = item["suggested_revision"].strip()
         if target_span and suggested_revision == target_span:
