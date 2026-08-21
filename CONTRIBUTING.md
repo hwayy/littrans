@@ -17,6 +17,15 @@ projects.
 Pull requests should explain the problem, the chosen approach, compatibility impact, and test
 evidence. By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Dependency updates
+
+Dependabot groups weekly minor and patch updates by ecosystem. Major-version updates remain
+separate pull requests so their migration notes and compatibility impact can be reviewed
+individually. Dependency pull requests are not merged automatically: they must pass
+`release-checks`, receive a current Codex Review with no unresolved threads, and be merged by a
+maintainer. When several major updates touch adjacent constraints, merge them one at a time and
+rerun the checks after each rebase.
+
 ## Reporting security issues
 
 Do not open a public issue for a vulnerability. Follow [SECURITY.md](SECURITY.md) instead.
