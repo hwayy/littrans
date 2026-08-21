@@ -5,6 +5,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ## [Unreleased]
 
+### Changed
+
+- Grouped weekly Dependabot minor and patch updates by ecosystem while keeping major-version
+  updates separate for explicit compatibility review and maintainer-controlled merging.
+
 ## [0.5.0] - 2026-08-21
 
 ### Added
