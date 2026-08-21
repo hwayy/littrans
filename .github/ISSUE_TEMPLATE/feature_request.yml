@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose an improvement to LitTrans
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: User need
+      description: What workflow problem should LitTrans solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility considerations
+      description: Note effects on schemas, existing projects, Codex, Cursor, or privacy boundaries.

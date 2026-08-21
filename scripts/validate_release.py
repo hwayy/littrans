@@ -5,6 +5,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 from littrans.project import schema_mismatches
 
 
@@ -17,6 +19,8 @@ SEMVER = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+SKILL_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+FRONTMATTER = re.compile(r"^---\r?\n(.*?)\r?\n---(?:\r?\n|$)", re.DOTALL)
 
 
 def load_json(path: Path) -> dict[str, object]:
@@ -108,6 +112,27 @@ def main() -> None:
     skill_files = sorted((PLUGIN_ROOT / "skills").glob("*/SKILL.md"))
     if not skill_files:
         raise ValueError("Plugin contains no skills")
+    for skill_path in skill_files:
+        skill_text = skill_path.read_text(encoding="utf-8")
+        parsed_skill = FRONTMATTER.match(skill_text)
+        if parsed_skill is None:
+            raise ValueError(f"Skill is missing YAML frontmatter: {skill_path}")
+        try:
+            skill_frontmatter = yaml.safe_load(parsed_skill.group(1))
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Skill has invalid YAML frontmatter: {skill_path}: {exc}") from exc
+        if not isinstance(skill_frontmatter, dict):
+            raise ValueError(f"Skill frontmatter must be a mapping: {skill_path}")
+        skill_name = skill_frontmatter.get("name")
+        if (
+            not isinstance(skill_name, str)
+            or SKILL_NAME.fullmatch(skill_name) is None
+            or skill_name != skill_path.parent.name
+        ):
+            raise ValueError(f"Skill name is invalid or does not match its directory: {skill_path}")
+        skill_description = skill_frontmatter.get("description")
+        if not isinstance(skill_description, str) or not skill_description.strip():
+            raise ValueError(f"Skill description must be a non-empty string: {skill_path}")
     agent_files = sorted((PLUGIN_ROOT / "agents").glob("*.md"))
     expected_agents = {
         "literature-translator.md": "writer",
