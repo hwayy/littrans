@@ -1,6 +1,10 @@
 # LitTrans
 
-LitTrans is a private Git-backed marketplace for the `literature-translation` plugin. The plugin
+[![Release checks](https://github.com/hwayy/littrans/actions/workflows/release-checks.yml/badge.svg?branch=main)](https://github.com/hwayy/littrans/actions/workflows/release-checks.yml)
+[![GitHub release](https://img.shields.io/github/v/release/hwayy/littrans)](https://github.com/hwayy/littrans/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+LitTrans is a public Git-backed marketplace for the `literature-translation` plugin. The plugin
 provides a controlled, resumable workflow for translating English technical books and research
 papers into Simplified Chinese. It installs on Codex and Cursor from the same plugin tree.
 
@@ -24,22 +28,22 @@ scripts/                                  Repository validation commands
 
 ## Install on Codex
 
-Configure GitHub authentication on each client with SSH or Git Credential Manager. Do not put
-tokens in this repository or in marketplace configuration.
+The public marketplace can be installed anonymously over HTTPS. Do not put tokens in this
+repository or in marketplace configuration.
 
 ### Consumer clients
 
 Track the release-only `stable` branch:
 
 ```powershell
-codex plugin marketplace add git@github.com:hwayy/littrans.git --ref stable
+codex plugin marketplace add https://github.com/hwayy/littrans.git --ref stable
 codex plugin add literature-translation@littrans
 ```
 
-Use the HTTPS repository URL instead when the client is configured for HTTPS authentication:
+Authenticated contributors may use SSH instead:
 
 ```powershell
-codex plugin marketplace add https://github.com/hwayy/littrans.git --ref stable
+codex plugin marketplace add git@github.com:hwayy/littrans.git --ref stable
 codex plugin add literature-translation@littrans
 ```
 
@@ -92,7 +96,7 @@ directory into `~/.cursor/plugins/local` instead of linking it.
 Clone or update the `stable` branch, then copy the plugin directory:
 
 ```powershell
-git clone --branch stable git@github.com:hwayy/littrans.git
+git clone --branch stable https://github.com/hwayy/littrans.git
 $repo = Join-Path (Get-Location) "littrans"
 $src = Join-Path $repo "plugins\literature-translation"
 $dest = Join-Path $env:USERPROFILE ".cursor\plugins\local\literature-translation"
@@ -101,7 +105,7 @@ if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
-Use the HTTPS repository URL instead when the client is configured for HTTPS authentication.
+Contributors with GitHub authentication may use the SSH repository URL instead.
 Start a new Cursor agent session after installation.
 
 ### Primary development client
@@ -128,7 +132,7 @@ be ignored.
 
 ## Development and release
 
-Development happens on `master` or topic branches. The `stable` branch advances only to checked,
+Development happens on `main` or topic branches. The `stable` branch advances only to checked,
 tagged release commits. Every distributed release increments the version in both plugin manifests,
 Python package metadata, and `littrans.__version__` together.
 
@@ -146,3 +150,11 @@ See [`RELEASING.md`](RELEASING.md) for the manual release procedure and
 The plugin is intended for private research reading. It does not call a model API directly and
 does not determine publication rights. Keep copyrighted source material and translated project
 state in separate private workspaces.
+
+The [MIT License](LICENSE) covers only the code and documentation committed to this repository.
+It does not license source PDFs, books, papers, translations, credentials, extracted assets, or
+project workspaces. Those materials are not part of LitTrans and must not be committed or
+published without the relevant rights and permissions.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and [SECURITY.md](SECURITY.md) for
+private vulnerability reporting.

@@ -4,7 +4,7 @@
     "name": "Hwa"
   },
   "metadata": {
-    "description": "Private marketplace for the literature-translation plugin."
+    "description": "Public marketplace for the literature-translation plugin."
   },
   "plugins": [
     {

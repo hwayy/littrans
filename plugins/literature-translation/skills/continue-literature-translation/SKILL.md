@@ -1,6 +1,6 @@
 ---
 name: continue-literature-translation
-description: Coordinate continuation of an existing littrans project in host-sized waves (Codex: 3 batches; Cursor: 6 by default, max 9) while preserving deterministic QA, three independent audit lenses, machine approval, external review, required second opinions, and single-batch rendering. Use when asked to continue, resume, or efficiently advance a prepared technical book, paper, article, or chapter translation across multiple batches.
+description: "Coordinate continuation of an existing littrans project in host-sized waves (Codex: 3 batches; Cursor: 6 by default, max 9) while preserving deterministic QA, three independent audit lenses, machine approval, external review, required second opinions, and single-batch rendering. Use when asked to continue, resume, or efficiently advance a prepared technical book, paper, article, or chapter translation across multiple batches."
 ---
 
 # Continue Literature Translation

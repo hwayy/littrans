@@ -5,9 +5,12 @@ versioning and correspond to Git tags named `v<version>`.
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-08-20
+## [0.5.0] - 2026-08-21
 
 ### Added
+
+- Published LitTrans as an open-source GitHub marketplace under the MIT License, with Windows CI,
+  issue and pull-request templates, a security policy, a code of conduct, and Dependabot upkeep.
 
 - Added Cursor host-subagent review imports with paired dry-run/result bindings, exact packet and
   page-evidence hashes, actual-model attestation, configured fallback matching, independent second
