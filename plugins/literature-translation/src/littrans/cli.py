@@ -23,8 +23,10 @@ from littrans.verification import verify_extraction
 from littrans.workflow import (
     create_workflow_packet,
     import_review_set,
+    prune_workflow_packets,
     workflow_metrics,
     workflow_next,
+    workflow_status,
 )
 
 app = typer.Typer(no_args_is_help=True, help="Controlled literature translation tooling.")
@@ -234,9 +236,27 @@ def review_external(
     reviewer: str | None = typer.Option(None),
     second_opinion: bool = typer.Option(False),
     dry_run: bool = typer.Option(False),
+    from_result: Path | None = typer.Option(None, "--from-result"),
+    from_dry_run: Path | None = typer.Option(None, "--from-dry-run"),
+    actual_model: str | None = typer.Option(
+        None,
+        "--actual-model",
+        help="Actual model label attested by the trusted Cursor host coordinator.",
+    ),
 ) -> None:
     """Run one isolated, read-only external translation review."""
-    emit(run_external_review(project, batch_id, reviewer, second_opinion, dry_run))
+    emit(
+        run_external_review(
+            project,
+            batch_id,
+            reviewer,
+            second_opinion,
+            dry_run,
+            from_result=from_result,
+            from_dry_run=from_dry_run,
+            host_actual_model=actual_model,
+        )
+    )
 
 
 @review_app.command("external-status")
@@ -261,7 +281,7 @@ def render_command(
     pages: str | None = typer.Option(None),
     batch_id: str | None = typer.Option(None),
     batch_ids: str | None = typer.Option(None),
-    name: str = typer.Option(...),
+    name: str | None = typer.Option(None),
     allow_draft: bool = typer.Option(False),
 ) -> None:
     parsed_batch_ids = (
@@ -273,8 +293,30 @@ def render_command(
 
 
 @workflow_app.command("next")
-def workflow_get_next(project: PathArg, limit: int = typer.Option(3)) -> None:
-    emit(workflow_next(project, limit))
+def workflow_get_next(
+    project: PathArg,
+    limit: int | None = typer.Option(
+        None,
+        help="Wave size. Defaults to 3 on Codex and 6 on Cursor.",
+    ),
+    start_at: str | None = typer.Option(None),
+    through: str | None = typer.Option(None),
+    host: str = typer.Option(
+        "auto",
+        help="Coordination host: auto, codex, or cursor.",
+    ),
+) -> None:
+    emit(workflow_next(project, limit, start_at, through, host))
+
+
+@workflow_app.command("status")
+def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...)) -> None:
+    emit(
+        workflow_status(
+            project,
+            [value.strip() for value in batch_ids.split(",") if value.strip()],
+        )
+    )
 
 
 @workflow_app.command("packet")
@@ -284,12 +326,35 @@ def workflow_create_packet(
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
 ) -> None:
+    result = create_workflow_packet(
+        project,
+        stage,
+        [value.strip() for value in batch_ids.split(",") if value.strip()],
+        lens,
+    )
     emit(
-        create_workflow_packet(
+        [packet.model_dump(mode="json") for packet in result]
+        if isinstance(result, list)
+        else result
+    )
+
+
+@workflow_app.command("prune-packets")
+def workflow_prune_packets(
+    project: PathArg,
+    batch_ids: str | None = typer.Option(None),
+    apply: bool = typer.Option(False),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    if apply == dry_run:
+        raise typer.BadParameter("choose exactly one of --apply or --dry-run")
+    emit(
+        prune_workflow_packets(
             project,
-            stage,
-            [value.strip() for value in batch_ids.split(",") if value.strip()],
-            lens,
+            [value.strip() for value in batch_ids.split(",") if value.strip()]
+            if batch_ids
+            else None,
+            apply=apply,
         )
     )
 

@@ -16,6 +16,7 @@ sys.path.insert(0, str(SOURCE_ROOT))
 from littrans.batching import load_manifest
 from littrans.evidence import effective_translation_payload, translation_payload
 from littrans.external_review import (
+    _claude_minimal_file_prompt,
     _evidence_map,
     _invoke,
     _packet_text,
@@ -68,10 +69,8 @@ JSON schema.
 
 
 def _variant_delivery(variant: str) -> PromptDelivery:
-    if variant == "legacy":
+    if variant in {"legacy", "optimized"}:
         return PromptDelivery.FILE
-    if variant == "optimized":
-        return PromptDelivery.STDIN
     raise ValueError(f"Unknown shadow variant: {variant}")
 
 
@@ -277,8 +276,11 @@ def run_ab(
                     ),
                     forced_delivery=_variant_delivery(variant),
                     file_prompt=(
-                        _legacy_prompt(packet_path) if variant == "legacy" else None
+                        _legacy_prompt(packet_path)
+                        if variant == "legacy"
+                        else _claude_minimal_file_prompt(packet_path)
                     ),
+                    claude_minimal_file_protocol=variant == "optimized",
                 )
                 results.append(
                     {
@@ -295,6 +297,7 @@ def run_ab(
                         "fast_mode": fast_mode,
                         "attempts": attempts,
                         "prompt_delivery": delivery.value,
+                        "minimal_file_protocol": variant == "optimized",
                         "duration_seconds": duration,
                         "usage": usage.model_dump(),
                         "cost_usd": cost,
@@ -356,7 +359,9 @@ def run_ab(
         and reductions["provider_turns"] >= 0.30
     )
     delivery_protocol_passed = all(
-        result["prompt_delivery"] == _variant_delivery(result["variant"]).value
+        result["prompt_delivery"] == PromptDelivery.FILE.value
+        and result["minimal_file_protocol"]
+        == (result["variant"] == "optimized")
         for result in results
     )
     return {
@@ -378,6 +383,10 @@ def run_ab(
         "reductions": reductions,
         "efficiency_passed": efficiency_passed,
         "delivery_protocol_passed": delivery_protocol_passed,
+        "minimal_file_protocol_enabled": (
+            quality_passed and efficiency_passed and delivery_protocol_passed
+        ),
+        # Compatibility alias consumed by existing automation.
         "prompt_delivery_enabled": (
             quality_passed and efficiency_passed and delivery_protocol_passed
         ),

@@ -12,14 +12,14 @@ Use the bundled Python launcher described in `../../references/runtime.md` for e
 ## Independence
 
 - Prefer a fresh local session or independent subagent that receives only the raw batch artifacts. Do not provide the expected verdict, prior reviewer conclusions, or translator rationale beyond recorded uncertainties. Follow [host-runtimes.md](../../references/host-runtimes.md) for host-specific invocation.
-- When independent subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish. For a coordinated set, let `continue-literature-translation` assign one lens reviewer across at most three batches. If a reviewer cannot write files, take its returned JSONL and persist it before import.
+- When independent subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish. For a coordinated set, let `continue-literature-translation` assign one lens reviewer across at most three consecutive batches, even when the frozen Cursor wave is larger; the coordinator splits the wave into consecutive groups. If a reviewer cannot write files, take its returned JSONL and persist it before import.
 - Keep all audit work on the local host. Do not hand packets, PDFs, or review judgment to a cloud or remote subagent.
 - When independent execution is unavailable, perform the three passes sequentially and disclose that limitation.
 
 ## Procedure
 
 1. Read the batch manifest, source, context, submitted translation, approved glossary, and protected tokens.
-2. Compare every translatable unit under all three lenses. Use [issue-contract.md](references/issue-contract.md).
+2. Compare every translatable unit under all three lenses. Use [issue-contract.md](references/issue-contract.md). Preserve stable-unit source ownership: moving a clause into a neighboring target is an omission/addition pair, not an acceptable seam polish, and must never be proposed as a revision.
 3. Check non-translatable neighbors and structural metadata against the PDF: verify display and inline LaTeX, equation numbers, code indentation/language, figure-label translations, captions, paragraph continuation, titled sidebar grouping, and cross-references. Check every source/target table cell and its row/column alignment. Do not rewrite protected code or formulas.
 4. Write JSONL issues only. Use precise source and target spans, explain the actual defect, and propose a revision only when confident.
 5. Import each independent single-batch issue file with `review import --lenses <lens>` even when it is empty. Import a coordinated packet with `review import-set`; never claim lenses that the reviewer did not perform.

@@ -226,13 +226,22 @@ def changed_units(
 
 
 def dependency_closure(
-    root: Path, batch_ids: Iterable[str], changed: Iterable[str]
+    root: Path,
+    batch_ids: Iterable[str],
+    changed: Iterable[str],
+    *,
+    all_units: list[SourceUnit] | None = None,
 ) -> list[str]:
     """Expand edits to local semantic dependencies and batch seams."""
     from littrans.batching import load_manifest
 
-    units = project_units(root)
+    units = project_units(root) if all_units is None else all_units
     positions = {unit.unit_id: index for index, unit in enumerate(units)}
+    batch_scope = {
+        unit_id
+        for batch_id in batch_ids
+        for unit_id in load_manifest(root, batch_id).unit_ids
+    }
     selected = {unit_id for unit_id in changed if unit_id in positions}
     if not selected:
         return []
@@ -240,9 +249,9 @@ def dependency_closure(
     # Immediate context is always reviewed for a changed unit.
     for unit_id in list(selected):
         index = positions[unit_id]
-        if index:
+        if index and units[index - 1].unit_id in batch_scope:
             selected.add(units[index - 1].unit_id)
-        if index + 1 < len(units):
+        if index + 1 < len(units) and units[index + 1].unit_id in batch_scope:
             selected.add(units[index + 1].unit_id)
 
     # Continued structures and sidebars may pull one another into the closure.
@@ -275,20 +284,8 @@ def dependency_closure(
         if len(selected) == previous_size:
             break
 
-    # Include both sides only for batch seams reached by the dependency closure.
-    for batch_id in batch_ids:
-        manifest = load_manifest(root, batch_id)
-        for seam_id, outside_offset in (
-            (manifest.unit_ids[0], -1),
-            (manifest.unit_ids[-1], 1),
-        ):
-            if seam_id not in selected:
-                continue
-            index = positions[seam_id]
-            selected.add(seam_id)
-            outside_index = index + outside_offset
-            if 0 <= outside_index < len(units):
-                selected.add(units[outside_index].unit_id)
+    # Cross a batch boundary only through a real semantic dependency (a
+    # continuation or shared sidebar), handled by the closure loop above.
     return [unit.unit_id for unit in units if unit.unit_id in selected]
 
 

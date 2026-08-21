@@ -5,6 +5,7 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import fitz
@@ -33,16 +34,21 @@ from littrans.semantics import (
     detect_code_language,
     inline_math_markdown,
     looks_like_continuation,
+    looks_like_program_code,
     normalize_prose,
     prose_from_block,
+    split_mixed_pdf_block,
     table_from_rows,
     unicode_math_to_latex,
 )
 from littrans.storage import (
     load_project,
+    project_write_lock,
     read_jsonl,
+    restore_files,
     save_project,
     sha256_text,
+    snapshot_files,
     write_json,
     write_jsonl,
 )
@@ -57,7 +63,9 @@ LIST_RE = re.compile(r"^(?:[•▪■●○◦–—-]|\(?\d+[.)]|[a-z][.)])\s+"
 CODE_RE = re.compile(
     r"(?:^\s*using\s+[\w.]+\s*;\s*$|"
     r"^\s*(?:(?:public|private|protected|internal)\s+)?(?:class|interface|enum|namespace)\s+\w+|"
-    r"^\s*(?:public|private|protected|internal)\s+[^.!?\n]+[;{]\s*$)",
+    r"^\s*(?:public|private|protected|internal)\s+[^.!?\n]+[;{]\s*$|"
+    r"^\s*(?:while|for|foreach|if)\s*\(|"
+    r"^\s*(?:xmlns[:A-Za-z0-9]*|x:(?:Class|TypeArguments))\s*=)",
     re.MULTILINE,
 )
 EQUATION_RE = re.compile(r"[=∑∫√∂∇±≤≥∞ρτλσνε]|\b(?:Re|PDF)\s*[=<>]")
@@ -70,6 +78,17 @@ PROTECTED_PATTERNS = (
     re.compile(r"\[(?:\d+(?:\s*[-,]\s*\d+)*)\]"),
 )
 PROTECTED_STOPWORDS = {"EG", "IE", "E.G", "I.E", "THE", "AND", "USING", "MORE"}
+
+
+def _fonts_are_monospace(fonts: set[str]) -> bool:
+    lowered = " ".join(fonts).casefold()
+    return bool(
+        "courier" in lowered
+        or "consol" in lowered
+        or "typewriter" in lowered
+        or "lucida console" in lowered
+        or re.search(r"mono(?:space(?:d)?|[-_ ]|$)", lowered)
+    )
 
 
 @dataclass
@@ -308,14 +327,6 @@ def _merge_note_fragments(candidates: list[BlockCandidate]) -> list[BlockCandida
     return sorted(result, key=lambda item: (round(item.bbox[1], 1), item.bbox[0]))
 
 
-def _looks_like_program_code(text: str) -> bool:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    semicolon_lines = sum(line.endswith(";") for line in lines)
-    return semicolon_lines >= 1 and bool(
-        re.search(r"(?:\bnew\s+[A-Za-z_]|\w+\.\w+\s*=|\w+\.\w+\()", text)
-    )
-
-
 def _classify_text(
     text: str,
     bbox: tuple[float, float, float, float],
@@ -325,7 +336,6 @@ def _classify_text(
     fonts: set[str],
     outline_titles: list[str],
 ) -> tuple[UnitKind, float, bool]:
-    lowered_fonts = " ".join(fonts).casefold()
     one_line = " ".join(text.splitlines())
     if _is_caption(one_line):
         return UnitKind.CAPTION, 0.97, True
@@ -336,11 +346,10 @@ def _classify_text(
     ):
         return UnitKind.NOTE, 0.95, True
     if (
-        "courier" in lowered_fonts
-        or "consol" in lowered_fonts
+        _fonts_are_monospace(fonts)
         or text.lstrip().startswith("<")
         or CODE_RE.search(text)
-        or _looks_like_program_code(text)
+        or looks_like_program_code(text)
     ):
         return UnitKind.CODE, 0.96, False
     if bbox[1] > page.rect.height * 0.80 and font_size < median_size * 0.83:
@@ -834,7 +843,7 @@ def _merge_code_fragments(candidates: list[BlockCandidate]) -> list[BlockCandida
             result
             and candidate.kind is UnitKind.CODE
             and result[-1].kind is UnitKind.CODE
-            and 0 <= candidate.bbox[1] - result[-1].bbox[3] < 9
+            and 0 <= candidate.bbox[1] - result[-1].bbox[3] < 16
             and abs(candidate.bbox[0] - result[-1].bbox[0]) < 30
         ):
             previous = result.pop()
@@ -917,6 +926,27 @@ def _load_overrides(project_root: Path) -> list[dict[str, Any]]:
         position = unit_positions[unit_id]
         merged[position] = {**merged[position], **override}
     return merged
+
+
+def _code_text_from_page(
+    page: fitz.Page, bbox: tuple[float, float, float, float]
+) -> str:
+    """Rebuild listing whitespace from the original PDF block for a code override."""
+    padded = (
+        bbox[0] - 1,
+        bbox[1] - 1,
+        bbox[2] + 1,
+        bbox[3] + 1,
+    )
+    raw = page.get_text("dict", clip=fitz.Rect(padded), sort=True)
+    chunks: list[str] = []
+    for block in raw.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        text = code_from_block(block)
+        if text.strip():
+            chunks.append(text)
+    return "\n".join(chunks).rstrip()
 
 
 def _apply_override(
@@ -1101,7 +1131,13 @@ def _inserted_unit_from_override(override: dict[str, Any]) -> SourceUnit:
 
 
 def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
-    """Apply reviewed structural overrides while retaining reviewed unit identities."""
+    """Apply reviewed structural overrides as one validated project mutation."""
+    with project_write_lock(project_root):
+        return _apply_layout_overrides_locked(project_root)
+
+
+def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
+    """Build and validate the complete override result before replacing project files."""
     units_path = project_root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     if not units:
@@ -1148,95 +1184,172 @@ def apply_layout_overrides(project_root: Path) -> list[SourceUnit]:
         "continued_to_next",
         "figure_labels",
     )
-    updated: list[SourceUnit] = []
-    for unit in units:
-        revised = _apply_override(unit, overrides)
-        if revised is None:
-            if unit.unit_id in translated_ids:
-                removed_translation_ids.add(unit.unit_id)
-            continue
-        translation_changed = unit.unit_id in translated_ids and any(
-            getattr(revised, field) != getattr(unit, field)
-            for field in translation_affecting_fields
-        )
-        if translation_changed:
-            record = translation_by_id[unit.unit_id]
-            if not revised.translatable:
-                removed_translation_ids.add(unit.unit_id)
-            elif revised.source_hash != unit.source_hash:
-                if record.source_hash != revised.source_hash:
-                    removed_translation_ids.add(unit.unit_id)
-            else:
-                invalidated_translation_ids.add(unit.unit_id)
-        if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
-            config = load_project(project_root)
-            document = fitz.open(config.source(project_root))
-            asset_name = f"page-{revised.page:04}-equation-override-{revised.unit_id}.png"
-            _crop_asset(
-                document[revised.page - 1],
-                revised.bbox,
-                project_root / "derived" / "assets" / asset_name,
-            )
-            revised = revised.model_copy(
-                update={
-                    "asset_refs": [
-                        AssetRef(
-                            kind=UnitKind.EQUATION,
-                            path=f"derived/assets/{asset_name}",
-                            bbox=revised.bbox,
-                        )
-                    ]
-                }
-            )
-        updated.append(revised)
-        for insertion in insertions_by_anchor.get(unit.unit_id, []):
-            inserted_id = str(insertion["unit_id"])
-            if inserted_id in existing_ids:
-                continue
-            inserted = _inserted_unit_from_override(insertion)
-            if inserted.unit_id in {item.unit_id for item in updated}:
-                raise ValueError(f"Duplicate inserted unit_id: {inserted.unit_id}")
-            updated.append(inserted)
-            existing_ids.add(inserted.unit_id)
-    write_jsonl(units_path, updated)
-    if translations:
-        write_jsonl(
-            project_root / "translations" / "current.jsonl",
-            (
-                record.model_copy(update={"status": ProjectStatus.DRAFT})
-                if record.unit_id in invalidated_translation_ids
-                else record
-                for record in translations
-                if record.unit_id not in removed_translation_ids
-            ),
-        )
-        if invalidated_translation_ids or removed_translation_ids:
-            config = load_project(project_root)
-            config.status = ProjectStatus.DRAFT
-            save_project(project_root, config)
-    unit_by_id = {unit.unit_id: unit for unit in updated}
     issues_path = project_root / "derived" / "extraction-issues.jsonl"
     issues = read_jsonl(issues_path, ExtractionIssue)
-    if issues:
-        reconciled: list[ExtractionIssue] = []
-        for issue in issues:
-            candidate = unit_by_id.get(issue.unit_id or "")
-            resolved = candidate is None or (
-                issue.code == "math-needs-verification"
-                and candidate.math_status is SemanticStatus.VERIFIED
-            ) or (
-                issue.code == "table-needs-verification"
-                and candidate.verification_status is SemanticStatus.VERIFIED
-            ) or (
-                issue.code == "figure-text-needs-verification"
-                and candidate.visual_text_status is SemanticStatus.VERIFIED
-            )
-            reconciled.append(
-                issue.model_copy(update={"status": IssueStatus.RESOLVED})
-                if resolved
-                else issue
-            )
-        write_jsonl(issues_path, reconciled)
+    project_config = None
+    document = None
+    updated: list[SourceUnit] = []
+    pending_assets: list[tuple[Path, Path]] = []
+    with TemporaryDirectory(prefix=".littrans-overrides-", dir=project_root) as temp_name:
+        temp_root = Path(temp_name)
+        try:
+            for unit in units:
+                revised = _apply_override(unit, overrides)
+                if revised is None:
+                    if unit.unit_id in translated_ids:
+                        removed_translation_ids.add(unit.unit_id)
+                    continue
+                if (
+                    revised.kind is UnitKind.CODE
+                    and unit.kind is not UnitKind.CODE
+                    and revised.source_text == unit.source_text
+                ):
+                    if project_config is None:
+                        project_config = load_project(project_root)
+                    if document is None:
+                        document = fitz.open(project_config.source(project_root))
+                    restored = _code_text_from_page(
+                        document[revised.page - 1], revised.bbox
+                    )
+                    if restored.strip() and restored != revised.source_text:
+                        revised = revised.model_copy(
+                            update={
+                                "source_text": restored,
+                                "source_hash": sha256_text(restored),
+                                "protected_tokens": protected_tokens(restored),
+                                "code_language": revised.code_language
+                                or detect_code_language(restored),
+                                "translatable": False,
+                                "source_markdown": None,
+                            }
+                        )
+                translation_changed = unit.unit_id in translated_ids and any(
+                    getattr(revised, field) != getattr(unit, field)
+                    for field in translation_affecting_fields
+                )
+                if translation_changed:
+                    record = translation_by_id[unit.unit_id]
+                    if not revised.translatable:
+                        removed_translation_ids.add(unit.unit_id)
+                    elif revised.source_hash != unit.source_hash:
+                        if record.source_hash != revised.source_hash:
+                            removed_translation_ids.add(unit.unit_id)
+                    else:
+                        invalidated_translation_ids.add(unit.unit_id)
+                if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
+                    if project_config is None:
+                        project_config = load_project(project_root)
+                    if document is None:
+                        document = fitz.open(project_config.source(project_root))
+                    asset_name = (
+                        f"page-{revised.page:04}-equation-override-{revised.unit_id}.png"
+                    )
+                    temporary_asset = temp_root / asset_name
+                    _crop_asset(document[revised.page - 1], revised.bbox, temporary_asset)
+                    destination = project_root / "derived" / "assets" / asset_name
+                    pending_assets.append((temporary_asset, destination))
+                    revised = revised.model_copy(
+                        update={
+                            "asset_refs": [
+                                AssetRef(
+                                    kind=UnitKind.EQUATION,
+                                    path=f"derived/assets/{asset_name}",
+                                    bbox=revised.bbox,
+                                )
+                            ]
+                        }
+                    )
+                # model_copy intentionally skips validation. Re-validate the staged
+                # object so a malformed override cannot partially update the ledger.
+                updated.append(
+                    SourceUnit.model_validate(revised.model_dump(mode="python"))
+                )
+                for insertion in insertions_by_anchor.get(unit.unit_id, []):
+                    inserted_id = str(insertion["unit_id"])
+                    if inserted_id in existing_ids:
+                        continue
+                    inserted = _inserted_unit_from_override(insertion)
+                    if inserted.unit_id in {item.unit_id for item in updated}:
+                        raise ValueError(f"Duplicate inserted unit_id: {inserted.unit_id}")
+                    updated.append(inserted)
+                    existing_ids.add(inserted.unit_id)
+
+            staged_translations = [
+                (
+                    record.model_copy(update={"status": ProjectStatus.DRAFT})
+                    if record.unit_id in invalidated_translation_ids
+                    else record
+                )
+                for record in translations
+                if record.unit_id not in removed_translation_ids
+            ]
+            staged_translations = [
+                TranslationRecord.model_validate(record.model_dump(mode="python"))
+                for record in staged_translations
+            ]
+            unit_by_id = {unit.unit_id: unit for unit in updated}
+            reconciled: list[ExtractionIssue] = []
+            for issue in issues:
+                candidate = unit_by_id.get(issue.unit_id or "")
+                resolved = candidate is None or (
+                    issue.code == "math-needs-verification"
+                    and candidate.math_status is SemanticStatus.VERIFIED
+                ) or (
+                    issue.code == "table-needs-verification"
+                    and candidate.verification_status is SemanticStatus.VERIFIED
+                ) or (
+                    issue.code == "figure-text-needs-verification"
+                    and candidate.visual_text_status is SemanticStatus.VERIFIED
+                )
+                staged_issue = (
+                    issue.model_copy(update={"status": IssueStatus.RESOLVED})
+                    if resolved
+                    else issue
+                )
+                reconciled.append(
+                    ExtractionIssue.model_validate(staged_issue.model_dump(mode="python"))
+                )
+
+            if translations and (invalidated_translation_ids or removed_translation_ids):
+                if project_config is None:
+                    project_config = load_project(project_root)
+                project_config.status = ProjectStatus.DRAFT
+
+            # No authoritative file is replaced until the complete staged snapshot,
+            # including derived issue state and generated crops, has validated. Keep
+            # exact pre-mutation bytes so interruption or any later write failure
+            # restores the entire project view, including overwritten/new assets.
+            translations_path = project_root / "translations" / "current.jsonl"
+            mutation_paths = [units_path]
+            if translations:
+                mutation_paths.append(translations_path)
+            if project_config is not None and (
+                invalidated_translation_ids or removed_translation_ids
+            ):
+                mutation_paths.append(project_root / "project.yaml")
+            if issues:
+                mutation_paths.append(issues_path)
+            mutation_paths.extend(destination for _, destination in pending_assets)
+            snapshots = snapshot_files(mutation_paths)
+            try:
+                for temporary_asset, destination in pending_assets:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    temporary_asset.replace(destination)
+                write_jsonl(units_path, updated)
+                if translations:
+                    write_jsonl(translations_path, staged_translations)
+                if project_config is not None and (
+                    invalidated_translation_ids or removed_translation_ids
+                ):
+                    save_project(project_root, project_config)
+                if issues:
+                    write_jsonl(issues_path, reconciled)
+            except BaseException:
+                restore_files(snapshots)
+                raise
+        finally:
+            if document is not None:
+                document.close()
     return updated
 
 
@@ -1378,50 +1491,58 @@ def extract_source(
                 _rect_overlap(bbox, region) > 0.55 for region in occupied
             ):
                 continue
-            text, font_size, fonts = _block_text(block)
-            if not text or _is_marginal(bbox, text, page, repeated):
-                continue
-            kind, confidence, translatable = _classify_text(
-                text, bbox, page, font_size, median_size, fonts, outline.get(page_number, [])
-            )
-            source_markdown: str | None = None
-            latex: str | None = None
-            math_status: SemanticStatus | None = None
-            code_language: str | None = None
-            if kind is UnitKind.CODE:
-                text = code_from_block(block)
-                code_language = detect_code_language(text)
-            elif kind in {
-                UnitKind.PARAGRAPH,
-                UnitKind.CAPTION,
-                UnitKind.FOOTNOTE,
-                UnitKind.NOTE,
-            }:
-                marked = inline_math_markdown(block, text)
-                source_markdown = marked if marked != text else None
-                if source_markdown:
-                    math_status = SemanticStatus.UNVERIFIED
-            elif kind is UnitKind.EQUATION:
-                latex = unicode_math_to_latex(text)
-                math_status = SemanticStatus.UNVERIFIED
-            asset_path: str | None = None
-            candidates.append(
-                BlockCandidate(
-                    bbox=bbox,
-                    text=text,
-                    kind=kind,
-                    confidence=confidence,
-                    translatable=translatable,
-                    font_size=font_size,
-                    font_names=fonts,
-                    asset_path=asset_path,
-                    source_markdown=source_markdown,
-                    latex=latex,
-                    math_status=math_status,
-                    code_language=code_language,
-                    callout_kind=_callout_kind(text) if kind is UnitKind.NOTE else None,
+            for subblock in split_mixed_pdf_block(block):
+                bbox = _bbox(subblock.get("bbox", block.get("bbox", (0, 0, 0, 0))))
+                text, font_size, fonts = _block_text(subblock)
+                if not text or _is_marginal(bbox, text, page, repeated):
+                    continue
+                kind, confidence, translatable = _classify_text(
+                    text,
+                    bbox,
+                    page,
+                    font_size,
+                    median_size,
+                    fonts,
+                    outline.get(page_number, []),
                 )
-            )
+                source_markdown: str | None = None
+                latex: str | None = None
+                math_status: SemanticStatus | None = None
+                code_language: str | None = None
+                if kind is UnitKind.CODE:
+                    text = code_from_block(subblock)
+                    code_language = detect_code_language(text)
+                elif kind in {
+                    UnitKind.PARAGRAPH,
+                    UnitKind.CAPTION,
+                    UnitKind.FOOTNOTE,
+                    UnitKind.NOTE,
+                }:
+                    marked = inline_math_markdown(subblock, text)
+                    source_markdown = marked if marked != text else None
+                    if source_markdown:
+                        math_status = SemanticStatus.UNVERIFIED
+                elif kind is UnitKind.EQUATION:
+                    latex = unicode_math_to_latex(text)
+                    math_status = SemanticStatus.UNVERIFIED
+                asset_path: str | None = None
+                candidates.append(
+                    BlockCandidate(
+                        bbox=bbox,
+                        text=text,
+                        kind=kind,
+                        confidence=confidence,
+                        translatable=translatable,
+                        font_size=font_size,
+                        font_names=fonts,
+                        asset_path=asset_path,
+                        source_markdown=source_markdown,
+                        latex=latex,
+                        math_status=math_status,
+                        code_language=code_language,
+                        callout_kind=_callout_kind(text) if kind is UnitKind.NOTE else None,
+                    )
+                )
 
         candidates = _merge_code_fragments(candidates)
         candidates = _merge_note_fragments(candidates)

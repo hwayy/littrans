@@ -3,7 +3,8 @@
     "ExternalReviewDriver": {
       "enum": [
         "claude-code",
-        "antigravity"
+        "antigravity",
+        "cursor-cli"
       ],
       "title": "ExternalReviewDriver",
       "type": "string"
@@ -317,6 +318,52 @@
       "minimum": 1,
       "title": "Attempts",
       "type": "integer"
+    },
+    "failure_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "authentication",
+            "network",
+            "format",
+            "model",
+            "quota",
+            "timeout",
+            "provider",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Type"
+    },
+    "fallback_of": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fallback Of"
+    },
+    "attempt_log_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attempt Log Path"
     },
     "success": {
       "default": true,

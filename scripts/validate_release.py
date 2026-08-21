@@ -109,8 +109,20 @@ def main() -> None:
     if not skill_files:
         raise ValueError("Plugin contains no skills")
     agent_files = sorted((PLUGIN_ROOT / "agents").glob("*.md"))
-    if len(agent_files) != 4:
-        raise ValueError("Cursor plugin must ship exactly four local subagents")
+    expected_agents = {
+        "literature-translator.md": "writer",
+        "literature-fidelity-reviewer.md": "jsonl",
+        "literature-technical-reviewer.md": "jsonl",
+        "literature-chinese-style-reviewer.md": "jsonl",
+        "literature-external-reviewer.md": "bound-json",
+    }
+    actual_agents = {path.name for path in agent_files}
+    if actual_agents != set(expected_agents):
+        raise ValueError(
+            "Cursor plugin agent set is invalid: "
+            f"missing={sorted(set(expected_agents) - actual_agents)}, "
+            f"unexpected={sorted(actual_agents - set(expected_agents))}"
+        )
     frontmatter_re = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n(.*)$", re.DOTALL)
     write_file_re = re.compile(
         r"write jsonl|return the issue file path|including an empty file",
@@ -122,16 +134,37 @@ def main() -> None:
         if parsed is None:
             raise ValueError(f"Agent is missing YAML frontmatter: {agent_path.name}")
         frontmatter, body = parsed.group(1), parsed.group(2)
-        if re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE):
+        readonly = bool(
+            re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE)
+        )
+        contract = expected_agents[agent_path.name]
+        if contract == "writer" and readonly:
+            raise ValueError("Cursor translation writer must not be read-only")
+        if contract != "writer" and not readonly:
+            raise ValueError(f"Reviewer agent must be read-only: {agent_path.name}")
+        if readonly:
             if write_file_re.search(body):
                 raise ValueError(
-                    f"Read-only agent {agent_path.name} must return JSONL "
-                    "instead of writing files"
+                    f"Read-only agent {agent_path.name} must return content instead "
+                    "of writing files"
                 )
-            if "jsonl" not in body.lower() or "return" not in body.lower():
+            lowered_body = body.lower()
+            if "return" not in lowered_body:
+                raise ValueError(
+                    f"Read-only agent {agent_path.name} must return its result"
+                )
+            if contract == "jsonl" and "jsonl" not in lowered_body:
                 raise ValueError(
                     f"Read-only agent {agent_path.name} must return JSONL "
                     "content for the parent to persist"
+                )
+            if contract == "bound-json" and not all(
+                marker in lowered_body
+                for marker in ("json object", "review_binding", "verdict", "issues")
+            ):
+                raise ValueError(
+                    "External reviewer must return a bound JSON object with "
+                    "review_binding, verdict, and issues"
                 )
 
     schema_dir = PLUGIN_ROOT / "schemas"

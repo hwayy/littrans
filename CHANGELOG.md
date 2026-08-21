@@ -3,6 +3,62 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [Unreleased]
+
+## [0.5.0] - 2026-08-20
+
+### Added
+
+- Added Cursor host-subagent review imports with paired dry-run/result bindings, exact packet and
+  page-evidence hashes, actual-model attestation, configured fallback matching, independent second
+  opinions, durable reservations, and tamper/staleness rejection without nesting Cursor CLI.
+- Added schema-v5 project snapshots, batch-local content-addressed work packets, compact fixed-wave
+  status, safe packet pruning, and metrics that separate logical review calls from evidence rows.
+- Recorded every external-provider attempt with raw output, failure class, duration, tokens, cache
+  use, turns, and fallback lineage; added targeted format repair and crash-recoverable per-service
+  OS locks.
+
+### Changed
+
+- Made `workflow next` host-aware: Codex waves remain capped at three batches, while Cursor defaults
+  to six and supports up to nine; audit-lens assignments remain independently capped at three.
+- Clarified that closure findings remain actionable after the combined initial revision pass and
+  that typical wave counts never justify suppressing a valid fluency or style defect.
+- Scoped internal audit invalidation and closure to each batch's real dependency set, skipped empty
+  audit evidence, stabilized imported reviewer issue IDs, and made three-lens imports atomic.
+- Reworked continuation around one initial audit, consolidated per-batch revision, a frozen wave,
+  and one minimal closure; independent external pipelines can advance without blocking clean peers.
+- Packaged the bilingual HTML template inside the wheel and made layout overrides validate their
+  complete derived snapshot before replacing project files.
+
+### Fixed
+
+- Restored shared brief, style-guide, glossary, translation-memory, and adjacent-source context to
+  translation packets; included every context input in packet identities and rebuilt malformed or
+  stale cached packets instead of reusing them.
+- Revalidated external-review context, scope, fingerprints, ancestry, model/effort labels, and
+  effective suggested revisions before import or approval; stale provider results can no longer
+  inject issues or approve units outside the reviewed snapshot.
+- Made external-review imports, issue resolution, reviewer reservations, provider calls, render
+  publication, layout overrides, review-set imports, and extraction asset replacement transactional
+  across interruption and concurrent project activity.
+- Preserved active batch-series lineage, cross-batch dependency closure, seam context, render
+  provenance, legacy render ownership, continued-table reader notes, and current manifest selection
+  when resuming long-running projects such as WPF45.
+- Made packet pruning conservative for legacy and schema-v5 manifests: unknown batches, incomplete
+  batch mappings, missing fingerprints, or partially imported lenses are never deleted.
+- Hardened PDF code/prose classification for C#, XAML, body-font listings, page breaks, glued prose
+  lead-ins, same-page fragments, ambiguous dotted calls, and proportional `Monotype` fonts.
+- Bound host review provenance to the final packet and truthful attempt telemetry, and restored or
+  released dry-run reservations on every import, rendering, version-probe, and persistence failure.
+- Serialized default `bNNN` ownership and rolled back interrupted multi-file render publication so
+  concurrent or failed first renders cannot strand or overwrite another batch's output.
+
+### Compatibility
+
+- Added lossless schema-v4-to-v5 migration. Existing evidence remains usable until locally
+  invalidated; legacy packet directories are reported but never deleted automatically.
+
 ## [0.4.0] - 2026-08-13
 
 ### Added

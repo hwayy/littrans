@@ -47,12 +47,12 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
         for attempt in range(7):
             try:
                 os.replace(temp_name, path)
@@ -64,6 +64,24 @@ def atomic_write_text(path: Path, text: str) -> None:
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def snapshot_files(paths: Iterable[Path]) -> dict[Path, bytes | None]:
+    """Capture exact file contents so a locked multi-file mutation can roll back."""
+    return {path: path.read_bytes() if path.exists() else None for path in paths}
+
+
+def restore_files(snapshots: dict[Path, bytes | None]) -> None:
+    """Restore a snapshot made by :func:`snapshot_files` atomically per file."""
+    for path, content in snapshots.items():
+        if content is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic_write_bytes(path, content)
 
 
 @contextmanager
@@ -154,7 +172,7 @@ def require_current_project_schema(
     if config.schema_version != PROJECT_SCHEMA_VERSION:
         raise ValueError(
             f"{operation} requires project schema v{PROJECT_SCHEMA_VERSION}; "
-            "run `littrans project migrate PROJECT --to 4` first "
+            f"run `littrans project migrate PROJECT --to {PROJECT_SCHEMA_VERSION}` first "
             f"(current schema: v{config.schema_version})"
         )
     return config

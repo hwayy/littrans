@@ -11,7 +11,9 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 import littrans.external_review as external_review
+import littrans.extractor as extractor_module
 import littrans.quality as quality_module
+import littrans.rendering as rendering_module
 import littrans.storage as storage_module
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
@@ -27,7 +29,9 @@ from littrans.external_review import (
     _packet_text,
     _parse_antigravity,
     _parse_claude,
+    _release_reviewer_reservation,
     _require_machine_reviewed,
+    _reserve_reviewer,
     _select_reviewer,
     _validate_issue_evidence,
     build_antigravity_command,
@@ -50,6 +54,7 @@ from littrans.models import (
     ExternalReviewerConfig,
     ExternalReviewRun,
     ExternalReviewVerdict,
+    ExtractionIssue,
     FigureLabel,
     IssueStatus,
     IssueType,
@@ -59,9 +64,11 @@ from littrans.models import (
     RenderPolicy,
     ReviewIssue,
     ReviewScope,
+    SemanticStatus,
     Severity,
     SidebarRole,
     SourceUnit,
+    TableData,
     TranslationRecord,
     UnitKind,
 )
@@ -88,6 +95,7 @@ from littrans.rendering import (
     _render_target_text,
     _target_markdown,
     _unit_html,
+    default_batch_output_name,
     render_project,
 )
 from littrans.semantics import (
@@ -110,6 +118,7 @@ from littrans.verification import (
     _semantic_errors,
     verify_extraction,
 )
+from littrans.workflow import _audit_unit_text
 
 
 def make_pdf(path: Path) -> None:
@@ -349,6 +358,121 @@ def test_reviewed_protected_token_override_can_correct_a_source_typo(
     updated = next(item for item in revised if item.unit_id == unit.unit_id)
     assert updated.source_text == unit.source_text
     assert updated.protected_tokens == ["CorrectedApiName"]
+
+
+def test_equation_asset_failure_does_not_replace_authoritative_units(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    units_path = prepared_project / "derived" / "units.jsonl"
+    before = units_path.read_bytes()
+    unit = next(
+        item
+        for item in read_jsonl(units_path, SourceUnit)
+        if item.kind is UnitKind.PARAGRAPH
+    )
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "kind": "equation",
+                    "latex": "a=b",
+                    "verified": True,
+                    "reason": "Verified display equation against the PDF.",
+                }
+            ]
+        },
+    )
+    real_replace = Path.replace
+
+    def fail_asset_replace(source: Path, destination: Path) -> Path:
+        if "equation-override" in destination.name:
+            raise PermissionError("seeded asset replace failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_asset_replace)
+    with pytest.raises(PermissionError, match="seeded asset replace failure"):
+        apply_layout_overrides(prepared_project)
+
+    assert units_path.read_bytes() == before
+
+
+def test_late_override_interruption_restores_ledgers_and_published_asset(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    units_path = prepared_project / "derived" / "units.jsonl"
+    translations_path = prepared_project / "translations" / "current.jsonl"
+    issues_path = prepared_project / "derived" / "extraction-issues.jsonl"
+    project_path = prepared_project / "project.yaml"
+    unit = next(
+        item
+        for item in read_jsonl(units_path, SourceUnit)
+        if item.kind is UnitKind.PARAGRAPH and item.translatable
+    )
+    write_jsonl(
+        translations_path,
+        [
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text="事务回滚测试译文。",
+                source_hash=unit.source_hash,
+                status=ProjectStatus.EXTERNAL_REVIEWED,
+            )
+        ],
+    )
+    config = load_project(prepared_project)
+    config.status = ProjectStatus.EXTERNAL_REVIEWED
+    save_project(prepared_project, config)
+    write_jsonl(
+        issues_path,
+        [
+            ExtractionIssue(
+                issue_id="layout-transaction",
+                page=unit.page,
+                unit_id=unit.unit_id,
+                severity=Severity.MINOR,
+                code="math-needs-verification",
+                message="Verify the reclassified display equation.",
+            )
+        ],
+    )
+    write_yaml(
+        prepared_project / "overrides" / "layout.yaml",
+        {
+            "overrides": [
+                {
+                    "unit_id": unit.unit_id,
+                    "kind": "equation",
+                    "latex": "a=b",
+                    "verified": True,
+                    "reason": "Verified display equation against the PDF.",
+                }
+            ]
+        },
+    )
+    asset_path = (
+        prepared_project
+        / "derived"
+        / "assets"
+        / f"page-{unit.page:04}-equation-override-{unit.unit_id}.png"
+    )
+    tracked = [units_path, translations_path, project_path, issues_path]
+    before = {path: path.read_bytes() for path in tracked}
+    assert not asset_path.exists()
+    original_write_jsonl = extractor_module.write_jsonl
+
+    def interrupt_issue_write(path: Path, records: object) -> None:
+        if path == issues_path:
+            raise KeyboardInterrupt("seeded late override interruption")
+        original_write_jsonl(path, records)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(extractor_module, "write_jsonl", interrupt_issue_write)
+    with pytest.raises(KeyboardInterrupt, match="seeded late override interruption"):
+        apply_layout_overrides(prepared_project)
+
+    assert {path: path.read_bytes() for path in tracked} == before
+    assert not asset_path.exists()
 
 
 def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
@@ -755,6 +879,55 @@ def test_external_review_packet_normalizes_chinese_captions(
     assert "figure and table captions" in packet
 
 
+def test_audit_packet_normalizes_chinese_caption_separator() -> None:
+    unit = SourceUnit(
+        unit_id="p0001-u001-caption",
+        kind=UnitKind.CAPTION,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text="Figure 1-1. Architecture",
+        source_hash=sha256_text("Figure 1-1. Architecture"),
+        confidence=1,
+    )
+    record = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="图 1-1　架构",
+        source_hash=unit.source_hash,
+    )
+
+    packet = _audit_unit_text(unit, record)
+
+    assert "图 1-1 架构" in packet
+    assert "图 1-1　架构" not in packet
+
+
+def test_audit_packet_does_not_duplicate_structured_table_rows() -> None:
+    source_rows = [["Property", "Description"], ["RowStyle", "Styles rows"]]
+    target_rows = [["属性", "说明"], ["`RowStyle`", "设置行的样式"]]
+    source_text = "\n".join(" | ".join(row) for row in source_rows)
+    unit = SourceUnit(
+        unit_id="p0001-u001-table",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=(0, 0, 10, 10),
+        source_text=source_text,
+        source_hash=sha256_text(source_text),
+        table=TableData(rows=source_rows, header_rows=1, column_count=2),
+        confidence=1,
+    )
+    record = TranslationRecord(
+        unit_id=unit.unit_id,
+        target_text="",
+        target_table=TableData(rows=target_rows, header_rows=1, column_count=2),
+        source_hash=unit.source_hash,
+    )
+
+    packet = _audit_unit_text(unit, record)
+
+    assert packet.count("Property | Description") == 1
+    assert packet.count("属性 | 说明") == 1
+
+
 def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
     manifests = create_batches(prepared_project, "1-3", max_words=300, prefix="synthetic")
     assert manifests
@@ -840,6 +1013,63 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     html = Path(outputs["html"]).read_text(encoding="utf-8")
     assert "读者注：The source" not in html
     assert "访问日期 未记录" not in html
+
+
+def test_reader_notes_from_all_continued_table_fragments_are_rendered(
+    prepared_project: Path,
+) -> None:
+    units_path = prepared_project / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    candidates = [
+        unit
+        for unit in units
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+    ][:2]
+    assert len(candidates) == 2
+    replacements: dict[str, SourceUnit] = {}
+    records: list[TranslationRecord] = []
+    for index, unit in enumerate(candidates):
+        source_table = TableData(
+            rows=[["Name", f"Part {index + 1}"]],
+            header_rows=1 if index == 0 else 0,
+            column_count=2,
+        )
+        replacements[unit.unit_id] = unit.model_copy(
+            update={
+                "kind": UnitKind.TABLE,
+                "table": source_table,
+                "verification_status": SemanticStatus.VERIFIED,
+                "continues_from_previous": index == 1,
+                "continued_to_next": index == 0,
+            }
+        )
+        records.append(
+            TranslationRecord(
+                unit_id=unit.unit_id,
+                target_text=f"表格片段 {index + 1}",
+                target_table=TableData(
+                    rows=[["名称", f"部分 {index + 1}"]],
+                    header_rows=1 if index == 0 else 0,
+                    column_count=2,
+                ),
+                reader_note=ReaderNote(text=f"第 {index + 1} 个片段注记。"),
+                source_hash=unit.source_hash,
+            )
+        )
+    write_jsonl(
+        units_path,
+        [replacements.get(unit.unit_id, unit) for unit in units],
+    )
+    write_jsonl(prepared_project / "translations" / "current.jsonl", records)
+
+    outputs = render_project(
+        prepared_project, "1", "continued-table-notes", allow_draft=True
+    )
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    rendered_html = Path(outputs["html"]).read_text(encoding="utf-8")
+    for index in (1, 2):
+        assert f"第 {index} 个片段注记。" in markdown
+        assert f"第 {index} 个片段注记。" in rendered_html
 
 
 def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None:
@@ -1214,6 +1444,173 @@ def test_batch_scoped_render_excludes_other_units_on_the_same_pages(
     assert f'<a id="{outside.unit_id}"></a>' not in markdown
     assert report["passed"]
     assert report["unit_ids"] == manifest.unit_ids
+
+
+def test_single_batch_render_defaults_to_short_name_and_overwrites(
+    prepared_project: Path,
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="shortname")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review = prepared_project / "reviews" / "shortname-empty.jsonl"
+    review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, review)
+    approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    assert default_batch_output_name(manifest.batch_id) == "b001"
+    with pytest.raises(ValueError, match="Specify name unless rendering a single batch_id"):
+        render_project(prepared_project, "1")
+
+    outputs = render_project(prepared_project, None, batch_id=manifest.batch_id)
+    markdown_path = Path(outputs["markdown"])
+    assert markdown_path.name == "b001.zh.md"
+    first = markdown_path.read_text(encoding="utf-8")
+    markdown_path.write_text(first + "\n<!-- stale -->\n", encoding="utf-8")
+    outputs_again = render_project(prepared_project, None, batch_id=manifest.batch_id)
+    assert Path(outputs_again["markdown"]) == markdown_path
+    assert markdown_path.read_text(encoding="utf-8") == first
+
+    render_qa_path = Path(outputs_again["render_qa"])
+    legacy_report = json.loads(render_qa_path.read_text(encoding="utf-8"))
+    legacy_report["selection"].pop("batch_ids")
+    render_qa_path.write_text(json.dumps(legacy_report), encoding="utf-8")
+    legacy_outputs = render_project(prepared_project, None, batch_id=manifest.batch_id)
+    assert Path(legacy_outputs["markdown"]) == markdown_path
+
+
+def test_first_default_render_rolls_back_interrupted_publication(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_batches(
+        prepared_project, "1", max_words=300, prefix="interrupted-render"
+    )[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review = prepared_project / "reviews" / "interrupted-render-empty.jsonl"
+    review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, review)
+    approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    original_atomic_write = rendering_module.atomic_write_text
+
+    def interrupt_html(path: Path, text: str) -> None:
+        if path.name == "b001.bilingual.html":
+            raise KeyboardInterrupt("seeded render publication interruption")
+        original_atomic_write(path, text)
+
+    monkeypatch.setattr(rendering_module, "atomic_write_text", interrupt_html)
+    with pytest.raises(
+        KeyboardInterrupt, match="seeded render publication interruption"
+    ):
+        render_project(prepared_project, None, batch_id=manifest.batch_id)
+    assert not list((prepared_project / "output").glob("b001.*"))
+
+    monkeypatch.setattr(
+        rendering_module, "atomic_write_text", original_atomic_write
+    )
+    outputs = render_project(prepared_project, None, batch_id=manifest.batch_id)
+    render_qa_path = Path(outputs["render_qa"])
+    markdown_path = Path(outputs["markdown"])
+    assert render_qa_path.is_file()
+    published_markdown = markdown_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        rendering_module,
+        "_render_quality_errors",
+        lambda *args, **kwargs: ["seeded structural error"],
+    )
+    with pytest.raises(ValueError, match="seeded structural error"):
+        render_project(prepared_project, None, batch_id=manifest.batch_id)
+    assert markdown_path.read_text(encoding="utf-8") == published_markdown
+
+
+def test_single_batch_default_render_rejects_a_different_batch_owner(
+    prepared_project: Path,
+) -> None:
+    first = create_batches(
+        prepared_project, "1", max_words=300, prefix="first-chapter"
+    )[0]
+    second = create_batches(
+        prepared_project, "2", max_words=300, prefix="second-chapter"
+    )[0]
+    assert default_batch_output_name(first.batch_id) == "b001"
+    assert default_batch_output_name(second.batch_id) == "b001"
+
+    for manifest in (first, second):
+        _submit_identity_translations(prepared_project, manifest.batch_id)
+        assert run_qa(prepared_project, manifest.batch_id).passed
+        review = prepared_project / "reviews" / f"{manifest.batch_id}-empty.jsonl"
+        review.write_text("", encoding="utf-8")
+        import_review(prepared_project, manifest.batch_id, review)
+        approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    first_outputs = render_project(prepared_project, None, batch_id=first.batch_id)
+    first_markdown = Path(first_outputs["markdown"])
+    first_text = first_markdown.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="already owned by batch"):
+        render_project(prepared_project, None, batch_id=second.batch_id)
+    assert first_markdown.read_text(encoding="utf-8") == first_text
+
+    second_outputs = render_project(
+        prepared_project,
+        None,
+        name="second-b001",
+        batch_id=second.batch_id,
+    )
+    assert Path(second_outputs["markdown"]).name == "second-b001.zh.md"
+
+
+def test_concurrent_default_renders_keep_one_batch_owner(
+    prepared_project: Path,
+) -> None:
+    first = create_batches(
+        prepared_project, "1", max_words=300, prefix="concurrent-first"
+    )[0]
+    second = create_batches(
+        prepared_project, "2", max_words=300, prefix="concurrent-second"
+    )[0]
+    for manifest in (first, second):
+        _submit_identity_translations(prepared_project, manifest.batch_id)
+        assert run_qa(prepared_project, manifest.batch_id).passed
+        review = prepared_project / "reviews" / f"{manifest.batch_id}-empty.jsonl"
+        review.write_text("", encoding="utf-8")
+        import_review(prepared_project, manifest.batch_id, review)
+        approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    barrier = threading.Barrier(2)
+    outcomes: list[tuple[str, str]] = []
+
+    def render(manifest_id: str) -> None:
+        barrier.wait()
+        try:
+            render_project(prepared_project, None, batch_id=manifest_id)
+        except ValueError as exc:
+            outcomes.append((manifest_id, str(exc)))
+        else:
+            outcomes.append((manifest_id, "ok"))
+
+    threads = [
+        threading.Thread(target=render, args=(manifest.batch_id,))
+        for manifest in (first, second)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    assert sorted(result for _, result in outcomes).count("ok") == 1
+    rejected = [result for _, result in outcomes if result != "ok"]
+    assert len(rejected) == 1
+    assert "already owned by batch" in rejected[0]
+    render_qa = json.loads(
+        (prepared_project / "output" / "b001.render-qa.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    owner = render_qa["selection"]["batch_id"]
+    owner_manifest = first if owner == first.batch_id else second
+    assert render_qa["unit_ids"] == owner_manifest.unit_ids
 
 
 def test_qa_rejects_protected_token_and_human_gate(prepared_project: Path) -> None:
@@ -1745,6 +2142,153 @@ def test_least_used_assignment_counts_primary_batches_not_retries(
     assert _select_reviewer(prepared_project, None).id == "agy"
 
 
+def test_assignment_epoch_and_reservations_balance_concurrent_calls(
+    prepared_project: Path,
+) -> None:
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        assignment_since="2026-01-01T00:00:00+00:00",
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                fast=False,
+            ),
+            ExternalReviewerConfig(
+                id="agy",
+                driver="antigravity",
+                command="agy",
+                model="gemini-3.6-flash-high",
+            ),
+            ExternalReviewerConfig(
+                id="cursor",
+                driver="cursor-cli",
+                command="agent.cmd",
+                model="cursor-grok-4.6-high-fast",
+                fallbacks=[
+                    {"model": "claude-sonnet-5-high"},
+                    {"model": "auto"},
+                ],
+            ),
+        ],
+    )
+    save_project(prepared_project, config)
+    append_jsonl(
+        prepared_project / "reviews" / "old.external-runs.jsonl",
+        [
+            ExternalReviewRun(
+                run_id=f"old-{index}",
+                batch_id=f"old-{index}",
+                reviewer_id="claude" if index < 20 else "agy",
+                driver="claude-code" if index < 20 else "antigravity",
+                role="primary",
+                requested_model="old",
+                actual_model="old",
+                model_verified=True,
+                translation_fingerprint="f" * 64,
+                packet_sha256="a" * 64,
+                prompt_version="test",
+                verdict="accepted",
+                summary="Historical accepted review.",
+                reviewed_at="2020-01-01T00:00:00+00:00",
+            )
+            for index in range(30)
+        ],
+    )
+
+    reservations: list[str] = []
+    selected: list[str] = []
+    for _ in range(3):
+        reviewer, reservation_id = _reserve_reviewer(
+            prepared_project, None, None, reserve=True
+        )
+        selected.append(reviewer.id)
+        assert reservation_id is not None
+        reservations.append(reservation_id)
+
+    assert selected == ["claude", "agy", "cursor"]
+    for reservation_id in reservations:
+        _release_reviewer_reservation(prepared_project, reservation_id)
+
+
+def test_cursor_host_dry_run_reservations_balance_assignments(
+    prepared_project: Path,
+) -> None:
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="cursor-a",
+                driver="cursor-cli",
+                command="agent.cmd",
+                model="cursor-grok-4.6-high",
+            ),
+            ExternalReviewerConfig(
+                id="cursor-b",
+                driver="cursor-cli",
+                command="agent.cmd",
+                model="claude-sonnet-5-high",
+            ),
+        ]
+    )
+    save_project(prepared_project, config)
+
+    reservations: list[str] = []
+    selected: list[str] = []
+    for _ in range(2):
+        reviewer, reservation_id = _reserve_reviewer(
+            prepared_project,
+            None,
+            None,
+            reserve=False,
+            reserve_cursor_dry_run=True,
+        )
+        selected.append(reviewer.id)
+        assert reservation_id is not None
+        reservations.append(reservation_id)
+
+    assert selected == ["cursor-a", "cursor-b"]
+    claimed = external_review._claim_reviewer_reservation(
+        prepared_project, reservations[0], config.external_review.reviewers[0]
+    )
+    assert claimed == reservations[0]
+    with pytest.raises(ValueError, match="already being imported"):
+        external_review._claim_reviewer_reservation(
+            prepared_project, reservations[0], config.external_review.reviewers[0]
+        )
+    external_review._restore_reviewer_reservation(
+        prepared_project, reservations[0], config.external_review.reviewers[0]
+    )
+    assert (
+        external_review._claim_reviewer_reservation(
+            prepared_project, reservations[0], config.external_review.reviewers[0]
+        )
+        == reservations[0]
+    )
+    for reservation_id in reservations:
+        _release_reviewer_reservation(prepared_project, reservation_id)
+
+
+def test_external_persistence_lock_serializes_one_batch(
+    prepared_project: Path,
+) -> None:
+    with external_review._external_persistence_lock(prepared_project, "batch-1"):
+        with pytest.raises(TimeoutError, match="external persistence lock"):
+            with external_review._external_persistence_lock(
+                prepared_project, "batch-1", timeout_seconds=0.01
+            ):
+                pass
+        with external_review._external_persistence_lock(
+            prepared_project, "batch-2"
+        ):
+            pass
+
+    with external_review._external_persistence_lock(prepared_project, "batch-1"):
+        pass
+
+
 def test_external_output_parsers_accept_wrapping_and_verify_metadata() -> None:
     result = {"verdict": "accepted", "summary": "No defects.", "issues": []}
     claude_outer = {
@@ -2086,6 +2630,595 @@ def test_external_issue_does_not_block_second_opinion_gate(
     )
 
 
+def test_failed_external_runs_persist_serially_across_drivers(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="race")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "race-internal.jsonl"
+    write_jsonl(empty_review, [])
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+            ),
+            ExternalReviewerConfig(
+                id="antigravity",
+                driver="antigravity",
+                command="agy",
+                model="gemini-3.6-flash-high",
+            ),
+        ]
+    )
+    save_project(prepared_project, config)
+
+    invocation_barrier = threading.Barrier(2)
+
+    def fail_together(*args: object, **kwargs: object) -> None:
+        invocation_barrier.wait(timeout=5)
+        raise external_review.ExternalInvocationError(
+            "seeded provider failure",
+            attempts=1,
+            raw="provider failure",
+            failure_type="provider",
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", fail_together)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+    original_append = external_review.append_jsonl
+    append_guard = threading.Lock()
+    active_appends = 0
+    maximum_active_appends = 0
+
+    def delayed_append(path: Path, records: object) -> None:
+        nonlocal active_appends, maximum_active_appends
+        if path.name.endswith(".external-runs.jsonl"):
+            with append_guard:
+                active_appends += 1
+                maximum_active_appends = max(maximum_active_appends, active_appends)
+            time.sleep(0.05)
+            try:
+                original_append(path, records)  # type: ignore[arg-type]
+            finally:
+                with append_guard:
+                    active_appends -= 1
+            return
+        original_append(path, records)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external_review, "append_jsonl", delayed_append)
+    errors: list[BaseException] = []
+
+    def run_failed(reviewer_id: str, other_id: str) -> None:
+        try:
+            external_review.run_external_review(
+                prepared_project,
+                manifest.batch_id,
+                reviewer_id=reviewer_id,
+                _attempted_reviewer_ids=frozenset({other_id}),
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run_failed, args=("claude", "antigravity")),
+        threading.Thread(target=run_failed, args=("antigravity", "claude")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert maximum_active_appends == 1
+    runs = read_jsonl(
+        prepared_project / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+        ExternalReviewRun,
+    )
+    assert {run.reviewer_id for run in runs} == {"claude", "antigravity"}
+    assert all(not run.success for run in runs)
+
+
+def test_cursor_host_subagent_from_result_skips_cli(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="host")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "host-internal.jsonl"
+    empty_review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="cursor-cli-grok46",
+                driver="cursor-cli",
+                command="reviewer-cli",
+                model="cursor-grok-4.6-high",
+                fallbacks=[{"model": "claude-sonnet-5-high"}],
+            )
+        ]
+    )
+    save_project(prepared_project, config)
+
+    original_packet_text = external_review._packet_text
+
+    def fail_packet_snapshot(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("seeded packet snapshot failure")
+
+    monkeypatch.setattr(external_review, "_packet_text", fail_packet_snapshot)
+    with pytest.raises(RuntimeError, match="seeded packet snapshot failure"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            dry_run=True,
+        )
+    assignment_root = prepared_project / ".littrans" / "external-assignments"
+    assert not list(assignment_root.glob("*.json"))
+    monkeypatch.setattr(external_review, "_packet_text", original_packet_text)
+
+    original_render_packet = external_review._render_packet
+
+    def fail_packet_render(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("seeded packet render failure")
+
+    monkeypatch.setattr(external_review, "_render_packet", fail_packet_render)
+    with pytest.raises(RuntimeError, match="seeded packet render failure"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            dry_run=True,
+        )
+    assert not list(assignment_root.glob("*.json"))
+    monkeypatch.setattr(external_review, "_render_packet", original_render_packet)
+
+    dry_run = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-cli-grok46",
+        dry_run=True,
+    )
+    dry_run_path = Path(dry_run["dry_run_path"])
+    assert dry_run_path.is_file()
+    assert dry_run["schema_version"] == external_review.CURSOR_HOST_DRY_RUN_SCHEMA_VERSION
+    assert dry_run["role"] == "primary"
+    assert dry_run["requested_model"] == "cursor-grok-4.6-high"
+    reservation_path = (
+        prepared_project
+        / ".littrans"
+        / "external-assignments"
+        / f"{dry_run['reservation_id']}.json"
+    )
+    assert reservation_path.is_file()
+    assert len(dry_run["review_binding"]) == 64
+    packet_text = Path(dry_run["packet_path"]).read_text(encoding="utf-8")
+    assert dry_run["review_binding"] in packet_text
+    assert dry_run["review_binding"] in dry_run["prompt"]
+
+    result_path = prepared_project / "reviews" / "host-result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "review_binding": dry_run["review_binding"],
+                "verdict": "accepted",
+                "summary": "No substantive defects found.",
+                "issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_invoked(*args: object, **kwargs: object) -> None:
+        raise AssertionError("cursor-cli must not be invoked for --from-result")
+
+    monkeypatch.setattr(external_review.subprocess, "run", fail_if_invoked)
+    with pytest.raises(
+        ValueError, match="from-result and from-dry-run must be provided together"
+    ):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+        )
+
+    obsolete_path = prepared_project / "reviews" / "obsolete-dry-run.json"
+    obsolete_path.write_text(
+        json.dumps({"reviewer_id": "cursor-cli-grok46"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="obsolete or incomplete; regenerate it"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=obsolete_path,
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+
+    original_dry_run = json.loads(dry_run_path.read_text(encoding="utf-8"))
+    legacy_path = prepared_project / "reviews" / "legacy-dry-run.json"
+    legacy_path.write_text(
+        json.dumps({**original_dry_run, "schema_version": 1}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="Unsupported Cursor host dry-run schema"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=legacy_path,
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+
+    for field, wrong_value in (
+        ("batch_id", "other-batch"),
+        ("requested_model", "cursor-wrong-model"),
+        ("translation_fingerprint", "0" * 64),
+        ("base_packet_sha256", "2" * 64),
+        ("packet_sha256", "1" * 64),
+        ("review_binding", "3" * 64),
+        ("base_run_id", "wrong-base-run"),
+    ):
+        invalid_path = dry_run_path.parent / f"invalid-{field}.json"
+        invalid_record = {**original_dry_run, field: wrong_value}
+        invalid_path.write_text(json.dumps(invalid_record), encoding="utf-8")
+        with pytest.raises(ValueError, match="does not match the current external review"):
+            external_review.run_external_review(
+                prepared_project,
+                manifest.batch_id,
+                reviewer_id="cursor-cli-grok46",
+                from_result=result_path,
+                from_dry_run=invalid_path,
+                host_actual_model="Cursor Grok 4.6 High",
+            )
+
+    page_path = next((dry_run_path.parent / "packet" / "pages").glob("*.png"))
+    original_page = page_path.read_bytes()
+    page_path.write_bytes(original_page + b"tampered")
+    with pytest.raises(ValueError, match="page evidence has changed"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=dry_run_path,
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+    page_path.write_bytes(original_page)
+
+    wrong_reviewer_path = prepared_project / "reviews" / "invalid-reviewer.json"
+    wrong_reviewer_path.write_text(
+        json.dumps({**original_dry_run, "reviewer_id": "other-reviewer"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Requested reviewer does not match"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=wrong_reviewer_path,
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+
+    with pytest.raises(ValueError, match="requires a non-empty actual-model"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=dry_run_path,
+        )
+    with pytest.raises(ValueError, match="only supported with from-result"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+    with pytest.raises(ValueError, match="actual model does not match"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=dry_run_path,
+            host_actual_model="Cursor Composer 2",
+        )
+
+    mismatched_result_path = prepared_project / "reviews" / "mismatched-result.json"
+    mismatched_result_path.write_text(
+        json.dumps(
+            {
+                "review_binding": "f" * 64,
+                "verdict": "accepted",
+                "summary": "No substantive defects found in another packet.",
+                "issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="result binding does not match"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=mismatched_result_path,
+            from_dry_run=dry_run_path,
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+
+    original_snapshot_text_files = external_review._snapshot_text_files
+
+    def fail_persistence_snapshot(*args: object, **kwargs: object) -> None:
+        assert (prepared_project / ".littrans-write-lock").is_dir()
+        raise KeyboardInterrupt("seeded persistence snapshot interruption")
+
+    monkeypatch.setattr(
+        external_review, "_snapshot_text_files", fail_persistence_snapshot
+    )
+    with pytest.raises(
+        KeyboardInterrupt, match="seeded persistence snapshot interruption"
+    ):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=dry_run_path,
+            host_actual_model="Sonnet 5 1M High",
+        )
+    snapshot_reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
+    assert snapshot_reservation["status"] == "reserved"
+    monkeypatch.setattr(
+        external_review, "_snapshot_text_files", original_snapshot_text_files
+    )
+
+    original_convert_issues = external_review._convert_issues
+
+    def fail_issue_persistence(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("seeded issue persistence failure")
+
+    monkeypatch.setattr(external_review, "_convert_issues", fail_issue_persistence)
+    with pytest.raises(RuntimeError, match="seeded issue persistence failure"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=result_path,
+            from_dry_run=dry_run_path,
+            host_actual_model="Sonnet 5 1M High",
+        )
+    reservation_record = json.loads(reservation_path.read_text(encoding="utf-8"))
+    assert reservation_record["status"] == "reserved"
+    monkeypatch.setattr(external_review, "_convert_issues", original_convert_issues)
+
+    status = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-cli-grok46",
+        from_result=result_path,
+        from_dry_run=dry_run_path,
+        host_actual_model="Sonnet 5 1M High",
+    )
+    assert status["verdict"] == "accepted"
+    assert status["external_approvable"] is True
+    primary = status["primary"]
+    assert primary["cli_version"] == external_review.CURSOR_HOST_SUBAGENT_VERSION
+    assert primary["requested_model"] == "claude-sonnet-5-high"
+    assert primary["actual_model"] == "Sonnet 5 1M High"
+    assert primary["model_verified"] is True
+    assert primary["packet_sha256"] == dry_run["packet_sha256"]
+    assert primary["packet_sha256"] != dry_run["base_packet_sha256"]
+    assert primary["attempt_log_path"] is None
+    assert not (
+        prepared_project / "reviews" / f"{manifest.batch_id}.external-attempts.jsonl"
+    ).exists()
+    assert not reservation_path.exists()
+
+    repeat_dry_run = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-cli-grok46",
+        dry_run=True,
+    )
+    unit_id = manifest.translatable_unit_ids[0]
+    source, target = external_review._evidence_map(
+        prepared_project, manifest.batch_id
+    )[unit_id]
+    changes_path = prepared_project / "reviews" / "host-changes-result.json"
+    changes_path.write_text(
+        json.dumps(
+            {
+                "review_binding": repeat_dry_run["review_binding"],
+                "verdict": "changes-requested",
+                "summary": "A substantive defect remains in the current translation.",
+                "issues": [
+                    {
+                        "unit_id": unit_id,
+                        "severity": "major",
+                        "type": "meaning",
+                        "source_span": source,
+                        "target_span": target,
+                        "explanation": "The translated meaning must be corrected.",
+                        "suggested_revision": f"{target} revised",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    repeat_reservation_path = (
+        prepared_project
+        / ".littrans"
+        / "external-assignments"
+        / f"{repeat_dry_run['reservation_id']}.json"
+    )
+    issue_path = prepared_project / "reviews" / f"{manifest.batch_id}.issues.jsonl"
+    issues_before_failure = issue_path.read_text(encoding="utf-8")
+    original_append_jsonl = external_review.append_jsonl
+
+    def fail_run_append(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt("seeded external run append interruption")
+
+    monkeypatch.setattr(external_review, "append_jsonl", fail_run_append)
+    with pytest.raises(KeyboardInterrupt, match="seeded external run append interruption"):
+        external_review.run_external_review(
+            prepared_project,
+            manifest.batch_id,
+            reviewer_id="cursor-cli-grok46",
+            from_result=changes_path,
+            from_dry_run=Path(repeat_dry_run["dry_run_path"]),
+            host_actual_model="Cursor Grok 4.6 High",
+        )
+    assert issue_path.read_text(encoding="utf-8") == issues_before_failure
+    repeat_reservation = json.loads(
+        repeat_reservation_path.read_text(encoding="utf-8")
+    )
+    assert repeat_reservation["status"] == "reserved"
+    monkeypatch.setattr(external_review, "append_jsonl", original_append_jsonl)
+
+    changed = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-cli-grok46",
+        from_result=changes_path,
+        from_dry_run=Path(repeat_dry_run["dry_run_path"]),
+        host_actual_model="Cursor Grok 4.6 High",
+    )
+    assert changed["external_approvable"] is False
+    assert changed["primary"]["run_id"] != primary["run_id"]
+    assert changed["primary"]["verdict"] == "changes-requested"
+
+
+def test_cursor_host_second_opinion_uses_a_separate_import(
+    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="host-second")[0]
+    _submit_identity_translations(prepared_project, manifest.batch_id)
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    empty_review = prepared_project / "reviews" / "host-second-internal.jsonl"
+    empty_review.write_text("", encoding="utf-8")
+    import_review(prepared_project, manifest.batch_id, empty_review)
+    assert approve_batch(prepared_project, manifest.batch_id, "machine")
+
+    config = load_project(prepared_project)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="cursor-primary",
+                driver="cursor-cli",
+                command="cursor-primary-cli",
+                model="cursor-grok-4.6-high",
+            ),
+            ExternalReviewerConfig(
+                id="cursor-second",
+                driver="cursor-cli",
+                command="cursor-second-cli",
+                model="cursor-composer-2",
+            ),
+        ]
+    )
+    save_project(prepared_project, config)
+
+    def fail_if_invoked(*args: object, **kwargs: object) -> None:
+        raise AssertionError("cursor-cli must not be invoked for host result imports")
+
+    monkeypatch.setattr(external_review.subprocess, "run", fail_if_invoked)
+    primary_dry_run = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-primary",
+        dry_run=True,
+    )
+    unit_id = manifest.translatable_unit_ids[0]
+    source, target = external_review._evidence_map(
+        prepared_project, manifest.batch_id
+    )[unit_id]
+    primary_result = prepared_project / "reviews" / "host-primary-result.json"
+    primary_result.write_text(
+        json.dumps(
+            {
+                "review_binding": primary_dry_run["review_binding"],
+                "verdict": "accepted",
+                "summary": "Accepted with one low-confidence style suggestion.",
+                "issues": [
+                    {
+                        "unit_id": unit_id,
+                        "severity": "suggestion",
+                        "type": "style",
+                        "source_span": source,
+                        "target_span": target,
+                        "explanation": "A low-confidence style point needs confirmation.",
+                        "suggested_revision": f"{target} revised",
+                        "confidence": 0.5,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pending = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-primary",
+        from_result=primary_result,
+        from_dry_run=Path(primary_dry_run["dry_run_path"]),
+        host_actual_model="Cursor Grok 4.6 High",
+    )
+    assert pending["second_opinion_required"] is True
+    assert pending["second_opinion"] is None
+
+    second_dry_run = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-second",
+        second_opinion=True,
+        dry_run=True,
+    )
+    assert second_dry_run["role"] == "second-opinion"
+    assert second_dry_run["base_run_id"] == pending["primary"]["run_id"]
+    second_result = prepared_project / "reviews" / "host-second-result.json"
+    second_result.write_text(
+        json.dumps(
+            {
+                "review_binding": second_dry_run["review_binding"],
+                "verdict": "accepted",
+                "summary": "No additional substantive defects found.",
+                "issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    complete = external_review.run_external_review(
+        prepared_project,
+        manifest.batch_id,
+        reviewer_id="cursor-second",
+        second_opinion=True,
+        from_result=second_result,
+        from_dry_run=Path(second_dry_run["dry_run_path"]),
+        host_actual_model="Cursor Composer 2",
+    )
+    assert complete["verdict"] == "accepted"
+    assert complete["external_approvable"] is True
+    assert complete["second_opinion"]["reviewer_id"] == "cursor-second"
+
+
 def test_external_issue_evidence_accepts_structured_source_and_target_spans() -> None:
     payload = {
         "issues": [
@@ -2416,3 +3549,41 @@ def test_render_qa_does_not_treat_data_attributes_as_element_ids() -> None:
             for unit_id in ("u1", "u2")
         ],
     ) == []
+
+
+def test_render_qa_allows_blank_blockquote_lines_in_sidebar_code() -> None:
+    unit = SourceUnit(
+        unit_id="u1",
+        kind=UnitKind.CODE,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="<Grid />",
+        source_hash=sha256_text("<Grid />"),
+        confidence=1.0,
+        translatable=False,
+        code_language="xaml",
+    )
+    fence = chr(96) * 3
+    markdown = f'<a id="u1"></a>\n> {fence}xaml\n>\n> <Grid />\n> {fence}'
+    rendered_html = '<article id="u1"><pre><code>&lt;Grid /&gt;</code></pre></article>'
+
+    assert _render_quality_errors(markdown, rendered_html, [unit]) == []
+
+
+def test_render_qa_still_rejects_a_nested_blockquote_marker() -> None:
+    unit = SourceUnit(
+        unit_id="u1",
+        kind=UnitKind.NOTE,
+        page=1,
+        bbox=(0, 0, 1, 1),
+        source_text="source",
+        source_hash=sha256_text("source"),
+        confidence=1.0,
+    )
+    errors = _render_quality_errors(
+        '<a id="u1"></a>\n> > [!NOTE]',
+        '<article id="u1"><blockquote>note</blockquote></article>',
+        [unit],
+    )
+
+    assert "nested-admonition-marker" in errors

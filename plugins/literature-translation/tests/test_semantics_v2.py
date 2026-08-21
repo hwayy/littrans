@@ -5,20 +5,28 @@ from pathlib import Path
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from littrans.extractor import extract_source
+from littrans.extractor import _fonts_are_monospace, extract_source
 from littrans.models import SourceUnit, TableData, UnitKind
 from littrans.project import initialize_project
 from littrans.rendering import (
     _coalesce_code_units,
+    _coalesce_table_units,
     _continuation_separator,
     _continued_note_markdown,
     _inline_html,
     _merge_continued_note_html,
 )
 from littrans.semantics import (
+    code_from_block,
+    detect_code_language,
     escape_markdown_prose,
     fenced_code,
+    looks_like_continuation,
+    looks_like_program_code,
     normalize_prose,
+    prose_from_block,
+    split_glued_listing,
+    split_mixed_pdf_block,
     table_to_html,
     table_to_markdown,
 )
@@ -156,6 +164,41 @@ def test_cross_page_code_fragments_keep_exact_indentation_in_one_fence() -> None
     assert grouped[first.unit_id] == [first.unit_id, second.unit_id]
 
 
+def test_continued_table_half_rows_render_as_one_logical_row() -> None:
+    first = SourceUnit(
+        unit_id="p0001-u001-table",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=[1, 1, 2, 2],
+        source_text="PropertyName |",
+        source_hash="a" * 64,
+        translatable=True,
+        table=TableData(rows=[["PropertyName", ""]], header_rows=0, column_count=2),
+        continued_to_next=True,
+        confidence=1.0,
+    )
+    second = SourceUnit(
+        unit_id="p0001-u002-table",
+        kind=UnitKind.TABLE,
+        page=1,
+        bbox=[2, 1, 3, 2],
+        source_text="| Property description.",
+        source_hash="b" * 64,
+        translatable=True,
+        table=TableData(rows=[["", "Property description."]], header_rows=0, column_count=2),
+        continues_from_previous=True,
+        confidence=1.0,
+    )
+    combined, grouped = _coalesce_table_units([first, second])
+    assert len(combined) == 1
+    assert combined[0].table == TableData(
+        rows=[["PropertyName", "Property description."]],
+        header_rows=0,
+        column_count=2,
+    )
+    assert grouped[first.unit_id] == [first.unit_id, second.unit_id]
+
+
 def test_headerless_table_keeps_every_row_as_body_data() -> None:
     table = TableData(
         rows=[["First", "One"], ["Second", "Two"]],
@@ -198,3 +241,224 @@ def test_cross_page_note_continuation_keeps_one_callout() -> None:
         '<aside class="source-note"><strong>提示</strong><p>'
         '第一部分<a id="u2"></a>第二部分</p></aside>'
     )
+
+
+def test_flattened_csharp_listings_are_recognized_as_code() -> None:
+    assert looks_like_program_code("while (nav.CanGoBack) { nav.RemoveBackEntry();}")
+    assert looks_like_program_code(
+        'string pageName; while (pageName != "ConfigureAppWizard.xaml") '
+        "{ JournalEntry entry = nav.RemoveBackEntry(); }"
+    )
+    assert looks_like_program_code(
+        "private void Replay(ListSelectionJournalEntry state) { lstSource.Items.Clear(); }"
+    )
+    assert looks_like_program_code(
+        'xmlns:local="clr-namespace:NavigationApplication" '
+        'x:Class="NavigationApplication.SelectProductPageFunction"'
+    )
+    assert looks_like_program_code("// Now perform the change. lstTarget.Items.Add(itemText);")
+    assert not looks_like_program_code(
+        "Unfortunately, WPF doesn't allow you to have much control over the "
+        "navigation stack. It just gives you two methods: AddBackEntry() and "
+        "RemoveBackEntry()."
+    )
+    assert not looks_like_program_code(
+        "public interface for you to use in your applications."
+    )
+    assert not looks_like_program_code("AnnotationHelper.GetAnchorInfo() method,")
+    assert not looks_like_program_code("BackgroundWorker.CancelAsync() method,")
+    assert not looks_like_program_code(
+        "fixed documents, 883 flow documents, 884 DoDragDrop() method, 131 "
+        "DoubleAnimation class, 297, 393, 395"
+    )
+    assert not looks_like_program_code(
+        "byte array, 608 ConvertBack() method, 610 Convert() method, 610 "
+        "ImageDirectory property, 609 ImagePathConverter class, 609"
+    )
+    assert looks_like_program_code("this.Cursor = null;}")
+    assert looks_like_program_code("this.view = view;")
+    assert not looks_like_continuation(
+        "update the lists, as shown here:",
+        "private void Replay(ListSelectionJournalEntry state) {",
+    )
+    assert split_glued_listing(
+        "You can handle the change as shown here: private void Replay() {"
+    ) == ("You can handle the change as shown here:", "private void Replay() {")
+    assert split_glued_listing(
+        "For example: private void Replay() {"
+    ) == ("For example:", "private void Replay() {")
+    assert split_glued_listing("Use this: void Replay() {") == (
+        "Use this:",
+        "void Replay() {",
+    )
+    assert split_glued_listing(
+        "// Look at paragraphs. foreach (Block block in document.Blocks) { }"
+    ) is None
+    assert split_glued_listing("case Ready: return Advance();") is None
+    assert split_glued_listing(
+        "Unfortunately, WPF doesn't allow you to have much control over the "
+        "navigation stack. It just gives you two methods: AddBackEntry() and "
+        "RemoveBackEntry()."
+    ) is None
+
+
+def test_ambiguous_dotted_calls_are_not_labeled_as_csharp() -> None:
+    assert detect_code_language("console.log(1);") == "text"
+    assert detect_code_language("System.out.println(1);") == "text"
+    assert detect_code_language("private void Replay() { nav.GoBack(); }") == "csharp"
+
+
+def test_split_mixed_pdf_block_keeps_listing_out_of_prose() -> None:
+    block = {
+        "type": 0,
+        "bbox": (72, 700, 420, 742),
+        "lines": [
+            {
+                "bbox": (72, 700, 420, 714),
+                "spans": [{"text": "You can handle this as shown here:", "size": 10}],
+            },
+            {
+                "bbox": (72, 716, 420, 728),
+                "spans": [{"text": "private void Replay()", "size": 10}],
+            },
+            {
+                "bbox": (72, 728, 420, 742),
+                "spans": [{"text": "{", "size": 10}],
+            },
+        ],
+    }
+    parts = split_mixed_pdf_block(block)
+    assert len(parts) == 2
+    assert prose_from_block(parts[0]) == "You can handle this as shown here:"
+    assert "private void Replay()" in code_from_block(parts[1])
+    assert "shown here" not in code_from_block(parts[1])
+
+
+def test_body_font_while_loop_extracts_as_code(tmp_path: Path) -> None:
+    source = tmp_path / "code.pdf"
+    root = tmp_path / "project"
+    pdf = canvas.Canvas(str(source), pagesize=letter)
+    width, height = letter
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(72, height - 80, "Clear the back list with this loop:")
+    pdf.drawString(72, height - 110, "while (nav.CanGoBack) { nav.RemoveBackEntry(); }")
+    pdf.showPage()
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(72, height - 40, "private void Replay()")
+    pdf.drawString(72, height - 54, "{")
+    pdf.drawString(90, height - 68, "lstSource.Items.Clear();")
+    pdf.drawString(72, height - 82, "}")
+    pdf.save()
+    initialize_project(source, root, "technical-book")
+    units = extract_source(root, "1-2")
+    listings = [unit for unit in units if unit.kind == "code"]
+    assert any("CanGoBack" in unit.source_text for unit in listings)
+    assert any("Replay" in unit.source_text for unit in listings)
+    replay = next(unit for unit in units if "Replay" in unit.source_text)
+    assert replay.kind == "code"
+    assert not replay.continues_from_previous
+
+
+def test_static_constructor_stays_with_its_listing_body() -> None:
+    block = {
+        "bbox": (72, 700, 420, 742),
+        "lines": [
+            {
+                "bbox": (72, 700, 420, 714),
+                "spans": [{"text": "static DataCommands() {", "size": 10}],
+            },
+            {
+                "bbox": (72, 716, 420, 728),
+                "spans": [{"text": "// Initialize the command.", "size": 10}],
+            },
+            {
+                "bbox": (72, 728, 420, 742),
+                "spans": [{"text": "requery = new RoutedUICommand();", "size": 10}],
+            },
+        ],
+    }
+    parts = split_mixed_pdf_block(block)
+    assert len(parts) == 1
+    assert looks_like_program_code(code_from_block(parts[0]))
+
+
+def test_wrapped_prose_that_looks_like_a_listing_lead_is_not_split() -> None:
+    samples = [
+        (
+            "WPF can perform the same work",
+            "using software calculations if necessary.",
+        ),
+        (
+            "The element name maps to a class. For example, the element",
+            "<Button instructs WPF to create a Button object.",
+        ),
+        (
+            "This namespace is declared without a",
+            "namespace prefix, so it becomes the default namespace.",
+        ),
+        (
+            "You cannot substitute <button> for",
+            "<Button>. However, type converters are not case-sensitive.",
+        ),
+    ]
+    for previous, current in samples:
+        block = {
+            "bbox": (72, 700, 420, 728),
+            "lines": [
+                {
+                    "bbox": (72, 700, 420, 714),
+                    "spans": [{"text": previous, "size": 10}],
+                },
+                {
+                    "bbox": (72, 716, 420, 728),
+                    "spans": [{"text": current, "size": 10}],
+                },
+            ],
+        }
+        assert split_mixed_pdf_block(block) == [block]
+
+    assert not looks_like_program_code("<Button instructs WPF to create an object.")
+    assert not looks_like_program_code(
+        "<Button>. However, type converters are not case-sensitive."
+    )
+    assert looks_like_program_code('<Button Content="Save" />')
+    assert looks_like_program_code("<Grid><Button /></Grid>")
+    assert not looks_like_program_code(
+        "<Product> element inside the <Products> element."
+    )
+    assert not looks_like_program_code("<Button> and <TextBox> are controls.")
+
+
+def test_ambiguous_generic_declarations_remain_language_neutral() -> None:
+    assert detect_code_language("var x = 1;") == "text"
+    assert detect_code_language("int main() { return 0; }") == "text"
+    assert detect_code_language("foreach (var item in items) { Use(item); }") == "csharp"
+
+
+def test_monospace_font_detection_does_not_match_monotype_vendor_name() -> None:
+    assert _fonts_are_monospace({"TheSansMono-Plain"})
+    assert _fonts_are_monospace({"CourierNewPSMT"})
+    assert not _fonts_are_monospace({"Monotype Corsiva"})
+
+
+def test_short_glued_prose_and_listing_split_then_merge(tmp_path: Path) -> None:
+    source = tmp_path / "glued.pdf"
+    root = tmp_path / "project"
+    pdf = canvas.Canvas(str(source), pagesize=letter)
+    width, height = letter
+    del width
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(72, height - 80, "For example: private void Replay()")
+    pdf.drawString(72, height - 94, "{")
+    pdf.drawString(90, height - 108, "lstSource.Items.Clear();")
+    pdf.drawString(72, height - 122, "}")
+    pdf.save()
+    initialize_project(source, root, "technical-book")
+    units = extract_source(root, "1")
+    prose = next(unit for unit in units if "For example" in unit.source_text)
+    listing = next(unit for unit in units if "private void Replay" in unit.source_text)
+    assert prose.kind == "paragraph"
+    assert "private void" not in prose.source_text
+    assert listing.kind == "code"
+    assert "lstSource.Items.Clear();" in listing.source_text
+    assert "For example" not in listing.source_text

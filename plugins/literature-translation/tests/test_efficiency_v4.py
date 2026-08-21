@@ -57,6 +57,7 @@ from littrans.models import (
     TranslationRecord,
     UnitKind,
     WorkflowPacketManifest,
+    utc_now,
 )
 from littrans.project import initialize_project, translation_map
 from littrans.quality import (
@@ -91,6 +92,10 @@ from littrans.workflow import (
 )
 
 
+def _packet_dir(root: Path, packet: WorkflowPacketManifest) -> Path:
+    return root / packet.storage_root / packet.packet_id
+
+
 def test_claude_stdin_delivery_remains_shadow_gated() -> None:
     assert external_review.CLAUDE_STDIN_PROMPT_DELIVERY_ENABLED is False
 
@@ -103,7 +108,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
     variant_delivery = namespace["_variant_delivery"]
 
     assert variant_delivery("legacy") is PromptDelivery.FILE
-    assert variant_delivery("optimized") is PromptDelivery.STDIN
+    assert variant_delivery("optimized") is PromptDelivery.FILE
     with pytest.raises(ValueError, match="Unknown shadow variant"):
         variant_delivery("unexpected")
 
@@ -172,7 +177,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
 
     result = run_ab(tmp_path, ["batch"], {"batch"}, reviewer.id)
 
-    assert deliveries == [PromptDelivery.FILE, PromptDelivery.STDIN]
+    assert deliveries == [PromptDelivery.FILE, PromptDelivery.FILE]
     assert result["delivery_protocol_passed"] is True
 
 
@@ -779,9 +784,8 @@ def test_completed_benchmark_does_not_group_across_incomplete_batches(
         not (set(first.unit_ids) & set(group) and set(last.unit_ids) & set(group))
         for group in base_shared_groups
     )
-    assert enlarged["optimized_packet_bytes"] - result["optimized_packet_bytes"] == (
-        len(marker.encode("utf-8")) * 3 * 2
-    )
+    # v5 lens packets no longer carry the legacy whole-wave read-only context.
+    assert enlarged["optimized_packet_bytes"] == result["optimized_packet_bytes"]
 
 
 def test_benchmark_splits_overlapping_manifests_into_executable_groups(
@@ -951,7 +955,7 @@ def _store_manual_audit_packet(
     root: Path, packet: WorkflowPacketManifest
 ) -> tuple[WorkflowPacketManifest, Path]:
     assert packet.stage == "audit"
-    packet_dir = root / "packets" / packet.packet_id
+    packet_dir = _packet_dir(root, packet)
     packet_dir.mkdir(parents=True, exist_ok=True)
     file_paths = {"shared": packet_dir / "shared.md"}
     file_paths.update(
@@ -1075,6 +1079,25 @@ def test_failed_external_review_records_actual_prompt_delivery(
 
     monkeypatch.setattr(external_review, "_invoke", fail_invoke)
     monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+
+    original_persist_telemetry = external_review._persist_attempt_telemetry
+
+    def fail_persist_telemetry(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("seeded failure telemetry persistence error")
+
+    monkeypatch.setattr(
+        external_review, "_persist_attempt_telemetry", fail_persist_telemetry
+    )
+    with pytest.raises(
+        RuntimeError, match="seeded failure telemetry persistence error"
+    ):
+        external_review.run_external_review(root, batch_id)
+    assignment_root = root / ".littrans" / "external-assignments"
+    assert not list(assignment_root.glob("*.json"))
+    monkeypatch.setattr(
+        external_review, "_persist_attempt_telemetry", original_persist_telemetry
+    )
+
     status = external_review.run_external_review(root, batch_id)
     runs = read_jsonl(
         root / "reviews" / f"{batch_id}.external-runs.jsonl", ExternalReviewRun
@@ -1126,18 +1149,23 @@ def test_external_review_uses_a_per_run_import_file(
         project_root: Path,
         batch_id: str,
         input_path: Path,
-        *args: object,
-        **kwargs: object,
+        reviewer_id: str,
     ) -> list[ReviewIssue]:
         assert project_root == root
+        assert reviewer_id == reviewer.id
         assert input_path.exists()
         assert read_jsonl(input_path, ReviewIssue) == []
         import_paths.append(input_path)
         return []
 
+    def command_version(command: str) -> str:
+        assert command == reviewer.command
+        assert not (root / ".littrans-write-lock").exists()
+        return "test"
+
     monkeypatch.setattr(external_review, "_invoke", invoke)
-    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
-    monkeypatch.setattr(external_review, "import_review", capture_import)
+    monkeypatch.setattr(external_review, "_command_version", command_version)
+    monkeypatch.setattr(external_review, "_import_review_locked", capture_import)
 
     for manifest in manifests:
         status = external_review.run_external_review(root, manifest.batch_id)
@@ -1147,6 +1175,144 @@ def test_external_review_uses_a_per_run_import_file(
     assert len(set(import_paths)) == len(import_paths)
     assert all(path.name.startswith(".external-import-") for path in import_paths)
     assert all(not path.exists() for path in import_paths)
+
+
+def test_external_review_rejects_a_snapshot_changed_during_provider_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_id = manifests[0].batch_id
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    save_project(root, config)
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+
+    def invoke(*args: object, **kwargs: object) -> tuple[object, ...]:
+        current = translation_map(root)
+        unit_id = manifests[0].translatable_unit_ids[0]
+        current[unit_id] = current[unit_id].model_copy(
+            update={"target_text": current[unit_id].target_text + "（并发修订）"}
+        )
+        write_jsonl(root / "translations" / "current.jsonl", current.values())
+        return (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=1),
+            0.01,
+        )
+
+    monkeypatch.setattr(external_review, "_invoke", invoke)
+    monkeypatch.setattr(external_review, "_command_version", lambda command: "test")
+    original_scope = external_review._primary_review_scope
+
+    def primary_scope(*args: object, **kwargs: object) -> tuple[object, ...]:
+        assert (root / ".littrans-write-lock").is_dir()
+        return original_scope(*args, **kwargs)
+
+    monkeypatch.setattr(external_review, "_primary_review_scope", primary_scope)
+
+    with pytest.raises(ValueError, match="snapshot became stale"):
+        external_review.run_external_review(root, batch_id)
+
+    assert not (root / "reviews" / f"{batch_id}.external-runs.jsonl").exists()
+    assert read_jsonl(
+        root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue
+    ) == []
+
+
+def test_external_review_releases_reservation_on_packet_or_version_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_id = manifests[0].batch_id
+    reviewer = ExternalReviewerConfig(
+        id="claude",
+        driver="claude-code",
+        command="claude",
+        model="claude-sonnet-5",
+        effort="high",
+        fast=False,
+    )
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    save_project(root, config)
+    _submit(root, batch_id)
+    _audit_and_approve(root, batch_id)
+    reservation_root = root / ".littrans" / "external-assignments"
+
+    original_temporary_directory = external_review.tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        external_review.tempfile,
+        "TemporaryDirectory",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("seeded temporary workspace failure")
+        ),
+    )
+    with pytest.raises(OSError, match="seeded temporary workspace failure"):
+        external_review.run_external_review(root, batch_id)
+    assert not list(reservation_root.glob("*.json"))
+    monkeypatch.setattr(
+        external_review.tempfile,
+        "TemporaryDirectory",
+        original_temporary_directory,
+    )
+
+    original_render = external_review._render_packet
+    monkeypatch.setattr(
+        external_review,
+        "_render_packet",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("seeded packet rendering failure")
+        ),
+    )
+    with pytest.raises(OSError, match="seeded packet rendering failure"):
+        external_review.run_external_review(root, batch_id)
+    assert not list(reservation_root.glob("*.json"))
+
+    monkeypatch.setattr(external_review, "_render_packet", original_render)
+    monkeypatch.setattr(
+        external_review,
+        "_invoke",
+        lambda *args, **kwargs: (
+            {"verdict": "accepted", "summary": "No defects found.", "issues": []},
+            "{}",
+            reviewer.model,
+            reviewer.effort,
+            reviewer.model,
+            "off",
+            1,
+            PromptDelivery.FILE,
+            1.0,
+            ReviewUsage(input_tokens=100, provider_turns=1),
+            0.01,
+        ),
+    )
+    monkeypatch.setattr(
+        external_review,
+        "_command_version",
+        lambda command: (_ for _ in ()).throw(
+            OSError("seeded version probe failure")
+        ),
+    )
+    with pytest.raises(OSError, match="seeded version probe failure"):
+        external_review.run_external_review(root, batch_id)
+    assert not list(reservation_root.glob("*.json"))
 
 
 def test_semantic_noop_changes_nothing(tmp_path: Path) -> None:
@@ -2243,6 +2409,7 @@ def test_external_review_context_change_requires_a_new_run(
     import_review(root, batch_id, empty)
 
     assert not external_review_status(root, batch_id)["external_approvable"]
+    assert workflow_next(root)["stage"] == "external-review"
     assert external_review.run_external_review(root, batch_id)[
         "external_approvable"
     ]
@@ -2253,6 +2420,76 @@ def test_external_review_context_change_requires_a_new_run(
     assert calls == 2
     assert len(runs) == 2
     assert runs[0].context_fingerprint != runs[1].context_fingerprint
+
+
+def test_stale_changes_requested_run_cannot_anchor_incremental_review(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    batch = manifests[0]
+    _submit(root, batch.batch_id)
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+    issue = ReviewIssue(
+        issue_id="resolved-external-minor",
+        batch_id=batch.batch_id,
+        unit_id=batch.unit_ids[0],
+        severity=Severity.MINOR,
+        type=IssueType.STYLE,
+        explanation="A localized wording defect was corrected.",
+        confidence=0.95,
+        reviewer="external:claude:claude-sonnet-5",
+        status=IssueStatus.RESOLVED,
+        resolution="Corrected in the current translation.",
+        resolved_at="2026-08-20T00:00:00Z",
+    )
+    write_jsonl(root / "reviews" / f"{batch.batch_id}.issues.jsonl", [issue])
+    base = ExternalReviewRun(
+        run_id="resolved-full-base",
+        batch_id=batch.batch_id,
+        reviewer_id="claude",
+        driver="claude-code",
+        role="primary",
+        requested_model="claude-sonnet-5",
+        actual_model="claude-sonnet-5",
+        model_verified=True,
+        translation_fingerprint=external_review.batch_translation_fingerprint(
+            root, batch.batch_id
+        ),
+        packet_sha256="0" * 64,
+        prompt_version="test",
+        verdict=ExternalReviewVerdict.CHANGES_REQUESTED,
+        summary="One localized issue was found and later resolved.",
+        issue_ids=[issue.issue_id],
+        covered_unit_ids=list(batch.unit_ids),
+        unit_fingerprints=batch_unit_fingerprints(root, batch.batch_id),
+        source_fingerprint=batch_source_fingerprint(root, batch.batch_id),
+        structure_fingerprint=batch_structure_fingerprint(root, batch.batch_id),
+        context_fingerprint=external_review._external_review_context_fingerprint(
+            root, batch.batch_id, list(batch.unit_ids), ReviewScope.FULL
+        ),
+    )
+    assert external_review._resolved_changes_requested_base(root, [base], base)
+
+    style_path = root / "context" / "style-guide.md"
+    atomic_write_text(
+        style_path,
+        style_path.read_text(encoding="utf-8").rstrip()
+        + "\n\n- Newly mandatory review instruction.\n",
+    )
+    assert not external_review._resolved_changes_requested_base(root, [base], base)
 
 
 def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> None:
@@ -2364,10 +2601,11 @@ def test_source_rebinding_does_not_create_translation_revision(
     assert returned[0].source_hash == new_hash
     assert history_path.read_bytes() == history_before
     assert load_project(root).status is ProjectStatus.REVISED
-    assert all(
-        not audit_coverage(root, manifest.batch_id)["complete"]
-        for manifest in manifests
-    )
+    assert [audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests] == [
+        True,
+        False,
+        True,
+    ]
     with pytest.raises(ValueError, match="not_publishable"):
         render_project(root, None, "stale-rebound", batch_id=batch_id)
 
@@ -2388,7 +2626,11 @@ def test_revision_invalidates_only_dependency_closure(tmp_path: Path) -> None:
         manifests[1].batch_id: {"u002"},
         manifests[2].batch_id: {"u003"},
     }
-    assert all(not audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests)
+    assert [audit_coverage(root, manifest.batch_id)["complete"] for manifest in manifests] == [
+        True,
+        False,
+        True,
+    ]
 
 
 def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path) -> None:
@@ -2402,7 +2644,6 @@ def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path)
         "u009",
     ]
     assert dependency_closure(root, [middle.batch_id], ["u007"]) == [
-        "u005",
         "u006",
         "u007",
         "u008",
@@ -2411,7 +2652,6 @@ def test_dependency_closure_invalidates_only_reached_batch_seams(tmp_path: Path)
         "u008",
         "u009",
         "u010",
-        "u011",
     ]
 
 
@@ -2429,11 +2669,11 @@ def test_incremental_audit_keeps_dependency_context_out_of_coverage(
         [middle.batch_id],
         "fidelity",
     )
-    initial_issues = root / "packets" / initial.packet_id / "issues.jsonl"
+    initial_issues = _packet_dir(root, initial) / "issues.jsonl"
     write_jsonl(initial_issues, [])
     import_review_set(
         root,
-        root / "packets" / initial.packet_id / "manifest.json",
+        _packet_dir(root, initial) / "manifest.json",
         initial_issues,
     )
     assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
@@ -2467,21 +2707,17 @@ def test_incremental_audit_keeps_dependency_context_out_of_coverage(
 
     assert packet.unit_ids == pending
     assert list(packet.unit_fingerprints) == [
-        "u005",
         "u006",
         "u007",
         "u008",
         "u009",
         "u010",
-        "u011",
     ]
     read_only = (
         root / packet.files["audit:read-only-context"]
     ).read_text(encoding="utf-8")
-    assert all(
-        f"## {unit_id}" in read_only
-        for unit_id in ("u005", "u006", "u010", "u011")
-    )
+    assert all(f"## {unit_id}" in read_only for unit_id in ("u006", "u010"))
+    assert all(f"## {unit_id}" not in read_only for unit_id in ("u005", "u011"))
     audit = (root / packet.files[f"{middle.batch_id}:audit"]).read_text(
         encoding="utf-8"
     )
@@ -2491,11 +2727,11 @@ def test_incremental_audit_keeps_dependency_context_out_of_coverage(
         for unit_id in ("u005", "u006", "u010", "u011")
     )
 
-    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues, [])
     import_review_set(
         root,
-        root / "packets" / packet.packet_id / "manifest.json",
+        _packet_dir(root, packet) / "manifest.json",
         issues,
     )
 
@@ -2873,11 +3109,11 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
     for lens in ("fidelity", "technical", "chinese-style"):
         packet = create_workflow_packet(root, "audit", batch_ids, lens)
         assert packet.total_bytes < legacy_bytes
-        issues = root / "packets" / packet.packet_id / "issues.jsonl"
+        issues = _packet_dir(root, packet) / "issues.jsonl"
         write_jsonl(issues, [])
         result = import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues,
         )
         assert result["lens"] == lens
@@ -2980,11 +3216,11 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
     assert "来源单元旧译" not in rendered_markdown
     assert "来源单元旧译" not in rendered_html
 
-    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues, [])
     import_review_set(
         root,
-        root / "packets" / packet.packet_id / "manifest.json",
+        _packet_dir(root, packet) / "manifest.json",
         issues,
     )
     assert audit_coverage(root, manifest.batch_id)["missing"]["fidelity"] == []
@@ -3081,13 +3317,13 @@ def test_review_set_rejects_packet_file_changed_after_creation(
         ),
         encoding="utf-8",
     )
-    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues_path = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues_path, [])
 
     with pytest.raises(ValueError, match="packet file digest mismatch"):
         import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues_path,
         )
 
@@ -3106,7 +3342,7 @@ def test_review_set_rejects_context_changed_after_packet_creation(
     packet = create_workflow_packet(
         root, "audit", [batch.batch_id], "fidelity"
     )
-    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues_path = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues_path, [])
     style_path = root / "context" / "style-guide.md"
     atomic_write_text(
@@ -3118,7 +3354,7 @@ def test_review_set_rejects_context_changed_after_packet_creation(
     with pytest.raises(ValueError, match="Audit packet context is stale"):
         import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues_path,
         )
 
@@ -3189,11 +3425,11 @@ def test_review_set_rejects_covered_unit_without_packet_fingerprint(
     assert run_qa(root, batch_id).passed
     packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
     covered_id = packet.unit_ids[0]
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = root / packet.storage_root / packet.packet_id / "manifest.json"
     manifest_payload = read_json(manifest_path)
     manifest_payload["unit_fingerprints"].pop(covered_id)
     write_json(manifest_path, manifest_payload)
-    issues_path = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues_path = manifest_path.parent / "issues.jsonl"
     write_jsonl(issues_path, [])
 
     _submit(root, batch_id, suffix="修订")
@@ -3215,7 +3451,7 @@ def test_review_set_revalidates_packet_inside_the_audit_import_lock(
     _submit(root, batch_id)
     assert run_qa(root, batch_id).passed
     packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = _packet_dir(root, packet) / "manifest.json"
     issues_path = manifest_path.parent / "issues.jsonl"
     write_jsonl(issues_path, [])
     original_lock = import_review_set.__globals__["project_write_lock"]
@@ -3257,7 +3493,7 @@ def test_review_set_revalidates_packet_inside_the_audit_import_lock(
     ) == []
 
 
-def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> None:
+def test_review_set_canonicalizes_local_ids_across_all_batches(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 2)
     first, second = manifests
     for batch in manifests:
@@ -3280,7 +3516,7 @@ def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> Non
     packet = create_workflow_packet(
         root, "audit", [first.batch_id, second.batch_id], "fidelity"
     )
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = _packet_dir(root, packet) / "manifest.json"
     issues_path = manifest_path.parent / "issues.jsonl"
     first_issue = ReviewIssue(
         issue_id="first-batch-fresh",
@@ -3297,24 +3533,33 @@ def test_review_set_validates_all_batches_before_applying(tmp_path: Path) -> Non
     write_jsonl(issues_path, [first_issue, conflicting_issue])
 
     current_before = (root / "translations" / "current.jsonl").read_bytes()
-    project_before = (root / "project.yaml").read_bytes()
     first_summary = root / "reviews" / f"{first.batch_id}.audit.json"
     assert not first_summary.exists()
 
-    with pytest.raises(
-        ValueError, match="issue IDs already exist with different content"
-    ):
-        import_review_set(root, manifest_path, issues_path)
+    result = import_review_set(root, manifest_path, issues_path)
 
-    assert read_jsonl(
+    assert set(result["id_map"]) == {
+        f"{first.batch_id}:{first_issue.issue_id}",
+        f"{second.batch_id}:{conflicting_issue.issue_id}",
+    }
+    first_imported = read_jsonl(
         root / "reviews" / f"{first.batch_id}.issues.jsonl", ReviewIssue
-    ) == []
-    assert read_jsonl(
-        root / "evidence" / "audits" / f"{first.batch_id}.jsonl", AuditRun
-    ) == []
-    assert not first_summary.exists()
-    assert (root / "translations" / "current.jsonl").read_bytes() == current_before
-    assert (root / "project.yaml").read_bytes() == project_before
+    )
+    second_imported = read_jsonl(
+        root / "reviews" / f"{second.batch_id}.issues.jsonl", ReviewIssue
+    )
+    assert first_imported[0].issue_id == result["id_map"][
+        f"{first.batch_id}:{first_issue.issue_id}"
+    ]
+    assert existing_issue in second_imported
+    assert any(
+        issue.issue_id
+        == result["id_map"][f"{second.batch_id}:{conflicting_issue.issue_id}"]
+        for issue in second_imported
+    )
+    assert first_summary.exists()
+    assert (root / "translations" / "current.jsonl").read_bytes() != current_before
+    assert load_project(root).status is ProjectStatus.REVIEWED
 
 
 def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:
@@ -3323,7 +3568,7 @@ def test_review_set_rejects_packet_id_path_escape(tmp_path: Path) -> None:
     _submit(root, batch_id)
     assert run_qa(root, batch_id).passed
     packet = create_workflow_packet(root, "audit", [batch_id], "fidelity")
-    manifest_path = root / "packets" / packet.packet_id / "manifest.json"
+    manifest_path = _packet_dir(root, packet) / "manifest.json"
     payload = read_json(manifest_path)
     payload["packet_id"] = "../escaped"
     write_json(manifest_path, payload)
@@ -3453,21 +3698,17 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     packet = create_workflow_packet(root, "audit", [middle.batch_id], "fidelity")
 
     assert packet.unit_ids == middle.unit_ids
-    assert set(packet.unit_fingerprints) == {"u001", "u002", "u003"}
-    context_path = root / packet.files["audit:read-only-context"]
-    context = context_path.read_text(encoding="utf-8")
-    assert "outside the requested batch set" in context
-    assert "## u001" in context
-    assert "## u003" in context
+    assert set(packet.unit_fingerprints) == {"u002"}
+    assert "audit:read-only-context" not in packet.files
     audit_path = root / packet.files[f"{middle.batch_id}:audit"]
     audit = audit_path.read_text(encoding="utf-8")
     assert "## u002" in audit
     assert "## u001" not in audit
     assert "## u003" not in audit
 
-    issues = root / "packets" / packet.packet_id / "issues.jsonl"
+    issues = _packet_dir(root, packet) / "issues.jsonl"
     write_jsonl(issues, [])
-    import_review_set(root, root / "packets" / packet.packet_id / "manifest.json", issues)
+    import_review_set(root, _packet_dir(root, packet) / "manifest.json", issues)
     assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
     assert audit_coverage(root, manifests[0].batch_id)["missing"]["fidelity"] == [
         "u001"
@@ -3487,9 +3728,7 @@ def test_audit_packet_emits_out_of_set_seam_neighbors_as_read_only_context(
     )
     write_jsonl(units_path, units)
 
-    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == [
-        "u002"
-    ]
+    assert audit_coverage(root, middle.batch_id)["missing"]["fidelity"] == []
 
 
 def test_audit_coverage_rejects_new_unreviewed_seam_membership(
@@ -3502,11 +3741,11 @@ def test_audit_coverage_rejects_new_unreviewed_seam_membership(
     middle = manifests[1]
     for lens in ("fidelity", "technical", "chinese-style"):
         packet = create_workflow_packet(root, "audit", [middle.batch_id], lens)
-        issues = root / "packets" / packet.packet_id / "issues.jsonl"
+        issues = _packet_dir(root, packet) / "issues.jsonl"
         write_jsonl(issues, [])
         import_review_set(
             root,
-            root / "packets" / packet.packet_id / "manifest.json",
+            _packet_dir(root, packet) / "manifest.json",
             issues,
         )
     assert audit_coverage(root, middle.batch_id)["complete"]
@@ -3544,17 +3783,13 @@ def test_audit_coverage_rejects_new_unreviewed_seam_membership(
 
     coverage = audit_coverage(root, middle.batch_id)
 
-    assert not coverage["complete"]
-    assert all(
-        missing == middle.unit_ids for missing in coverage["missing"].values()
+    assert coverage["complete"]
+    render_project(
+        root,
+        None,
+        "new-seam-context",
+        batch_id=middle.batch_id,
     )
-    with pytest.raises(ValueError, match=f"incomplete_audit=.*{middle.batch_id}"):
-        render_project(
-            root,
-            None,
-            "new-seam-context",
-            batch_id=middle.batch_id,
-        )
 
 
 def test_review_packets_show_renderer_visible_equations(tmp_path: Path) -> None:
@@ -4004,7 +4239,7 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     context_ids = external_review._outer_seam_context_ids(
         root, middle.batch_id, covered
     )
-    assert context_ids == outside_ids
+    assert context_ids == []
     assert not set(outside_ids) & set(covered)
     packet, pages = external_review._packet_text(
         root,
@@ -4013,11 +4248,11 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
         read_only_context_ids=context_ids,
     )
     assert all(
-        f"## Unit {unit_id} [READ-ONLY SEAM CONTEXT]" in packet
+        f"## Unit {unit_id} [READ-ONLY SEAM CONTEXT]" not in packet
         for unit_id in outside_ids
     )
-    assert "do not report issues against them" in packet
-    assert pages == [4, 5, 6, 7]
+    assert "do not report issues against them" not in packet
+    assert pages == [6, 7]
 
     _audit_and_approve(root, middle.batch_id)
     captured_evidence: dict[str, tuple[str, str]] = {}
@@ -4065,8 +4300,8 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     )
     write_jsonl(root / "translations" / "current.jsonl", current.values())
 
-    assert not external_review_status(root, middle.batch_id)["external_approvable"]
-    assert accepted.context_fingerprint != (
+    assert external_review_status(root, middle.batch_id)["external_approvable"]
+    assert accepted.context_fingerprint == (
         external_review._external_review_context_fingerprint(
             root,
             middle.batch_id,
@@ -4397,6 +4632,7 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     assert (root / "translations" / "history.jsonl").read_bytes() == history_before
     migrated_qa = read_json(qa_path)
     assert "qa_context_fingerprint" not in migrated_qa
+    migrate_project_schema(root, 5)
     assert workflow_next(root)["stage"] == "qa"
     rerun = run_qa(root, batch_id)
     assert not rerun.passed
@@ -4499,6 +4735,142 @@ def test_v3_migration_reconstructs_legacy_figure_label_packets(
     migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
     assert migrated.run_id == "legacy-figure-run-v4"
     assert migrated.context_fingerprint
+
+
+def test_v4_to_v5_preserves_legacy_full_review_context_without_seams(
+    tmp_path: Path,
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first, second = manifests
+    units_path = root / "derived" / "units.jsonl"
+    units = read_jsonl(units_path, SourceUnit)
+    units[0] = units[0].model_copy(
+        update={
+            "kind": UnitKind.HEADING,
+            "sidebar_id": "legacy-cross-batch-sidebar",
+            "sidebar_role": SidebarRole.TITLE,
+        }
+    )
+    units[1] = units[1].model_copy(
+        update={
+            "sidebar_id": "legacy-cross-batch-sidebar",
+            "sidebar_role": SidebarRole.BODY,
+        }
+    )
+    write_jsonl(units_path, units)
+    assert verify_extraction(root, "all", force=True)["passed"]
+    for manifest in manifests:
+        refresh_batch(root, manifest.batch_id)
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+
+    config = load_project(root)
+    config.schema_version = 4
+    config.external_review = ExternalReviewConfig(
+        reviewers=[
+            ExternalReviewerConfig(
+                id="claude",
+                driver="claude-code",
+                command="claude",
+                model="claude-sonnet-5",
+                effort="high",
+                fast=False,
+            )
+        ]
+    )
+    save_project(root, config)
+
+    legacy_runs: list[ExternalReviewRun] = []
+    for manifest in manifests:
+        current_manifest = load_manifest(root, manifest.batch_id)
+        covered = list(current_manifest.unit_ids)
+        run = ExternalReviewRun(
+            run_id=f"legacy-v4-{manifest.batch_id}",
+            batch_id=manifest.batch_id,
+            reviewer_id="claude",
+            driver="claude-code",
+            role="primary",
+            requested_model="claude-sonnet-5",
+            actual_model="claude-sonnet-5",
+            model_verified=True,
+            translation_fingerprint=external_review.batch_translation_fingerprint(
+                root, manifest.batch_id
+            ),
+            packet_sha256="0" * 64,
+            prompt_version=external_review.PROMPT_VERSION,
+            verdict=ExternalReviewVerdict.ACCEPTED,
+            summary="No substantive defects found in the legacy full review.",
+            scope=ReviewScope.FULL,
+            covered_unit_ids=covered,
+            unit_fingerprints=batch_unit_fingerprints(root, manifest.batch_id),
+            source_fingerprint=batch_source_fingerprint(root, manifest.batch_id),
+            structure_fingerprint=batch_structure_fingerprint(root, manifest.batch_id),
+            context_fingerprint=(
+                external_review._external_review_context_fingerprint(
+                    root,
+                    manifest.batch_id,
+                    covered,
+                    ReviewScope.FULL,
+                    _legacy_v4_full_scope=True,
+                )
+            ),
+        )
+        append_jsonl(
+            root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
+            [run],
+        )
+        legacy_runs.append(run)
+
+    migrate_project_schema(root, 5)
+
+    assert all(
+        external_review._external_review_context_is_current(root, run)
+        for run in legacy_runs
+    )
+    assert all(
+        external_review_status(root, manifest.batch_id)["external_approvable"]
+        for manifest in manifests
+    )
+    for manifest in manifests:
+        approve_batch(root, manifest.batch_id, "external")
+    formal = render_project(root, None, batch_id=first.batch_id)
+    assert Path(formal["markdown"]).is_file()
+
+    current_v5_run = legacy_runs[0].model_copy(
+        update={
+            "run_id": "current-v5-full-review",
+            "reviewed_at": utc_now(),
+            "context_fingerprint": (
+                external_review._external_review_context_fingerprint(
+                    root,
+                    first.batch_id,
+                    list(load_manifest(root, first.batch_id).unit_ids),
+                    ReviewScope.FULL,
+                )
+            ),
+        }
+    )
+    translations = translation_map(root)
+    seam_unit_id = load_manifest(root, second.batch_id).unit_ids[0]
+    translations[seam_unit_id] = translations[seam_unit_id].model_copy(
+        update={"target_text": "迁移后的跨批侧栏译文", "revision": 2}
+    )
+    assert external_review._external_review_context_is_current(
+        root, legacy_runs[0], translations=translations
+    )
+    assert not external_review._external_review_context_is_current(
+        root, current_v5_run, translations=translations
+    )
+
+    style_path = root / "context" / "style-guide.md"
+    style_path.write_text(
+        style_path.read_text(encoding="utf-8") + "\nUse a newly revised style rule.\n",
+        encoding="utf-8",
+    )
+    assert not external_review._external_review_context_is_current(
+        root, legacy_runs[0]
+    )
 
 
 def test_v3_migration_reconstructs_legacy_equation_packets(tmp_path: Path) -> None:

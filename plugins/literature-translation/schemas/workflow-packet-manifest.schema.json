@@ -2,7 +2,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": 1,
+      "default": 2,
       "title": "Schema Version",
       "type": "integer"
     },
@@ -20,7 +20,7 @@
         "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
         "type": "string"
       },
-      "maxItems": 3,
+      "maxItems": 9,
       "minItems": 1,
       "title": "Batch Ids",
       "type": "array"
@@ -50,6 +50,44 @@
       },
       "title": "Unit Fingerprints",
       "type": "object"
+    },
+    "batch_unit_ids": {
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "Batch Unit Ids",
+      "type": "object"
+    },
+    "batch_context_unit_ids": {
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "Batch Context Unit Ids",
+      "type": "object"
+    },
+    "batch_context_fingerprints": {
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$": {
+          "type": "string"
+        }
+      },
+      "title": "Batch Context Fingerprints",
+      "type": "object"
+    },
+    "storage_root": {
+      "default": "packets",
+      "title": "Storage Root",
+      "type": "string"
     },
     "files": {
       "additionalProperties": {

@@ -186,15 +186,20 @@ def code_from_block(block: dict[str, Any]) -> str:
 
 def detect_code_language(text: str) -> str:
     stripped = text.lstrip()
+    if re.search(r"\bxmlns(?::\w+)?=", text) or re.search(
+        r"\bx:(?:Class|Name|Key|TypeArguments)=", text
+    ):
+        return "xaml"
     if re.search(r"<\/?[A-Za-z][^>]*>", text) and (
         "xmlns" in text or "x:Class" in text or re.search(r"<(Grid|Window|Button)\b", text)
     ):
         return "xaml"
     if stripped.startswith("<") and re.search(r"<\/?[A-Za-z][^>]*>", text):
         return "xml"
-    if re.search(r"\b(namespace|using|public|private|protected|internal|class)\b", text) and re.search(
-        r"[;{}]", text
-    ):
+    if re.search(
+        r"\b(namespace|using|public|private|protected|internal|class|foreach|override)\b",
+        text,
+    ) and re.search(r"[;{}]", text):
         return "csharp"
     if re.search(r"^\s*(def|class|from|import)\s+", text, re.MULTILINE):
         return "python"
@@ -359,10 +364,249 @@ def table_from_rows(
     return TableData(rows=padded, header_rows=min(header_rows, len(padded)), column_count=width)
 
 
+_CODE_STARTER_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:\.\.\.\s*)?"
+    r"(?:(?:public|private|protected|internal|static|partial|sealed|abstract|"
+    r"readonly|volatile|async|override|virtual|extern|unsafe|new)\s+)+"
+    r"(?:[A-Za-z_]\w*(?=\s*\()|"
+    r"(?:class|interface|enum|struct|delegate|record)\s+[A-Za-z_]\w*"
+    r"(?=\s*(?:[<{:]|$))|"
+    r"(?:void|var|string|int|bool|byte|char|decimal|double|float|long|object|"
+    r"uint|ulong|short|[A-Za-z_]\w*(?:[.<>?\[\],]\w*)*)\s+[A-Za-z_]\w*"
+    r"(?=\s*(?:[({;=]|=>|$)))"
+    r"|"
+    r"(?:namespace|class|interface|enum|struct|delegate|record)\s+\w"
+    r"|"
+    r"(?:using|return|throw|yield|await|lock|fixed)\s"
+    r"|"
+    r"(?:void|var|string|int|bool|byte|char|decimal|double|float|long|object|"
+    r"uint|ulong|short)\s+[A-Za-z_]"
+    r"|"
+    r"(?:while|for|foreach|if|switch|catch|using)\s*\("
+    r"|"
+    r"try\s*\{"
+    r"|"
+    r"else\s*(?:if\s*\(|\{)"
+    r"|"
+    r"xmlns[:A-Za-z0-9]*="
+    r"|"
+    r"x:(?:Class|Name|Key|TypeArguments)="
+    r"|"
+    r"//"
+    r"|"
+    r"/\*"
+    r"|"
+    r"\[(?:Serializable|ComVisible|DllImport|ValueConversion|DependsOn|"
+    r"Obsolete|Flags|AddIn)\b"
+    r"|"
+    r"</?[A-Za-z][\w:.]*"
+    r"|"
+    r"\}(?:\s*(?:else|catch|finally|while))?"
+    r")",
+    re.MULTILINE,
+)
+_CODE_PROSE_RE = re.compile(
+    r"\b(?:the|this(?!\s*\.)|that|you|your|when|which|however|because|although|"
+    r"unfortunately|instead|imagine|consider|remember)\b",
+    re.I,
+)
+_INDEX_REFERENCE_RE = re.compile(r",\s*\d+(?:\s*[–-]\s*\d+)?\b")
+_INDEX_DESCRIPTOR_RE = re.compile(
+    r"\b(?:class|classes|document|documents|field|fields|method|methods|object|objects|"
+    r"operation|operations|property|properties)\b",
+    re.I,
+)
+
+
+def _looks_like_xml_listing(text: str) -> bool:
+    stripped = text.strip()
+    tags = re.findall(r"</?[A-Za-z][^>]*>", stripped)
+    if not tags:
+        return False
+    opening = {
+        match.group(1)
+        for match in re.finditer(r"<([A-Za-z][\w:.-]*)\b[^>]*>", stripped)
+        if not match.group(0).rstrip().endswith("/>")
+    }
+    closing = {
+        match.group(1)
+        for match in re.finditer(r"</([A-Za-z][\w:.-]*)\s*>", stripped)
+    }
+    if opening & closing:
+        return True
+    if any("=" in tag or tag.rstrip().endswith("/>") for tag in tags):
+        return True
+    residue = stripped
+    for tag in tags:
+        residue = residue.replace(tag, "", 1)
+    return not residue.strip()
+
+
+def looks_like_program_code(text: str) -> bool:
+    """True when a PDF text block is a source listing rather than body prose."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    compact = " ".join(stripped.split())
+    if (
+        len(_INDEX_REFERENCE_RE.findall(compact)) >= 2
+        and _INDEX_DESCRIPTOR_RE.search(compact)
+    ):
+        return False
+    if stripped.startswith("<") and not _looks_like_xml_listing(stripped):
+        return False
+    if _CODE_STARTER_RE.search(stripped) and re.search(
+        r"[;{}=<>]|://|\(\)|=>", stripped
+    ):
+        return True
+    if re.search(
+        r"^\s*(?:(?:public|private|protected|internal|static|partial|sealed|"
+        r"abstract|readonly|unsafe|new)\s+)*(?:class|interface|enum|struct|"
+        r"delegate|record)\s+[A-Za-z_]\w*(?:\s*<[^>\n]+>)?\s*(?:[:{]|$)",
+        stripped,
+        re.MULTILINE,
+    ):
+        return True
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    punct_lines = sum(
+        line.endswith((";", "{", "}", ";}", ");", "};")) or ";" in line
+        for line in lines
+    )
+    has_api = bool(
+        re.search(r"(?:\bnew\s+[A-Za-z_]|\w+\.\w+\s*=|\w+\.\w+\()", stripped)
+    )
+    if punct_lines >= 1 and has_api:
+        if (
+            compact.endswith((".", "?", "!"))
+            and _CODE_PROSE_RE.search(compact)
+            and not stripped.lstrip().startswith(
+                ("//", "/*", "if ", "while ", "for ", "foreach ")
+            )
+        ):
+            return False
+        if _CODE_PROSE_RE.search(compact) and punct_lines < max(2, (len(lines) + 1) // 2):
+            return False
+        return True
+    if re.match(r"^(?:xmlns[:A-Za-z0-9]*=|x:[A-Za-z]+=)", stripped):
+        return True
+    if (
+        len(compact) < 280
+        and not _CODE_PROSE_RE.search(compact)
+        and has_api
+        and re.search(r"[;{}]", stripped)
+    ):
+        return True
+    return False
+
+
+_GLUED_LISTING_BOUNDARY_RE = re.compile(r"([.!?:])\s+")
+
+
+def _is_body_prose(text: str) -> bool:
+    compact = " ".join(text.split())
+    if not compact or looks_like_program_code(compact):
+        return False
+    if compact.lstrip().startswith(("//", "/*", "...")):
+        return False
+    if re.match(r"^(?:case\b.+|default)\s*:$", compact, re.I):
+        return False
+    words = re.findall(r"[^\W\d_]+(?:['’-][^\W\d_]+)*", compact, re.UNICODE)
+    return len(words) >= 2
+
+
+def looks_like_listing_lead(text: str) -> bool:
+    stripped = text.strip()
+    if stripped.startswith("..."):
+        stripped = stripped[3:].lstrip()
+    if not stripped:
+        return False
+    if _CODE_STARTER_RE.match(stripped):
+        return True
+    return looks_like_program_code(stripped) and not _CODE_PROSE_RE.search(stripped[:80])
+
+
+def split_glued_listing(text: str) -> tuple[str, str] | None:
+    """Split a body sentence that PDF extraction glued onto a listing lead."""
+    stripped = text.strip()
+    for match in _GLUED_LISTING_BOUNDARY_RE.finditer(stripped):
+        prose = stripped[: match.end(1)].strip()
+        code = stripped[match.end() :].strip()
+        if (
+            looks_like_listing_lead(code)
+            and looks_like_program_code(code)
+            and _is_body_prose(prose)
+        ):
+            return prose, code
+    return None
+
+
+def _lines_bbox(lines: Sequence[dict[str, Any]]) -> tuple[float, float, float, float]:
+    boxes = [tuple(float(value) for value in line["bbox"]) for line in lines]
+    return (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
+
+
+def _block_from_lines(block: dict[str, Any], lines: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**block, "lines": lines, "bbox": _lines_bbox(lines)}
+
+
+def _line_with_text(line: dict[str, Any], text: str) -> dict[str, Any]:
+    spans = [dict(span) for span in line.get("spans") or []]
+    if spans:
+        spans[0]["text"] = text
+        for extra in spans[1:]:
+            extra["text"] = ""
+    else:
+        spans = [{"text": text, "bbox": line.get("bbox")}]
+    return {**line, "spans": spans}
+
+
+def split_mixed_pdf_block(block: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split one PDF text block into prose then listing when both are glued together."""
+    lines = logical_lines(block)
+    if not lines:
+        return [block]
+    texts = [_line_text(line) for line in lines]
+    first_split = split_glued_listing(texts[0].strip())
+    if first_split:
+        prose_text, code_text = first_split
+        prose_block = _block_from_lines(block, [_line_with_text(lines[0], prose_text)])
+        code_lines = [_line_with_text(lines[0], code_text), *lines[1:]]
+        return [prose_block, _block_from_lines(block, code_lines)]
+    for index in range(1, len(lines)):
+        previous = normalize_prose("\n".join(texts[:index]))
+        current = texts[index].strip()
+        remainder = code_from_block(_block_from_lines(block, lines[index:]))
+        if (
+            looks_like_listing_lead(current)
+            and looks_like_program_code(remainder)
+            and _is_body_prose(previous)
+        ):
+            return [
+                _block_from_lines(block, lines[:index]),
+                _block_from_lines(block, lines[index:]),
+            ]
+    glued = split_glued_listing(prose_from_block(block))
+    if glued and len(lines) == 1:
+        prose_text, code_text = glued
+        return [
+            _block_from_lines(block, [_line_with_text(lines[0], prose_text)]),
+            _block_from_lines(block, [_line_with_text(lines[0], code_text)]),
+        ]
+    return [block]
+
+
 def looks_like_continuation(previous: str, current: str) -> bool:
     previous = previous.rstrip()
     current = current.lstrip()
     if not previous or not current or TERMINAL_RE.search(previous):
+        return False
+    if looks_like_program_code(previous) or looks_like_program_code(current):
         return False
     return bool(re.match(r"^(?:[a-z]|and\b|or\b|but\b|which\b|that\b|with\b)", current))
 

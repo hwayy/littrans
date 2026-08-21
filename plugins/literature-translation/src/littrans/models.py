@@ -4,13 +4,15 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from littrans.hosts import WAVE_BATCH_SET_MAX
+
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
-PROJECT_SCHEMA_VERSION = 4
+PROJECT_SCHEMA_VERSION = 5
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -109,6 +111,7 @@ class IssueStatus(StrEnum):
 class ExternalReviewDriver(StrEnum):
     CLAUDE_CODE = "claude-code"
     ANTIGRAVITY = "antigravity"
+    CURSOR_CLI = "cursor-cli"
 
 
 class ExternalReviewVerdict(StrEnum):
@@ -150,10 +153,14 @@ class ExternalReviewerConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_driver_options(self) -> ExternalReviewerConfig:
-        if self.driver is ExternalReviewDriver.ANTIGRAVITY and self.fast is not None:
+        if self.driver is not ExternalReviewDriver.CLAUDE_CODE and self.fast is not None:
             raise ValueError("fast is only supported by the claude-code driver")
         if self.driver is ExternalReviewDriver.CLAUDE_CODE and self.fast is True:
             raise ValueError("external Claude Code review must not enable fast mode")
+        if self.driver is ExternalReviewDriver.CURSOR_CLI and self.effort is not None:
+            raise ValueError(
+                "cursor-cli model IDs encode effort; external reviewer effort must be omitted"
+            )
         for fallback in self.fallbacks:
             if (
                 self.driver is ExternalReviewDriver.ANTIGRAVITY
@@ -161,6 +168,13 @@ class ExternalReviewerConfig(StrictModel):
                 and fallback.effort is not None
             ):
                 raise ValueError("Antigravity claude-sonnet-4-6 fallback cannot set effort")
+            if (
+                self.driver is ExternalReviewDriver.CURSOR_CLI
+                and fallback.effort is not None
+            ):
+                raise ValueError(
+                    "cursor-cli fallback model IDs encode effort; fallback effort must be omitted"
+                )
         return self
 
 
@@ -180,6 +194,7 @@ class ExternalSecondOpinionConfig(StrictModel):
 class ExternalReviewConfig(StrictModel):
     enabled: bool = True
     assignment: str = "least-used"
+    assignment_since: str | None = None
     reviewers_per_batch: int = Field(default=1, ge=1)
     reviewers: list[ExternalReviewerConfig]
     second_opinion: ExternalSecondOpinionConfig = Field(default_factory=ExternalSecondOpinionConfig)
@@ -194,6 +209,19 @@ class ExternalReviewConfig(StrictModel):
         if not normalized:
             raise ValueError("external_review.domain_expertise must not be empty")
         return normalized
+
+    @field_validator("assignment_since")
+    @classmethod
+    def require_utc_assignment_since(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("external_review.assignment_since must be ISO 8601") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("external_review.assignment_since must include a UTC offset")
+        return value
 
     @model_validator(mode="after")
     def validate_external_review_config(self) -> ExternalReviewConfig:
@@ -428,6 +456,18 @@ class ExternalReviewRun(StrictModel):
     issue_ids: list[str] = Field(default_factory=list)
     response_path: str | None = None
     attempts: int = Field(default=1, ge=1)
+    failure_type: Literal[
+        "authentication",
+        "network",
+        "format",
+        "model",
+        "quota",
+        "timeout",
+        "provider",
+        "unknown",
+    ] | None = None
+    fallback_of: str | None = None
+    attempt_log_path: str | None = None
     success: bool = True
     reviewed_at: str = Field(default_factory=utc_now)
 
@@ -445,6 +485,40 @@ class ReviewUsage(StrictModel):
     cache_read_input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     provider_turns: int = Field(default=0, ge=0)
+
+
+class ExternalReviewAttempt(StrictModel):
+    """One provider invocation attempt, including targeted format-repair attempts."""
+
+    schema_version: int = 1
+    run_id: str
+    batch_id: BatchId
+    attempt: int = Field(ge=1)
+    reviewer_id: str
+    driver: ExternalReviewDriver
+    requested_model: str
+    actual_model: str | None = None
+    effort: str | None = None
+    prompt_delivery: PromptDelivery
+    duration_seconds: float = Field(ge=0)
+    success: bool
+    failure_type: Literal[
+        "authentication",
+        "network",
+        "format",
+        "model",
+        "quota",
+        "timeout",
+        "provider",
+        "unknown",
+    ] | None = None
+    quota_pool: Literal["cursor-first-party", "cursor-third-party"] | None = None
+    error: str | None = None
+    targeted_repair_scheduled: bool = False
+    usage: ReviewUsage = Field(default_factory=ReviewUsage)
+    cost_usd: float | None = Field(default=None, ge=0)
+    raw_response_path: str
+    recorded_at: str = Field(default_factory=utc_now)
 
 
 class PageVerificationReceipt(StrictModel):
@@ -485,13 +559,19 @@ class AuditRun(StrictModel):
 
 
 class WorkflowPacketManifest(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     packet_id: BatchId
     stage: str
-    batch_ids: list[BatchId] = Field(min_length=1, max_length=3)
+    batch_ids: list[BatchId] = Field(min_length=1, max_length=WAVE_BATCH_SET_MAX)
     lens: str | None = None
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
+    # v2 binds evidence to each batch's own coverage and dependency closure.
+    # Defaults preserve readability of v1 manifests during migration.
+    batch_unit_ids: dict[BatchId, list[str]] = Field(default_factory=dict)
+    batch_context_unit_ids: dict[BatchId, list[str]] = Field(default_factory=dict)
+    batch_context_fingerprints: dict[BatchId, str] = Field(default_factory=dict)
+    storage_root: str = "packets"
     files: dict[str, str]
     file_sha256: dict[str, str] = Field(default_factory=dict)
     total_bytes: int = Field(ge=0)

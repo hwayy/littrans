@@ -3,10 +3,11 @@ from __future__ import annotations
 import html
 import json
 import re
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, select_autoescape
 from latex2mathml.converter import convert as latex_to_mathml
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -14,8 +15,13 @@ from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
 from littrans.batching import load_manifest
-from littrans.evidence import effective_figure_labels, equation_markdown
+from littrans.evidence import (
+    dependency_closure,
+    effective_figure_labels,
+    equation_markdown,
+)
 from littrans.extractor import parse_page_spec
+from littrans.hosts import WAVE_BATCH_SET_MAX
 from littrans.models import (
     BatchManifest,
     CalloutKind,
@@ -26,6 +32,7 @@ from littrans.models import (
     Severity,
     SidebarRole,
     SourceUnit,
+    TableData,
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
@@ -37,7 +44,14 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
-from littrans.storage import load_project, plugin_root, read_jsonl
+from littrans.storage import (
+    atomic_write_text,
+    load_project,
+    project_write_lock,
+    read_jsonl,
+    restore_files,
+    snapshot_files,
+)
 from littrans.verification import require_verified_extraction
 
 LEGACY_PUBLISHABLE = {
@@ -45,6 +59,13 @@ LEGACY_PUBLISHABLE = {
     ProjectStatus.EXTERNAL_REVIEWED,
     ProjectStatus.HUMAN_APPROVED,
 }
+
+BATCH_SERIES_RE = re.compile(r"^(?P<series>.+)-b\d+$")
+
+
+def _batch_series(batch_id: str) -> str | None:
+    match = BATCH_SERIES_RE.fullmatch(batch_id)
+    return match.group("series") if match else None
 
 
 def _manifest_cover(
@@ -61,8 +82,14 @@ def _manifest_cover(
                 for manifest in candidates
                 if remaining & set(manifest.unit_ids)
             ),
-            key=lambda item: (-item[0], item[1].created_at, item[1].batch_id),
+            key=lambda item: item[1].batch_id,
         )
+        # Stable sorts retain a deterministic batch-id tie-breaker while preferring
+        # the broadest and newest evidence. Long-running projects intentionally keep
+        # historic overlapping manifests, but those must not displace the current
+        # adjacent batch when a render expands through a semantic dependency.
+        ranked.sort(key=lambda item: item[1].created_at, reverse=True)
+        ranked.sort(key=lambda item: item[0], reverse=True)
         if not ranked:
             return None
         _, selected = ranked[0]
@@ -209,6 +236,42 @@ def _safe_name(value: str) -> str:
     return cleaned
 
 
+def default_batch_output_name(batch_id: str) -> str:
+    """Use the short batch key (`bNNN`) as the canonical single-batch output stem."""
+    return _safe_name(batch_id.rsplit("-", 1)[-1])
+
+
+def _require_default_output_owner(output: Path, output_name: str, batch_id: str) -> None:
+    existing = list(output.glob(f"{output_name}.*"))
+    if not existing:
+        return
+    render_qa_path = output / f"{output_name}.render-qa.json"
+    try:
+        payload = json.loads(render_qa_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ValueError(
+            f"Default output name {output_name!r} is already in use without an "
+            "ownership report; pass --name explicitly"
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Default output name {output_name!r} has an invalid ownership report; "
+            "pass --name explicitly"
+        ) from exc
+    selection = payload.get("selection") if isinstance(payload, dict) else None
+    owned_by_batch = (
+        isinstance(selection, dict)
+        and selection.get("batch_id") == batch_id
+        and selection.get("batch_ids") in (None, [batch_id])
+    )
+    if not owned_by_batch:
+        owner = selection.get("batch_id") if isinstance(selection, dict) else None
+        raise ValueError(
+            f"Default output name {output_name!r} is already owned by batch "
+            f"{owner or 'unknown'}; pass --name explicitly"
+        )
+
+
 def _render_target_text(unit: SourceUnit, target: str | None) -> str | None:
     if target is not None and unit.kind is UnitKind.CAPTION:
         return normalize_zh_caption(target)
@@ -280,6 +343,77 @@ def _coalesce_code_units(
             combined = first.model_copy(
                 update={
                     "source_text": "\n".join(part.source_text for part in group),
+                    "continued_to_next": False,
+                    "continues_from_previous": False,
+                    "fragments": [fragment for part in group for fragment in part.fragments],
+                    "asset_refs": [asset for part in group for asset in part.asset_refs],
+                }
+            )
+            rendered.append(combined)
+            grouped_ids[first.unit_id] = [part.unit_id for part in group]
+        index = cursor
+    return rendered, grouped_ids
+
+
+def _merge_continued_table_data(tables: list[TableData]) -> TableData:
+    """Join complementary half-rows without moving their stable-unit text."""
+    if not tables:
+        raise ValueError("At least one table is required")
+    column_count = tables[0].column_count
+    rows = [list(row) for row in tables[0].rows]
+    for table in tables[1:]:
+        if table.column_count != column_count:
+            raise ValueError("Continued table fragments must have matching columns")
+        incoming = [list(row) for row in table.rows]
+        if rows and incoming:
+            left = rows[-1]
+            right = incoming[0]
+            complementary = (
+                any(not cell for cell in left)
+                and any(not cell for cell in right)
+                and all(not left[index] or not right[index] for index in range(column_count))
+            )
+            if complementary:
+                rows[-1] = [left[index] or right[index] for index in range(column_count)]
+                incoming = incoming[1:]
+        rows.extend(incoming)
+    return TableData(
+        rows=rows,
+        header_rows=tables[0].header_rows,
+        column_count=column_count,
+    )
+
+
+def _coalesce_table_units(
+    units: list[SourceUnit],
+) -> tuple[list[SourceUnit], dict[str, list[str]]]:
+    """Render explicitly continued table fragments as one logical table."""
+    rendered: list[SourceUnit] = []
+    grouped_ids: dict[str, list[str]] = {}
+    index = 0
+    while index < len(units):
+        first = units[index]
+        group = [first]
+        cursor = index + 1
+        while (
+            first.kind is UnitKind.TABLE
+            and first.table is not None
+            and group[-1].continued_to_next
+            and cursor < len(units)
+            and units[cursor].kind is UnitKind.TABLE
+            and units[cursor].table is not None
+            and units[cursor].continues_from_previous
+        ):
+            group.append(units[cursor])
+            cursor += 1
+        if len(group) == 1:
+            rendered.append(first)
+        else:
+            combined = first.model_copy(
+                update={
+                    "table": _merge_continued_table_data(
+                        [part.table for part in group if part.table is not None]
+                    ),
                     "continued_to_next": False,
                     "continues_from_previous": False,
                     "fragments": [fragment for part in group for fragment in part.fragments],
@@ -468,7 +602,7 @@ def _unit_html(
 def render_project(
     root: Path,
     page_spec: str | None,
-    name: str,
+    name: str | None = None,
     allow_draft: bool = False,
     batch_id: str | None = None,
     batch_ids: list[str] | None = None,
@@ -482,8 +616,18 @@ def render_project(
     selectors = sum(value is not None for value in (page_spec, batch_id, batch_ids))
     if selectors != 1:
         raise ValueError("Specify exactly one of page_spec, batch_id, or batch_ids")
-    if batch_ids is not None and (not batch_ids or len(batch_ids) > 3):
-        raise ValueError("batch_ids must contain one to three exact batch IDs")
+    if name is not None:
+        output_name = _safe_name(name)
+    elif batch_id:
+        output_name = default_batch_output_name(batch_id)
+    else:
+        raise ValueError("Specify name unless rendering a single batch_id")
+    if batch_ids is not None and (
+        not batch_ids or len(batch_ids) > WAVE_BATCH_SET_MAX
+    ):
+        raise ValueError(
+            f"batch_ids must contain 1 to {WAVE_BATCH_SET_MAX} exact batch IDs"
+        )
     if batch_ids is not None:
         from littrans.workflow import _validate_batch_set
 
@@ -495,8 +639,6 @@ def render_project(
         if manifests
         else set(parse_page_spec(page_spec or "", config.source_pages))
     )
-    if not allow_draft:
-        require_verified_extraction(root, pages)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     if manifests:
         unit_map = {unit.unit_id: unit for unit in all_units}
@@ -517,14 +659,66 @@ def render_project(
         ]
         if missing_manifest_units:
             raise ValueError(f"Batch references missing source units: {missing_manifest_units}")
-        selected_set = set(selected_manifest_unit_ids)
+        selected_set = set(
+            dependency_closure(
+                root,
+                [manifest.batch_id for manifest in manifests],
+                selected_manifest_unit_ids,
+                all_units=all_units,
+            )
+        )
         units = [unit for unit in all_units if unit.unit_id in selected_set]
     else:
         units = [unit for unit in all_units if unit.page in pages]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
+    pages |= {unit.page for unit in units}
+    if not allow_draft:
+        require_verified_extraction(root, pages)
     render_units, grouped_code_ids = _coalesce_code_units(units)
+    render_units, grouped_table_ids = _coalesce_table_units(render_units)
+    grouped_unit_ids = {**grouped_code_ids, **grouped_table_ids}
     translations = translation_map(root)
     selected_ids = {unit.unit_id for unit in units}
+    content_manifests = manifests
+    if manifests:
+        covered_by_selected_manifests = {
+            unit_id for manifest in manifests for unit_id in manifest.unit_ids
+        }
+        dependency_ids = selected_ids - covered_by_selected_manifests
+        if dependency_ids:
+            explicit_batch_ids = {manifest.batch_id for manifest in manifests}
+            dependency_manifests = [
+                manifest
+                for path in (root / "batches").iterdir()
+                if path.is_dir()
+                and (path / "manifest.yaml").is_file()
+                for manifest in [load_manifest(root, path.name)]
+                if manifest.batch_id not in explicit_batch_ids
+                and dependency_ids & set(manifest.unit_ids)
+            ]
+            explicit_series = {
+                series
+                for manifest in manifests
+                if (series := _batch_series(manifest.batch_id)) is not None
+            }
+            same_series_manifests = [
+                manifest
+                for manifest in dependency_manifests
+                if _batch_series(manifest.batch_id) in explicit_series
+            ]
+            dependency_cover = _manifest_cover(
+                dependency_ids, same_series_manifests
+            ) or _manifest_cover(
+                dependency_ids, dependency_manifests
+            )
+            if dependency_cover:
+                content_manifests = sorted(
+                    [*manifests, *dependency_cover],
+                    key=lambda manifest: min(
+                        positions.get(unit_id, 10**12)
+                        for unit_id in manifest.unit_ids
+                    ),
+                )
     missing = [
         unit.unit_id for unit in units if unit.translatable and unit.unit_id not in translations
     ]
@@ -540,7 +734,7 @@ def render_project(
     stale_external: list[str] = []
     unbatched_units: list[str] = []
     if not allow_draft:
-        relevant_manifests = manifests
+        relevant_manifests = content_manifests
         gate_status: dict[str, tuple[bool, bool, bool]] = {}
         if not relevant_manifests:
             candidate_manifests = [
@@ -674,13 +868,13 @@ def render_project(
             f"open_severe={open_severe}"
         )
 
-    output_name = _safe_name(name)
     output = root / "output"
     output.mkdir(parents=True, exist_ok=True)
     markdown_path = output / f"{output_name}.zh.md"
     html_path = output / f"{output_name}.bilingual.html"
     qa_path = output / f"{output_name}.quality.md"
     unresolved_path = output / f"{output_name}.unresolved.md"
+    render_qa_path = output / f"{output_name}.render-qa.json"
 
     markdown: list[str] = [
         f"# {config.title}",
@@ -714,8 +908,19 @@ def render_project(
         else:
             bilingual_target = "[尚未翻译]"
         render_unit = unit
-        if unit.kind is UnitKind.TABLE and record and record.target_table:
-            render_unit = unit.model_copy(update={"table": record.target_table})
+        target_table = record.target_table if record else None
+        reader_notes = [record.reader_note] if record and record.reader_note else []
+        if unit.unit_id in grouped_table_ids:
+            table_records = [translations.get(unit_id) for unit_id in grouped_table_ids[unit.unit_id]]
+            if all(item and item.target_table for item in table_records):
+                target_table = _merge_continued_table_data(
+                    [item.target_table for item in table_records if item and item.target_table]
+                )
+            reader_notes = [
+                item.reader_note for item in table_records if item and item.reader_note
+            ]
+        if unit.kind is UnitKind.TABLE and target_table:
+            render_unit = unit.model_copy(update={"table": target_table})
         rendered_figure_labels = effective_figure_labels(unit, record)
         if rendered_figure_labels:
             render_unit = unit.model_copy(
@@ -724,7 +929,7 @@ def render_project(
         rendered = _target_markdown(render_unit, target)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
-            for unit_id in grouped_code_ids.get(unit.unit_id, [unit.unit_id])
+            for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])
         )
         if (
             unit.continues_from_previous
@@ -778,8 +983,7 @@ def render_project(
             markdown.append("")
         else:
             markdown.extend([anchor, rendered, ""])
-        if record and record.reader_note:
-            pending_markdown_reader_notes.append(record.reader_note)
+        pending_markdown_reader_notes.extend(reader_notes)
         # A reader note attached to any fragment of a continued paragraph or
         # callout belongs after the complete logical unit.  Emitting it here
         # would interrupt the sentence at a physical page boundary.
@@ -811,13 +1015,13 @@ def render_project(
         target_html = _unit_html(
             render_unit,
             bilingual_target,
-            record.target_table if record else None,
+            target_table,
             source_view=False,
         )
-        if unit.unit_id in grouped_code_ids:
+        if unit.unit_id in grouped_unit_ids:
             extra_anchors = "".join(
                 f'<span id="{html.escape(unit_id)}"></span>'
-                for unit_id in grouped_code_ids[unit.unit_id][1:]
+                for unit_id in grouped_unit_ids[unit.unit_id][1:]
             )
             source_html = extra_anchors + source_html
         if (
@@ -839,8 +1043,7 @@ def render_project(
             if source_note is not None and target_note is not None:
                 rows[-1]["source_html"] = source_note
                 rows[-1]["target_html"] = target_note
-                if record and record.reader_note:
-                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["reader_notes"].extend(reader_notes)
                 rows[-1]["last_page"] = unit_last_page
             else:
                 rows.append(
@@ -851,9 +1054,7 @@ def render_project(
                         "target_html": target_html,
                         "assets": assets,
                         "record": record,
-                        "reader_notes": [record.reader_note]
-                        if record and record.reader_note
-                        else [],
+                        "reader_notes": list(reader_notes),
                     }
                 )
         elif (
@@ -875,8 +1076,7 @@ def render_project(
             if source_list is not None and target_list is not None:
                 rows[-1]["source_html"] = source_list
                 rows[-1]["target_html"] = target_list
-                if record and record.reader_note:
-                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["reader_notes"].extend(reader_notes)
                 rows[-1]["last_page"] = unit_last_page
             else:
                 rows.append(
@@ -887,9 +1087,7 @@ def render_project(
                         "target_html": target_html,
                         "assets": assets,
                         "record": record,
-                        "reader_notes": [record.reader_note]
-                        if record and record.reader_note
-                        else [],
+                        "reader_notes": list(reader_notes),
                     }
                 )
         elif (
@@ -913,8 +1111,7 @@ def render_project(
             if source_sidebar is not None and target_sidebar is not None:
                 rows[-1]["source_html"] = source_sidebar
                 rows[-1]["target_html"] = target_sidebar
-                if record and record.reader_note:
-                    rows[-1]["reader_notes"].append(record.reader_note)
+                rows[-1]["reader_notes"].extend(reader_notes)
                 rows[-1]["last_page"] = unit_last_page
             else:
                 rows.append(
@@ -925,9 +1122,7 @@ def render_project(
                         "target_html": target_html,
                         "assets": assets,
                         "record": record,
-                        "reader_notes": [record.reader_note]
-                        if record and record.reader_note
-                        else [],
+                        "reader_notes": list(reader_notes),
                     }
                 )
         elif (
@@ -953,8 +1148,7 @@ def render_project(
                 rows[-1]["target_html"].removesuffix("</p>")
                 + f'{target_separator}<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>{inline_target}</p>'
             )
-            if record and record.reader_note:
-                rows[-1]["reader_notes"].append(record.reader_note)
+            rows[-1]["reader_notes"].extend(reader_notes)
             rows[-1]["last_page"] = unit_last_page
         else:
             rows.append(
@@ -965,9 +1159,7 @@ def render_project(
                     "target_html": target_html,
                     "assets": assets,
                     "record": record,
-                    "reader_notes": [record.reader_note]
-                    if record and record.reader_note
-                    else [],
+                    "reader_notes": list(reader_notes),
                 }
             )
         previous_page = unit_last_page
@@ -984,17 +1176,18 @@ def render_project(
             and (index == len(rows) - 1 or rows[index + 1]["unit"].sidebar_id != sidebar_id)
         )
     markdown_text = "\n".join(markdown).rstrip() + "\n"
-    markdown_path.write_text(markdown_text, encoding="utf-8")
 
     environment = Environment(
-        loader=FileSystemLoader(plugin_root() / "templates"),
         autoescape=select_autoescape(["html", "xml"]),
         trim_blocks=True,
         lstrip_blocks=True,
     )
     environment.filters["inline_html"] = _inline_html
     environment.filters["reader_note_text"] = _reader_note_text
-    template = environment.get_template("bilingual.html.j2")
+    template_text = (
+        files("littrans").joinpath("templates", "bilingual.html.j2").read_text(encoding="utf-8")
+    )
+    template = environment.from_string(template_text)
     html_text = template.render(
         config=config,
         rows=rows,
@@ -1002,43 +1195,74 @@ def render_project(
         pdf_uri=config.source(root).as_uri(),
         allow_draft=allow_draft,
     )
-    html_path.write_text(html_text, encoding="utf-8")
-
-    _write_quality_summary(qa_path, root, units, missing, unapproved, open_severe)
-    _write_unresolved(unresolved_path, root, selected_ids)
-    render_qa_path = output / f"{output_name}.render-qa.json"
     render_errors = _render_quality_errors(markdown_text, html_text, units)
-    render_qa_path.write_text(
-        json.dumps(
-            {
-                "passed": not render_errors,
-                "selection": {
-                    "batch_id": batch_id,
-                    "batch_ids": selected_batch_ids or None,
-                    "pages": sorted(pages),
-                },
-                "unit_ids": [unit.unit_id for unit in units],
-                "errors": render_errors,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     if render_errors:
         raise ValueError(f"Rendered output failed structural QA: {render_errors}")
-    outputs = {
-        "markdown": str(markdown_path),
-        "html": str(html_path),
-        "quality": str(qa_path),
-        "unresolved": str(unresolved_path),
-        "render_qa": str(render_qa_path),
-    }
-    if config.external_review and config.external_review.enabled and selected_batch_ids:
-        external_path = output / f"{output_name}.external-review.md"
-        _write_external_review_summary_set(external_path, root, selected_batch_ids)
-        outputs["external_review"] = str(external_path)
+    with project_write_lock(root):
+        if name is None and batch_id is not None:
+            _require_default_output_owner(output, output_name, batch_id)
+        review_batch_ids = [manifest.batch_id for manifest in content_manifests]
+        external_path = (
+            output / f"{output_name}.external-review.md"
+            if config.external_review
+            and config.external_review.enabled
+            and review_batch_ids
+            else None
+        )
+        publication_paths = [
+            markdown_path,
+            html_path,
+            qa_path,
+            unresolved_path,
+            render_qa_path,
+        ]
+        if external_path is not None:
+            publication_paths.append(external_path)
+        publication_snapshot = snapshot_files(publication_paths)
+        try:
+            atomic_write_text(markdown_path, markdown_text)
+            atomic_write_text(html_path, html_text)
+            _write_quality_summary(
+                qa_path, root, units, missing, unapproved, open_severe
+            )
+            _write_unresolved(unresolved_path, root, selected_ids)
+            atomic_write_text(
+                render_qa_path,
+                json.dumps(
+                    {
+                        "passed": not render_errors,
+                        "selection": {
+                            "batch_id": batch_id,
+                            "batch_ids": selected_batch_ids or None,
+                            "pages": sorted(pages),
+                        },
+                        "unit_ids": [unit.unit_id for unit in units],
+                        "errors": render_errors,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+            )
+        except BaseException:
+            restore_files(publication_snapshot)
+            raise
+        outputs = {
+            "markdown": str(markdown_path),
+            "html": str(html_path),
+            "quality": str(qa_path),
+            "unresolved": str(unresolved_path),
+            "render_qa": str(render_qa_path),
+        }
+        if external_path is not None:
+            try:
+                _write_external_review_summary_set(
+                    external_path, root, review_batch_ids
+                )
+            except BaseException:
+                restore_files(publication_snapshot)
+                raise
+            outputs["external_review"] = str(external_path)
     return outputs
 
 
@@ -1080,7 +1304,7 @@ def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> Non
         [f"- `{issue_id}`" for issue_id in status["open_substantive_issues"]]
         or ["None."]
     )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")
 
 
 def _write_external_review_summary_set(
@@ -1104,7 +1328,7 @@ def _write_external_review_summary_set(
                 "",
             ]
         )
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
 
 
 def _render_quality_errors(
@@ -1113,7 +1337,10 @@ def _render_quality_errors(
     errors: list[str] = []
     if re.search(r"(?m)^-\s+[•▪■●]\s+", markdown):
         errors.append("duplicated-list-marker")
-    if re.search(r"(?m)^>\s+>\s+", markdown):
+    # Match a genuinely nested blockquote marker on one physical line.
+    # Using \s here also consumes newlines and falsely flags the valid blank
+    # quote line emitted inside a sidebar code fence.
+    if re.search(r"(?m)^>[ \t]+>[ \t]+", markdown):
         errors.append("nested-admonition-marker")
     for unit in units:
         anchor = f'<a id="{unit.unit_id}"></a>'
@@ -1162,7 +1389,7 @@ def _write_quality_summary(
         f"- Review issues: {len(review_issues)} ({sum(issue.status is IssueStatus.OPEN for issue in review_issues)} open)",
         "",
     ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines))
 
 
 def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
@@ -1197,4 +1424,4 @@ def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
     )
     if not issues:
         lines.append("None.")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")
