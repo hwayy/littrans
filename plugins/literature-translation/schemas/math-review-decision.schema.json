@@ -1,0 +1,225 @@
+{
+  "$defs": {
+    "MathReviewDisposition": {
+      "enum": [
+        "accepted",
+        "corrected",
+        "manual",
+        "rejected"
+      ],
+      "title": "MathReviewDisposition",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A visual-review decision bound to immutable PDF and crop evidence.",
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "decision_id": {
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "unit_id": {
+      "title": "Unit Id",
+      "type": "string"
+    },
+    "page": {
+      "minimum": 1,
+      "title": "Page",
+      "type": "integer"
+    },
+    "candidate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Candidate Id"
+    },
+    "packet_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Packet Id"
+    },
+    "packet_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Packet Sha256"
+    },
+    "manifest_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Manifest Sha256"
+    },
+    "review_crop_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Review Crop Path"
+    },
+    "disposition": {
+      "$ref": "#/$defs/MathReviewDisposition"
+    },
+    "source_pdf_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Pdf Sha256",
+      "type": "string"
+    },
+    "source_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Hash",
+      "type": "string"
+    },
+    "crop_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Crop Sha256",
+      "type": "string"
+    },
+    "page_image_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Page Image Sha256",
+      "type": "string"
+    },
+    "reviewed_against_pdf": {
+      "title": "Reviewed Against Pdf",
+      "type": "boolean"
+    },
+    "reviewer_id": {
+      "title": "Reviewer Id",
+      "type": "string"
+    },
+    "reviewer_model": {
+      "title": "Reviewer Model",
+      "type": "string"
+    },
+    "reviewer_effort": {
+      "title": "Reviewer Effort",
+      "type": "string"
+    },
+    "reviewer_task": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reviewer Task"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "final_latex": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Final Latex"
+    },
+    "final_source_markdown": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Final Source Markdown"
+    },
+    "equation_number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Equation Number"
+    },
+    "structural_issues": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Structural Issues",
+      "type": "array"
+    },
+    "uncertainties": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Uncertainties",
+      "type": "array"
+    },
+    "reviewed_at": {
+      "title": "Reviewed At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "decision_id",
+    "unit_id",
+    "page",
+    "disposition",
+    "source_pdf_sha256",
+    "source_hash",
+    "crop_sha256",
+    "page_image_sha256",
+    "reviewed_against_pdf",
+    "reviewer_id",
+    "reviewer_model",
+    "reviewer_effort",
+    "reason"
+  ],
+  "title": "MathReviewDecision",
+  "type": "object"
+}

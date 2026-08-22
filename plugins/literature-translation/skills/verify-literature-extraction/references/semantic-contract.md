@@ -6,6 +6,7 @@
 - Continuation: cross-page or block continuations carry both continuation flags and render as one paragraph.
 - Inline math: exact LaTeX between `$` delimiters in `source_markdown`; surrounding prose remains complete.
 - Display math: exact `latex`, separate `equation_number`, and a retained crop used only for comparison.
+- Vision-model transcriptions remain candidates until a reviewer compares the candidate, crop, and rendered PDF page. Limit remote use to a small exact-unit pilot with two independent attempts; if that pilot is unusable, stop remote calls and use page-complete `--manual-only` packets. Bind every imported decision to current source, page-image, crop, and candidate hashes; provider output alone is never verification evidence.
 - Table: rectangular `rows`, accurate `header_rows`, no screenshot fallback in final output.
 - Code: exact characters and indentation, plus a known language when identifiable.
 - Figure: original visual, translated caption, and translated internal labels or an explicit finding that none exist.
@@ -26,3 +27,9 @@ overrides:
 ```
 
 For tables, set `table.rows`, `table.header_rows`, and `table.column_count`. One logical table remains one structured table across physical pages; include every body row, preserve empty cells, omit absorbed paragraph fragments as duplicates, and keep one evidence crop per physical page region. For figures, set `figure_labels` to objects containing `source` and `target`, then set `visual_text_status: verified`.
+
+Packet-local structural proposals are not layout authority. A `structural-overrides.yaml` may be
+merged only through `source import-math-review --structural-overrides PATH`, after its packet ID,
+packet/manifest hashes, decision bindings, source hashes, and canonical override hashes validate.
+Import holds the project write lock and serially merges accepted records into
+`overrides/layout.yaml`; never paste, concatenate, or independently apply the sidecar.

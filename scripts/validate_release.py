@@ -41,12 +41,49 @@ def package_version() -> str:
     return match.group(1)
 
 
+def unexpected_plugin_workspaces() -> list[str]:
+    """Find generated translation projects accidentally left in the plugin tree."""
+
+    markers = {"source", "derived", "evidence", ".littrans", "overrides"}
+    allowed_marker_paths = {"project/.littrans"}
+    ignored_top_levels = {".mypy_cache", ".pytest_cache", ".pytest-tmp", ".ruff_cache"}
+    unexpected: list[str] = []
+    for project_file in PLUGIN_ROOT.rglob("project.yaml"):
+        workspace = project_file.parent
+        relative_workspace = workspace.relative_to(PLUGIN_ROOT)
+        if (
+            relative_workspace.parts
+            and relative_workspace.parts[0] in ignored_top_levels
+        ):
+            continue
+        if any((workspace / marker).exists() for marker in markers):
+            unexpected.append(relative_workspace.as_posix())
+    for marker in markers:
+        for path in PLUGIN_ROOT.rglob(marker):
+            if not path.is_dir():
+                continue
+            relative_path = path.relative_to(PLUGIN_ROOT)
+            if relative_path.parts and relative_path.parts[0] in ignored_top_levels:
+                continue
+            relative = relative_path.as_posix()
+            if relative not in allowed_marker_paths:
+                unexpected.append(relative)
+    return sorted(set(unexpected))
+
+
 def main() -> None:
     marketplace_path = ROOT / ".agents" / "plugins" / "marketplace.json"
     cursor_marketplace_path = ROOT / ".cursor-plugin" / "marketplace.json"
     manifest_path = PLUGIN_ROOT / ".codex-plugin" / "plugin.json"
     cursor_manifest_path = PLUGIN_ROOT / ".cursor-plugin" / "plugin.json"
     pyproject_path = PLUGIN_ROOT / "pyproject.toml"
+
+    unexpected_workspaces = unexpected_plugin_workspaces()
+    if unexpected_workspaces:
+        raise ValueError(
+            "Generated project workspace/evidence directories must not live under "
+            f"the plugin root: {unexpected_workspaces}"
+        )
 
     marketplace = load_json(marketplace_path)
     cursor_marketplace = load_json(cursor_marketplace_path)
@@ -77,8 +114,13 @@ def main() -> None:
     plugin_name = manifest.get("name")
     if plugin_name != "literature-translation" or entry.get("name") != plugin_name:
         raise ValueError("Plugin names in the marketplace and manifest do not match")
-    if cursor_manifest.get("name") != plugin_name or cursor_entry.get("name") != plugin_name:
-        raise ValueError("Plugin names in the Cursor marketplace and manifest do not match")
+    if (
+        cursor_manifest.get("name") != plugin_name
+        or cursor_entry.get("name") != plugin_name
+    ):
+        raise ValueError(
+            "Plugin names in the Cursor marketplace and manifest do not match"
+        )
 
     source = entry.get("source")
     if not isinstance(source, dict) or source.get("source") != "local":
@@ -86,7 +128,9 @@ def main() -> None:
     if source.get("path") != "./plugins/literature-translation":
         raise ValueError("Marketplace plugin path is not the canonical repository path")
     if cursor_entry.get("source") != "plugins/literature-translation":
-        raise ValueError("Cursor marketplace plugin path is not the canonical repository path")
+        raise ValueError(
+            "Cursor marketplace plugin path is not the canonical repository path"
+        )
 
     manifest_version = manifest.get("version")
     cursor_version = cursor_manifest.get("version")
@@ -100,9 +144,13 @@ def main() -> None:
         package_version(),
     }
     if len(versions) != 1 or not isinstance(manifest_version, str):
-        raise ValueError(f"Release versions are not aligned: {sorted(map(str, versions))}")
+        raise ValueError(
+            f"Release versions are not aligned: {sorted(map(str, versions))}"
+        )
     if SEMVER.fullmatch(manifest_version) is None:
-        raise ValueError(f"Plugin version is not valid semantic versioning: {manifest_version}")
+        raise ValueError(
+            f"Plugin version is not valid semantic versioning: {manifest_version}"
+        )
     if "+codex." in manifest_version:
         raise ValueError("A release must not contain a local Codex cachebuster")
 
@@ -120,7 +168,9 @@ def main() -> None:
         try:
             skill_frontmatter = yaml.safe_load(parsed_skill.group(1))
         except yaml.YAMLError as exc:
-            raise ValueError(f"Skill has invalid YAML frontmatter: {skill_path}: {exc}") from exc
+            raise ValueError(
+                f"Skill has invalid YAML frontmatter: {skill_path}: {exc}"
+            ) from exc
         if not isinstance(skill_frontmatter, dict):
             raise ValueError(f"Skill frontmatter must be a mapping: {skill_path}")
         skill_name = skill_frontmatter.get("name")
@@ -129,10 +179,14 @@ def main() -> None:
             or SKILL_NAME.fullmatch(skill_name) is None
             or skill_name != skill_path.parent.name
         ):
-            raise ValueError(f"Skill name is invalid or does not match its directory: {skill_path}")
+            raise ValueError(
+                f"Skill name is invalid or does not match its directory: {skill_path}"
+            )
         skill_description = skill_frontmatter.get("description")
         if not isinstance(skill_description, str) or not skill_description.strip():
-            raise ValueError(f"Skill description must be a non-empty string: {skill_path}")
+            raise ValueError(
+                f"Skill description must be a non-empty string: {skill_path}"
+            )
     agent_files = sorted((PLUGIN_ROOT / "agents").glob("*.md"))
     expected_agents = {
         "literature-translator.md": "writer",
@@ -159,9 +213,7 @@ def main() -> None:
         if parsed is None:
             raise ValueError(f"Agent is missing YAML frontmatter: {agent_path.name}")
         frontmatter, body = parsed.group(1), parsed.group(2)
-        readonly = bool(
-            re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE)
-        )
+        readonly = bool(re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE))
         contract = expected_agents[agent_path.name]
         if contract == "writer" and readonly:
             raise ValueError("Cursor translation writer must not be read-only")

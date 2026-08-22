@@ -4,8 +4,9 @@
 English technical books and research papers into Simplified Chinese. It installs on Codex and
 Cursor. Python manages stable source units, exact LaTeX, structured tables, code, state, QA,
 reviews, and rendering. The agent performs the language work. The package does not call a model
-API directly; projects may explicitly configure supported local CLIs for isolated, read-only
-external review.
+API during translation or review. During source verification, the explicitly authorized
+`source math-candidates` command may send local formula crops to a configured vision provider;
+its output is non-authoritative evidence and can never approve a source unit.
 
 ## First use
 
@@ -26,6 +27,18 @@ See `references/runtime.md` for launcher resolution from an installed skill, and
 2. Run `verify-literature-extraction` and compare the visual overlay with every selected PDF
    page. Translation is blocked until formulas, tables, code, figures, notes, and paragraph
    boundaries are verified.
+   For math-dense PDFs, use `source math-candidates --unit-ids ...` only as an explicitly
+   authorized DeepSeek pilot with 1–60 exact current unit IDs. Each unit is limited to two
+   independent current-source/current-crop passes; `--force` cannot create a third. If those two
+   attempts do not produce usable candidates, stop remote calls and build fully local packets with
+   `source math-review-packets --manual-only`.
+   To repair a current structural blocker involving verified or non-math units, add exact stable IDs
+   with `--include-unit-ids id1,id2`; IDs must exist on `--pages`, and remain fully hash-bound.
+   `source math-review-report` renders a local comparison report, and `source import-math-review`
+   imports only explicitly attested PDF visual-review decisions. A proposed
+   `structural-overrides.yaml` is untrusted until supplied through `--structural-overrides` and
+   accepted by the packet/hash/decision binding checks; never copy it directly into
+   `overrides/layout.yaml`.
 3. Run `translate-literature-section` on prepared batches. Every source unit is immutable;
    translations are separate revisioned records.
 4. Run `audit-literature-translation` in an independent context. Reviewers write issue records,
@@ -82,6 +95,8 @@ open minor issues.
 ## Formats and boundaries
 
 - Display and inline mathematics are stored as reviewed LaTeX; crops are evidence only.
+- Vision-model math candidates remain separate evidence. They never set `math_status`,
+  `verification_status`, or `verified` without a fresh PDF-bound review decision.
 - Running heads, decorative separators, and other non-reading matter remain traceable source
   units but may use `render_policy: omit`; omitted units are neither batched nor rendered.
 - `target_text` contains semantic body text only. The renderer owns heading, list, note,

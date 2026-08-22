@@ -29,6 +29,7 @@ PROJECT_DIRS = (
     "qa",
     "evidence/pages",
     "evidence/audits",
+    "evidence/math",
     "packets",
     "output",
     "overrides",

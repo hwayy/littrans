@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import statistics
 from collections import Counter
@@ -18,6 +20,10 @@ from littrans.models import (
     ExtractionIssue,
     FigureLabel,
     IssueStatus,
+    MathCandidate,
+    MathReviewDecision,
+    MathStructuralAction,
+    MathStructuralOverrideDecision,
     ProjectStatus,
     RenderPolicy,
     SemanticStatus,
@@ -28,6 +34,8 @@ from littrans.models import (
     TableData,
     TranslationRecord,
     UnitKind,
+    canonical_math_review_representation_sha256,
+    canonical_math_review_unit_guard_sha256,
 )
 from littrans.semantics import (
     code_from_block,
@@ -42,11 +50,13 @@ from littrans.semantics import (
     unicode_math_to_latex,
 )
 from littrans.storage import (
+    atomic_write_text,
     load_project,
     project_write_lock,
     read_jsonl,
     restore_files,
     save_project,
+    sha256_file,
     sha256_text,
     snapshot_files,
     write_json,
@@ -247,12 +257,16 @@ def _is_marginal(
         return True
     # Do not discard a unique single line merely because body text begins near
     # a page edge: it may be the continuation of a paragraph across pages.
-    if y1 < page.rect.height * 0.08 and block_height < 20 and re.fullmatch(
-        r"[■▪●]?\s*[A-Z][A-Z0-9 .&:;–—-]{2,}", text.strip()
+    if (
+        y1 < page.rect.height * 0.08
+        and block_height < 20
+        and re.fullmatch(r"[■▪●]?\s*[A-Z][A-Z0-9 .&:;–—-]{2,}", text.strip())
     ):
         return True
-    if y0 > page.rect.height * 0.92 and block_height < 28 and re.fullmatch(
-        r"(?:(?:page\s*)?\d+|[ivxlcdm]+)", text.strip(), re.I
+    if (
+        y0 > page.rect.height * 0.92
+        and block_height < 28
+        and re.fullmatch(r"(?:(?:page\s*)?\d+|[ivxlcdm]+)", text.strip(), re.I)
     ):
         return True
     width, height = x1 - x0, y1 - y0
@@ -559,18 +573,15 @@ def _merge_table_regions(
         clear_boundary = min(clear_boundaries, default=page.rect.height - 35.0)
         horizontal_rules = sorted(
             {
-            float(drawing["rect"].y1)
-            for drawing in page.get_drawings()
-            if drawing["rect"].width >= max(100.0, page.rect.width * 0.25)
-            and drawing["rect"].height <= 3.0
-            and caption.bbox[3] < drawing["rect"].y1
-            and drawing["rect"].y1 < clear_boundary
+                float(drawing["rect"].y1)
+                for drawing in page.get_drawings()
+                if drawing["rect"].width >= max(100.0, page.rect.width * 0.25)
+                and drawing["rect"].height <= 3.0
+                and caption.bbox[3] < drawing["rect"].y1
+                and drawing["rect"].y1 < clear_boundary
             }
         )
-        if (
-            len(horizontal_rules) == 2
-            and horizontal_rules[1] - horizontal_rules[0] <= 45.0
-        ):
+        if len(horizontal_rules) == 2 and horizontal_rules[1] - horizontal_rules[0] <= 45.0:
             # A top rule followed closely by a header separator, with no later
             # bottom rule, is an open table segment that continues to the end of
             # the physical page (and possibly onto the next page).
@@ -873,14 +884,10 @@ def _merge_code_fragments(candidates: list[BlockCandidate]) -> list[BlockCandida
 def _reading_order(candidates: list[BlockCandidate], page: fitz.Page) -> list[BlockCandidate]:
     midpoint = page.rect.width / 2
     left = [
-        item
-        for item in candidates
-        if item.bbox[2] < midpoint + 8 and item.bbox[0] < midpoint - 25
+        item for item in candidates if item.bbox[2] < midpoint + 8 and item.bbox[0] < midpoint - 25
     ]
     right = [
-        item
-        for item in candidates
-        if item.bbox[0] > midpoint - 8 and item.bbox[2] > midpoint + 25
+        item for item in candidates if item.bbox[0] > midpoint - 8 and item.bbox[2] > midpoint + 25
     ]
     if len(left) < 2 or len(right) < 2:
         return sorted(candidates, key=lambda item: (round(item.bbox[1], 1), item.bbox[0]))
@@ -911,7 +918,10 @@ def _load_overrides(project_root: Path) -> list[dict[str, Any]]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict) or not isinstance(payload.get("overrides", []), list):
         raise ValueError(f"{path} must contain an overrides list")
-    overrides = [item for item in payload["overrides"] if isinstance(item, dict)]
+    return [item for item in payload["overrides"] if isinstance(item, dict)]
+
+
+def _merge_overrides(overrides: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     unit_positions: dict[str, int] = {}
     for override in overrides:
@@ -928,9 +938,1072 @@ def _load_overrides(project_root: Path) -> list[dict[str, Any]]:
     return merged
 
 
-def _code_text_from_page(
-    page: fitz.Page, bbox: tuple[float, float, float, float]
-) -> str:
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MATH_REVIEW_GUARD_FIELDS = {
+    "schema_version",
+    "decision_id",
+    "unit_id",
+    "page",
+    "source_pdf_sha256",
+    "source_hash",
+    "unit_guard_sha256",
+    "before_representation_sha256",
+    "after_representation_sha256",
+    "crop_sha256",
+    "page_image_sha256",
+    "reviewed_against_pdf",
+}
+_APPLIED_MATH_OVERRIDE_RECEIPTS = Path("evidence/math/applied-overrides.jsonl")
+_APPLIED_MATH_OVERRIDE_CHAINS = Path("evidence/math/applied-override-chains.jsonl")
+_APPLIED_RECEIPT_FIELDS = {
+    "schema_version",
+    "override_sha256",
+    "decision_id",
+    "unit_id",
+    "source_pdf_sha256",
+    "outcome",
+    "unit_record_sha256",
+}
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _guarded_override_sha256(override: dict[str, Any]) -> str:
+    return _canonical_json_sha256(override)
+
+
+def _source_unit_record_sha256(unit: SourceUnit) -> str:
+    return _canonical_json_sha256(unit.model_dump(mode="json"))
+
+
+def _load_applied_math_override_receipts(project_root: Path) -> dict[str, dict[str, Any]]:
+    path = project_root / _APPLIED_MATH_OVERRIDE_RECEIPTS
+    if not path.is_file():
+        return {}
+    receipts: dict[str, dict[str, Any]] = {}
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid applied math override receipt at {path}:{line_number}"
+            ) from exc
+        if not isinstance(receipt, dict) or set(receipt) != _APPLIED_RECEIPT_FIELDS:
+            raise ValueError(f"Invalid applied math override receipt at {path}:{line_number}")
+        digest_fields = ("override_sha256", "source_pdf_sha256")
+        if any(
+            not isinstance(receipt.get(field), str) or not _SHA256_RE.fullmatch(str(receipt[field]))
+            for field in digest_fields
+        ):
+            raise ValueError(f"Invalid applied math override receipt at {path}:{line_number}")
+        outcome = receipt.get("outcome")
+        unit_record_sha256 = receipt.get("unit_record_sha256")
+        if (
+            outcome not in {"absent", "present"}
+            or (outcome == "absent" and unit_record_sha256 is not None)
+            or (
+                outcome == "present"
+                and (
+                    not isinstance(unit_record_sha256, str)
+                    or not _SHA256_RE.fullmatch(unit_record_sha256)
+                )
+            )
+        ):
+            raise ValueError(f"Invalid applied math override receipt at {path}:{line_number}")
+        if (
+            receipt.get("schema_version") != 1
+            or not isinstance(receipt.get("decision_id"), str)
+            or not str(receipt["decision_id"]).strip()
+            or not isinstance(receipt.get("unit_id"), str)
+            or not str(receipt["unit_id"]).strip()
+        ):
+            raise ValueError(f"Invalid applied math override receipt at {path}:{line_number}")
+        override_sha256 = str(receipt["override_sha256"])
+        previous = receipts.get(override_sha256)
+        if previous is not None and previous != receipt:
+            raise ValueError(f"Conflicting applied math override receipt: {override_sha256}")
+        receipts[override_sha256] = receipt
+    return receipts
+
+
+def _structural_reviews_by_id(project_root: Path) -> dict[str, MathStructuralOverrideDecision]:
+    path = project_root / "evidence" / "math" / "structural-reviews.jsonl"
+    records = read_jsonl(path, MathStructuralOverrideDecision)
+    by_id: dict[str, MathStructuralOverrideDecision] = {}
+    for record in records:
+        if record.decision_id in by_id:
+            raise ValueError(f"Duplicate existing structural decision_id: {record.decision_id}")
+        by_id[record.decision_id] = record
+    return by_id
+
+
+def _structural_packet_units(
+    project_root: Path,
+    source_pdf_sha256: str,
+    decision: MathStructuralOverrideDecision,
+    manifest_candidates: list[Path] | None = None,
+) -> dict[str, SourceUnit]:
+    candidates = manifest_candidates
+    if candidates is None:
+        candidates = [
+            project_root
+            / "packets"
+            / "math-pilot"
+            / decision.packet_id
+            / "packet"
+            / "manifest.json",
+            project_root
+            / ".littrans"
+            / "work"
+            / "math-review-packets"
+            / decision.packet_id
+            / "packet"
+            / "manifest.json",
+        ]
+        candidates.extend(
+            (project_root / "packets").glob(f"**/{decision.packet_id}/packet/manifest.json")
+        )
+    root_resolved = project_root.resolve()
+    manifests: dict[Path, Path] = {}
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError as exc:
+            raise ValueError("Structural packet manifest escapes the project root") from exc
+        manifests[resolved] = resolved
+    if len(manifests) != 1:
+        raise ValueError(
+            f"Applied structural review {decision.decision_id} requires exactly one bound packet"
+        )
+    manifest_path = next(iter(manifests))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid structural packet manifest: {manifest_path}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Invalid structural packet manifest: {manifest_path}")
+    payload_value = manifest.get("payload")
+    if isinstance(payload_value, dict):
+        payload = payload_value
+        recorded_hash = manifest.get("payload_sha256")
+    else:
+        payload = {
+            key: value
+            for key, value in manifest.items()
+            if key not in {"packet_id", "packet_sha256", "manifest_sha256"}
+        }
+        recorded_hash = manifest.get("packet_sha256")
+    payload_sha256 = _canonical_json_sha256(payload)
+    source_binding = payload.get("source_pdf")
+    if (
+        recorded_hash != payload_sha256
+        or decision.packet_payload_sha256 != payload_sha256
+        or not isinstance(source_binding, dict)
+        or source_binding.get("sha256") != source_pdf_sha256
+    ):
+        raise ValueError(f"Applied structural review {decision.decision_id} packet is stale")
+    raw_units = payload.get("units")
+    if not isinstance(raw_units, list):
+        raise ValueError(f"Applied structural review {decision.decision_id} packet has no units")
+    units: dict[str, SourceUnit] = {}
+    for raw_entry in raw_units:
+        if not isinstance(raw_entry, dict):
+            raise ValueError(f"Applied structural review {decision.decision_id} packet is invalid")
+        raw_unit = raw_entry.get("unit", raw_entry.get("source_unit"))
+        if not isinstance(raw_unit, dict):
+            raise ValueError(f"Applied structural review {decision.decision_id} packet is invalid")
+        unit = SourceUnit.model_validate(raw_unit)
+        record_hash = raw_entry.get(
+            "unit_record_sha256", raw_entry.get("source_unit_record_sha256")
+        )
+        if (
+            raw_entry.get("source_hash", raw_unit.get("source_hash")) != unit.source_hash
+            or (record_hash is not None and record_hash != _canonical_json_sha256(raw_unit))
+            or unit.unit_id in units
+        ):
+            raise ValueError(f"Applied structural review {decision.decision_id} packet is invalid")
+        units[unit.unit_id] = unit
+    return units
+
+
+def _legacy_structural_states(
+    project_root: Path,
+    source_pdf_sha256: str,
+    override: dict[str, Any],
+    decision: MathStructuralOverrideDecision,
+) -> tuple[SourceUnit, SourceUnit | None] | None:
+    """Reconstruct exact pre/post states for a pre-receipt flat structural entry."""
+
+    unit_id = override.get("unit_id")
+    if (
+        not isinstance(unit_id, str)
+        or decision.source_pdf_sha256 != source_pdf_sha256
+        or override.get("reason") != decision.reason.strip()
+        or override.get("math_review_decision_id") != decision.decision_id
+        or override.get("reviewed_against_pdf") is not True
+    ):
+        return None
+    final_values = decision.final_values.model_dump(mode="json", exclude_unset=True)
+    if "set_bbox" in final_values and final_values["set_bbox"] is not None:
+        final_values["set_bbox"] = list(final_values["set_bbox"])
+    if decision.action is MathStructuralAction.IGNORE:
+        expected_selector = decision.unit_id
+        expected_fields = {"ignore": True}
+    elif decision.action is MathStructuralAction.MERGE and unit_id == decision.unit_id:
+        expected_selector = decision.unit_id
+        expected_fields = {"ignore": True}
+    elif decision.action is MathStructuralAction.MERGE:
+        expected_selector = decision.target_unit_ids[0]
+        expected_fields = final_values
+    else:
+        expected_selector = decision.unit_id
+        expected_fields = final_values
+    if unit_id != expected_selector or any(
+        override.get(field) != value for field, value in expected_fields.items()
+    ):
+        return None
+    packet_unit = _structural_packet_units(project_root, source_pdf_sha256, decision).get(unit_id)
+    if packet_unit is None:
+        return None
+    if override.get("source_hash") != packet_unit.source_hash:
+        return None
+    expected = _apply_override(packet_unit, [override])
+    if expected is not None and expected.kind is UnitKind.EQUATION and not expected.asset_refs:
+        asset_name = f"page-{expected.page:04}-equation-override-{expected.unit_id}.png"
+        expected = expected.model_copy(
+            update={
+                "asset_refs": [
+                    AssetRef(
+                        kind=UnitKind.EQUATION,
+                        path=f"derived/assets/{asset_name}",
+                        bbox=expected.bbox,
+                    )
+                ]
+            }
+        )
+    validated = (
+        SourceUnit.model_validate(expected.model_dump(mode="python"))
+        if expected is not None
+        else None
+    )
+    return packet_unit, validated
+
+
+def _legacy_structural_result_matches(
+    project_root: Path,
+    source_pdf_sha256: str,
+    override: dict[str, Any],
+    current_units: list[SourceUnit],
+    decision: MathStructuralOverrideDecision,
+) -> bool:
+    states = _legacy_structural_states(project_root, source_pdf_sha256, override, decision)
+    if states is None:
+        return False
+    _, expected = states
+    if expected is None:
+        # Absence alone cannot distinguish a legitimately consumed selector
+        # from an arbitrary deletion.  A durable receipt or an authenticated
+        # merge target is required for that case.
+        return False
+    return len(current_units) == 1 and current_units[0] == expected
+
+
+def _legacy_consumed_merge_matches(
+    project_root: Path,
+    source_pdf_sha256: str,
+    source_override: dict[str, Any],
+    units_by_id: dict[str, list[SourceUnit]],
+    overrides: list[dict[str, Any]],
+    authenticated_chains: dict[str, dict[str, Any]],
+    decision: MathStructuralOverrideDecision,
+) -> bool:
+    """Prove an absent pre-receipt merge source from its exact target outcome."""
+
+    if (
+        decision.action is not MathStructuralAction.MERGE
+        or source_override.get("unit_id") != decision.unit_id
+        or units_by_id.get(decision.unit_id)
+        or len(decision.target_unit_ids) != 1
+    ):
+        return False
+    target_id = decision.target_unit_ids[0]
+    target_chain = authenticated_chains.get(target_id)
+    structural_identity = f"structural:{decision.decision_id}"
+    if target_chain is not None and structural_identity in target_chain["decision_ids"]:
+        return True
+    target_entries = [
+        entry
+        for entry in overrides
+        if entry.get("unit_id") == target_id
+        and entry.get("math_review_decision_id") == decision.decision_id
+    ]
+    return len(target_entries) == 1 and _legacy_structural_result_matches(
+        project_root,
+        source_pdf_sha256,
+        target_entries[0],
+        units_by_id.get(target_id, []),
+        decision,
+    )
+
+
+def _legacy_structural_input_matches(
+    project_root: Path,
+    source_pdf_sha256: str,
+    override: dict[str, Any],
+    current_units: list[SourceUnit],
+    decision: MathStructuralOverrideDecision,
+) -> bool:
+    states = _legacy_structural_states(project_root, source_pdf_sha256, override, decision)
+    return states is not None and len(current_units) == 1 and current_units[0] == states[0]
+
+
+def _flat_math_review_result_matches(unit: SourceUnit, override: dict[str, Any]) -> bool:
+    if override.get("verified") is not True:
+        return False
+    if unit.verification_status is not SemanticStatus.VERIFIED or unit.confidence != 1.0:
+        return False
+    for field in ("latex", "source_markdown", "equation_number"):
+        if field in override and getattr(unit, field) != override[field]:
+            return False
+    effective_markdown = override.get("source_markdown", unit.source_markdown)
+    if (unit.kind is UnitKind.EQUATION or effective_markdown) and (
+        unit.math_status is not SemanticStatus.VERIFIED
+    ):
+        return False
+    return True
+
+
+def _math_reviews_by_id(project_root: Path) -> dict[str, MathReviewDecision]:
+    path = project_root / "evidence" / "math" / "reviews.jsonl"
+    records = read_jsonl(path, MathReviewDecision)
+    by_id: dict[str, MathReviewDecision] = {}
+    for record in records:
+        if record.decision_id in by_id:
+            raise ValueError(f"Duplicate existing math decision_id: {record.decision_id}")
+        by_id[record.decision_id] = record
+    return by_id
+
+
+def _math_candidates_by_id(project_root: Path) -> dict[str, MathCandidate]:
+    path = project_root / "evidence" / "math" / "candidates.jsonl"
+    records = read_jsonl(path, MathCandidate)
+    by_id: dict[str, MathCandidate] = {}
+    for record in records:
+        if record.candidate_id in by_id:
+            raise ValueError(f"Duplicate math candidate ID: {record.candidate_id}")
+        by_id[record.candidate_id] = record
+    return by_id
+
+
+def _review_packet_unit(
+    project_root: Path,
+    source_pdf_sha256: str,
+    decision: MathReviewDecision,
+    manifest_candidates: list[Path] | None = None,
+) -> SourceUnit:
+    if decision.packet_id is None or decision.packet_sha256 is None:
+        raise ValueError(
+            f"Supersession chain decision {decision.decision_id} has no immutable packet binding"
+        )
+    candidates = manifest_candidates
+    if candidates is None:
+        candidates = [
+            project_root
+            / ".littrans"
+            / "work"
+            / "math-review-packets"
+            / decision.packet_id
+            / "packet"
+            / "manifest.json",
+            project_root
+            / "packets"
+            / "math-pilot"
+            / decision.packet_id
+            / "packet"
+            / "manifest.json",
+        ]
+        candidates.extend(
+            (project_root / "packets").glob(f"**/{decision.packet_id}/packet/manifest.json")
+        )
+    root_resolved = project_root.resolve()
+    manifests: dict[Path, Path] = {}
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError as exc:
+            raise ValueError("Math review packet manifest escapes the project root") from exc
+        manifests[resolved] = resolved
+    if len(manifests) != 1:
+        raise ValueError(
+            f"Supersession chain decision {decision.decision_id} requires one immutable packet"
+        )
+    manifest_path = next(iter(manifests))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid math review packet: {manifest_path}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Invalid math review packet: {manifest_path}")
+    payload_value = manifest.get("payload")
+    if isinstance(payload_value, dict):
+        payload = payload_value
+        recorded_hash = manifest.get("payload_sha256")
+    else:
+        payload = {
+            key: value
+            for key, value in manifest.items()
+            if key not in {"packet_id", "packet_sha256", "manifest_sha256"}
+        }
+        recorded_hash = manifest.get("packet_sha256")
+        manifest_core = {
+            **payload,
+            "packet_id": manifest.get("packet_id"),
+            "packet_sha256": recorded_hash,
+        }
+        if (
+            decision.manifest_sha256 is None
+            or manifest.get("manifest_sha256") != decision.manifest_sha256
+            or decision.manifest_sha256 != _canonical_json_sha256(manifest_core)
+        ):
+            raise ValueError(f"Math review packet manifest for {decision.decision_id} is stale")
+    payload_sha256 = _canonical_json_sha256(payload)
+    source_binding = payload.get("source_pdf")
+    if (
+        recorded_hash != payload_sha256
+        or decision.packet_sha256 != payload_sha256
+        or not isinstance(source_binding, dict)
+        or source_binding.get("sha256") != source_pdf_sha256
+    ):
+        raise ValueError(f"Math review packet for {decision.decision_id} is stale")
+    raw_units = payload.get("units")
+    if not isinstance(raw_units, list):
+        raise ValueError(f"Math review packet for {decision.decision_id} has no units")
+    matches: list[SourceUnit] = []
+    for raw_entry in raw_units:
+        if not isinstance(raw_entry, dict):
+            continue
+        raw_unit = raw_entry.get("unit", raw_entry.get("source_unit"))
+        if not isinstance(raw_unit, dict) or raw_unit.get("unit_id") != decision.unit_id:
+            continue
+        unit = SourceUnit.model_validate(raw_unit)
+        record_hash = raw_entry.get(
+            "unit_record_sha256", raw_entry.get("source_unit_record_sha256")
+        )
+        if raw_entry.get("source_hash", raw_unit.get("source_hash")) != unit.source_hash or (
+            record_hash is not None and record_hash != _canonical_json_sha256(raw_unit)
+        ):
+            raise ValueError(f"Math review packet unit for {decision.decision_id} is stale")
+        matches.append(unit)
+    if len(matches) != 1:
+        raise ValueError(
+            f"Math review packet for {decision.decision_id} does not bind one source unit"
+        )
+    return matches[0]
+
+
+def _expected_equation_asset(unit: SourceUnit | None) -> SourceUnit | None:
+    if unit is None or unit.kind is not UnitKind.EQUATION or unit.asset_refs:
+        return unit
+    asset_name = f"page-{unit.page:04}-equation-override-{unit.unit_id}.png"
+    return unit.model_copy(
+        update={
+            "asset_refs": [
+                AssetRef(
+                    kind=UnitKind.EQUATION,
+                    path=f"derived/assets/{asset_name}",
+                    bbox=unit.bbox,
+                )
+            ]
+        }
+    )
+
+
+def _math_review_transition(
+    project_root: Path,
+    source_pdf_sha256: str,
+    override: dict[str, Any],
+    decision: MathReviewDecision,
+    candidates: dict[str, MathCandidate],
+    manifest_candidates: list[Path] | None = None,
+) -> tuple[SourceUnit, SourceUnit | None, str] | None:
+    if (
+        override.get("math_review_decision_id") != decision.decision_id
+        or override.get("unit_id") != decision.unit_id
+        or override.get("source_pdf_sha256") != decision.source_pdf_sha256
+        or override.get("source_hash") != decision.source_hash
+        or override.get("crop_sha256") != decision.crop_sha256
+        or override.get("page_image_sha256") != decision.page_image_sha256
+        or override.get("candidate_id") != decision.candidate_id
+        or override.get("reason") != decision.reason.strip()
+        or override.get("reviewed_against_pdf") is not True
+        or decision.source_pdf_sha256 != source_pdf_sha256
+        or override.get("verified") is not True
+    ):
+        return None
+    latex = decision.final_latex
+    source_markdown = decision.final_source_markdown
+    equation_number = decision.equation_number
+    if decision.candidate_id is not None:
+        candidate = candidates.get(decision.candidate_id)
+        if candidate is None or candidate.unit_id != decision.unit_id:
+            return None
+        latex = latex if latex is not None else candidate.latex
+        source_markdown = (
+            source_markdown if source_markdown is not None else candidate.source_markdown
+        )
+        equation_number = (
+            equation_number if equation_number is not None else candidate.equation_number
+        )
+    if (
+        ("latex" in override and override.get("latex") != latex)
+        or ("source_markdown" in override and override.get("source_markdown") != source_markdown)
+        or ("equation_number" in override and override.get("equation_number") != equation_number)
+    ):
+        return None
+    before = _review_packet_unit(
+        project_root,
+        source_pdf_sha256,
+        decision,
+        manifest_candidates,
+    )
+    after = _expected_equation_asset(_apply_override(before, [override]))
+    return before, after, f"math:{decision.decision_id}"
+
+
+_STRUCTURAL_MUTATION_FIELDS = {
+    "ignore",
+    "kind",
+    "source_text",
+    "source_markdown",
+    "latex",
+    "equation_number",
+    "set_bbox",
+    "parent_id",
+    "continues_from_previous",
+    "continued_to_next",
+}
+
+
+def _structural_transition(
+    project_root: Path,
+    source_pdf_sha256: str,
+    override: dict[str, Any],
+    decision: MathStructuralOverrideDecision,
+    manifest_candidates: list[Path] | None = None,
+) -> tuple[SourceUnit, SourceUnit | None, str] | None:
+    unit_id = override.get("unit_id")
+    if (
+        not isinstance(unit_id, str)
+        or decision.source_pdf_sha256 != source_pdf_sha256
+        or override.get("reason") != decision.reason.strip()
+    ):
+        return None
+    final_values = decision.final_values.model_dump(mode="json", exclude_unset=True)
+    if "set_bbox" in final_values and final_values["set_bbox"] is not None:
+        final_values["set_bbox"] = list(final_values["set_bbox"])
+    if decision.action is MathStructuralAction.IGNORE:
+        expected_selector = decision.unit_id
+        expected_fields = {"ignore": True}
+    elif decision.action is MathStructuralAction.MERGE and unit_id == decision.unit_id:
+        expected_selector = decision.unit_id
+        expected_fields = {"ignore": True}
+    elif decision.action is MathStructuralAction.MERGE:
+        expected_selector = decision.target_unit_ids[0]
+        expected_fields = final_values
+    else:
+        expected_selector = decision.unit_id
+        expected_fields = final_values
+    actual_mutations = {
+        field: override[field] for field in _STRUCTURAL_MUTATION_FIELDS if field in override
+    }
+    if unit_id != expected_selector or actual_mutations != expected_fields:
+        return None
+    if "math_review_decision_id" in override and (
+        override.get("math_review_decision_id") != decision.decision_id
+        or override.get("source_pdf_sha256") != decision.source_pdf_sha256
+        or override.get("reviewed_against_pdf") is not True
+    ):
+        return None
+    before = _structural_packet_units(
+        project_root,
+        source_pdf_sha256,
+        decision,
+        manifest_candidates,
+    ).get(unit_id)
+    if before is None:
+        return None
+    after = _expected_equation_asset(_apply_override(before, [override]))
+    return before, after, f"structural:{decision.decision_id}"
+
+
+def _load_chain_receipts(project_root: Path) -> dict[str, dict[str, Any]]:
+    path = project_root / _APPLIED_MATH_OVERRIDE_CHAINS
+    if not path.is_file():
+        return {}
+    receipts: dict[str, dict[str, Any]] = {}
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid applied override chain receipt at {path}:{line_number}"
+            ) from exc
+        required = {
+            "schema_version",
+            "unit_id",
+            "source_pdf_sha256",
+            "entry_sha256s",
+            "decision_ids",
+            "outcome",
+            "unit_record_sha256",
+        }
+        if not isinstance(receipt, dict) or set(receipt) != required:
+            raise ValueError(f"Invalid applied override chain receipt at {path}:{line_number}")
+        unit_id = receipt.get("unit_id")
+        entry_hashes = receipt.get("entry_sha256s")
+        decision_ids = receipt.get("decision_ids")
+        if (
+            receipt.get("schema_version") != 1
+            or not isinstance(unit_id, str)
+            or not unit_id
+            or not isinstance(entry_hashes, list)
+            or not entry_hashes
+            or any(
+                not isinstance(value, str) or not _SHA256_RE.fullmatch(value)
+                for value in entry_hashes
+            )
+            or not isinstance(decision_ids, list)
+            or len(decision_ids) != len(entry_hashes)
+            or len(set(decision_ids)) != len(decision_ids)
+            or any(not isinstance(value, str) or not value for value in decision_ids)
+            or not isinstance(receipt.get("source_pdf_sha256"), str)
+            or not _SHA256_RE.fullmatch(str(receipt["source_pdf_sha256"]))
+            or unit_id in receipts
+        ):
+            raise ValueError(f"Invalid applied override chain receipt at {path}:{line_number}")
+        outcome = receipt.get("outcome")
+        state_hash = receipt.get("unit_record_sha256")
+        if (
+            outcome not in {"absent", "present"}
+            or (outcome == "absent" and state_hash is not None)
+            or (
+                outcome == "present"
+                and (not isinstance(state_hash, str) or not _SHA256_RE.fullmatch(state_hash))
+            )
+        ):
+            raise ValueError(f"Invalid applied override chain receipt at {path}:{line_number}")
+        receipts[unit_id] = receipt
+    return receipts
+
+
+def _state_matches_units(state: SourceUnit | None, units: list[SourceUnit]) -> bool:
+    if state is None:
+        return not units
+    return len(units) == 1 and units[0] == state
+
+
+def _preflight_authenticated_chains(
+    project_root: Path,
+    source_pdf_sha256: str,
+    units_by_id: dict[str, list[SourceUnit]],
+    overrides: list[dict[str, Any]],
+) -> tuple[set[int], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    existing_receipts = _load_chain_receipts(project_root)
+    entries_by_unit: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for index, override in enumerate(overrides):
+        unit_id = override.get("unit_id")
+        if isinstance(unit_id, str):
+            entries_by_unit.setdefault(unit_id, []).append((index, override))
+    math_reviews = _math_reviews_by_id(project_root)
+    structural_reviews = _structural_reviews_by_id(project_root)
+    chain_unit_ids = {
+        unit_id
+        for unit_id, entries in entries_by_unit.items()
+        if len(entries) > 1
+        and any(
+            (
+                isinstance(entry.get("math_review_decision_id"), str)
+                and (
+                    entry["math_review_decision_id"] in structural_reviews
+                    or (
+                        entry["math_review_decision_id"] in math_reviews
+                        and math_reviews[entry["math_review_decision_id"]].packet_id is not None
+                    )
+                )
+            )
+            for _, entry in entries
+        )
+    } | set(existing_receipts)
+    if not chain_unit_ids:
+        return set(), {}, existing_receipts
+
+    candidates = _math_candidates_by_id(project_root)
+    packet_manifests: dict[str, list[Path]] = {}
+    packet_roots = (
+        project_root / "packets",
+        project_root / ".littrans" / "work" / "math-review-packets",
+    )
+    for packet_root in packet_roots:
+        for manifest_path in packet_root.glob("**/packet/manifest.json"):
+            packet_manifests.setdefault(manifest_path.parent.parent.name, []).append(manifest_path)
+    structural_by_reason: dict[str, list[MathStructuralOverrideDecision]] = {}
+    for structural in structural_reviews.values():
+        structural_by_reason.setdefault(structural.reason.strip(), []).append(structural)
+    skipped: set[int] = set()
+    authenticated: dict[str, dict[str, Any]] = {}
+    for unit_id in sorted(chain_unit_ids):
+        entries = entries_by_unit.get(unit_id, [])
+        if not entries:
+            raise ValueError(f"Authenticated override chain for {unit_id} was removed")
+        transitions: list[tuple[SourceUnit, SourceUnit | None, str]] = []
+        entry_hashes: list[str] = []
+        decision_ids: list[str] = []
+        for index, entry in entries:
+            transition_matches: list[tuple[SourceUnit, SourceUnit | None, str]] = []
+            decision_id = entry.get("math_review_decision_id")
+            if isinstance(decision_id, str):
+                guarded_structural = structural_reviews.get(decision_id)
+                if guarded_structural is not None:
+                    transition = _structural_transition(
+                        project_root,
+                        source_pdf_sha256,
+                        entry,
+                        guarded_structural,
+                        packet_manifests.get(guarded_structural.packet_id, []),
+                    )
+                    if transition is not None:
+                        transition_matches.append(transition)
+                math_review = math_reviews.get(decision_id)
+                if math_review is not None:
+                    transition = _math_review_transition(
+                        project_root,
+                        source_pdf_sha256,
+                        entry,
+                        math_review,
+                        candidates,
+                        packet_manifests.get(math_review.packet_id or "", []),
+                    )
+                    if transition is not None:
+                        transition_matches.append(transition)
+            else:
+                reason = entry.get("reason")
+                reason_matches = (
+                    structural_by_reason.get(reason, []) if isinstance(reason, str) else []
+                )
+                for structural in reason_matches:
+                    transition = _structural_transition(
+                        project_root,
+                        source_pdf_sha256,
+                        entry,
+                        structural,
+                        packet_manifests.get(structural.packet_id, []),
+                    )
+                    if transition is not None:
+                        transition_matches.append(transition)
+                if len(transition_matches) > 1 and index > 0:
+                    previous_entry = overrides[index - 1]
+                    paired: list[tuple[SourceUnit, SourceUnit | None, str]] = []
+                    for transition in transition_matches:
+                        structural = structural_reviews[transition[2].removeprefix("structural:")]
+                        if (
+                            _structural_transition(
+                                project_root,
+                                source_pdf_sha256,
+                                previous_entry,
+                                structural,
+                                packet_manifests.get(structural.packet_id, []),
+                            )
+                            is not None
+                        ):
+                            paired.append(transition)
+                    transition_matches = paired
+            if len(transition_matches) != 1:
+                raise ValueError(
+                    f"Override chain entry {index + 1} for {unit_id} is unauthenticated or ambiguous"
+                )
+            transition = transition_matches[0]
+            transitions.append(transition)
+            entry_hashes.append(_guarded_override_sha256(entry))
+            decision_ids.append(transition[2])
+            skipped.add(index)
+        if len(decision_ids) != len(set(decision_ids)):
+            raise ValueError(f"Override chain for {unit_id} contains duplicate decision IDs")
+        base_state = transitions[0][0]
+        state: SourceUnit | None = base_state
+        prefix_states: list[SourceUnit | None] = []
+        for (_, entry), (before, _after, _) in zip(entries, transitions, strict=True):
+            prior_states = [base_state, *prefix_states]
+            if state is None or before not in prior_states:
+                raise ValueError(
+                    f"Override chain for {unit_id} is reordered or has a stale packet transition"
+                )
+            state = _expected_equation_asset(_apply_override(state, [entry]))
+            prefix_states.append(state)
+        current_units = units_by_id.get(unit_id, [])
+        receipt = existing_receipts.get(unit_id)
+        if receipt is not None:
+            old_hashes = receipt["entry_sha256s"]
+            old_decisions = receipt["decision_ids"]
+            if (
+                receipt.get("source_pdf_sha256") != source_pdf_sha256
+                or entry_hashes[: len(old_hashes)] != old_hashes
+                or decision_ids[: len(old_decisions)] != old_decisions
+            ):
+                raise ValueError(
+                    f"Authenticated override chain for {unit_id} was removed, reordered, or altered"
+                )
+            receipt_matches = (receipt.get("outcome") == "absent" and not current_units) or (
+                receipt.get("outcome") == "present"
+                and len(current_units) == 1
+                and receipt.get("unit_record_sha256")
+                == _source_unit_record_sha256(current_units[0])
+            )
+            if not receipt_matches:
+                raise ValueError(f"Authenticated override chain state for {unit_id} is stale")
+        else:
+            allowed_states = [transitions[0][0], *prefix_states]
+            if not any(
+                _state_matches_units(candidate, current_units) for candidate in allowed_states
+            ):
+                raise ValueError(
+                    f"Authenticated override chain terminal state for {unit_id} is stale"
+                )
+        authenticated[unit_id] = {
+            "entry_sha256s": entry_hashes,
+            "decision_ids": decision_ids,
+            "terminal": state,
+        }
+    return skipped, authenticated, existing_receipts
+
+
+def _preflight_math_review_overrides(
+    project_root: Path,
+    units: list[SourceUnit],
+    overrides: list[dict[str, Any]],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+]:
+    """Reject stale guarded review entries before staging any source mutation."""
+
+    guarded_indexes = {
+        index
+        for index, override in enumerate(overrides)
+        if "math_review_decision_id" in override or "math_review_guard" in override
+    }
+    existing_chain_receipts = _load_chain_receipts(project_root)
+    if not guarded_indexes and not existing_chain_receipts:
+        return _load_applied_math_override_receipts(project_root), {}, {}
+
+    config = load_project(project_root)
+    source = config.source(project_root)
+    if not source.is_file():
+        raise ValueError(f"Guarded math review source PDF is missing: {source}")
+    source_sha256 = sha256_file(source)
+    if source_sha256 != config.source_sha256:
+        raise ValueError("Guarded math review source PDF changed after project initialization")
+
+    units_by_id: dict[str, list[SourceUnit]] = {}
+    for unit in units:
+        units_by_id.setdefault(unit.unit_id, []).append(unit)
+    receipts = _load_applied_math_override_receipts(project_root)
+    chain_indexes, authenticated_chains, existing_chain_receipts = _preflight_authenticated_chains(
+        project_root,
+        source_sha256,
+        units_by_id,
+        overrides,
+    )
+    structural_reviews: dict[str, MathStructuralOverrideDecision] | None = None
+
+    for index, override in enumerate(overrides):
+        if index in chain_indexes:
+            continue
+        if index not in guarded_indexes:
+            continue
+        decision_id = override.get("math_review_decision_id")
+        unit_id = override.get("unit_id")
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            raise ValueError("Guarded math review override has no decision ID")
+        if not isinstance(unit_id, str) or not unit_id.strip():
+            raise ValueError(f"Guarded math review {decision_id} has no exact unit ID")
+        flat_source_pdf_sha256 = override.get("source_pdf_sha256")
+        flat_source_hash = override.get("source_hash")
+        if (
+            not isinstance(flat_source_pdf_sha256, str)
+            or not _SHA256_RE.fullmatch(flat_source_pdf_sha256)
+            or flat_source_pdf_sha256 != source_sha256
+        ):
+            raise ValueError(
+                f"Guarded math review {decision_id} source PDF hash is stale or invalid"
+            )
+        if not isinstance(flat_source_hash, str) or not _SHA256_RE.fullmatch(flat_source_hash):
+            raise ValueError(
+                f"Guarded math review {decision_id} unit source hash is stale or invalid"
+            )
+        if override.get("reviewed_against_pdf") is not True:
+            raise ValueError(
+                f"Guarded math review {decision_id} lacks PDF visual-review attestation"
+            )
+        if any(
+            not isinstance(override.get(field), str)
+            or not _SHA256_RE.fullmatch(str(override[field]))
+            for field in ("crop_sha256", "page_image_sha256")
+        ):
+            raise ValueError(
+                f"Guarded math review {decision_id} has malformed visual evidence hashes"
+            )
+
+        guard = override.get("math_review_guard")
+        if guard is not None:
+            if not isinstance(guard, dict) or set(guard) != _MATH_REVIEW_GUARD_FIELDS:
+                raise ValueError(f"Guarded math review {decision_id} has an invalid selector guard")
+            digest_fields = (
+                "source_pdf_sha256",
+                "source_hash",
+                "unit_guard_sha256",
+                "before_representation_sha256",
+                "after_representation_sha256",
+                "crop_sha256",
+                "page_image_sha256",
+            )
+            if any(
+                not isinstance(guard.get(field), str) or not _SHA256_RE.fullmatch(str(guard[field]))
+                for field in digest_fields
+            ):
+                raise ValueError(
+                    f"Guarded math review {decision_id} contains a malformed SHA-256 binding"
+                )
+            if (
+                guard.get("schema_version") != 1
+                or guard.get("decision_id") != decision_id
+                or guard.get("unit_id") != unit_id
+                or guard.get("source_pdf_sha256") != flat_source_pdf_sha256
+                or guard.get("source_hash") != flat_source_hash
+                or guard.get("crop_sha256") != override.get("crop_sha256")
+                or guard.get("page_image_sha256") != override.get("page_image_sha256")
+                or guard.get("reviewed_against_pdf") is not True
+            ):
+                raise ValueError(f"Guarded math review {decision_id} selector bindings conflict")
+
+        matches = units_by_id.get(unit_id, [])
+        override_sha256 = _guarded_override_sha256(override)
+        receipt = receipts.get(override_sha256)
+        if receipt is not None:
+            if (
+                receipt.get("decision_id") != decision_id
+                or receipt.get("unit_id") != unit_id
+                or receipt.get("source_pdf_sha256") != source_sha256
+            ):
+                raise ValueError(f"Guarded math review {decision_id} applied receipt conflicts")
+            if receipt.get("outcome") == "absent":
+                if matches:
+                    raise ValueError(
+                        f"Guarded math review {decision_id} applied absent state is stale"
+                    )
+            elif len(matches) != 1 or receipt.get(
+                "unit_record_sha256"
+            ) != _source_unit_record_sha256(matches[0]):
+                raise ValueError(
+                    f"Guarded math review {decision_id} applied SourceUnit state is stale"
+                )
+            continue
+
+        if structural_reviews is None:
+            structural_reviews = _structural_reviews_by_id(project_root)
+        structural = structural_reviews.get(decision_id)
+        if structural is not None and (
+            _legacy_structural_result_matches(
+                project_root,
+                source_sha256,
+                override,
+                matches,
+                structural,
+            )
+            or _legacy_structural_input_matches(
+                project_root,
+                source_sha256,
+                override,
+                matches,
+                structural,
+            )
+            or _legacy_consumed_merge_matches(
+                project_root,
+                source_sha256,
+                override,
+                units_by_id,
+                overrides,
+                authenticated_chains,
+                structural,
+            )
+        ):
+            continue
+
+        if guard is None:
+            if structural is None and len(matches) == 1:
+                unit = matches[0]
+                source_matches = (
+                    flat_source_hash == unit.source_hash
+                    and sha256_text(unit.source_text) == unit.source_hash
+                )
+                already_verified = (
+                    unit.verification_status is SemanticStatus.VERIFIED
+                    or unit.math_status is SemanticStatus.VERIFIED
+                )
+                if source_matches and (
+                    not already_verified or _flat_math_review_result_matches(unit, override)
+                ):
+                    continue
+        elif len(matches) == 1:
+            unit = matches[0]
+            source_matches = (
+                flat_source_hash == unit.source_hash
+                and sha256_text(unit.source_text) == unit.source_hash
+            )
+            guard_matches = (
+                guard.get("page") == unit.page
+                and guard.get("unit_guard_sha256") == canonical_math_review_unit_guard_sha256(unit)
+                and canonical_math_review_representation_sha256(unit)
+                in {
+                    guard.get("before_representation_sha256"),
+                    guard.get("after_representation_sha256"),
+                }
+            )
+            if source_matches and guard_matches:
+                continue
+
+        if len(matches) != 1:
+            raise ValueError(
+                f"Guarded math review {decision_id} requires exactly one current "
+                f"SourceUnit for {unit_id}; found {len(matches)}"
+            )
+        if (
+            flat_source_hash != matches[0].source_hash
+            or sha256_text(matches[0].source_text) != matches[0].source_hash
+        ):
+            raise ValueError(
+                f"Guarded math review {decision_id} unit source hash is stale or invalid"
+            )
+        raise ValueError(f"Guarded math review {decision_id} current SourceUnit state is stale")
+    return receipts, authenticated_chains, existing_chain_receipts
+
+
+def _code_text_from_page(page: fitz.Page, bbox: tuple[float, float, float, float]) -> str:
     """Rebuild listing whitespace from the original PDF block for a code override."""
     padded = (
         bbox[0] - 1,
@@ -964,8 +2037,7 @@ def _apply_override(
         if isinstance(bbox_value, list) and len(bbox_value) == 4:
             bbox_matches = _rect_overlap(revised.bbox, _bbox(bbox_value)) > 0.5
         kind_matches = (
-            "current_kind" in override
-            and str(override["current_kind"]) == revised.kind.value
+            "current_kind" in override and str(override["current_kind"]) == revised.kind.value
         )
         text_matches = "text_regex" in override and bool(
             re.search(str(override["text_regex"]), revised.source_text, re.MULTILINE)
@@ -1028,8 +2100,7 @@ def _apply_override(
             updates["bbox"] = _bbox(value)
         if "fragments" in override:
             updates["fragments"] = [
-                SourceFragment.model_validate(value)
-                for value in (override["fragments"] or [])
+                SourceFragment.model_validate(value) for value in (override["fragments"] or [])
             ]
         if "sidebar_role" in override:
             updates["sidebar_role"] = (
@@ -1060,13 +2131,9 @@ def _apply_override(
                 else None
             )
         if "visual_text_status" in override:
-            updates["visual_text_status"] = SemanticStatus(
-                str(override["visual_text_status"])
-            )
+            updates["visual_text_status"] = SemanticStatus(str(override["visual_text_status"]))
         if "verification_status" in override:
-            updates["verification_status"] = SemanticStatus(
-                str(override["verification_status"])
-            )
+            updates["verification_status"] = SemanticStatus(str(override["verification_status"]))
         if override.get("verified") is True:
             if not str(override.get("reason", "")).strip():
                 raise ValueError("A verified semantic override requires a reason")
@@ -1103,9 +2170,7 @@ def _inserted_unit_from_override(override: dict[str, Any]) -> SourceUnit:
     page = int(override["page"])
     bbox = _bbox(bbox_value)
     payload = {
-        field: value
-        for field, value in override.items()
-        if field in SourceUnit.model_fields
+        field: value for field, value in override.items() if field in SourceUnit.model_fields
     }
     payload.update(
         {
@@ -1114,9 +2179,7 @@ def _inserted_unit_from_override(override: dict[str, Any]) -> SourceUnit:
             "bbox": bbox,
             "source_text": source_text,
             "source_hash": sha256_text(source_text),
-            "protected_tokens": override.get(
-                "protected_tokens", protected_tokens(source_text)
-            ),
+            "protected_tokens": override.get("protected_tokens", protected_tokens(source_text)),
             "fragments": override.get("fragments", [{"page": page, "bbox": bbox}]),
             "confidence": float(override.get("confidence", 1.0)),
         }
@@ -1142,12 +2205,18 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
     units = read_jsonl(units_path, SourceUnit)
     if not units:
         raise ValueError("No extracted units exist")
-    overrides = _load_overrides(project_root)
-    if not overrides:
+    override_entries = _load_overrides(project_root)
+    if not override_entries:
         raise ValueError("No layout overrides exist")
-    translations = read_jsonl(
-        project_root / "translations" / "current.jsonl", TranslationRecord
-    )
+    # Every guarded entry is checked in its original form.  Merging first could
+    # allow a later duplicate selector to conceal a stale earlier review guard.
+    (
+        applied_receipts,
+        authenticated_chains,
+        existing_chain_receipts,
+    ) = _preflight_math_review_overrides(project_root, units, override_entries)
+    overrides = _merge_overrides(override_entries)
+    translations = read_jsonl(project_root / "translations" / "current.jsonl", TranslationRecord)
     translation_by_id = {record.unit_id: record for record in translations}
     translated_ids = set(translation_by_id)
     removed_translation_ids: set[str] = set()
@@ -1208,9 +2277,7 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                         project_config = load_project(project_root)
                     if document is None:
                         document = fitz.open(project_config.source(project_root))
-                    restored = _code_text_from_page(
-                        document[revised.page - 1], revised.bbox
-                    )
+                    restored = _code_text_from_page(document[revised.page - 1], revised.bbox)
                     if restored.strip() and restored != revised.source_text:
                         revised = revised.model_copy(
                             update={
@@ -1241,9 +2308,7 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                         project_config = load_project(project_root)
                     if document is None:
                         document = fitz.open(project_config.source(project_root))
-                    asset_name = (
-                        f"page-{revised.page:04}-equation-override-{revised.unit_id}.png"
-                    )
+                    asset_name = f"page-{revised.page:04}-equation-override-{revised.unit_id}.png"
                     temporary_asset = temp_root / asset_name
                     _crop_asset(document[revised.page - 1], revised.bbox, temporary_asset)
                     destination = project_root / "derived" / "assets" / asset_name
@@ -1261,9 +2326,7 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                     )
                 # model_copy intentionally skips validation. Re-validate the staged
                 # object so a malformed override cannot partially update the ledger.
-                updated.append(
-                    SourceUnit.model_validate(revised.model_dump(mode="python"))
-                )
+                updated.append(SourceUnit.model_validate(revised.model_dump(mode="python")))
                 for insertion in insertions_by_anchor.get(unit.unit_id, []):
                     inserted_id = str(insertion["unit_id"])
                     if inserted_id in existing_ids:
@@ -1288,23 +2351,67 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                 for record in staged_translations
             ]
             unit_by_id = {unit.unit_id: unit for unit in updated}
+            guarded_entries = [
+                override
+                for override in override_entries
+                if "math_review_decision_id" in override or "math_review_guard" in override
+            ]
+            staged_receipts = dict(applied_receipts)
+            for guarded_entry in guarded_entries:
+                unit_id = str(guarded_entry["unit_id"])
+                decision_id = str(guarded_entry["math_review_decision_id"])
+                current = unit_by_id.get(unit_id)
+                override_sha256 = _guarded_override_sha256(guarded_entry)
+                staged_receipts[override_sha256] = {
+                    "schema_version": 1,
+                    "override_sha256": override_sha256,
+                    "decision_id": decision_id,
+                    "unit_id": unit_id,
+                    "source_pdf_sha256": str(guarded_entry["source_pdf_sha256"]),
+                    "outcome": "present" if current is not None else "absent",
+                    "unit_record_sha256": (
+                        _source_unit_record_sha256(current) if current is not None else None
+                    ),
+                }
+            staged_chain_receipts = dict(existing_chain_receipts)
+            for unit_id, chain in authenticated_chains.items():
+                current = unit_by_id.get(unit_id)
+                terminal = chain["terminal"]
+                if not _state_matches_units(terminal, [current] if current is not None else []):
+                    raise ValueError(
+                        f"Authenticated override chain for {unit_id} did not produce its terminal state"
+                    )
+                staged_chain_receipts[unit_id] = {
+                    "schema_version": 1,
+                    "unit_id": unit_id,
+                    "source_pdf_sha256": load_project(project_root).source_sha256,
+                    "entry_sha256s": chain["entry_sha256s"],
+                    "decision_ids": chain["decision_ids"],
+                    "outcome": "present" if current is not None else "absent",
+                    "unit_record_sha256": (
+                        _source_unit_record_sha256(current) if current is not None else None
+                    ),
+                }
             reconciled: list[ExtractionIssue] = []
             for issue in issues:
                 candidate = unit_by_id.get(issue.unit_id or "")
-                resolved = candidate is None or (
-                    issue.code == "math-needs-verification"
-                    and candidate.math_status is SemanticStatus.VERIFIED
-                ) or (
-                    issue.code == "table-needs-verification"
-                    and candidate.verification_status is SemanticStatus.VERIFIED
-                ) or (
-                    issue.code == "figure-text-needs-verification"
-                    and candidate.visual_text_status is SemanticStatus.VERIFIED
+                resolved = (
+                    candidate is None
+                    or (
+                        issue.code == "math-needs-verification"
+                        and candidate.math_status is SemanticStatus.VERIFIED
+                    )
+                    or (
+                        issue.code == "table-needs-verification"
+                        and candidate.verification_status is SemanticStatus.VERIFIED
+                    )
+                    or (
+                        issue.code == "figure-text-needs-verification"
+                        and candidate.visual_text_status is SemanticStatus.VERIFIED
+                    )
                 )
                 staged_issue = (
-                    issue.model_copy(update={"status": IssueStatus.RESOLVED})
-                    if resolved
-                    else issue
+                    issue.model_copy(update={"status": IssueStatus.RESOLVED}) if resolved else issue
                 )
                 reconciled.append(
                     ExtractionIssue.model_validate(staged_issue.model_dump(mode="python"))
@@ -1329,6 +2436,12 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                 mutation_paths.append(project_root / "project.yaml")
             if issues:
                 mutation_paths.append(issues_path)
+            receipts_path = project_root / _APPLIED_MATH_OVERRIDE_RECEIPTS
+            chain_receipts_path = project_root / _APPLIED_MATH_OVERRIDE_CHAINS
+            if guarded_entries:
+                mutation_paths.append(receipts_path)
+            if authenticated_chains:
+                mutation_paths.append(chain_receipts_path)
             mutation_paths.extend(destination for _, destination in pending_assets)
             snapshots = snapshot_files(mutation_paths)
             try:
@@ -1344,6 +2457,21 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                     save_project(project_root, project_config)
                 if issues:
                     write_jsonl(issues_path, reconciled)
+                if guarded_entries:
+                    receipts_path.parent.mkdir(parents=True, exist_ok=True)
+                    receipt_text = "".join(
+                        json.dumps(staged_receipts[key], ensure_ascii=False, sort_keys=True) + "\n"
+                        for key in sorted(staged_receipts)
+                    )
+                    atomic_write_text(receipts_path, receipt_text)
+                if authenticated_chains:
+                    chain_receipts_path.parent.mkdir(parents=True, exist_ok=True)
+                    chain_receipt_text = "".join(
+                        json.dumps(staged_chain_receipts[key], ensure_ascii=False, sort_keys=True)
+                        + "\n"
+                        for key in sorted(staged_chain_receipts)
+                    )
+                    atomic_write_text(chain_receipts_path, chain_receipt_text)
             except BaseException:
                 restore_files(snapshots)
                 raise
@@ -1445,7 +2573,7 @@ def extract_source(
     pages = parse_page_spec(page_spec, document.page_count)
     outline = _outline_by_page(document)
     repeated = _repeated_marginal_text(document, pages)
-    overrides = _load_overrides(project_root)
+    overrides = _merge_overrides(_load_overrides(project_root))
     assets = project_root / "derived" / "assets"
     extracted: list[SourceUnit] = []
     issues: list[ExtractionIssue] = []
@@ -1700,9 +2828,7 @@ def extract_source(
             if unit.page == page_number and unit.kind is UnitKind.PARAGRAPH
         ]
         next_candidates = [
-            unit
-            for unit in extracted
-            if unit.page == next_page and unit.kind is UnitKind.PARAGRAPH
+            unit for unit in extracted if unit.page == next_page and unit.kind is UnitKind.PARAGRAPH
         ]
         if not previous_candidates or not next_candidates:
             continue

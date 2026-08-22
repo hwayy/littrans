@@ -13,6 +13,13 @@ from pydantic import BaseModel
 from littrans.batching import create_batches, refresh_batch, show_batch
 from littrans.external_review import external_review_status, run_external_review
 from littrans.extractor import apply_layout_overrides, extract_source, inspect_source
+from littrans.math_packets import build_math_review_packets
+from littrans.math_review import (
+    build_math_review_report,
+    import_math_review,
+    repair_math_structural_review_ledger,
+)
+from littrans.math_vision import generate_math_candidates
 from littrans.migration import migrate_project_schema, migrate_translations
 from littrans.models import IssueStatus
 from littrans.project import initialize_project, project_status
@@ -57,11 +64,28 @@ def emit(payload: object) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
+def _parse_unit_ids(values: list[str] | None, option_name: str = "--unit-ids") -> list[str] | None:
+    """Expand repeatable/comma-separated CLI values without weakening exact matching."""
+
+    if not values:
+        return None
+    unit_ids: list[str] = []
+    for value in values:
+        parts = [part.strip() for part in value.split(",")]
+        if any(not part for part in parts):
+            raise typer.BadParameter(f"{option_name} values must contain non-empty exact unit IDs")
+        unit_ids.extend(parts)
+    if len(set(unit_ids)) != len(unit_ids):
+        raise typer.BadParameter(f"{option_name} cannot contain duplicate unit IDs")
+    return unit_ids
+
+
 @app.command()
 def doctor() -> None:
     """Check the local runtime without changing it."""
     modules = [
         "fitz",
+        "httpx",
         "jinja2",
         "latex2mathml",
         "pydantic",
@@ -132,6 +156,155 @@ def source_verify(
 ) -> None:
     """Run structural gates and create a visual extraction report."""
     emit(verify_extraction(project, pages, force))
+
+
+@source_app.command("math-candidates")
+def source_math_candidates(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    provider: str = typer.Option("deepseek"),
+    model: str = typer.Option("deepseek-v4-flash-vision-exp"),
+    limit: int | None = typer.Option(None, min=1),
+    sampling: str = typer.Option("sequential"),
+    max_cost_usd: float = typer.Option(10.0, min=0.01),
+    allow_remote: bool = typer.Option(False, "--allow-remote"),
+    concurrency: int = typer.Option(4, min=1, max=16),
+    batch_size: int = typer.Option(6, min=1, max=14),
+    force: bool = typer.Option(
+        False,
+        help=(
+            "Allow replacement of stale or incomplete evidence only; never request a third "
+            "current-source/current-crop pass."
+        ),
+    ),
+    unit_ids: list[str] | None = typer.Option(
+        None,
+        "--unit-ids",
+        help=(
+            "Required: select 1-60 exact pilot unit IDs. Repeat the option or provide "
+            "comma-separated IDs; verified, unknown, or page-excluded IDs are rejected."
+        ),
+    ),
+) -> None:
+    """Generate non-authoritative visual math transcription candidates."""
+    emit(
+        generate_math_candidates(
+            project,
+            pages,
+            provider,
+            model,
+            limit,
+            sampling,
+            max_cost_usd,
+            allow_remote,
+            concurrency,
+            batch_size,
+            force,
+            _parse_unit_ids(unit_ids),
+        )
+    )
+
+
+@source_app.command("math-review-packets")
+def source_math_review_packets(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    target_units: int = typer.Option(
+        40,
+        "--target-units",
+        min=1,
+        help="Preferred number of reviewable math units per page-complete packet.",
+    ),
+    max_units: int = typer.Option(
+        60,
+        "--max-units",
+        min=1,
+        help="Hard packet unit limit, except for a single denser PDF page.",
+    ),
+    output_root: Path | None = typer.Option(
+        None,
+        "--output-root",
+        help="Project-internal packet destination (default: .littrans/work/math-review-packets).",
+    ),
+    manual_only: bool = typer.Option(
+        False,
+        "--manual-only",
+        help=(
+            "Build fully local manual-review packets without reading remote candidates; "
+            "use after a small DeepSeek pilot fails twice."
+        ),
+    ),
+    require_candidates: bool = typer.Option(
+        False,
+        "--require-candidates",
+        help="Require candidate evidence for every selected unit in non-manual packets.",
+    ),
+    include_unit_ids: list[str] | None = typer.Option(
+        None,
+        "--include-unit-ids",
+        help=(
+            "Add exact current unit IDs to a manual-only packet even when they are verified "
+            "or not math. Repeat the option or provide comma-separated IDs; unknown, "
+            "duplicate, or page-excluded IDs are rejected."
+        ),
+    ),
+) -> None:
+    """Build immutable, page-complete visual math review packets."""
+
+    emit(
+        build_math_review_packets(
+            project,
+            pages,
+            target_units,
+            max_units,
+            output_root,
+            manual_only,
+            require_candidates,
+            _parse_unit_ids(include_unit_ids, "--include-unit-ids"),
+        )
+    )
+
+
+@source_app.command("math-review-report")
+def source_math_review_report(project: PathArg, pages: str = typer.Option("all")) -> None:
+    """Render a local-only PDF-bound math candidate review report."""
+    emit(build_math_review_report(project, pages))
+
+
+@source_app.command("import-math-review")
+def source_import_math_review(
+    project: PathArg,
+    input_file: PathArg,
+    confirm_visual_review: bool = typer.Option(
+        False,
+        "--confirm-visual-review",
+        help="Attest that every imported decision was compared with the rendered PDF page.",
+    ),
+    structural_overrides: Path | None = typer.Option(
+        None,
+        "--structural-overrides",
+        help=(
+            "Strict packet/hash/decision-bound structural-overrides.yaml sidecar; "
+            "unbound layout YAML is rejected."
+        ),
+    ),
+) -> None:
+    """Import fresh visual-review decisions into durable layout overrides."""
+    emit(
+        import_math_review(
+            project,
+            input_file,
+            confirm_visual_review,
+            structural_overrides,
+        )
+    )
+
+
+@source_app.command("repair-math-structural-ledger")
+def source_repair_math_structural_ledger(project: PathArg) -> None:
+    """Restore only hash-proven explicit nulls in structural review receipts."""
+
+    emit(repair_math_structural_review_ledger(project))
 
 
 @batch_app.command("create")
@@ -207,9 +380,7 @@ def review_import(
 
 
 @review_app.command("import-set")
-def review_import_set(
-    project: PathArg, packet_manifest: PathArg, issues_jsonl: PathArg
-) -> None:
+def review_import_set(project: PathArg, packet_manifest: PathArg, issues_jsonl: PathArg) -> None:
     emit(import_review_set(project, packet_manifest, issues_jsonl))
 
 
@@ -285,9 +456,7 @@ def render_command(
     allow_draft: bool = typer.Option(False),
 ) -> None:
     parsed_batch_ids = (
-        [value.strip() for value in batch_ids.split(",") if value.strip()]
-        if batch_ids
-        else None
+        [value.strip() for value in batch_ids.split(",") if value.strip()] if batch_ids else None
     )
     emit(render_project(project, pages, name, allow_draft, batch_id, parsed_batch_ids))
 
@@ -360,9 +529,7 @@ def workflow_prune_packets(
 
 
 @workflow_app.command("metrics")
-def workflow_get_metrics(
-    project: PathArg, batch_ids: str | None = typer.Option(None)
-) -> None:
+def workflow_get_metrics(project: PathArg, batch_ids: str | None = typer.Option(None)) -> None:
     emit(
         workflow_metrics(
             project,

@@ -33,7 +33,7 @@ from littrans.storage import (
 )
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u0370-\u03ff]|[\u2200-\u22ff]")
-VERIFIER_VERSION = "source-verifier-v4"
+VERIFIER_VERSION = "source-verifier-v5"
 
 
 def _tokens(text: str) -> Counter[str]:
@@ -48,6 +48,29 @@ def _coverage(page_text: str, units: list[SourceUnit]) -> float:
     return sum(min(count, captured[token]) for token, count in source.items()) / sum(
         source.values()
     )
+
+
+def _has_unresolved_paragraph_continuation(
+    previous: SourceUnit,
+    current: SourceUnit,
+) -> bool:
+    """Detect an unmarked continuation using reviewed prose when authoritative."""
+
+    if (
+        previous.kind is not UnitKind.PARAGRAPH
+        or current.kind is not UnitKind.PARAGRAPH
+        or current.continues_from_previous
+    ):
+        return False
+    reviewed_markdown = (
+        previous.verification_status is SemanticStatus.VERIFIED
+        and current.verification_status is SemanticStatus.VERIFIED
+        and bool((previous.source_markdown or "").strip())
+        and bool((current.source_markdown or "").strip())
+    )
+    previous_text = previous.source_markdown if reviewed_markdown else previous.source_text
+    current_text = current.source_markdown if reviewed_markdown else current.source_text
+    return looks_like_continuation(previous_text or "", current_text or "")
 
 
 def _semantic_context_units(
@@ -394,11 +417,8 @@ def verify_extraction(
         if not page_units:
             errors.append({"code": "empty-page-inventory", "page": page_number})
         for index, unit in enumerate(page_units):
-            if index and (
-                page_units[index - 1].kind is UnitKind.PARAGRAPH
-                and unit.kind is UnitKind.PARAGRAPH
-                and looks_like_continuation(page_units[index - 1].source_text, unit.source_text)
-                and not unit.continues_from_previous
+            if index and _has_unresolved_paragraph_continuation(
+                page_units[index - 1], unit
             ):
                 errors.append(
                     {

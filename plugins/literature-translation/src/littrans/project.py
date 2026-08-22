@@ -15,6 +15,10 @@ from littrans.models import (
     BatchManifest,
     ExternalReviewAttempt,
     ExternalReviewRun,
+    MathCandidate,
+    MathReviewDecision,
+    MathStructuralOverrideDecision,
+    MathStructuralReviewSidecar,
     PageVerificationReceipt,
     ProjectConfig,
     ProjectStatus,
@@ -191,6 +195,10 @@ def schema_models() -> dict[str, type[BaseModel]]:
         "page-verification-receipt.schema.json": PageVerificationReceipt,
         "audit-run.schema.json": AuditRun,
         "workflow-packet-manifest.schema.json": WorkflowPacketManifest,
+        "math-candidate.schema.json": MathCandidate,
+        "math-review-decision.schema.json": MathReviewDecision,
+        "math-structural-override-decision.schema.json": MathStructuralOverrideDecision,
+        "math-structural-review-sidecar.schema.json": MathStructuralReviewSidecar,
     }
 
 

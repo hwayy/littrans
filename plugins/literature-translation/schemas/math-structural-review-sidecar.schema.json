@@ -1,0 +1,345 @@
+{
+  "$defs": {
+    "MathStructuralAction": {
+      "description": "Closed set of structural changes a math-review sidecar may request.",
+      "enum": [
+        "ignore",
+        "merge",
+        "split",
+        "reclassify",
+        "reorder"
+      ],
+      "title": "MathStructuralAction",
+      "type": "string"
+    },
+    "MathStructuralFinalValues": {
+      "additionalProperties": false,
+      "description": "Only source-layout values a structural sidecar is allowed to propose.\n\nIn particular, this intentionally has no selector, insertion, confidence,\ntranslatability, render policy, or verification/status fields.",
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnitKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Text"
+        },
+        "source_markdown": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Markdown"
+        },
+        "latex": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latex"
+        },
+        "equation_number": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Equation Number"
+        },
+        "set_bbox": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Set Bbox"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        },
+        "continues_from_previous": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continues From Previous"
+        },
+        "continued_to_next": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continued To Next"
+        }
+      },
+      "title": "MathStructuralFinalValues",
+      "type": "object"
+    },
+    "MathStructuralOverrideDecision": {
+      "additionalProperties": false,
+      "description": "A packet-bound structural proposal; never a verification grant.",
+      "properties": {
+        "schema_version": {
+          "const": 5,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "packet_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "title": "Packet Id",
+          "type": "string"
+        },
+        "packet_payload_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Packet Payload Sha256",
+          "type": "string"
+        },
+        "decision_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "unit_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "title": "Unit Id",
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "source_pdf_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Pdf Sha256",
+          "type": "string"
+        },
+        "source_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Hash",
+          "type": "string"
+        },
+        "page_image_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Page Image Sha256",
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/MathStructuralAction"
+        },
+        "target_unit_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Target Unit Ids",
+          "type": "array"
+        },
+        "fields": {
+          "items": {
+            "enum": [
+              "kind",
+              "source_text",
+              "source_markdown",
+              "latex",
+              "equation_number",
+              "set_bbox",
+              "parent_id",
+              "continues_from_previous",
+              "continued_to_next"
+            ],
+            "type": "string"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "final_values": {
+          "$ref": "#/$defs/MathStructuralFinalValues"
+        },
+        "reviewed_against_pdf": {
+          "title": "Reviewed Against Pdf",
+          "type": "boolean"
+        },
+        "reviewer_id": {
+          "title": "Reviewer Id",
+          "type": "string"
+        },
+        "reviewer_model": {
+          "title": "Reviewer Model",
+          "type": "string"
+        },
+        "reviewer_effort": {
+          "title": "Reviewer Effort",
+          "type": "string"
+        },
+        "reviewer_task": {
+          "title": "Reviewer Task",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "reviewed_at": {
+          "title": "Reviewed At",
+          "type": "string"
+        },
+        "canonical_override_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Canonical Override Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "packet_id",
+        "packet_payload_sha256",
+        "decision_id",
+        "unit_id",
+        "page",
+        "source_pdf_sha256",
+        "source_hash",
+        "page_image_sha256",
+        "action",
+        "target_unit_ids",
+        "fields",
+        "final_values",
+        "reviewed_against_pdf",
+        "reviewer_id",
+        "reviewer_model",
+        "reviewer_effort",
+        "reviewer_task",
+        "reason",
+        "reviewed_at",
+        "canonical_override_sha256"
+      ],
+      "title": "MathStructuralOverrideDecision",
+      "type": "object"
+    },
+    "UnitKind": {
+      "enum": [
+        "heading",
+        "paragraph",
+        "list_item",
+        "note",
+        "code",
+        "equation",
+        "figure",
+        "caption",
+        "table",
+        "footnote",
+        "bibliography"
+      ],
+      "title": "UnitKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Strict packet-level envelope for structural math review proposals.",
+  "properties": {
+    "schema_version": {
+      "const": 5,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "kind": {
+      "const": "math-structural-review-sidecar",
+      "default": "math-structural-review-sidecar",
+      "title": "Kind",
+      "type": "string"
+    },
+    "packet_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "title": "Packet Id",
+      "type": "string"
+    },
+    "packet_payload_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Packet Payload Sha256",
+      "type": "string"
+    },
+    "overrides": {
+      "items": {
+        "$ref": "#/$defs/MathStructuralOverrideDecision"
+      },
+      "title": "Overrides",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "packet_id",
+    "packet_payload_sha256",
+    "overrides"
+  ],
+  "title": "MathStructuralReviewSidecar",
+  "type": "object"
+}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -17,9 +19,7 @@ PROJECT_SCHEMA_VERSION = 5
 
 def validate_batch_identifier(value: str) -> str:
     if BATCH_ID_PATTERN.fullmatch(value) is None:
-        raise ValueError(
-            "batch ID must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}"
-        )
+        raise ValueError("batch ID must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     return value
 
 
@@ -130,6 +130,45 @@ class PromptDelivery(StrEnum):
     FILE = "file"
 
 
+class MathCandidateClassification(StrEnum):
+    INLINE = "inline"
+    DISPLAY = "display"
+    MIXED = "mixed"
+    NOT_MATH = "not-math"
+    NEEDS_SPLIT = "needs-split"
+
+
+class MathReviewDisposition(StrEnum):
+    ACCEPTED = "accepted"
+    CORRECTED = "corrected"
+    MANUAL = "manual"
+    REJECTED = "rejected"
+
+
+class MathStructuralAction(StrEnum):
+    """Closed set of structural changes a math-review sidecar may request."""
+
+    IGNORE = "ignore"
+    MERGE = "merge"
+    SPLIT = "split"
+    RECLASSIFY = "reclassify"
+    REORDER = "reorder"
+
+
+MathStructuralField = Literal[
+    "kind",
+    "source_text",
+    "source_markdown",
+    "latex",
+    "equation_number",
+    "set_bbox",
+    "parent_id",
+    "continues_from_previous",
+    "continued_to_next",
+]
+Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
 class ExternalReviewFallback(StrictModel):
     model: str
     effort: str | None = None
@@ -168,10 +207,7 @@ class ExternalReviewerConfig(StrictModel):
                 and fallback.effort is not None
             ):
                 raise ValueError("Antigravity claude-sonnet-4-6 fallback cannot set effort")
-            if (
-                self.driver is ExternalReviewDriver.CURSOR_CLI
-                and fallback.effort is not None
-            ):
+            if self.driver is ExternalReviewDriver.CURSOR_CLI and fallback.effort is not None:
                 raise ValueError(
                     "cursor-cli fallback model IDs encode effort; fallback effort must be omitted"
                 )
@@ -353,6 +389,40 @@ class SourceUnit(StrictModel):
         return self
 
 
+_MATH_REVIEW_REPRESENTATION_FIELDS = (
+    "source_markdown",
+    "latex",
+    "equation_number",
+    "math_status",
+    "verification_status",
+    "confidence",
+)
+
+
+def canonical_math_review_unit_guard_sha256(unit: SourceUnit) -> str:
+    """Hash source/layout state that a math review is not allowed to change."""
+
+    payload = unit.model_dump(
+        mode="json",
+        exclude={*_MATH_REVIEW_REPRESENTATION_FIELDS, "asset_refs"},
+    )
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_math_review_representation_sha256(unit: SourceUnit) -> str:
+    """Hash the review-controlled representation/status state of a source unit."""
+
+    serialized = unit.model_dump(mode="json")
+    payload = {field: serialized[field] for field in _MATH_REVIEW_REPRESENTATION_FIELDS}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class ReaderNote(StrictModel):
     text: str
     sources: list[str] = Field(default_factory=list)
@@ -456,16 +526,19 @@ class ExternalReviewRun(StrictModel):
     issue_ids: list[str] = Field(default_factory=list)
     response_path: str | None = None
     attempts: int = Field(default=1, ge=1)
-    failure_type: Literal[
-        "authentication",
-        "network",
-        "format",
-        "model",
-        "quota",
-        "timeout",
-        "provider",
-        "unknown",
-    ] | None = None
+    failure_type: (
+        Literal[
+            "authentication",
+            "network",
+            "format",
+            "model",
+            "quota",
+            "timeout",
+            "provider",
+            "unknown",
+        ]
+        | None
+    ) = None
     fallback_of: str | None = None
     attempt_log_path: str | None = None
     success: bool = True
@@ -487,6 +560,262 @@ class ReviewUsage(StrictModel):
     provider_turns: int = Field(default=0, ge=0)
 
 
+class MathCandidate(StrictModel):
+    """One non-authoritative visual transcription candidate for a source unit."""
+
+    schema_version: int = 1
+    candidate_id: str
+    unit_id: str
+    page: int = Field(ge=1)
+    source_pdf_sha256: Sha256Digest
+    source_hash: Sha256Digest
+    crop_path: str
+    crop_sha256: Sha256Digest
+    provider: str
+    model: str
+    prompt_version: str
+    pass_index: int = Field(default=1, ge=1, le=2)
+    classification: MathCandidateClassification
+    latex: str | None = None
+    source_markdown: str | None = None
+    equation_number: str | None = None
+    uncertainties: list[str] = Field(default_factory=list)
+    needs_second_pass: bool = False
+    request_sha256: Sha256Digest
+    response_sha256: Sha256Digest
+    raw_response_path: str
+    usage: ReviewUsage = Field(default_factory=ReviewUsage)
+    estimated_cost_usd: float = Field(default=0.0, ge=0)
+    generated_at: str = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def require_candidate_representation(self) -> MathCandidate:
+        if self.classification is MathCandidateClassification.DISPLAY and not self.latex:
+            raise ValueError("display math candidates require latex")
+        if self.classification is MathCandidateClassification.INLINE and not self.source_markdown:
+            raise ValueError("inline math candidates require source_markdown")
+        return self
+
+
+class MathReviewDecision(StrictModel):
+    """A visual-review decision bound to immutable PDF and crop evidence."""
+
+    schema_version: int = 1
+    decision_id: str
+    unit_id: str
+    page: int = Field(ge=1)
+    candidate_id: str | None = None
+    packet_id: BatchId | None = None
+    packet_sha256: Sha256Digest | None = None
+    manifest_sha256: Sha256Digest | None = None
+    review_crop_path: str | None = None
+    disposition: MathReviewDisposition
+    source_pdf_sha256: Sha256Digest
+    source_hash: Sha256Digest
+    crop_sha256: Sha256Digest
+    page_image_sha256: Sha256Digest
+    reviewed_against_pdf: bool
+    reviewer_id: str
+    reviewer_model: str
+    reviewer_effort: str
+    reviewer_task: str | None = None
+    reason: str
+    final_latex: str | None = None
+    final_source_markdown: str | None = None
+    equation_number: str | None = None
+    structural_issues: list[str] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    reviewed_at: str = Field(default_factory=utc_now)
+
+    @field_validator(
+        "decision_id",
+        "unit_id",
+        "source_pdf_sha256",
+        "source_hash",
+        "crop_sha256",
+        "page_image_sha256",
+        "reviewer_id",
+        "reviewer_model",
+        "reviewer_effort",
+        "reason",
+    )
+    @classmethod
+    def require_nonempty_math_review_values(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("math review evidence values must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def require_review_evidence(self) -> MathReviewDecision:
+        packet_binding = (
+            self.packet_id,
+            self.packet_sha256,
+            self.manifest_sha256,
+            self.review_crop_path,
+        )
+        if any(value is not None for value in packet_binding) and not all(
+            value is not None for value in packet_binding
+        ):
+            raise ValueError(
+                "packet-bound math reviews require packet_id, packet_sha256, "
+                "manifest_sha256, and review_crop_path"
+            )
+        if self.review_crop_path is not None and not self.review_crop_path.strip():
+            raise ValueError("review_crop_path must not be empty")
+        if self.disposition is MathReviewDisposition.ACCEPTED and not self.candidate_id:
+            raise ValueError("accepted math reviews require candidate_id")
+        if self.disposition in {
+            MathReviewDisposition.CORRECTED,
+            MathReviewDisposition.MANUAL,
+        } and not (self.final_latex or self.final_source_markdown):
+            raise ValueError("corrected or manual math reviews require a final representation")
+        return self
+
+
+class MathStructuralFinalValues(StrictModel):
+    """Only source-layout values a structural sidecar is allowed to propose.
+
+    In particular, this intentionally has no selector, insertion, confidence,
+    translatability, render policy, or verification/status fields.
+    """
+
+    kind: UnitKind | None = None
+    source_text: str | None = None
+    source_markdown: str | None = None
+    latex: str | None = None
+    equation_number: str | None = None
+    set_bbox: tuple[float, float, float, float] | None = None
+    parent_id: str | None = None
+    continues_from_previous: bool | None = None
+    continued_to_next: bool | None = None
+
+
+class MathStructuralOverrideDecision(StrictModel):
+    """A packet-bound structural proposal; never a verification grant."""
+
+    schema_version: Literal[5]
+    packet_id: BatchId
+    packet_payload_sha256: Sha256Digest
+    decision_id: BatchId
+    unit_id: BatchId
+    page: int = Field(ge=1)
+    source_pdf_sha256: Sha256Digest
+    source_hash: Sha256Digest
+    page_image_sha256: Sha256Digest
+    action: MathStructuralAction
+    target_unit_ids: list[BatchId]
+    fields: list[MathStructuralField]
+    final_values: MathStructuralFinalValues
+    reviewed_against_pdf: bool
+    reviewer_id: str
+    reviewer_model: str
+    reviewer_effort: str
+    reviewer_task: str
+    reason: str
+    reviewed_at: str
+    canonical_override_sha256: Sha256Digest
+
+    @field_validator(
+        "reviewer_id",
+        "reviewer_model",
+        "reviewer_effort",
+        "reviewer_task",
+        "reason",
+        "reviewed_at",
+    )
+    @classmethod
+    def require_nonempty_structural_review_values(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("structural review evidence values must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def require_closed_structural_change(self) -> MathStructuralOverrideDecision:
+        if len(self.target_unit_ids) != len(set(self.target_unit_ids)):
+            raise ValueError("target_unit_ids must be unique")
+        if self.unit_id in self.target_unit_ids:
+            raise ValueError("target_unit_ids must not contain unit_id")
+        if len(self.fields) != len(set(self.fields)):
+            raise ValueError("structural fields must be unique")
+        supplied_values = set(self.final_values.model_fields_set)
+        if supplied_values != set(self.fields):
+            raise ValueError("fields must exactly match explicitly supplied final_values")
+        if self.action is MathStructuralAction.IGNORE:
+            if self.target_unit_ids or self.fields:
+                raise ValueError("ignore structural decisions cannot target or update other fields")
+        elif self.action is MathStructuralAction.MERGE:
+            if len(self.target_unit_ids) != 1:
+                raise ValueError("merge structural decisions require exactly one target unit")
+        elif self.action is MathStructuralAction.SPLIT:
+            if not self.target_unit_ids or not self.fields:
+                raise ValueError("split structural decisions require targets and final fields")
+        elif self.action is MathStructuralAction.RECLASSIFY:
+            if self.target_unit_ids:
+                raise ValueError("reclassify structural decisions cannot target other units")
+            if "kind" not in self.fields:
+                raise ValueError("reclassify structural decisions require a final kind")
+        elif self.action is MathStructuralAction.REORDER:
+            reorder_fields = {
+                "parent_id",
+                "continues_from_previous",
+                "continued_to_next",
+            }
+            if not self.fields or not set(self.fields).issubset(reorder_fields):
+                raise ValueError("reorder may only change parent/continuation fields")
+        expected = canonical_math_structural_override_sha256(self)
+        if self.canonical_override_sha256 != expected:
+            raise ValueError("canonical_override_sha256 does not match the override payload")
+        return self
+
+
+def canonical_math_structural_override_sha256(
+    decision: MathStructuralOverrideDecision | dict[str, Any],
+) -> str:
+    """Hash a structural decision canonically, excluding its hash field."""
+
+    if isinstance(decision, BaseModel):
+        payload = decision.model_dump(
+            mode="json",
+            exclude={"canonical_override_sha256"},
+            exclude_unset=True,
+        )
+    else:
+        payload = {
+            key: value for key, value in decision.items() if key != "canonical_override_sha256"
+        }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class MathStructuralReviewSidecar(StrictModel):
+    """Strict packet-level envelope for structural math review proposals."""
+
+    schema_version: Literal[5]
+    kind: Literal["math-structural-review-sidecar"] = "math-structural-review-sidecar"
+    packet_id: BatchId
+    packet_payload_sha256: Sha256Digest
+    overrides: list[MathStructuralOverrideDecision]
+
+    @model_validator(mode="after")
+    def require_bound_unique_overrides(self) -> MathStructuralReviewSidecar:
+        if not self.overrides:
+            raise ValueError("structural sidecar must contain at least one override")
+        decision_ids = [item.decision_id for item in self.overrides]
+        if len(decision_ids) != len(set(decision_ids)):
+            raise ValueError("structural sidecar contains duplicate decision_id values")
+        unit_ids = [item.unit_id for item in self.overrides]
+        if len(unit_ids) != len(set(unit_ids)):
+            raise ValueError("structural sidecar contains duplicate unit_id values")
+        for override in self.overrides:
+            if override.packet_id != self.packet_id:
+                raise ValueError("structural override belongs to a different packet")
+            if override.packet_payload_sha256 != self.packet_payload_sha256:
+                raise ValueError("structural override packet payload hash does not match sidecar")
+        return self
+
+
 class ExternalReviewAttempt(StrictModel):
     """One provider invocation attempt, including targeted format-repair attempts."""
 
@@ -502,16 +831,19 @@ class ExternalReviewAttempt(StrictModel):
     prompt_delivery: PromptDelivery
     duration_seconds: float = Field(ge=0)
     success: bool
-    failure_type: Literal[
-        "authentication",
-        "network",
-        "format",
-        "model",
-        "quota",
-        "timeout",
-        "provider",
-        "unknown",
-    ] | None = None
+    failure_type: (
+        Literal[
+            "authentication",
+            "network",
+            "format",
+            "model",
+            "quota",
+            "timeout",
+            "provider",
+            "unknown",
+        ]
+        | None
+    ) = None
     quota_pool: Literal["cursor-first-party", "cursor-third-party"] | None = None
     error: str | None = None
     targeted_repair_scheduled: bool = False
@@ -606,6 +938,7 @@ class BatchManifest(StrictModel):
     translatable_unit_ids: list[str]
     source_words: int
     created_at: str = Field(default_factory=utc_now)
+
 
 class QAItem(StrictModel):
     code: str
