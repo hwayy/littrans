@@ -1686,6 +1686,30 @@ def _load_existing_structural_reviews(path: Path) -> dict[str, str]:
     return records
 
 
+def _staged_structural_removal_unit_ids(
+    overrides: Sequence[Mapping[str, Any]],
+    structural_decision_ids: set[str],
+) -> set[str]:
+    """Return units already removed by a durable structural decision.
+
+    A later visual pass can legitimately record a new decision for the same
+    packet unit.  Re-staging an ``ignore`` transition for an already removed
+    unit is not a second state transition, though: it makes the authenticated
+    chain impossible to replay once the first transition reaches ``absent``.
+    Only hash-validated structural decision IDs are eligible here; an
+    unrelated or unguarded layout entry must never suppress a fresh review.
+    """
+
+    return {
+        unit_id
+        for override in overrides
+        if override.get("ignore") is True
+        and isinstance((unit_id := override.get("unit_id")), str)
+        and isinstance((decision_id := override.get("math_review_decision_id")), str)
+        and decision_id in structural_decision_ids
+    }
+
+
 def _reject_conflicting_replays(
     incoming: Sequence[MathReviewDecision | MathStructuralOverrideDecision],
     durable_hashes: Mapping[str, str],
@@ -2087,6 +2111,11 @@ def import_math_review(
             raise ValueError("Source PDF changed while math review evidence was validated")
 
         layout = _load_layout(layout_path)
+        existing_overrides = list(layout.get("overrides", []))
+        staged_structural_removals = _staged_structural_removal_unit_ids(
+            existing_overrides,
+            set(existing_structural_reviews),
+        )
         new_reviews: list[MathReviewDecision] = []
         new_overrides: list[dict[str, Any]] = []
         outcomes: list[dict[str, Any]] = list(replay_outcomes)
@@ -2121,6 +2150,24 @@ def import_math_review(
                 decisions_by_id[structural.decision_id],
                 units_by_id,
             )
+            removal_already_staged = (
+                structural.action in {MathStructuralAction.IGNORE, MathStructuralAction.MERGE}
+                and structural.unit_id in staged_structural_removals
+            )
+            if removal_already_staged:
+                converted = [
+                    override
+                    for override in converted
+                    if not (
+                        override.get("unit_id") == structural.unit_id
+                        and override.get("ignore") is True
+                    )
+                ]
+            elif structural.action in {
+                MathStructuralAction.IGNORE,
+                MathStructuralAction.MERGE,
+            }:
+                staged_structural_removals.add(structural.unit_id)
             new_structural_overrides.extend(converted)
             outcomes.append(
                 {
@@ -2128,10 +2175,10 @@ def import_math_review(
                     "status": "structural-overridden",
                     "unit_id": structural.unit_id,
                     "action": _value(structural.action),
+                    "removal_already_staged": removal_already_staged,
                 }
             )
 
-        existing_overrides = list(layout.get("overrides", []))
         layout["overrides"] = existing_overrides + new_overrides + new_structural_overrides
         layout_snapshot = snapshot_files([layout_path, reviews_path, structural_reviews_path])
         try:

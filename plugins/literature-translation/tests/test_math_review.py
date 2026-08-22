@@ -995,6 +995,80 @@ def test_structural_review_replay_is_idempotent_but_conflicts_are_strict(
     assert {path: path.read_bytes() for path in durable_before} == durable_before
 
 
+def test_revised_structural_merge_does_not_stage_a_duplicate_removal(
+    tmp_path: Path,
+) -> None:
+    root, equation, inline, candidate, _ = _project(tmp_path)
+    build_math_review_report(root)
+    page_hash = sha256_file(root / "derived" / "verification" / "page-0001.png")
+    packet_id = "revised-structural-merge-packet"
+    packet_hash = _structural_packet(root, packet_id, [equation, inline], page_hash)
+
+    results: list[dict[str, object]] = []
+    for suffix in ("first", "revision"):
+        decision = _decision(
+            root,
+            equation,
+            candidate,
+            page_hash,
+            MathReviewDisposition.REJECTED,
+            decision_id=f"revised-merge-{suffix}",
+            reviewer_task=f"revised-merge-{suffix}",
+        )
+        decisions = tmp_path / f"revised-merge-{suffix}.jsonl"
+        decisions.write_text(decision.model_dump_json() + "\n", encoding="utf-8")
+        structural = _structural_override(
+            decision,
+            packet_id,
+            packet_hash,
+            action="merge",
+            target_unit_ids=[inline.unit_id],
+        )
+        structural["canonical_override_sha256"] = canonical_math_structural_override_sha256(
+            structural
+        )
+        sidecar = tmp_path / f"revised-merge-{suffix}.yaml"
+        _write_sidecar(sidecar, packet_id, packet_hash, [structural])
+        results.append(
+            import_math_review(
+                root,
+                decisions,
+                confirm_visual_review=True,
+                structural_file=sidecar,
+            )
+        )
+
+    assert results[0]["structural_layout_override_count"] == 2
+    assert results[1]["structural_layout_override_count"] == 1
+    revision_outcome = next(
+        item
+        for item in results[1]["outcomes"]
+        if item["decision_id"] == "revised-merge-revision"
+        and item["status"] == "structural-overridden"
+    )
+    assert revision_outcome["removal_already_staged"] is True
+
+    layout = yaml.safe_load((root / "overrides" / "layout.yaml").read_text(encoding="utf-8"))
+    removals = [
+        override
+        for override in layout["overrides"]
+        if override.get("unit_id") == equation.unit_id and override.get("ignore") is True
+    ]
+    assert len(removals) == 1
+    structural_reviews = read_jsonl(
+        root / "evidence" / "math" / "structural-reviews.jsonl",
+        MathStructuralOverrideDecision,
+    )
+    assert {review.decision_id for review in structural_reviews} == {
+        "revised-merge-first",
+        "revised-merge-revision",
+    }
+
+    applied = {unit.unit_id: unit for unit in apply_layout_overrides(root)}
+    assert equation.unit_id not in applied
+    assert inline.unit_id in applied
+
+
 def test_consumed_structural_ignore_allows_later_guarded_page_work(
     tmp_path: Path,
 ) -> None:
