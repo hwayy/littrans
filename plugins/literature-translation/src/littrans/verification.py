@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import re
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,7 @@ from littrans.storage import (
 )
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u0370-\u03ff]|[\u2200-\u22ff]")
-VERIFIER_VERSION = "source-verifier-v5"
+VERIFIER_VERSION = "source-verifier-v6"
 
 
 def _tokens(text: str) -> Counter[str]:
@@ -53,8 +54,15 @@ def _coverage(page_text: str, units: list[SourceUnit]) -> float:
 def _has_unresolved_paragraph_continuation(
     previous: SourceUnit,
     current: SourceUnit,
+    page_units: Sequence[SourceUnit] = (),
 ) -> bool:
-    """Detect an unmarked continuation using reviewed prose when authoritative."""
+    """Detect adjacent unmarked prose using reviewed text when authoritative.
+
+    Unit storage order is normally reading order, but visually reviewed math can be
+    appended later without moving the surrounding prose units.  A block occupying
+    the same reading lane between the two paragraphs means they are not directly
+    adjacent prose, regardless of their positions in the JSONL list.
+    """
 
     if (
         previous.kind is not UnitKind.PARAGRAPH
@@ -70,7 +78,46 @@ def _has_unresolved_paragraph_continuation(
     )
     previous_text = previous.source_markdown if reviewed_markdown else previous.source_text
     current_text = current.source_markdown if reviewed_markdown else current.source_text
-    return looks_like_continuation(previous_text or "", current_text or "")
+    if not looks_like_continuation(previous_text or "", current_text or ""):
+        return False
+    return not any(
+        _visually_interposes(previous, current, unit)
+        for unit in page_units
+        if unit.unit_id not in {previous.unit_id, current.unit_id}
+    )
+
+
+def _horizontal_overlap_ratio(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    overlap = min(first[2], second[2]) - max(first[0], second[0])
+    if overlap <= 0:
+        return 0.0
+    narrower_width = min(first[2] - first[0], second[2] - second[0])
+    return overlap / max(narrower_width, 1.0)
+
+
+def _visually_interposes(
+    previous: SourceUnit,
+    current: SourceUnit,
+    candidate: SourceUnit,
+) -> bool:
+    """Return whether a page block separates two paragraphs in their reading lane."""
+
+    if candidate.page != previous.page or current.page != previous.page:
+        return False
+    if _horizontal_overlap_ratio(previous.bbox, current.bbox) < 0.2:
+        return False
+    previous_midpoint = (previous.bbox[1] + previous.bbox[3]) / 2
+    current_midpoint = (current.bbox[1] + current.bbox[3]) / 2
+    candidate_midpoint = (candidate.bbox[1] + candidate.bbox[3]) / 2
+    if not previous_midpoint < candidate_midpoint < current_midpoint:
+        return False
+    return max(
+        _horizontal_overlap_ratio(previous.bbox, candidate.bbox),
+        _horizontal_overlap_ratio(current.bbox, candidate.bbox),
+    ) >= 0.2
 
 
 def _semantic_context_units(
@@ -418,7 +465,7 @@ def verify_extraction(
             errors.append({"code": "empty-page-inventory", "page": page_number})
         for index, unit in enumerate(page_units):
             if index and _has_unresolved_paragraph_continuation(
-                page_units[index - 1], unit
+                page_units[index - 1], unit, page_units
             ):
                 errors.append(
                     {

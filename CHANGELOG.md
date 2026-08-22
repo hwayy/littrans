@@ -10,6 +10,11 @@ versioning and correspond to Git tags named `v<version>`.
 - Grouped weekly Dependabot minor and patch updates by ecosystem while keeping major-version
   updates separate for explicit compatibility review and maintainer-controlled merging.
 
+### Fixed
+
+- Made source continuation verification honor page geometry when a visually interposed block was
+  appended later in unit storage order, while retaining reviewed-Markdown continuation checks.
+
 ## [0.5.0] - 2026-08-21
 
 ### Added
