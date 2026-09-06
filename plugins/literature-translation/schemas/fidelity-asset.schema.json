@@ -1,0 +1,176 @@
+{
+  "$defs": {
+    "FidelityFragment": {
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "png_path": {
+          "title": "Png Path",
+          "type": "string"
+        },
+        "svg_path": {
+          "title": "Svg Path",
+          "type": "string"
+        },
+        "pdf_path": {
+          "title": "Pdf Path",
+          "type": "string"
+        },
+        "glyph_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Glyph Ids",
+          "type": "array"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "number"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "number"
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline"
+        },
+        "dpi": {
+          "default": 300,
+          "title": "Dpi",
+          "type": "integer"
+        },
+        "export_method": {
+          "default": "raw-region",
+          "enum": [
+            "raw-region",
+            "explicit-glyph-paths-v1",
+            "explicit-glyph-paths-v2"
+          ],
+          "title": "Export Method",
+          "type": "string"
+        },
+        "file_sha256": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "File Sha256",
+          "type": "object"
+        }
+      },
+      "required": [
+        "page",
+        "bbox",
+        "png_path",
+        "svg_path",
+        "pdf_path",
+        "width",
+        "height"
+      ],
+      "title": "FidelityFragment",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 6,
+      "default": 6,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "math",
+        "table",
+        "code",
+        "figure",
+        "mixed-region"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "source_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Sha256",
+      "type": "string"
+    },
+    "content_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "fragments": {
+      "items": {
+        "$ref": "#/$defs/FidelityFragment"
+      },
+      "minItems": 1,
+      "title": "Fragments",
+      "type": "array"
+    },
+    "grouping_pending": {
+      "default": false,
+      "title": "Grouping Pending",
+      "type": "boolean"
+    },
+    "display": {
+      "default": false,
+      "title": "Display",
+      "type": "boolean"
+    },
+    "provenance": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Provenance",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "source_sha256",
+    "content_sha256",
+    "fragments"
+  ],
+  "title": "FidelityAsset",
+  "type": "object"
+}

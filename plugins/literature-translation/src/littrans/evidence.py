@@ -32,6 +32,7 @@ from littrans.storage import (
 )
 
 TRANSLATION_PAYLOAD_FIELDS = {
+    "asset_translations",
     "target_text",
     "target_table",
     "figure_labels",
@@ -46,6 +47,7 @@ SOURCE_SEMANTIC_FIELDS = {
     "bbox",
     "source_text",
     "source_hash",
+    "asset_content_hashes",
     "source_markdown",
     "parent_id",
     "sidebar_id",
@@ -58,6 +60,8 @@ SOURCE_SEMANTIC_FIELDS = {
     "fragments",
     "latex",
     "equation_number",
+    "footnote_number",
+    "footnote_refs",
     "math_status",
     "code_language",
     "table",
@@ -69,6 +73,8 @@ SOURCE_SEMANTIC_FIELDS = {
 }
 
 STRUCTURE_FIELDS = {
+    "footnote_number",
+    "footnote_refs",
     "kind",
     "page",
     "bbox",
@@ -281,6 +287,10 @@ def dependency_closure(
         selected.update(
             unit.unit_id for unit in units if unit.sidebar_id in sidebar_ids
         )
+        for unit in units:
+            if unit.unit_id in selected or selected.intersection(unit.footnote_refs):
+                selected.add(unit.unit_id)
+                selected.update(ref for ref in unit.footnote_refs if ref in positions)
         if len(selected) == previous_size:
             break
 
@@ -336,6 +346,10 @@ def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
         selected_indices.update(
             index for index, unit in enumerate(units) if unit.sidebar_id in sidebar_ids
         )
+        selected_ids = {units[index].unit_id for index in selected_indices}
+        referenced = {ref for index in selected_indices for ref in units[index].footnote_refs}
+        selected_indices.update(index for index, unit in enumerate(units)
+                                if unit.unit_id in referenced or selected_ids.intersection(unit.footnote_refs))
         for index in list(selected_indices):
             left = index
             while left > 0 and (

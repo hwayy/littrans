@@ -34,6 +34,12 @@ from littrans.models import (
     utc_now,
 )
 from littrans.project import load_terms, promote_status, translation_map
+from littrans.representations import (
+    ASSET_RE,
+    representation_status,
+    validate_asset_references,
+    validate_asset_translations,
+)
 from littrans.storage import (
     append_jsonl,
     load_project,
@@ -104,13 +110,31 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v4.1-figure-label-map|"
+        "deterministic-qa-v6.2-original-assets-and-unresolved-understanding|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
 
-def current_qa_context_fingerprint(root: Path) -> str:
-    return _qa_context_fingerprint(load_terms(root))
+def current_qa_context_fingerprint(root: Path, batch_id: str | None = None) -> str:
+    asset_ids = None
+    scoped_units = None
+    if batch_id is not None:
+        from littrans.fidelity_models import load_assets
+
+        units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        manifest = load_manifest(root, batch_id)
+        scoped_units = set(dependency_closure(root, [batch_id], manifest.unit_ids, all_units=units))
+        asset_ids = sorted({key for unit in units if unit.unit_id in scoped_units
+                            for key in ASSET_RE.findall(unit.source_markdown or unit.source_text)}
+                           & load_assets(root).keys())
+    uncertainty = {key: state["semantic_uncertainty"]
+                   for key, state in representation_status(root, asset_ids)["assets"].items()
+                   if state["semantic_uncertainty"]}
+    translation_uncertainty = {key: record.uncertainties for key, record in translation_map(root).items()
+                               if (scoped_units is None or key in scoped_units)
+                               and any(item.strip() for item in record.uncertainties)}
+    return sha256_text(_qa_context_fingerprint(load_terms(root)) + json.dumps(
+        {"assets": uncertainty, "translations": translation_uncertainty}, sort_keys=True))
 
 
 def qa_report_is_current(root: Path, batch_id: str) -> bool:
@@ -123,7 +147,7 @@ def qa_report_is_current(root: Path, batch_id: str) -> bool:
     return bool(
         report.passed
         and report.translation_fingerprint == batch_translation_fingerprint(root, batch_id)
-        and report.qa_context_fingerprint == current_qa_context_fingerprint(root)
+        and report.qa_context_fingerprint == current_qa_context_fingerprint(root, batch_id)
     )
 
 
@@ -257,7 +281,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
     warnings: list[QAItem] = []
     approved_terms = load_terms(root)
     fingerprint = batch_translation_fingerprint(root, batch_id)
-    qa_context_fingerprint = _qa_context_fingerprint(approved_terms)
+    qa_context_fingerprint = current_qa_context_fingerprint(root, batch_id)
     existing_path = root / "qa" / f"{batch_id}.json"
     if existing_path.is_file():
         existing = QAReport.model_validate(read_json(existing_path))
@@ -267,6 +291,15 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             and existing.qa_context_fingerprint == qa_context_fingerprint
         ):
             return existing
+
+    for dependency_id in dependency_closure(root, [batch_id], manifest.unit_ids,
+                                             all_units=list(units.values())):
+        dependency_record = translations.get(dependency_id)
+        if dependency_record and any(item.strip() for item in dependency_record.uncertainties):
+            errors.append(QAItem(code="translation-understanding-unresolved", severity="error",
+                                 message="Resolve the recorded source-understanding uncertainty before approval: "
+                                         + "; ".join(dependency_record.uncertainties),
+                                 unit_id=dependency_id))
 
     for unit_id in manifest.translatable_unit_ids:
         unit = units[unit_id]
@@ -311,13 +344,40 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 label.target or "" for label in rendered_figure_labels
             )
+        for companion in record.asset_translations:
+            effective_target += "\n" + companion.target_text
+            if companion.target_table is not None:
+                effective_target += "\n" + "\n".join(
+                    cell for row in companion.target_table.rows for cell in row)
+            effective_target += "\n" + "\n".join(label.target or "" for label in companion.figure_labels)
         effective_source = _comparison_source_text(
             unit,
             [label.source for label in rendered_figure_labels],
         )
+        for problem in validate_asset_references(root, unit.source_markdown or unit.source_text,
+                                                 record.target_text):
+            errors.append(QAItem(**problem, severity="error", unit_id=unit_id))
+        for problem in validate_asset_translations(root, unit.source_markdown or unit.source_text,
+                                                   record.asset_translations, record.target_text,
+                                                   record.target_table):
+            errors.append(QAItem(**problem, severity="error", unit_id=unit_id))
+        if ASSET_RE.search(unit.source_markdown or unit.source_text):
+            from littrans.context_packets import validate_translation_images
+
+            try:
+                validate_translation_images(root, unit, record.image_evidence)
+            except ValueError as exc:
+                errors.append(QAItem(code="asset-image-receipt-missing", severity="error",
+                                     message=str(exc), unit_id=unit_id))
+            warnings.append(QAItem(code="image-content-visual-audit-required", severity="warning",
+                                   message="Automatic number/token checks cover extracted prose only. "
+                                   "Numbers, symbols, and text inside original images require independent visual review.",
+                                   unit_id=unit_id))
+        effective_source = ASSET_RE.sub("", effective_source)
+        effective_target = ASSET_RE.sub("", effective_target)
         semantic_source = _semantic_comparison_text(effective_source)
         semantic_target = _semantic_comparison_text(effective_target)
-        if not effective_target.strip():
+        if not effective_target.strip() and not ASSET_RE.search(record.target_text):
             errors.append(
                 QAItem(
                     code="empty-translation",
@@ -337,6 +397,8 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                 )
             )
         for token in unit.protected_tokens:
+            if ASSET_RE.fullmatch(token):
+                continue
             if not _semantic_token_present(token, effective_target, semantic_target):
                 errors.append(
                     QAItem(
@@ -403,7 +465,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                     unit_id=unit_id,
                 )
             )
-        if unit.kind is UnitKind.TABLE:
+        if unit.kind is UnitKind.TABLE and unit.table is not None:
             if record.target_table is None:
                 errors.append(
                     QAItem(
@@ -456,7 +518,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             and unit.kind is not UnitKind.CODE
         ):
             source_words = re.findall(r"[A-Za-z]{2,}", unit.source_text)
-            chinese_characters = re.findall(r"[\u3400-\u9fff]", record.target_text)
+            chinese_characters = re.findall(r"[\u3400-\u9fff]", effective_target)
             if (
                 len(unit.source_text) >= 80
                 and len(source_words) >= 8
@@ -1020,7 +1082,7 @@ def approve_batch(
             raise ValueError("A passing QA report is required")
         if qa_payload.get("translation_fingerprint") != current_fingerprint:
             raise ValueError("The QA report is stale for the current translation revision")
-        if qa_payload.get("qa_context_fingerprint") != current_qa_context_fingerprint(root):
+        if qa_payload.get("qa_context_fingerprint") != current_qa_context_fingerprint(root, batch_id):
             raise ValueError("The QA report is stale for the current approved terminology")
         status = review_status(root, batch_id)
         if not status["audit_exists"]:

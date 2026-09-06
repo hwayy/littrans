@@ -6,7 +6,9 @@ import threading
 import time
 from pathlib import Path
 
+import fitz
 import pytest
+from fidelity_fixtures import original_image_evidence
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -47,8 +49,9 @@ from littrans.extractor import (
     inspect_source,
     protected_tokens,
 )
-from littrans.migration import migrate_translations
+from littrans.fidelity import build_source_review_packet, import_source_review, prepare_source
 from littrans.models import (
+    AssetTranslation,
     CalloutKind,
     ExternalReviewConfig,
     ExternalReviewerConfig,
@@ -106,9 +109,12 @@ from littrans.semantics import (
 from littrans.storage import (
     append_jsonl,
     load_project,
+    read_json,
     read_jsonl,
     save_project,
+    sha256_file,
     sha256_text,
+    write_json,
     write_jsonl,
     write_yaml,
 )
@@ -290,7 +296,7 @@ def test_only_caption_target_views_use_the_chinese_caption_separator() -> None:
 
 
 @pytest.fixture()
-def prepared_project(tmp_path: Path) -> Path:
+def legacy_extractor_project(tmp_path: Path) -> Path:
     source = tmp_path / "synthetic.pdf"
     root = tmp_path / "project"
     make_pdf(source)
@@ -313,13 +319,88 @@ def prepared_project(tmp_path: Path) -> Path:
         },
     )
     apply_layout_overrides(root)
+    # Legacy extractor transaction/algorithm fixture; never enters a v6 production gate.
+    return root
+
+
+def _review_synthetic_workflow_source(root: Path) -> None:
+    """Test-only metadata oracle, restricted to unchanged generated original assets."""
+    packet = build_source_review_packet(root)
+    evidence = read_json(Path(packet["packet_path"]))
+    with fitz.open(load_project(root).source(root)) as document:
+        for page in evidence["pages"]:
+            reconstructed = " ".join(unit["source_text"] for unit in page["units"])
+            for aid, source_text in ((f"code-{page['page']}", '<Grid Name="RootGrid">\n</Grid>'), (f"math-{page['page']}", "a = b + 3")):
+                reference = "{{asset:" + aid + "}}"
+                assert reconstructed.count(reference) == 1
+                reconstructed = reconstructed.replace(reference, source_text)
+            assert reconstructed.split() == document[page["page"] - 1].get_text().split()
+            for asset in page["assets"]:
+                assert asset["id"] in {f"code-{page['page']}", f"math-{page['page']}"}
+                fragment = asset["fragments"][0]
+                expected = '<Grid Name="RootGrid">\n</Grid>' if asset["kind"] == "code" else "a = b + 3"
+                actual = document[page["page"] - 1].get_text(clip=fitz.Rect(fragment["bbox"])).strip()
+                assert actual == expected
+                image = root / fragment["png_path"]
+                assert fitz.Pixmap(str(image)).width > 0
+                assert sha256_file(image) == fragment["file_sha256"][fragment["png_path"]]
+    review = read_json(Path(packet["review_template"]))
+    review["reviewer"] = "generated-workflow-fixture-oracle"
+    for decision in review["pages"]:
+        for field in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
+            decision[field] = True
+        decision["notes"] = "Test-only generated PDF oracle: exact original code and equation regions, image hashes and metadata checked."
+    path = root / "tmp" / "workflow-fixture-review.json"
+    write_json(path, review)
+    assert import_source_review(root, path, confirm_visual_review=True)["approved_pages"] == packet["pages"]
+
+
+@pytest.fixture()
+def prepared_project(tmp_path: Path) -> Path:
+    source, root = tmp_path / "synthetic.pdf", tmp_path / "project"
+    make_pdf(source)
+    initialize_project(source, root, "technical-book", "Synthetic")
+    prepare_source(root)
+    packet = build_source_review_packet(root)
+    review = read_json(Path(packet["review_template"]))
+    review["reviewer"] = "generated-workflow-fixture-oracle"
+    with fitz.open(source) as document:
+        for decision in review["pages"]:
+            page = decision["page"]
+            units = []
+            for index, block in enumerate(document[page - 1].get_text("blocks")):
+                bbox, text = list(block[:4]), " ".join(block[4].split())
+                if text.startswith('<Grid') or text == '</Grid>':
+                    if text == '</Grid>':
+                        continue
+                    text, bbox, kind = '{{asset:code-' + str(page) + '}}', [78, 178, 210, 210], "paragraph"
+                elif text == "a = b + 3":
+                    text, bbox, kind = '{{asset:math-' + str(page) + '}}', [280, 220, 335, 242], "equation"
+                else:
+                    kind = "heading" if text.startswith("Section ") else "paragraph"
+                units.append({"unit_id": f"p{page:04d}-b{index}", "kind": kind, "bbox": bbox, "source_markdown": text})
+            decision["override"] = {"regions": [
+                {"id": f"code-{page}", "kind": "code", "bbox": [78, 178, 210, 210], "display": True},
+                {"id": f"math-{page}", "kind": "math", "bbox": [280, 220, 335, 242], "display": True},
+            ], "units": units}
+    path = root / "tmp" / "workflow-fixture-regions.json"
+    write_json(path, review)
+    assert import_source_review(root, path, confirm_visual_review=True)["requires_new_packet"]
+    # Running headers remain in coverage evidence, but are explicitly omitted in reading output.
+    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    for unit in units:
+        if unit.source_text.startswith(("Synthetic Technical Document", "Page ")):
+            unit.render_policy = RenderPolicy.OMIT
+            unit.translatable = False
+    write_jsonl(root / "derived" / "units.jsonl", units)
+    _review_synthetic_workflow_source(root)
     assert verify_extraction(root, "1-3")["passed"]
     return root
 
 
-def test_extraction_is_stable_and_preserves_structure(prepared_project: Path) -> None:
-    first = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
-    second = extract_source(prepared_project, "1-3", replace=True)
+def test_extraction_is_stable_and_preserves_structure(legacy_extractor_project: Path) -> None:
+    first = read_jsonl(legacy_extractor_project / "derived" / "units.jsonl", SourceUnit)
+    second = extract_source(legacy_extractor_project, "1-3", replace=True)
     assert [(unit.unit_id, unit.source_hash) for unit in first] == [
         (unit.unit_id, unit.source_hash) for unit in second
     ]
@@ -334,15 +415,15 @@ def test_extraction_is_stable_and_preserves_structure(prepared_project: Path) ->
 
 
 def test_reviewed_protected_token_override_can_correct_a_source_typo(
-    prepared_project: Path,
+    legacy_extractor_project: Path,
 ) -> None:
     unit = next(
         item
-        for item in read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+        for item in read_jsonl(legacy_extractor_project / "derived" / "units.jsonl", SourceUnit)
         if item.translatable
     )
     write_yaml(
-        prepared_project / "overrides" / "layout.yaml",
+        legacy_extractor_project / "overrides" / "layout.yaml",
         {
             "overrides": [
                 {
@@ -354,16 +435,16 @@ def test_reviewed_protected_token_override_can_correct_a_source_typo(
             ]
         },
     )
-    revised = apply_layout_overrides(prepared_project)
+    revised = apply_layout_overrides(legacy_extractor_project)
     updated = next(item for item in revised if item.unit_id == unit.unit_id)
     assert updated.source_text == unit.source_text
     assert updated.protected_tokens == ["CorrectedApiName"]
 
 
 def test_equation_asset_failure_does_not_replace_authoritative_units(
-    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+    legacy_extractor_project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    units_path = prepared_project / "derived" / "units.jsonl"
+    units_path = legacy_extractor_project / "derived" / "units.jsonl"
     before = units_path.read_bytes()
     unit = next(
         item
@@ -371,7 +452,7 @@ def test_equation_asset_failure_does_not_replace_authoritative_units(
         if item.kind is UnitKind.PARAGRAPH
     )
     write_yaml(
-        prepared_project / "overrides" / "layout.yaml",
+        legacy_extractor_project / "overrides" / "layout.yaml",
         {
             "overrides": [
                 {
@@ -393,18 +474,18 @@ def test_equation_asset_failure_does_not_replace_authoritative_units(
 
     monkeypatch.setattr(Path, "replace", fail_asset_replace)
     with pytest.raises(PermissionError, match="seeded asset replace failure"):
-        apply_layout_overrides(prepared_project)
+        apply_layout_overrides(legacy_extractor_project)
 
     assert units_path.read_bytes() == before
 
 
 def test_late_override_interruption_restores_ledgers_and_published_asset(
-    prepared_project: Path, monkeypatch: pytest.MonkeyPatch
+    legacy_extractor_project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    units_path = prepared_project / "derived" / "units.jsonl"
-    translations_path = prepared_project / "translations" / "current.jsonl"
-    issues_path = prepared_project / "derived" / "extraction-issues.jsonl"
-    project_path = prepared_project / "project.yaml"
+    units_path = legacy_extractor_project / "derived" / "units.jsonl"
+    translations_path = legacy_extractor_project / "translations" / "current.jsonl"
+    issues_path = legacy_extractor_project / "derived" / "extraction-issues.jsonl"
+    project_path = legacy_extractor_project / "project.yaml"
     unit = next(
         item
         for item in read_jsonl(units_path, SourceUnit)
@@ -421,9 +502,9 @@ def test_late_override_interruption_restores_ledgers_and_published_asset(
             )
         ],
     )
-    config = load_project(prepared_project)
+    config = load_project(legacy_extractor_project)
     config.status = ProjectStatus.EXTERNAL_REVIEWED
-    save_project(prepared_project, config)
+    save_project(legacy_extractor_project, config)
     write_jsonl(
         issues_path,
         [
@@ -438,7 +519,7 @@ def test_late_override_interruption_restores_ledgers_and_published_asset(
         ],
     )
     write_yaml(
-        prepared_project / "overrides" / "layout.yaml",
+        legacy_extractor_project / "overrides" / "layout.yaml",
         {
             "overrides": [
                 {
@@ -452,7 +533,7 @@ def test_late_override_interruption_restores_ledgers_and_published_asset(
         },
     )
     asset_path = (
-        prepared_project
+        legacy_extractor_project
         / "derived"
         / "assets"
         / f"page-{unit.page:04}-equation-override-{unit.unit_id}.png"
@@ -469,7 +550,7 @@ def test_late_override_interruption_restores_ledgers_and_published_asset(
 
     monkeypatch.setattr(extractor_module, "write_jsonl", interrupt_issue_write)
     with pytest.raises(KeyboardInterrupt, match="seeded late override interruption"):
-        apply_layout_overrides(prepared_project)
+        apply_layout_overrides(legacy_extractor_project)
 
     assert {path: path.read_bytes() for path in tracked} == before
     assert not asset_path.exists()
@@ -717,9 +798,9 @@ def test_generic_and_unit_specific_overrides_compose_in_file_order(
 
 
 def test_layout_overrides_only_invalidate_affected_translations(
-    prepared_project: Path,
+    legacy_extractor_project: Path,
 ) -> None:
-    units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
+    units = read_jsonl(legacy_extractor_project / "derived" / "units.jsonl", SourceUnit)
     affected = next(
         unit for unit in units if unit.translatable and unit.kind is UnitKind.PARAGRAPH
     )
@@ -736,14 +817,14 @@ def test_layout_overrides_only_invalidate_affected_translations(
         )
         for unit in translated_units
     ]
-    write_jsonl(prepared_project / "translations" / "current.jsonl", records)
-    config = load_project(prepared_project)
+    write_jsonl(legacy_extractor_project / "translations" / "current.jsonl", records)
+    config = load_project(legacy_extractor_project)
     config.status = ProjectStatus.EXTERNAL_REVIEWED
-    save_project(prepared_project, config)
+    save_project(legacy_extractor_project, config)
 
     untranslated = next(unit for unit in units if not unit.translatable)
     write_yaml(
-        prepared_project / "overrides" / "layout.yaml",
+        legacy_extractor_project / "overrides" / "layout.yaml",
         {
             "overrides": [
                 {
@@ -754,17 +835,17 @@ def test_layout_overrides_only_invalidate_affected_translations(
             ]
         },
     )
-    apply_layout_overrides(prepared_project)
-    assert load_project(prepared_project).status is ProjectStatus.EXTERNAL_REVIEWED
+    apply_layout_overrides(legacy_extractor_project)
+    assert load_project(legacy_extractor_project).status is ProjectStatus.EXTERNAL_REVIEWED
     assert all(
         record.status is ProjectStatus.EXTERNAL_REVIEWED
         for record in read_jsonl(
-            prepared_project / "translations" / "current.jsonl", TranslationRecord
+            legacy_extractor_project / "translations" / "current.jsonl", TranslationRecord
         )
     )
 
     write_yaml(
-        prepared_project / "overrides" / "layout.yaml",
+        legacy_extractor_project / "overrides" / "layout.yaml",
         {
             "overrides": [
                 {
@@ -776,19 +857,19 @@ def test_layout_overrides_only_invalidate_affected_translations(
             ]
         },
     )
-    apply_layout_overrides(prepared_project)
+    apply_layout_overrides(legacy_extractor_project)
     current = {
         record.unit_id: record
         for record in read_jsonl(
-            prepared_project / "translations" / "current.jsonl", TranslationRecord
+            legacy_extractor_project / "translations" / "current.jsonl", TranslationRecord
         )
     }
     assert current[affected.unit_id].status is ProjectStatus.DRAFT
     assert current[unaffected.unit_id].status is ProjectStatus.EXTERNAL_REVIEWED
-    assert load_project(prepared_project).status is ProjectStatus.DRAFT
+    assert load_project(legacy_extractor_project).status is ProjectStatus.DRAFT
 
     write_yaml(
-        prepared_project / "overrides" / "layout.yaml",
+        legacy_extractor_project / "overrides" / "layout.yaml",
         {
             "overrides": [
                 {
@@ -800,11 +881,11 @@ def test_layout_overrides_only_invalidate_affected_translations(
             ]
         },
     )
-    apply_layout_overrides(prepared_project)
+    apply_layout_overrides(legacy_extractor_project)
     current = {
         record.unit_id: record
         for record in read_jsonl(
-            prepared_project / "translations" / "current.jsonl", TranslationRecord
+            legacy_extractor_project / "translations" / "current.jsonl", TranslationRecord
         )
     }
     assert current[unaffected.unit_id].status is ProjectStatus.DRAFT
@@ -823,6 +904,8 @@ def _submit_identity_translations(root: Path, batch_id: str) -> None:
             unit_id=unit_id,
             target_text=f"译文：{units[unit_id].source_text}",
             source_hash=units[unit_id].source_hash,
+            image_evidence=original_image_evidence(root, units[unit_id]),
+            asset_translations=[AssetTranslation(asset_id=aid, language_present=False, notes="Generated code contains identifiers only; preserve the original.") for aid in units[unit_id].asset_content_hashes],
         )
         for unit_id in manifest["translatable_unit_ids"]
     ]
@@ -856,6 +939,7 @@ def test_external_review_packet_normalizes_chinese_captions(
         for unit in units
     ]
     write_jsonl(prepared_project / "derived" / "units.jsonl", units)
+    _review_synthetic_workflow_source(prepared_project)
     manifest = create_batches(
         prepared_project, "1", max_words=5000, prefix="caption-packet"
     )[0]
@@ -949,13 +1033,17 @@ def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
     assert "双语译本" in html
     assert "DependencyObject" in html
     assert "machine-reviewed" in html
-    assert '<math xmlns="http://www.w3.org/1998/Math/MathML"' in html
-    assert 'class="language-xaml"' in html
-    assert '<span class="nt">&lt;Grid</span>' in html
+    assert 'mathjax/tex-svg.js' in html
+    assert 'class="fidelity-asset' in html
+    assert "转写未完成" in html
+    assert "original-assets/" in html and ".svg" in html
+    assert list((Path(outputs["html"]).parent / "original-assets").glob("*.svg"))
     assert '<Grid Name="RootGrid">' not in html
     markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
-    assert "```xaml" in markdown
-    assert "$$\na = b + 3" in markdown
+    assert "转写未完成" in markdown
+    assert "original-assets/" in markdown
+    assert ".png" in markdown or ".svg" in markdown
+    assert "$$\na = b + 3" not in markdown
 
 
 def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
@@ -975,6 +1063,7 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
         revised.append(unit)
     write_jsonl(prepared_project / "derived" / "units.jsonl", revised)
 
+    _review_synthetic_workflow_source(prepared_project)
     manifest = create_batches(
         prepared_project, "1", max_words=5000, prefix="continued-note"
     )[0]
@@ -1099,6 +1188,7 @@ def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None
         revised.append(unit)
     write_jsonl(prepared_project / "derived" / "units.jsonl", revised)
 
+    _review_synthetic_workflow_source(prepared_project)
     manifest = create_batches(
         prepared_project, "1", max_words=5000, prefix="continued-list"
     )[0]
@@ -1152,6 +1242,7 @@ def test_render_policy_omit_is_persistent_and_excluded_from_batches(
     omitted = next(item for item in revised if item.unit_id == unit.unit_id)
     assert omitted.render_policy is RenderPolicy.OMIT
     assert not omitted.translatable
+    _review_synthetic_workflow_source(prepared_project)
     manifest = create_batches(prepared_project, "1", max_words=300, prefix="omit")[0]
     assert unit.unit_id not in manifest.unit_ids
 
@@ -1717,18 +1808,19 @@ def test_nontranslatable_source_revision_invalidates_prior_audit(
     code = next(
         unit
         for unit in units
-        if unit.kind is UnitKind.CODE and unit.unit_id in manifest.unit_ids
+        if unit.kind is UnitKind.EQUATION and unit.unit_id in manifest.unit_ids
     )
-    corrected = code.source_text.replace("</Grid>", "  </Grid>")
+    corrected = code.source_text + "\n"
     units = [
         unit.model_copy(
-            update={"source_text": corrected, "source_hash": sha256_text(corrected)}
+            update={"source_text": corrected, "source_markdown": corrected, "source_hash": sha256_text(corrected)}
         )
         if unit.unit_id == code.unit_id
         else unit
         for unit in units
     ]
     write_jsonl(prepared_project / "derived" / "units.jsonl", units)
+    _review_synthetic_workflow_source(prepared_project)
     assert run_qa(prepared_project, manifest.batch_id).passed
     with pytest.raises(ValueError, match="audit is stale"):
         approve_batch(prepared_project, manifest.batch_id, "machine")
@@ -1799,35 +1891,22 @@ def test_batch_refresh_includes_new_units_inside_existing_boundaries(
     assert inserted.unit_id in refreshed.translatable_unit_ids
 
 
-def test_migration_never_carries_approval(prepared_project: Path) -> None:
-    manifest = create_batches(prepared_project, "1", max_words=300, prefix="migrate")[0]
+def test_rebuild_never_carries_approval(prepared_project: Path) -> None:
+    from littrans.project import rebuild_project
+    manifest = create_batches(prepared_project, "1", max_words=300, prefix="rebuild")[0]
     _submit_identity_translations(prepared_project, manifest.batch_id)
-    target_root = prepared_project.parent / "migrated"
-    source_pdf = prepared_project.parent / "synthetic.pdf"
-    initialize_project(source_pdf, target_root, "technical-book", "Migrated")
-    units = extract_source(target_root, "1")
-    write_yaml(
-        target_root / "overrides" / "layout.yaml",
-        {
-            "overrides": [
-                {
-                    "unit_id": unit.unit_id,
-                    "latex": "a = b + 3",
-                    "verified": True,
-                    "reason": "Compared with the generated PDF equation.",
-                }
-                for unit in units
-                if unit.kind == "equation"
-            ]
-        },
-    )
-    apply_layout_overrides(target_root)
-    report = migrate_translations(prepared_project, target_root, "1")
-    assert report["migrated"] == len(manifest.translatable_unit_ids)
-    assert all(
-        record.status is ProjectStatus.DRAFT
-        for record in translation_map(target_root).values()
-    )
+    assert run_qa(prepared_project, manifest.batch_id).passed
+    review = prepared_project / "reviews" / "rebuild-empty.jsonl"
+    write_jsonl(review, [])
+    import_review(prepared_project, manifest.batch_id, review)
+    approve_batch(prepared_project, manifest.batch_id, "machine")
+    before = {str(p.relative_to(prepared_project)): p.read_bytes() for p in prepared_project.rglob("*") if p.is_file()}
+    target = prepared_project.parent / "rebuilt"
+    rebuild_project(prepared_project, target)
+    assert not translation_map(target)
+    assert not (target / "derived" / "units.jsonl").exists()
+    assert not list((target / "reviews").glob("*.jsonl"))
+    assert {str(p.relative_to(prepared_project)): p.read_bytes() for p in prepared_project.rglob("*") if p.is_file()} == before
 
 
 def test_external_review_config_validation_and_legacy_compatibility(
@@ -2717,7 +2796,8 @@ def test_failed_external_runs_persist_serially_across_drivers(
         thread.join(timeout=10)
 
     assert not any(thread.is_alive() for thread in threads)
-    assert errors == []
+    if errors:
+        raise errors[0]  # Preserve the original worker traceback and filesystem path.
     assert maximum_active_appends == 1
     runs = read_jsonl(
         prepared_project / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",

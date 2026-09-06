@@ -79,7 +79,7 @@ class WorkflowSnapshot:
     audit_runs: dict[str, list[AuditRun]]
     external_status: dict[str, dict[str, Any] | None]
     external_enabled: bool
-    qa_context_fingerprint: str
+    qa_context_fingerprints: dict[str, str]
 
 
 def _translation_fingerprint_from_snapshot(
@@ -172,7 +172,7 @@ def _load_workflow_snapshot(
         audit_runs=audit_runs,
         external_status=external_status,
         external_enabled=bool(config.external_review and config.external_review.enabled),
-        qa_context_fingerprint=current_qa_context_fingerprint(root),
+        qa_context_fingerprints={m.batch_id: current_qa_context_fingerprint(root, m.batch_id) for m in manifests},
     )
 
 
@@ -247,7 +247,7 @@ def _batch_stage(
         and qa_report.passed
         and qa_report.translation_fingerprint
         == _translation_fingerprint_from_snapshot(snapshot, manifest)
-        and qa_report.qa_context_fingerprint == snapshot.qa_context_fingerprint
+        and qa_report.qa_context_fingerprint == snapshot.qa_context_fingerprints[manifest.batch_id]
     ):
         return "qa"
     if not audit_coverage(
@@ -304,6 +304,54 @@ def _batch_stage(
         ):
             return "external-approve"
     return "complete"
+
+
+def _asset_lane(root: Path, manifest: BatchManifest, units: dict[str, SourceUnit]) -> dict[str, Any]:
+    from littrans.fidelity_models import asset_reference_ids
+    from littrans.representations import representation_status
+    ids = list(dict.fromkeys(a for uid in manifest.unit_ids for a in asset_reference_ids(
+        units[uid].source_markdown or units[uid].source_text
+    )))
+    status = representation_status(root, ids)
+    states = status["assets"]
+    pending = {name: [aid for aid, row in states.items() if row["state"] == name]
+               for name in ("transcribe", "asset-audit")}
+    return {"states": states, "pending": pending, "complete": not any(pending.values())}
+
+
+def _dispatch_stage(translation_stage: str, lane: dict[str, Any]) -> str:
+    if translation_stage == "translate" and lane["pending"]["transcribe"]:
+        return "parallel"
+    if translation_stage != "complete":
+        return translation_stage
+    for name in ("transcribe", "asset-audit"):
+        if lane["pending"][name]:
+            return name
+    return "complete"
+
+
+def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
+                 host: str) -> list[dict[str, Any]]:
+    config = load_project(root)
+    model_policy = config.agent_models.get(host, {})
+    tasks: list[dict[str, Any]] = []
+    by_id = {m.batch_id: m for m in snapshot.manifests}
+    for bid in batch_ids:
+        stage = _batch_stage(root, bid, snapshot)
+        lane = _asset_lane(root, by_id[bid], snapshot.unit_map)
+        if stage != "complete":
+            tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
+                          "model": model_policy.get(stage),
+                          "reasoning_effort": model_policy.get("reasoning_effort") if stage == "translate" else None,
+                          "fresh_context": True})
+        for role, ids in lane["pending"].items():
+            if ids:
+                tasks.append({"batch_id": bid, "stage": role, "asset_ids": ids,
+                              "depends_on": ["source-fidelity"] if role == "transcribe" else ["candidate"],
+                              "model": model_policy.get(role),
+                              "reasoning_effort": model_policy.get("reasoning_effort") if role == "transcribe" else None,
+                              "fresh_context": True})
+    return tasks
 
 
 def workflow_next(
@@ -399,7 +447,8 @@ def workflow_next(
     stages = [
         (
             manifest.batch_id,
-            _batch_stage(root, manifest.batch_id, snapshot, context_cache),
+            _dispatch_stage(_batch_stage(root, manifest.batch_id, snapshot, context_cache),
+                            _asset_lane(root, manifest, snapshot.unit_map)),
         )
         for manifest in manifests
     ]
@@ -437,6 +486,8 @@ def workflow_next(
         "limit": resolved_limit,
         "start_at": start_at,
         "through": through,
+        "ready_tasks": _ready_tasks(root, batch_ids, snapshot, resolved_host),
+        "schedule": "independent-parallel",
     }
 
 
@@ -511,11 +562,15 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
         for batch_id in requested
     }
     unique_stages = set(stages.values())
+    lanes = {m.batch_id: _asset_lane(root, m, snapshot.unit_map) for m in requested_manifests}
     return {
         "batch_ids": requested,
         "stage": next(iter(unique_stages)) if len(unique_stages) == 1 else "mixed",
         "stages": stages,
-        "complete": all(stage == "complete" for stage in stages.values()),
+        "reading_complete": all(stage == "complete" for stage in stages.values()),
+        "assets": lanes,
+        "ready_tasks": _ready_tasks(root, requested, snapshot, resolve_coordination_host(None)),
+        "complete": all(stage == "complete" for stage in stages.values()) and all(x["complete"] for x in lanes.values()),
     }
 
 
@@ -612,7 +667,7 @@ def _shared_context(root: Path, units: list[SourceUnit]) -> str:
 def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     source = (
         equation_markdown(unit)
-        if unit.kind is UnitKind.EQUATION
+        if unit.kind is UnitKind.EQUATION and "{{asset:" not in (unit.source_markdown or unit.source_text)
         else unit.source_markdown or unit.source_text
     )
     if unit.table:
@@ -631,6 +686,10 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
         target += "\n\nFigure label translations:\n" + "\n".join(
             f"- {label.source}: {label.target or '[missing]'}"
             for label in rendered_figure_labels
+        )
+    if record and record.asset_translations:
+        target += "\n\nImage-contained language translations (verify any language_present=false claim against the original):\n" + json.dumps(
+            [a.model_dump(mode="json") for a in record.asset_translations], ensure_ascii=False,
         )
     if record and record.reader_note:
         note = record.reader_note
@@ -688,8 +747,23 @@ def create_workflow_packet(
     stage: str,
     batch_ids: list[str],
     lens: str | None = None,
-) -> WorkflowPacketManifest | list[WorkflowPacketManifest]:
+) -> WorkflowPacketManifest | list[WorkflowPacketManifest] | dict[str, Any]:
     require_current_project_schema(root, "Workflow packet creation")
+    if stage in {"transcribe", "asset-audit"}:
+        if lens is not None:
+            raise ValueError("Asset tasks do not accept a translation audit lens")
+        from littrans.fidelity_models import asset_reference_ids
+        from littrans.representations import build_asset_packet, representation_status
+        asset_manifests = _validate_batch_set(root, batch_ids)
+        scope = {uid for m in asset_manifests for uid in m.unit_ids}
+        context_units = [u for u in read_jsonl(root / "derived/units.jsonl", SourceUnit) if u.unit_id in scope]
+        ids = list(dict.fromkeys(a for u in context_units for a in asset_reference_ids(u.source_markdown or u.source_text)))
+        states = representation_status(root, ids)["assets"]
+        ids = [aid for aid in ids if states[aid]["state"] == stage]
+        if not ids:
+            return {"stage": stage, "batch_ids": batch_ids, "asset_ids": [], "pending": False}
+        from littrans.context_packets import adjacent_source_units
+        return build_asset_packet(root, ids, stage=stage, context_units=context_units + adjacent_source_units(root, context_units))
     if stage not in {"translate", "audit"}:
         raise ValueError("workflow packet stage must be translate or audit")
     if stage == "audit" and len(batch_ids) > LENS_REVIEWER_BATCH_MAX:
@@ -709,7 +783,7 @@ def create_workflow_packet(
             packet = create_workflow_packet(root, stage, batch_ids, selected_lens)
             if isinstance(packet, list):  # pragma: no cover - guarded above
                 packets.extend(packet)
-            else:
+            elif isinstance(packet, WorkflowPacketManifest):
                 packets.append(packet)
         return packets
     if stage == "audit" and lens not in REQUIRED_AUDIT_LENSES:
@@ -718,6 +792,11 @@ def create_workflow_packet(
         )
     if stage == "translate" and lens is not None:
         raise ValueError("translation packets do not accept a lens")
+    if stage == "translate":
+        host = resolve_coordination_host(None)
+        policy = load_project(root).agent_models.get(host, {})
+        if not policy.get("translate") or not policy.get("reasoning_effort"):
+            raise ValueError(f"Configure agent_models.{host}.translate and reasoning_effort before creating translation tasks; no model substitution is allowed")
     manifests = _validate_batch_set(root, batch_ids)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     unit_map = {unit.unit_id: unit for unit in all_units}
@@ -787,6 +866,11 @@ def create_workflow_packet(
     planned_files: dict[str, tuple[str, str]] = {
         "shared": ("shared.md", _shared_context(root, selected_units))
     }
+    from littrans.context_packets import original_context
+    original = original_context(root, selected_units, stage, include_adjacent=True)
+    planned_files["original-images"] = (
+        "original-images.json", json.dumps(original, ensure_ascii=False, indent=2) + "\n",
+    )
     for manifest in manifests:
         batch_units = [
             unit_map[unit_id]
@@ -1360,7 +1444,7 @@ def workflow_metrics(root: Path, batch_ids: Iterable[str] | None = None) -> dict
         ),
         "generated_packet_allocation": "equal-per-batch-leading-remainder",
         "page_receipts": sum(
-            (root / "evidence" / "pages" / f"page-{page:04}.json").is_file()
+            (root / "evidence" / "pages" / f"fidelity-p{page:04}.review.json").is_file()
             for page in selected_pages
         ),
         "audit_runs": len(audit_runs),

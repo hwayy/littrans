@@ -500,7 +500,7 @@ def _packet_text(
         record = translations.get(unit_id)
         source = (
             equation_markdown(unit)
-            if unit.kind is UnitKind.EQUATION and not _legacy_v3
+            if unit.kind is UnitKind.EQUATION and not _legacy_v3 and "{{asset:" not in (unit.source_markdown or unit.source_text)
             else unit.source_markdown or unit.source_text
         )
         if unit.table:
@@ -511,6 +511,10 @@ def _packet_text(
         if record and record.target_table:
             target += "\n\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
+            )
+        if record and record.asset_translations:
+            target += "\n\nImage-contained language translations (verify against original images):\n" + json.dumps(
+                [item.model_dump(mode="json") for item in record.asset_translations], ensure_ascii=False,
             )
         reader_note = ""
         if record and record.reader_note:
@@ -680,7 +684,7 @@ def _evidence_map(
         record = translations.get(unit_id)
         source = (
             equation_markdown(unit)
-            if unit.kind is UnitKind.EQUATION
+            if unit.kind is UnitKind.EQUATION and "{{asset:" not in (unit.source_markdown or unit.source_text)
             else unit.source_markdown or unit.source_text
         )
         if unit.table:
@@ -690,6 +694,10 @@ def _evidence_map(
             target = normalize_zh_caption(target)
         if record and record.target_table:
             target += "\n" + "\n".join(" | ".join(row) for row in record.target_table.rows)
+        if record and record.asset_translations:
+            target += "\nImage-contained language translations:\n" + json.dumps(
+                [item.model_dump(mode="json") for item in record.asset_translations], ensure_ascii=False,
+            )
         labels = effective_figure_labels(unit, record)
         if unit.kind is UnitKind.FIGURE and labels:
             source += "\nFigure label sources:\n" + "\n".join(

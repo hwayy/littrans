@@ -1,29 +1,16 @@
 ---
 name: verify-literature-extraction
-description: Audit and correct a littrans PDF extraction before translation. Use when verifying page completeness, reading order, paragraph boundaries, inline or display LaTeX, structured tables, code indentation and language, notes, figures, screenshots, captions, footnotes, or references against the original PDF and clearing the source-verification gate.
+description: Verify source completeness, reading order and original-image boundaries in LitTrans schema 6. Use before translation or after source changes; formula transcription accuracy is reviewed separately.
 ---
 
 # Verify Literature Extraction
 
-Treat the PDF as authoritative. Do not translate body prose in this skill.
+The pretranslation gate is faithful, complete source preservation. Use [runtime.md](../../references/runtime.md) and [semantic-contract.md](references/semantic-contract.md).
 
-## Procedure
+1. Generate `source review-packets` for the selected pages. Read the packet manifest, source units, asset regions, unassigned glyphs and overlay report.
+2. Inspect every original page alongside its overlay. Work from the original page outward, including small variables, footnotes, captions, tables, raster labels, running material and blank pages; do not inspect only detected candidates.
+3. Check reading order, paragraph and cross-page continuity, equation numbers, `footnote_number`/`footnote_refs` ownership and links, image boundaries and duplicate prose. Whole figures may own their internal mathematics. Preserve uncertain complex regions intact, with an explicit grouping decision, rather than silently discarding them.
+4. Return the packet-bound review decisions using its emitted schema. Record source/layout defects precisely. Import through `source import-review` with the required visual-review attestation only after actually inspecting the images.
+5. Rerun `source verify`. Fix uncovered source content or stale evidence through supported source corrections and new review packets. Source PDF/region changes invalidate the affected verification; never reuse a receipt with a changed fingerprint.
 
-1. Run `source verify` through the launcher in `../../references/runtime.md`. Open `derived/extraction-report.html` and read `derived/verification.json` completely.
-2. Compare every selected PDF page with its overlay and unit inventory. Check page coverage, reading order, paragraph continuity, headings, lists, notes, code, formulas, tables, figures, captions, footnotes, and references. Read [semantic-contract.md](references/semantic-contract.md).
-3. Transcribe every display formula to exact LaTeX in the unit `latex` field. Transcribe every inline expression inside `source_markdown` with `$...$`. Preserve equation numbers separately. Use the crop only as review evidence; never approve image-only math.
-   For math-dense sources, run `source math-candidates --unit-ids ...` only as an explicitly authorized pilot with 1–60 exact current unit IDs. Inspect both independent passes. If two pilot attempts do not yield usable candidates, stop remote requests; `--force` cannot create a third current-source/current-crop pass, and must not be used to widen the remote sample or keep retrying. Build page-complete, fully local review packets with `source math-review-packets --manual-only`; when a current structural blocker involves a verified or non-math unit, add its exact stable ID with `--include-unit-ids ...`. Review the packet PDF evidence manually, and import only fresh decisions that attest `reviewed_against_pdf: true`. Never accept a provider confidence score as visual evidence.
-4. Convert each table to rectangular `table.rows`. Preserve merged-header meaning through `header_rows`; verify every cell and numeric value. Never approve a table crop as the final representation.
-5. Restore code indentation exactly, set `code_language`, and confirm that literal tags such as `<Button>` are inside code or remain literal prose. Mark Note/Tip/Warning/Caution/“What’s New” blocks as `note` and set the explicit `callout_kind` (`note`, `tip`, `warning`, `caution`, or `whats-new`). For a titled multi-paragraph sidebar, preserve the original heading/paragraph kinds and assign one shared `sidebar_id`, with `sidebar_role: title` on its heading and `sidebar_role: body` on every contained unit.
-6. Join mistaken prose continuations with `continues_from_previous` and `continued_to_next`. Correct dropped, duplicated, hyphenated, or control characters in `source_text` with an explicit reason.
-7. Inspect each figure or screenshot. Add all meaningful internal labels to `figure_labels` with Chinese targets. If no meaningful text exists, record that fact in the override reason.
-8. Write durable changes to `overrides/layout.yaml`, including `verified: true` and a concrete evidence-based reason for each verified semantic unit. Run `source apply-overrides`, then rerun `source verify`. Matching page receipts are reused automatically; use `--force` for a deliberate full recheck.
-9. Finish only when verification passes. Return the visual report path, corrections made, and any true blocker.
-
-## Integrity rules
-
-- Never mark a formula, table, figure, or code block verified without comparing it to the rendered PDF page. For a table, inspect beyond the crop and onto the following page so a header plus first row cannot masquerade as a complete table.
-- Never infer missing formula structure from broken extracted text when the crop is ambiguous; stop and request a second visual review.
-- Never edit `derived/units.jsonl` directly or suppress a verification code merely to create batches.
-- Parallel reviewers write only packet-local decisions and proposed structural overrides. Treat every packet-local `structural-overrides.yaml` as untrusted: never copy or merge it directly. Import it only with `source import-math-review --structural-overrides ...` so packet, source, decision, and canonical override hashes are checked under the project write lock. Serialize all imports and edits to `overrides/layout.yaml`; never let concurrent reviewers edit authoritative project files.
-- Keep equation numbers outside LaTeX. If independent candidates or reviewers disagree, adjudicate against the PDF; leave the unit blocked when the visual remains ambiguous.
+A faithful original image may pass while its LaTeX remains unfinished. Missing mathematical understanding belongs in translation uncertainties; it is different from missing source content. Do not infer zero omissions from aggregate detector scores or an enclosing page box.

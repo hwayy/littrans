@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,6 @@ from littrans.models import (
     BatchManifest,
     ExternalReviewAttempt,
     ExternalReviewRun,
-    MathCandidate,
-    MathReviewDecision,
-    MathStructuralOverrideDecision,
-    MathStructuralReviewSidecar,
     PageVerificationReceipt,
     ProjectConfig,
     ProjectStatus,
@@ -49,6 +46,8 @@ def load_profile(profile: str) -> dict[str, Any]:
     candidate = Path(profile)
     if not candidate.is_file():
         candidate = plugin_root() / "profiles" / f"{profile}.yaml"
+    if not candidate.is_file():
+        candidate = Path(__file__).resolve().parent / "profiles" / f"{profile}.yaml"
     if not candidate.is_file():
         raise ValueError(f"Unknown profile: {profile}")
     payload = yaml.safe_load(candidate.read_text(encoding="utf-8"))
@@ -100,8 +99,8 @@ def initialize_project(
     )
     (root / "context" / "style-guide.md").write_text(
         "# Translation style\n\n- Translate faithfully into clear Simplified Chinese.\n"
-        "- Preserve verified inline and display LaTeX exactly.\n"
-        "- Translate every structured table cell without changing its shape.\n"
+        "- Preserve every {{asset:ID}} reference in its corresponding source block.\n"
+        "- Read original formula and table images in context; do not assume candidates verified.\n"
         "- Preserve code indentation, citations, numbers, and protected identifiers.\n"
         "- Keep reader notes separate from translated text.\n",
         encoding="utf-8",
@@ -115,6 +114,38 @@ def initialize_project(
             "source_is_copied": False,
         },
     )
+    return config
+
+
+def rebuild_project(old: Path, new: Path) -> ProjectConfig:
+    """Create a v6 workspace from source/context only, without inheriting approvals."""
+    old, new = old.resolve(), new.resolve()
+    if new == old or new.exists():
+        raise ValueError("Rebuild requires a new, non-existing directory distinct from OLD")
+    payload = yaml.safe_load((old / "project.yaml").read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid historical project configuration")
+    source = Path(payload["source_path"])
+    if not source.is_absolute():
+        source = old / source
+    if sha256_file(source) != payload["source_sha256"]:
+        raise ValueError("Historical source PDF hash changed")
+    config = initialize_project(
+        source, new, payload.get("profile", "technical-book"), payload.get("title"),
+        payload.get("source_language", "en"), payload.get("target_language", "zh-CN"),
+    )
+    for directory in ("context", "glossary"):
+        if (old / directory).is_dir():
+            shutil.copytree(old / directory, new / directory, dirs_exist_ok=True)
+    if payload.get("external_review") is not None:
+        from littrans.models import ExternalReviewConfig
+        config.external_review = ExternalReviewConfig.model_validate(payload["external_review"])
+        save_project(new, config)
+    write_json(new / "derived" / "rebuild-provenance.json", {
+        "historical_project": str(old), "source_sha256": config.source_sha256,
+        "copied": ["context", "glossary"], "inherited_approvals": False,
+        "context_policy": "Historical style text is context; the v6 asset-reference contract takes precedence.",
+    })
     return config
 
 
@@ -184,6 +215,8 @@ def project_status(root: Path) -> dict[str, Any]:
 
 
 def schema_models() -> dict[str, type[BaseModel]]:
+    from littrans.fidelity_models import FidelityAsset
+    from littrans.representation_models import AssetReviewSubmission, AssetSubmission
     return {
         "project.schema.json": ProjectConfig,
         "source-unit.schema.json": SourceUnit,
@@ -195,10 +228,9 @@ def schema_models() -> dict[str, type[BaseModel]]:
         "page-verification-receipt.schema.json": PageVerificationReceipt,
         "audit-run.schema.json": AuditRun,
         "workflow-packet-manifest.schema.json": WorkflowPacketManifest,
-        "math-candidate.schema.json": MathCandidate,
-        "math-review-decision.schema.json": MathReviewDecision,
-        "math-structural-override-decision.schema.json": MathStructuralOverrideDecision,
-        "math-structural-review-sidecar.schema.json": MathStructuralReviewSidecar,
+        "fidelity-asset.schema.json": FidelityAsset,
+        "asset-submission.schema.json": AssetSubmission,
+        "asset-review-submission.schema.json": AssetReviewSubmission,
     }
 
 

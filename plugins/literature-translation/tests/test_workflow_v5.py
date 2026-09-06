@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fidelity_fixtures import review_fixture_metadata
 from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 import littrans.external_review as external_review_module
@@ -73,7 +74,7 @@ def test_wave_status_is_compact_and_packet_is_content_addressed(tmp_path: Path) 
     assert not isinstance(first, list) and not isinstance(second, list)
     assert first.packet_id == second.packet_id
     assert first.storage_root == ".littrans/work"
-    assert not any((root / "packets").iterdir())
+    assert all(path.name.startswith("source-") for path in (root / "packets").iterdir())
     assert (root / ".gitignore").read_text(encoding="utf-8").splitlines().count(
         "/.littrans/"
     ) == 1
@@ -423,6 +424,7 @@ def test_cross_batch_seam_enters_only_the_local_dependency_context(tmp_path: Pat
     units[0] = units[0].model_copy(update={"continued_to_next": True})
     units[1] = units[1].model_copy(update={"continues_from_previous": True})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
@@ -541,6 +543,7 @@ def test_workflow_status_rechecks_audit_packet_dependency_closure(
     units = read_jsonl(units_path, SourceUnit)
     units[1] = units[1].model_copy(update={"continues_from_previous": True})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
 
     assert not audit_coverage(root, first.batch_id)["complete"]
@@ -557,6 +560,7 @@ def test_single_batch_render_includes_cross_batch_continuation_chain(
     units[0] = units[0].model_copy(update={"continued_to_next": True})
     units[1] = units[1].model_copy(update={"continues_from_previous": True})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
@@ -592,6 +596,7 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
         update={"sidebar_id": "cross-batch-sidebar", "sidebar_role": SidebarRole.BODY}
     )
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
@@ -664,6 +669,7 @@ def test_full_external_packet_includes_cross_batch_sidebar_context(
         update={"sidebar_id": "external-sidebar", "sidebar_role": SidebarRole.BODY}
     )
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)

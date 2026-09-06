@@ -37,6 +37,13 @@ from littrans.models import (
 )
 from littrans.project import load_terms, translation_map
 from littrans.quality import audit_coverage, qa_report_is_current
+from littrans.representations import (
+    ASSET_RE,
+    install_mathjax,
+    mathjax_bootstrap,
+    resolve_asset_html,
+    resolve_asset_markdown,
+)
 from littrans.semantics import (
     escape_markdown_prose,
     fenced_code,
@@ -429,6 +436,8 @@ def _coalesce_table_units(
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target or unit.source_text
     safe_text = escape_markdown_prose(text)
+    if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
+        return safe_text + (f" ({unit.equation_number})" if unit.equation_number else "")
     if unit.sidebar_role is SidebarRole.TITLE:
         return f"> **{safe_text}**"
     if unit.sidebar_role is SidebarRole.BODY:
@@ -465,7 +474,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CAPTION:
         return f"*{safe_text}*"
     if unit.kind is UnitKind.FOOTNOTE:
-        return f"> **脚注：** {safe_text}"
+        return f"> **脚注{unit.footnote_number or ''}：** {safe_text}"
     return safe_text
 
 
@@ -523,6 +532,9 @@ def _unit_html(
     source_view: bool,
 ) -> str:
     text = target if target is not None else (unit.source_markdown or unit.source_text)
+    if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
+        number = f'<span class="equation-number">({html.escape(unit.equation_number)})</span>' if unit.equation_number else ""
+        return '<div class="fidelity-complex">' + _inline_html(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + _inline_html(text) + "</h3></aside>"
     if unit.sidebar_role is SidebarRole.BODY:
@@ -589,7 +601,8 @@ def _unit_html(
     if unit.kind is UnitKind.CAPTION:
         return "<figcaption>" + _inline_html(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:
-        return '<aside class="footnote">' + _inline_html(text) + "</aside>"
+        label = f'<strong>脚注 {html.escape(unit.footnote_number)}：</strong>' if unit.footnote_number else ""
+        return '<aside class="footnote">' + label + _inline_html(text) + "</aside>"
     if unit.kind is UnitKind.FIGURE and unit.figure_labels:
         labels = "".join(
             f"<li>{_inline_html(label.source if source_view else (label.target or label.source))}</li>"
@@ -597,6 +610,28 @@ def _unit_html(
         )
         return "<ul class=figure-labels>" + labels + "</ul>"
     return "<p>" + _inline_html(text) + "</p>"
+
+
+def _asset_companions(record: Any) -> tuple[str, str]:
+    """Translate image-native prose/labels beside the unchanged original asset."""
+    markdown: list[str] = []
+    markup: list[str] = []
+    for item in record.asset_translations if record is not None else []:
+        if not item.language_present:
+            continue
+        body: list[str] = []
+        if item.target_text:
+            markdown.append(escape_markdown_prose(item.target_text))
+            body.append("<p>" + _inline_html(item.target_text) + "</p>")
+        if item.target_table is not None:
+            markdown.append(table_to_markdown(item.target_table))
+            body.append(table_to_html(item.target_table, _inline_html))
+        for label in item.figure_labels:
+            markdown.append(f"- {escape_markdown_prose(label.source)}：{escape_markdown_prose(label.target or '')}")
+            body.append("<p>" + _inline_html(label.source) + "：" + _inline_html(label.target or "") + "</p>")
+        markup.append('<aside class="asset-translation" data-asset-id="' + html.escape(item.asset_id, quote=True)
+                      + '">' + "".join(body) + "</aside>")
+    return "\n\n".join(markdown), "".join(markup)
 
 
 def render_project(
@@ -927,6 +962,12 @@ def render_project(
                 update={"figure_labels": rendered_figure_labels}
             )
         rendered = _target_markdown(render_unit, target)
+        companion_md, companion_html = _asset_companions(record)
+        if companion_md:
+            rendered += "\n\n" + companion_md
+        if ASSET_RE.search(render_unit.source_text) and target_table:
+            rendered += "\n\n" + table_to_markdown(target_table)
+        rendered = resolve_asset_markdown(root, rendered, output)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
             for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])
@@ -1004,7 +1045,7 @@ def render_project(
             pending_markdown_reader_notes.clear()
         assets = (
             [f"../{asset.path.replace('\\', '/')}" for asset in unit.asset_refs]
-            if unit.kind is UnitKind.FIGURE
+            if unit.kind is UnitKind.FIGURE and not ASSET_RE.search(unit.source_text)
             else []
         )
         source_html = _unit_html(
@@ -1018,6 +1059,11 @@ def render_project(
             target_table,
             source_view=False,
         )
+        target_html += companion_html
+        if ASSET_RE.search(render_unit.source_text) and target_table:
+            target_html += table_to_html(target_table, _inline_html)
+        source_html = resolve_asset_html(root, source_html, output)
+        target_html = resolve_asset_html(root, target_html, output)
         if unit.unit_id in grouped_unit_ids:
             extra_anchors = "".join(
                 f'<span id="{html.escape(unit_id)}"></span>'
@@ -1194,6 +1240,7 @@ def render_project(
         pages=f"{min(pages)}–{max(pages)}",
         pdf_uri=config.source(root).as_uri(),
         allow_draft=allow_draft,
+        mathjax_bootstrap=mathjax_bootstrap(),
     )
     render_errors = _render_quality_errors(markdown_text, html_text, units)
     if render_errors:
@@ -1220,6 +1267,8 @@ def render_project(
             publication_paths.append(external_path)
         publication_snapshot = snapshot_files(publication_paths)
         try:
+            if any(ASSET_RE.search(unit.source_markdown or unit.source_text) for unit in units):
+                install_mathjax(output)
             atomic_write_text(markdown_path, markdown_text)
             atomic_write_text(html_path, html_text)
             _write_quality_summary(

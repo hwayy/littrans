@@ -26,6 +26,8 @@ def test_wheel_contains_template_and_installed_render_uses_it(
     installed = tmp_path / "installed"
     with zipfile.ZipFile(wheel_path) as archive:
         assert "littrans/templates/bilingual.html.j2" in archive.namelist()
+        for profile in ("technical-book", "research-paper", "en-zh-cn"):
+            assert f"littrans/profiles/{profile}.yaml" in archive.namelist()
         archive.extractall(installed)
 
     project = tmp_path / "project"
@@ -33,7 +35,15 @@ def test_wheel_contains_template_and_installed_render_uses_it(
 from pathlib import Path
 from littrans.models import ProjectConfig, SourceUnit, UnitKind
 from littrans.rendering import render_project
+from littrans.project import load_profile
 from littrans.storage import sha256_text, write_jsonl, write_yaml
+
+for profile in ('technical-book', 'research-paper'):
+    settings = load_profile(profile)
+    assert settings['name'] == profile
+    assert settings['batch']['max_source_words'] == 900
+    assert settings['batch']['soft_max_assets'] == 60
+assert load_profile('en-zh-cn')
 
 root = Path(__import__('sys').argv[1])
 for directory in ('derived', 'translations', 'reviews', 'qa', 'glossary', 'output', 'batches'):

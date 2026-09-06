@@ -1,35 +1,13 @@
-# Semantic extraction contract
+# Source and asset semantics
 
-## Required source representations
+Each source unit owns its text and ordered asset occurrences. Preserve stable IDs, source PDF fingerprint, ordered page regions, glyph ownership, geometry, baseline and numbering/footnote links. A cross-page complex element may have several ordered original fragments under one logical asset.
 
-- Prose: one logical paragraph per unit; physical PDF line wraps are spaces.
-- Continuation: cross-page or block continuations carry both continuation flags and render as one paragraph.
-- Inline math: exact LaTeX between `$` delimiters in `source_markdown`; surrounding prose remains complete.
-- Display math: exact `latex`, separate `equation_number`, and a retained crop used only for comparison.
-- Vision-model transcriptions remain candidates until a reviewer compares the candidate, crop, and rendered PDF page. Limit remote use to a small exact-unit pilot with two independent attempts; if that pilot is unusable, stop remote calls and use page-complete `--manual-only` packets. Bind every imported decision to current source, page-image, crop, and candidate hashes; provider output alone is never verification evidence.
-- Table: rectangular `rows`, accurate `header_rows`, no screenshot fallback in final output.
-- Code: exact characters and indentation, plus a known language when identifiable.
-- Figure: original visual, translated caption, and translated internal labels or an explicit finding that none exist.
-- Note/Tip/Warning/Caution/“What’s New”: `note` kind plus explicit `callout_kind` so renderers emit the correct localized admonition label. Source-prefix inference is a legacy fallback only.
-- Titled sidebar: retain separate heading/body units, assign a shared `sidebar_id`, mark the heading as `sidebar_role: title`, mark every contained unit as `sidebar_role: body`, and verify the entire group visually. Do not flatten a multi-paragraph sidebar into an ordinary heading plus body prose.
+The source representation is ordinary text plus `{{asset:ID}}`. Review its fidelity against original pages; never treat OCR or a formula candidate as authoritative source merely because it is grammatical or compilable. Whole original figures and complex tables are valid assets. Where native prose is unavailable, preserve the region and record unresolved text recovery without claiming complete translated coverage.
 
-## Override example
+Review imports bind to the issued source packet and fingerprints. A changed PDF, ownership or meaningful region requires a new review of affected content. Source corrections must use supported project operations; do not manually change a generated registry to clear a gate.
 
-```yaml
-overrides:
-  - unit_id: p0003-u005-example
-    latex: >-
-      \mathbf{a}=\frac{\partial\mathbf{u}}{\partial t}
-      +(\mathbf{u}\cdot\nabla)\mathbf{u}
-    equation_number: "1"
-    verified: true
-    reason: Compared character-by-character with PDF p.3 at 200% zoom.
-```
+The source gate certifies coverage and boundaries. It does not certify LaTeX, translations or mathematical truth. Independent asset review later certifies the candidate against the original, including equation separation, matrix structure and typography that changes symbol identity.
 
-For tables, set `table.rows`, `table.header_rows`, and `table.column_count`. One logical table remains one structured table across physical pages; include every body row, preserve empty cells, omit absorbed paragraph fragments as duplicates, and keep one evidence crop per physical page region. For figures, set `figure_labels` to objects containing `source` and `target`, then set `visual_text_status: verified`.
+For a narrow boundary correction, explicit `glyph_ids` select existing original PDF glyph paths. Inspect their visible ink, including accents outside font metrics; the exporter expands bounds to that ink and preserves baseline information. Unsupported or unmapped paths fail closed. Retain the complete raw region and re-review any fallback rather than dropping unknown content. See [glyph correction and footnote rules](../../../references/fidelity-workflow.md#narrow-original-glyph-corrections).
 
-Packet-local structural proposals are not layout authority. A `structural-overrides.yaml` may be
-merged only through `source import-math-review --structural-overrides PATH`, after its packet ID,
-packet/manifest hashes, decision bindings, source hashes, and canonical override hashes validate.
-Import holds the project write lock and serially merges accepted records into
-`overrides/layout.yaml`; never paste, concatenate, or independently apply the sidecar.
+Set `footnote_number` on the footnote and `footnote_refs` on callers using stable footnote unit IDs. Check each link against the original page; missing targets, non-footnote targets and duplicates block source review. Caller and footnote participate in the same source/audit dependency closure.

@@ -1,9 +1,11 @@
 name: technical-book
-description: Technical books with prose, code, screenshots, figures, notes, and tables.
+description: Faithful original assets with independent transcription and translation.
 outline_source: pdf-bookmarks
 batch:
   max_source_words: 900
+  soft_max_assets: 60
   preserve_heading_boundaries: true
+  preserve_logical_elements: true
 code:
   preserve_body: true
   translate_comments: false
@@ -11,23 +13,28 @@ code:
   preserve_indentation: true
   detect_language: true
 equations:
-  mode: verified-latex
-  inline: verified-latex
-  keep_crop_as_review_evidence_only: true
+  mode: original-preserved
+  inline: original-preserved
+  retain_original: true
+  preserve_numbers: true
+  protect_symbols: true
 figures:
   preserve_image: true
   translate_caption: true
   internal_labels: explain-below
+  preserve_internal_math: true
   require_visual_text_review: true
 tables:
-  mode: verified-structured
+  mode: original-preserved
   require_translated_cells: true
-  image_fallback_in_final: false
-notes:
-  render_as_admonition: true
+  allow_corresponding_region_translation: true
+  image_fallback_in_final: true
 verification:
   require_visual_overlay_review: true
-  block_unverified_math_tables_and_figures: true
+  require_source_coverage: true
+  require_complete_asset_boundaries: true
+  block_unverified_source_fidelity: true
+  block_unfinished_transcription: false
 reader_notes:
   allow_modernization: true
   require_primary_https_sources: true

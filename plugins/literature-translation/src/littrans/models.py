@@ -14,7 +14,7 @@ from littrans.hosts import WAVE_BATCH_SET_MAX
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
-PROJECT_SCHEMA_VERSION = 5
+PROJECT_SCHEMA_VERSION = 6
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -285,6 +285,10 @@ class ProjectConfig(StrictModel):
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
     external_review: ExternalReviewConfig | None = None
+    agent_models: dict[str, dict[str, str]] = Field(default_factory=lambda: {
+        "codex": {"transcribe": "gpt-5.6-luna", "translate": "gpt-5.6-luna", "reasoning_effort": "max"},
+        "cursor": {},
+    })
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)
@@ -336,13 +340,14 @@ class FigureLabel(StrictModel):
 
 
 class SourceUnit(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     unit_id: str
     kind: UnitKind
     page: int
     bbox: tuple[float, float, float, float]
     source_text: str
     source_hash: str
+    asset_content_hashes: dict[str, str] = Field(default_factory=dict)
     source_markdown: str | None = None
     parent_id: str | None = None
     sidebar_id: str | None = None
@@ -355,6 +360,8 @@ class SourceUnit(StrictModel):
     fragments: list[SourceFragment] = Field(default_factory=list)
     latex: str | None = None
     equation_number: str | None = None
+    footnote_number: str | None = None
+    footnote_refs: list[str] = Field(default_factory=list)
     math_status: SemanticStatus | None = None
     code_language: str | None = None
     table: TableData | None = None
@@ -442,6 +449,21 @@ class TermProposal(StrictModel):
     reason: str | None = None
 
 
+class AssetTranslation(StrictModel):
+    asset_id: str
+    language_present: bool = True
+    target_text: str = ""
+    target_table: TableData | None = None
+    figure_labels: list[FigureLabel] = Field(default_factory=list)
+    notes: str = ""
+
+    @model_validator(mode="after")
+    def require_explained_language_omission(self) -> AssetTranslation:
+        if not self.language_present and not self.notes.strip():
+            raise ValueError("Explain why the original asset contains no translatable natural language")
+        return self
+
+
 class TranslationRecord(StrictModel):
     schema_version: int = 2
     unit_id: str
@@ -449,6 +471,8 @@ class TranslationRecord(StrictModel):
     target_table: TableData | None = None
     figure_labels: list[FigureLabel] = Field(default_factory=list)
     source_hash: str
+    image_evidence: dict[str, str] = Field(default_factory=dict)
+    asset_translations: list[AssetTranslation] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
     reader_note: ReaderNote | None = None
     term_proposals: list[TermProposal] = Field(default_factory=list)
@@ -912,8 +936,8 @@ class WorkflowPacketManifest(StrictModel):
     @field_validator("stage")
     @classmethod
     def require_supported_packet_stage(cls, value: str) -> str:
-        if value not in {"translate", "audit"}:
-            raise ValueError("workflow packet stage must be translate or audit")
+        if value not in {"translate", "audit", "transcribe", "asset-audit"}:
+            raise ValueError("workflow packet stage must be translate, transcribe, asset-audit or audit")
         return value
 
     @model_validator(mode="after")

@@ -1,6 +1,6 @@
 {
   "name": "literature-translation",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A controlled, resumable workflow for high-quality literature translation.",
   "author": {
     "name": "Hwa",
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Literature Translation",
     "shortDescription": "Translate technical books and papers with auditable quality gates.",
-    "longDescription": "Verify PDF structure and exact LaTeX, translate stable prose and tables, preserve highlighted code, run independent audits, and render private Chinese reading editions.",
+    "longDescription": "Preserve readable PDF content and original formula assets, independently transcribe and translate with full context, verify both outputs, and render private bilingual reading editions with original-image fallbacks.",
     "developerName": "Hwa",
     "category": "Productivity",
     "capabilities": [

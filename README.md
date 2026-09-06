@@ -12,6 +12,21 @@ The implementation lives in [`plugins/literature-translation`](plugins/literatur
 Source PDFs, extracted assets, translation workspaces, credentials, and generated reading
 editions are intentionally kept outside version control.
 
+## Unified 0.6 workflow
+
+Preserve native prose and original complex-element images first, then run independent transcription
+and translation tasks against that shared source context. Source coverage, translated meaning and
+structured-asset correctness have separate review states. Reviewed reading editions retain original
+images whenever LaTeX or another structured representation is unfinished or unverified.
+
+Codex translation and transcription default to fresh `gpt-5.6-luna` tasks at `max` effort; Cursor
+uses its explicit host role configuration. Existing projects rebuild into a new schema-6 directory
+with source/context/glossary only. See the [plugin workflow](plugins/literature-translation/README.md)
+and [rebuild guide](plugins/literature-translation/MIGRATING.md).
+
+The 0.6 development branch does not change the installed stable plugin. Stable installations move
+only through the checked, tagged release procedure.
+
 ## Repository layout
 
 ```text
@@ -83,7 +98,7 @@ marketplace without running `marketplace upgrade`.
 
 Enable **Include third-party Plugins, Skills, and other configs** in Cursor settings. Load the
 plugin from `~/.cursor/plugins/local/literature-translation`, then reload the window
-(**Developer: Reload Window**). Confirm the skills and the five local agents in **Customize**.
+(**Developer: Reload Window**). Confirm the skills and the local production and review agents in **Customize**.
 
 Keep source PDFs and translation workspaces on the local machine. Do not run this workflow through
 Cursor Cloud Agents or `/in-cloud`.

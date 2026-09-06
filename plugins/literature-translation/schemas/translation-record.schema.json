@@ -1,5 +1,52 @@
 {
   "$defs": {
+    "AssetTranslation": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "language_present": {
+          "default": true,
+          "title": "Language Present",
+          "type": "boolean"
+        },
+        "target_text": {
+          "default": "",
+          "title": "Target Text",
+          "type": "string"
+        },
+        "target_table": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TableData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "figure_labels": {
+          "items": {
+            "$ref": "#/$defs/FigureLabel"
+          },
+          "title": "Figure Labels",
+          "type": "array"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id"
+      ],
+      "title": "AssetTranslation",
+      "type": "object"
+    },
     "FigureLabel": {
       "additionalProperties": false,
       "properties": {
@@ -175,6 +222,20 @@
     "source_hash": {
       "title": "Source Hash",
       "type": "string"
+    },
+    "image_evidence": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Image Evidence",
+      "type": "object"
+    },
+    "asset_translations": {
+      "items": {
+        "$ref": "#/$defs/AssetTranslation"
+      },
+      "title": "Asset Translations",
+      "type": "array"
     },
     "revision": {
       "default": 1,

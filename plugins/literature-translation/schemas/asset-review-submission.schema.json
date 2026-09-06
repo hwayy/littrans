@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "AssetReviewItem": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "candidate_sha256": {
+          "title": "Candidate Sha256",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "accept",
+            "reject",
+            "unresolved"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "visual_checked": {
+          "title": "Visual Checked",
+          "type": "boolean"
+        },
+        "render_checked": {
+          "title": "Render Checked",
+          "type": "boolean"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "semantic_uncertainty": {
+          "default": "",
+          "title": "Semantic Uncertainty",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "candidate_sha256",
+        "verdict",
+        "visual_checked",
+        "render_checked"
+      ],
+      "title": "AssetReviewItem",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "packet_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Packet Id",
+      "type": "string"
+    },
+    "reviewer_task_id": {
+      "minLength": 1,
+      "title": "Reviewer Task Id",
+      "type": "string"
+    },
+    "image_evidence": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Image Evidence",
+      "type": "object"
+    },
+    "render_artifact_sha256": {
+      "title": "Render Artifact Sha256",
+      "type": "string"
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/AssetReviewItem"
+      },
+      "minItems": 1,
+      "title": "Decisions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "packet_id",
+    "reviewer_task_id",
+    "image_evidence",
+    "render_artifact_sha256",
+    "decisions"
+  ],
+  "title": "AssetReviewSubmission",
+  "type": "object"
+}

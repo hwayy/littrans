@@ -207,7 +207,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": 2,
+      "default": 3,
       "title": "Schema Version",
       "type": "integer"
     },
@@ -249,6 +249,13 @@
     "source_hash": {
       "title": "Source Hash",
       "type": "string"
+    },
+    "asset_content_hashes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Asset Content Hashes",
+      "type": "object"
     },
     "source_markdown": {
       "anyOf": [
@@ -361,6 +368,25 @@
       ],
       "default": null,
       "title": "Equation Number"
+    },
+    "footnote_number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Footnote Number"
+    },
+    "footnote_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Footnote Refs",
+      "type": "array"
     },
     "math_status": {
       "anyOf": [

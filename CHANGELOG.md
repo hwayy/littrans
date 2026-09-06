@@ -3,7 +3,25 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
-## [Unreleased]
+## [0.6.0] - Unreleased
+
+### Changed
+
+- Unified source preparation around faithful native prose and original PDF/SVG/PNG assets,
+  with source-bound coverage review before parallel transcription and translation.
+- Separated structured-asset candidates and independent visual/render review from translation
+  approval; unfinished representations retain an explicit original-image reading fallback.
+- Defaulted Codex transcription and translation to fresh gpt-5.6-luna tasks at max effort,
+  preserving the three translation audit lenses and configured external review.
+- Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
+  only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
+- Added the transcription skill, asset review role and offline MathJax reading contract.
+
+## Historical changes before 0.6
+
+The workflow descriptions below document released history, not current operating instructions.
+
+## [Unreleased before 0.6]
 
 ### Changed
 

@@ -101,6 +101,14 @@ def project_write_lock(root: Path, timeout_seconds: float = 30.0) -> Iterator[No
                     "Remove it only after confirming no littrans process is running."
                 ) from None
             time.sleep(0.05)
+        except PermissionError as exc:
+            # Windows may briefly deny CreateDirectory while the previous owner
+            # finishes removing this lock directory. Wait without acquiring it;
+            # persistent or unrelated permissions must retain their actual error.
+            if (os.name != "nt" or getattr(exc, "winerror", None) != 5
+                    or time.monotonic() >= deadline):
+                raise
+            time.sleep(0.05)
     try:
         yield
     finally:
@@ -163,7 +171,14 @@ def initialize_project_dirs(root: Path) -> None:
 
 
 def load_project(root: Path) -> ProjectConfig:
-    return ProjectConfig.model_validate(read_yaml(root / "project.yaml"))
+    payload = read_yaml(root / "project.yaml")
+    if payload.get("schema_version") != PROJECT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Project schema v{payload.get('schema_version')} is historical; "
+            "run `littrans project rebuild OLD NEW` to create a separate v6 project. "
+            "Existing source, translations and approvals will remain unchanged."
+        )
+    return ProjectConfig.model_validate(payload)
 
 
 def require_current_project_schema(
@@ -173,7 +188,7 @@ def require_current_project_schema(
     if config.schema_version != PROJECT_SCHEMA_VERSION:
         raise ValueError(
             f"{operation} requires project schema v{PROJECT_SCHEMA_VERSION}; "
-            f"run `littrans project migrate PROJECT --to {PROJECT_SCHEMA_VERSION}` first "
+            "run `littrans project rebuild OLD NEW` first "
             f"(current schema: v{config.schema_version})"
         )
     return config

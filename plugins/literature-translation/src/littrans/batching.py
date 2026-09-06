@@ -62,7 +62,9 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
         f"verified: {unit.verification_status} | continues: {str(unit.continues_from_previous).lower()}"
         f"{sidebar}{callout} -->"
     )
-    if unit.kind == "code":
+    if "{{asset:" in (unit.source_markdown or unit.source_text):
+        body = unit.source_markdown or unit.source_text
+    elif unit.kind == "code":
         body = fenced_code(unit.source_text, unit.code_language)
     elif unit.kind == "equation":
         number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
@@ -144,8 +146,11 @@ def create_batches(
     max_words: int | None = None,
     prefix: str | None = None,
     untranslated_only: bool = False,
+    unit_ids: list[str] | None = None,
 ) -> list[BatchManifest]:
     config = load_project(root)
+    profile_settings = load_profile(config.profile).get("batch", {})
+    soft_max_assets = int(profile_settings.get("soft_max_assets", 60))
     if max_words is None:
         profile = load_profile(config.profile)
         batch_settings = profile.get("batch", {})
@@ -159,6 +164,25 @@ def create_batches(
         for unit in all_units
         if unit.page in pages and unit.render_policy is RenderPolicy.INCLUDE
     ]
+    if unit_ids is not None:
+        requested = set(unit_ids)
+        if not requested or len(requested) != len(unit_ids):
+            raise ValueError("unit_ids must be nonempty and unique")
+        missing = requested - {unit.unit_id for unit in selected}
+        if missing:
+            raise ValueError(f"Unknown, excluded or out-of-page source unit IDs: {sorted(missing)}")
+        selected = [unit for unit in selected if unit.unit_id in requested]
+        for index, unit in enumerate(all_units):
+            if unit.unit_id not in requested:
+                continue
+            linked = []
+            if unit.continues_from_previous and index:
+                linked.append(all_units[index - 1])
+            if unit.continued_to_next and index + 1 < len(all_units):
+                linked.append(all_units[index + 1])
+            if any(other.unit_id not in requested for other in linked):
+                raise ValueError(f"Unit selection cuts a continuation at {unit.unit_id}")
+        pages = {unit.page for unit in selected}
     if untranslated_only:
         translated_ids = set(translation_map(root))
         selected = [
@@ -186,7 +210,12 @@ def create_batches(
             and unit.page != current[-1].page
         )
         hard_boundary = bool(current and words + unit_words > max_words * 1.5)
-        if current and (word_boundary or hard_boundary or heading_boundary or page_gap):
+        asset_boundary = sum(len(u.asset_content_hashes) for u in current) >= soft_max_assets
+        connected = bool(current and (
+            current[-1].continued_to_next or unit.continues_from_previous
+            or (unit.parent_id and unit.parent_id == current[-1].parent_id)
+        ))
+        if current and not connected and (word_boundary or hard_boundary or heading_boundary or page_gap or asset_boundary):
             groups.append(current)
             current, words = [], 0
         current.append(unit)

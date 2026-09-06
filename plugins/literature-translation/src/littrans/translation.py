@@ -33,16 +33,23 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
         extra = sorted(set(supplied) - expected)
         raise ValueError(f"Translation coverage mismatch; missing={missing}, extra={extra}")
 
-    units = {
-        unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    }
     with project_write_lock(root):
+        # Re-read bindings under the same lock used for source correction/import.
+        current_manifest = load_manifest(root, batch_id)
+        if current_manifest != manifest:
+            raise ValueError("Batch changed while translation submission was being prepared")
+        units = {
+            unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        }
         current = translation_map(root)
         normalized: list[TranslationRecord] = []
         changed: list[TranslationRecord] = []
         rebound: list[TranslationRecord] = []
         for record in submitted:
             unit = units[record.unit_id]
+            if "{{asset:" in (unit.source_markdown or unit.source_text):
+                from littrans.context_packets import validate_translation_images
+                validate_translation_images(root, unit, record.image_evidence)
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")
             effective_figure_labels(unit, record)

@@ -12,17 +12,9 @@ from pydantic import BaseModel
 
 from littrans.batching import create_batches, refresh_batch, show_batch
 from littrans.external_review import external_review_status, run_external_review
-from littrans.extractor import apply_layout_overrides, extract_source, inspect_source
-from littrans.math_packets import build_math_review_packets
-from littrans.math_review import (
-    build_math_review_report,
-    import_math_review,
-    repair_math_structural_review_ledger,
-)
-from littrans.math_vision import generate_math_candidates
-from littrans.migration import migrate_project_schema, migrate_translations
+from littrans.extractor import inspect_source
 from littrans.models import IssueStatus
-from littrans.project import initialize_project, project_status
+from littrans.project import initialize_project, project_status, rebuild_project
 from littrans.quality import approve_batch, import_review, resolve_issue, review_status, run_qa
 from littrans.rendering import render_project
 from littrans.translation import submit_translation
@@ -44,6 +36,7 @@ translation_app = typer.Typer(no_args_is_help=True)
 qa_app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
 workflow_app = typer.Typer(no_args_is_help=True)
+assets_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(source_app, name="source")
 app.add_typer(batch_app, name="batch")
@@ -51,6 +44,7 @@ app.add_typer(translation_app, name="translation")
 app.add_typer(qa_app, name="qa")
 app.add_typer(review_app, name="review")
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(assets_app, name="assets")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -64,20 +58,6 @@ def emit(payload: object) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
-def _parse_unit_ids(values: list[str] | None, option_name: str = "--unit-ids") -> list[str] | None:
-    """Expand repeatable/comma-separated CLI values without weakening exact matching."""
-
-    if not values:
-        return None
-    unit_ids: list[str] = []
-    for value in values:
-        parts = [part.strip() for part in value.split(",")]
-        if any(not part for part in parts):
-            raise typer.BadParameter(f"{option_name} values must contain non-empty exact unit IDs")
-        unit_ids.extend(parts)
-    if len(set(unit_ids)) != len(unit_ids):
-        raise typer.BadParameter(f"{option_name} cannot contain duplicate unit IDs")
-    return unit_ids
 
 
 @app.command()
@@ -117,14 +97,6 @@ def project_init(
     emit(initialize_project(source, project, profile, title, source_language, target_language))
 
 
-@project_app.command("migrate")
-def project_migrate(
-    project: PathArg,
-    to_version: int = typer.Option(..., "--to"),
-    dry_run: bool = typer.Option(False),
-) -> None:
-    """Losslessly migrate a project evidence ledger to schema v4."""
-    emit(migrate_project_schema(project, to_version, dry_run))
 
 
 @source_app.command("inspect")
@@ -132,20 +104,8 @@ def source_inspect(project: PathArg, pages: str = typer.Option("all")) -> None:
     emit(inspect_source(project, pages))
 
 
-@source_app.command("extract")
-def source_extract(
-    project: PathArg,
-    pages: str = typer.Option("all"),
-    replace: bool = typer.Option(False),
-) -> None:
-    units = extract_source(project, pages, replace)
-    emit({"units": len(units), "pages": sorted({unit.page for unit in units})})
 
 
-@source_app.command("apply-overrides")
-def source_apply_overrides(project: PathArg) -> None:
-    units = apply_layout_overrides(project)
-    emit({"units": len(units), "overrides_applied": True})
 
 
 @source_app.command("verify")
@@ -154,157 +114,80 @@ def source_verify(
     pages: str = typer.Option("all"),
     force: bool = typer.Option(False),
 ) -> None:
-    """Run structural gates and create a visual extraction report."""
+    """Check current source coverage, original assets and visual-review evidence."""
     emit(verify_extraction(project, pages, force))
 
 
-@source_app.command("math-candidates")
-def source_math_candidates(
+
+
+
+
+
+
+
+
+
+
+
+@project_app.command("rebuild")
+def project_rebuild(old: PathArg, new: PathArg) -> None:
+    """Build a new v6 workspace; preserve the historical project and its evidence."""
+    emit(rebuild_project(old, new))
+
+
+@source_app.command("prepare")
+def source_prepare(project: PathArg, pages: str = typer.Option("all"), replace: bool = typer.Option(False)) -> None:
+    """Preserve original prose and complex visual assets without formula transcription."""
+    from littrans.fidelity import prepare_source
+    emit(prepare_source(project, pages, replace))
+
+
+@source_app.command("review-packets")
+def source_review_packets(project: PathArg, pages: str = typer.Option("all")) -> None:
+    from littrans.fidelity import build_source_review_packet
+    emit(build_source_review_packet(project, pages))
+
+
+@source_app.command("import-review")
+def source_import_review(project: PathArg, input_file: PathArg, confirm_visual_review: bool = typer.Option(False, "--confirm-visual-review")) -> None:
+    from littrans.fidelity import import_source_review
+    emit(import_source_review(project, input_file, confirm_visual_review))
+
+
+@assets_app.command("submit")
+def assets_submit(project: PathArg, input_file: PathArg) -> None:
+    from littrans.representations import submit_candidates
+    emit(submit_candidates(project, input_file))
+
+
+@assets_app.command("packet")
+def assets_packet(
     project: PathArg,
-    pages: str = typer.Option("all"),
-    provider: str = typer.Option("deepseek"),
-    model: str = typer.Option("deepseek-v4-flash-vision-exp"),
-    limit: int | None = typer.Option(None, min=1),
-    sampling: str = typer.Option("sequential"),
-    max_cost_usd: float = typer.Option(10.0, min=0.01),
-    allow_remote: bool = typer.Option(False, "--allow-remote"),
-    concurrency: int = typer.Option(4, min=1, max=16),
-    batch_size: int = typer.Option(6, min=1, max=14),
-    force: bool = typer.Option(
-        False,
-        help=(
-            "Allow replacement of stale or incomplete evidence only; never request a third "
-            "current-source/current-crop pass."
-        ),
-    ),
-    unit_ids: list[str] | None = typer.Option(
-        None,
-        "--unit-ids",
-        help=(
-            "Required: select 1-60 exact pilot unit IDs. Repeat the option or provide "
-            "comma-separated IDs; verified, unknown, or page-excluded IDs are rejected."
-        ),
-    ),
+    asset_ids: str = typer.Option(..., help="Comma-separated stable asset IDs."),
+    stage: str = typer.Option("transcribe"),
+    revision_notes: str | None = typer.Option(None, help="Explicit correction request bound to existing candidate/review evidence."),
 ) -> None:
-    """Generate non-authoritative visual math transcription candidates."""
-    emit(
-        generate_math_candidates(
-            project,
-            pages,
-            provider,
-            model,
-            limit,
-            sampling,
-            max_cost_usd,
-            allow_remote,
-            concurrency,
-            batch_size,
-            force,
-            _parse_unit_ids(unit_ids),
-        )
-    )
+    from littrans.context_packets import adjacent_source_units
+    from littrans.fidelity_models import asset_reference_ids
+    from littrans.models import SourceUnit
+    from littrans.representations import build_asset_packet
+    from littrans.storage import read_jsonl
+    ids = [aid.strip() for aid in asset_ids.split(",")]
+    units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit)
+             if set(ids) & set(asset_reference_ids(u.source_markdown or u.source_text))]
+    emit(build_asset_packet(project, ids, stage, units + adjacent_source_units(project, units), revision_notes))
 
 
-@source_app.command("math-review-packets")
-def source_math_review_packets(
-    project: PathArg,
-    pages: str = typer.Option("all"),
-    target_units: int = typer.Option(
-        40,
-        "--target-units",
-        min=1,
-        help="Preferred number of reviewable math units per page-complete packet.",
-    ),
-    max_units: int = typer.Option(
-        60,
-        "--max-units",
-        min=1,
-        help="Hard packet unit limit, except for a single denser PDF page.",
-    ),
-    output_root: Path | None = typer.Option(
-        None,
-        "--output-root",
-        help="Project-internal packet destination (default: .littrans/work/math-review-packets).",
-    ),
-    manual_only: bool = typer.Option(
-        False,
-        "--manual-only",
-        help=(
-            "Build fully local manual-review packets without reading remote candidates; "
-            "use after a small DeepSeek pilot fails twice."
-        ),
-    ),
-    require_candidates: bool = typer.Option(
-        False,
-        "--require-candidates",
-        help="Require candidate evidence for every selected unit in non-manual packets.",
-    ),
-    include_unit_ids: list[str] | None = typer.Option(
-        None,
-        "--include-unit-ids",
-        help=(
-            "Add exact current unit IDs to a manual-only packet even when they are verified "
-            "or not math. Repeat the option or provide comma-separated IDs; unknown, "
-            "duplicate, or page-excluded IDs are rejected."
-        ),
-    ),
-) -> None:
-    """Build immutable, page-complete visual math review packets."""
-
-    emit(
-        build_math_review_packets(
-            project,
-            pages,
-            target_units,
-            max_units,
-            output_root,
-            manual_only,
-            require_candidates,
-            _parse_unit_ids(include_unit_ids, "--include-unit-ids"),
-        )
-    )
+@assets_app.command("import-review")
+def assets_import_review(project: PathArg, input_file: PathArg, confirm_visual_review: bool = typer.Option(False, "--confirm-visual-review")) -> None:
+    from littrans.representations import import_asset_review
+    emit(import_asset_review(project, input_file, confirm_visual_review))
 
 
-@source_app.command("math-review-report")
-def source_math_review_report(project: PathArg, pages: str = typer.Option("all")) -> None:
-    """Render a local-only PDF-bound math candidate review report."""
-    emit(build_math_review_report(project, pages))
-
-
-@source_app.command("import-math-review")
-def source_import_math_review(
-    project: PathArg,
-    input_file: PathArg,
-    confirm_visual_review: bool = typer.Option(
-        False,
-        "--confirm-visual-review",
-        help="Attest that every imported decision was compared with the rendered PDF page.",
-    ),
-    structural_overrides: Path | None = typer.Option(
-        None,
-        "--structural-overrides",
-        help=(
-            "Strict packet/hash/decision-bound structural-overrides.yaml sidecar; "
-            "unbound layout YAML is rejected."
-        ),
-    ),
-) -> None:
-    """Import fresh visual-review decisions into durable layout overrides."""
-    emit(
-        import_math_review(
-            project,
-            input_file,
-            confirm_visual_review,
-            structural_overrides,
-        )
-    )
-
-
-@source_app.command("repair-math-structural-ledger")
-def source_repair_math_structural_ledger(project: PathArg) -> None:
-    """Restore only hash-proven explicit nulls in structural review receipts."""
-
-    emit(repair_math_structural_review_ledger(project))
+@assets_app.command("status")
+def assets_status(project: PathArg) -> None:
+    from littrans.representations import representation_status
+    emit(representation_status(project))
 
 
 @batch_app.command("create")
@@ -314,11 +197,13 @@ def batch_create(
     max_words: int | None = typer.Option(None),
     prefix: str | None = typer.Option(None),
     untranslated_only: bool = typer.Option(False),
+    unit_ids: str | None = typer.Option(None, help="Comma-separated source unit IDs; include complete continuations."),
 ) -> None:
     emit(
         [
             manifest.model_dump(mode="json")
-            for manifest in create_batches(project, pages, max_words, prefix, untranslated_only)
+            for manifest in create_batches(project, pages, max_words, prefix, untranslated_only,
+                                           unit_ids.split(",") if unit_ids is not None else None)
         ]
     )
 
@@ -343,15 +228,6 @@ def translation_submit(project: PathArg, batch_id: str, input_file: PathArg) -> 
     )
 
 
-@translation_app.command("migrate")
-def translation_migrate(
-    source_project: PathArg,
-    target_project: PathArg,
-    pages: str = typer.Option("all"),
-    minimum_score: float = typer.Option(88.0),
-) -> None:
-    """Migrate drafts after an explicit re-extraction of the same PDF."""
-    emit(migrate_translations(source_project, target_project, pages, minimum_score))
 
 
 @qa_app.command("run")
@@ -504,7 +380,7 @@ def workflow_create_packet(
     emit(
         [packet.model_dump(mode="json") for packet in result]
         if isinstance(result, list)
-        else result
+        else result.model_dump(mode="json") if isinstance(result, BaseModel) else result
     )
 
 

@@ -190,6 +190,8 @@ def main() -> None:
     agent_files = sorted((PLUGIN_ROOT / "agents").glob("*.md"))
     expected_agents = {
         "literature-translator.md": "writer",
+        "literature-transcriber.md": "writer",
+        "literature-asset-reviewer.md": "asset-json",
         "literature-fidelity-reviewer.md": "jsonl",
         "literature-technical-reviewer.md": "jsonl",
         "literature-chinese-style-reviewer.md": "jsonl",
@@ -216,7 +218,7 @@ def main() -> None:
         readonly = bool(re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE))
         contract = expected_agents[agent_path.name]
         if contract == "writer" and readonly:
-            raise ValueError("Cursor translation writer must not be read-only")
+            raise ValueError(f"Production agent must not be read-only: {agent_path.name}")
         if contract != "writer" and not readonly:
             raise ValueError(f"Reviewer agent must be read-only: {agent_path.name}")
         if readonly:
@@ -242,6 +244,15 @@ def main() -> None:
                 raise ValueError(
                     "External reviewer must return a bound JSON object with "
                     "review_binding, verdict, and issues"
+                )
+
+            if contract == "asset-json" and not all(
+                marker in lowered_body
+                for marker in ("json", "image_evidence", "render_artifact_sha256", "candidate")
+            ):
+                raise ValueError(
+                    "Asset reviewer must return bound JSON with original-image "
+                    "and rendered-candidate evidence"
                 )
 
     schema_dir = PLUGIN_ROOT / "schemas"
