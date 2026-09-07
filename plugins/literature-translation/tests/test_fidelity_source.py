@@ -191,7 +191,7 @@ def test_partial_verification_rejects_global_duplicate_unit_ids(project: Path) -
     assert "duplicate source unit" in result["errors"][0]["message"]
 
 
-def test_parser_box_cutting_one_prose_word_promotes_complete_block() -> None:
+def test_parser_box_cutting_one_prose_word_preserves_native_text() -> None:
     from littrans.fidelity import _regions
 
     class Page:
@@ -207,9 +207,7 @@ def test_parser_box_cutting_one_prose_word_promotes_complete_block() -> None:
     glyphs = [{"id": str(i), "text": c, "font": "SFRM1000", "bbox": [i * 6, 20, i * 6 + 5, 30], "line": "line"} for i, c in enumerate("norm")]
     boxes = [{"label": "inline_formula", "bbox": [0, 30, 11, 45]}]
     regions = _regions(Page(), glyphs, boxes)
-    assert regions[0]["kind"] == "mixed-region"
-    assert regions[0]["grouping_pending"]
-    assert regions[0]["bbox"][2] >= 80
+    assert regions == []
 
 
 def test_roman_math_font_rule_does_not_capture_plain_cmr_prose() -> None:
@@ -235,3 +233,97 @@ def test_roman_math_font_rule_does_not_capture_plain_cmr_prose() -> None:
     found = _regions(Page(), mixed, [])
     assert len(found) == 1
     assert found[0]["kind"] == "math"
+
+
+def test_adjacent_native_math_lines_do_not_merge() -> None:
+    from littrans.fidelity import _native, _regions
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((100, 100), "x = 1", fontsize=11)
+        page.insert_text((100, 112), "y = 2", fontsize=11)
+        glyphs, _ = _native(page)
+        regions = _regions(page, glyphs, [])
+    assert len(regions) == 2
+    assert not set(regions[0]["glyph_ids"]) & set(regions[1]["glyph_ids"])
+
+
+def test_table_container_keeps_all_original_text() -> None:
+    from littrans.fidelity import _native, _regions
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((100, 100), "Label = 1")
+        glyphs, _ = _native(page)
+        regions = _regions(page, glyphs, [{"label": "table", "bbox": [180, 160, 400, 230]}])
+    assert len(regions) == 1
+    assert regions[0]["kind"] == "table"
+    assert "glyph_ids" not in regions[0]
+
+
+def test_roman_operator_does_not_discard_display_formula() -> None:
+    from littrans.fidelity import _native, _regions
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((100, 100), "sin x = 1")
+        glyphs, _ = _native(page)
+        regions = _regions(page, glyphs, [{"label": "display_formula", "bbox": [190, 175, 310, 210]}])
+    assert len(regions) == 1 and regions[0]["display"]
+    assert {g["id"] for g in glyphs if g["text"].strip()} <= set(regions[0]["glyph_ids"])
+
+
+def test_display_equation_is_separate_and_numbered(project: Path) -> None:
+    from littrans.fidelity import _make_unit, _separate_display_units
+    prepare_source(project, "1")
+    assets = load_assets(project)
+    asset = next(a for a in assets.values() if a.kind == "math")
+    assets[asset.id] = asset.model_copy(update={"display": True})
+    marker = "{{asset:" + asset.id + "}}"
+    units = [_make_unit(1, "p1-b1", "For a polynomial, take " + marker + "Then continue.", [60, 68, 200, 86], assets),
+             _make_unit(1, "p1-b2", "(10.20)", [10, 68, 40, 84], assets)]
+    split = _separate_display_units(units, assets)
+    assert [u.kind.value for u in split] == ["paragraph", "equation", "paragraph"]
+    assert split[1].equation_number == "10.20"
+    assert split[1].source_text == marker
+    assert not split[1].translatable
+
+
+def test_recoverable_paragraph_cannot_pass_as_image() -> None:
+    from littrans.fidelity import _opaque_prose_assets
+    text = "For an arbitrary polynomial the matrix function takes the form"
+    glyphs = [{"id": str(i), "text": c, "font": "SFRM1000"} for i, c in enumerate(text)]
+    current = {"ledger": {"glyphs": glyphs}, "assets": [{"id": "opaque", "kind": "mixed-region", "fragments": [{"glyph_ids": [g["id"] for g in glyphs]}]}]}
+    assert _opaque_prose_assets(current) == ["opaque"]
+
+
+def test_unsupported_vector_keeps_unreviewed_original(project: Path) -> None:
+    from littrans.fidelity import _asset, _native, _regions
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((100, 100), "x = 1")
+        page.draw_line((119, 85), (119, 105))
+        glyphs, _ = _native(page)
+        region = next(r for r in _regions(page, glyphs, []) if r.get("glyph_ids"))
+        asset = _asset(project, doc, 1, "a" * 64, region, glyphs)
+    assert asset.kind == "mixed-region" and asset.grouping_pending
+    assert asset.fragments[0].export_method == "raw-region"
+    assert (project / asset.fragments[0].png_path).is_file()
+
+
+def test_roman_math_operators_are_not_opaque_prose() -> None:
+    from littrans.fidelity import _opaque_prose_assets
+    text = "sin x + cos x + tan x + log x + exp x + max x"
+    glyphs = [{"id": str(i), "text": c, "font": "Helvetica"} for i, c in enumerate(text)]
+    current = {"ledger": {"glyphs": glyphs}, "assets": [{"id": "formula", "kind": "math", "fragments": [{"glyph_ids": [g["id"] for g in glyphs]}]}]}
+    assert _opaque_prose_assets(current) == []
+
+
+def test_prose_article_before_math_font_space_stays_text() -> None:
+    from littrans.fidelity import _regions
+    class Page:
+        def get_image_info(self): return []
+        def get_drawings(self): return []
+    text = "This is a L2"
+    glyphs = [{"id": str(i), "text": c, "font": "SFRM1000" if i < 9 else "CMR10", "bbox": [i * 6, 10, i * 6 + 5, 20], "line": "line"} for i, c in enumerate(text)]
+    regions = _regions(Page(), glyphs, [])
+    assert len(regions) == 1
+    assert "8" not in regions[0]["glyph_ids"]
+    assert {"10", "11"} <= set(regions[0]["glyph_ids"])

@@ -54,6 +54,8 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         "instructions": (
             "Read original English and actually view the referenced source images before writing. "
             "Preserve each {{asset:ID}} in its corresponding unit; source formulas remain images. "
+            "Keep each inline mathematical referent explicit at its corresponding location; do not replace it with a vague verbal category. "
+            "If recoverable prose and formulas are trapped in a mixed-region, request source splitting before translating its companion. "
             "Do not read transcription candidates. Record viewed source image hashes in image_evidence "
             "on translation records. If mathematical meaning is unclear, record uncertainties. "
             "For table, mixed-region and figure assets include asset_translations: translated text, "

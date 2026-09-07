@@ -37,6 +37,7 @@ from littrans.storage import (
 
 MATH_FONT = re.compile(r"cmmi|cmsy|cmex|msam|msbm|math|symbol|stix|cm[a-z]*sy", re.I)
 MATH_CHAR = re.compile(r"[\u0370-\u03ff\u2100-\u214f\u2190-\u22ff\u27c0-\u27ef=<>^_|]")
+MATH_OPERATORS = {"sin", "cos", "tan", "log", "ln", "exp", "lim", "sup", "inf", "max", "min", "det", "rank", "diag", "span", "arg", "dim", "ker", "poly", "tr"}
 KINDS = {"math", "figure", "table", "code", "mixed-region"}
 
 
@@ -105,13 +106,17 @@ def _native(page: fitz.Page) -> tuple[list[dict[str, Any]], list[dict[str, Any]]
 
 
 def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Use original visible paths when available: TeX accents and radicals often
+    # have misleading native metric rectangles on an adjacent line.
+    if hasattr(page, "get_svg_image"):
+        from littrans.glyph_export import glyph_ink_boxes
+        ink = glyph_ink_boxes(page, glyphs)
+        glyphs = [{**g, "bbox": ink.get(g["id"], g["bbox"])} for g in glyphs]
     regions: list[dict[str, Any]] = []
-    for block in page.get_text("rawdict")["blocks"]:
-        if block["type"] != 0:
-            continue
-        bad = [g for g in glyphs if _inside(g, block["bbox"]) and ("\ufffd" in g["text"] or any(ord(c) < 32 and c not in "\t\r\n" for c in g["text"]) and not MATH_FONT.search(g["font"]))]
-        if bad:
-            regions.append({"kind": "mixed-region", "bbox": list(block["bbox"]), "provenance": ["invalid-native-text:recovery-required"], "display": True, "grouping_pending": True})
+    # A damaged character does not make the surrounding paragraph opaque.
+    for glyph in glyphs:
+        if "\ufffd" in glyph["text"] or (any(ord(c) < 32 and c not in "\t\r\n" for c in glyph["text"]) and not MATH_FONT.search(glyph["font"])):
+            regions.append({"kind": "mixed-region", "bbox": list(glyph["bbox"]), "glyph_ids": [glyph["id"]], "provenance": ["invalid-native-text:recovery-required"], "display": False, "grouping_pending": True})
     for item in layout:
         label = item.get("label", "")
         kind = "math" if "formula" in label and "number" not in label else "figure" if label in {"image", "figure", "chart", "header_image", "footer_image"} else label if label in {"table", "code"} else None
@@ -127,16 +132,22 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     for line in lines.values():
         run: list[dict[str, Any]] = []
         for position, glyph in enumerate([*line, {"text": "\u0000", "font": "", "bbox": [0, 0, 0, 0]}]):
-            mathematical = bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or (separate_roman_math and re.match(r"CMR\d", glyph["font"], re.I)))
+            mathematical = bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
             if mathematical or (run and glyph["text"] in "0123456789()[]{}+-*/., "):
-                if mathematical and not run:
+                if mathematical and not run and not glyph["text"].isspace():
                     # Normal-font prefixes are common in U(N), diag(...), 2π.
                     prefix: list[dict[str, Any]] = []
                     for previous in reversed(line[:position]):
+                        if previous["text"].isspace() and not prefix:
+                            continue
                         if previous["text"].isspace() or not re.fullmatch(r"[A-Za-z0-9([{}.*+/-]", previous["text"]):
                             break
                         prefix.insert(0, previous)
                     prefix_text = "".join(g["text"] for g in prefix)
+                    # A preceding prose article is not a mathematical prefix.
+                    if prefix and line[position - 1]["text"].isspace() and glyph["text"] not in "=<>±×÷":
+                        prefix = []
+                        prefix_text = ""
                     if re.fullmatch(r"(?:[A-Za-z]|diag|rank|Tr|tr|sin|cos|tan|log|exp|lim|sup|inf|max|min|det|dim|ker|span)?[0-9([{}.*+/-]*", prefix_text):
                         run.extend(prefix)
                 run.append(glyph)
@@ -144,7 +155,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                 while run and run[-1]["text"] in " .,":
                     run.pop()
                 if run:
-                    regions.append({"kind": "math", "bbox": _union([g["bbox"] for g in run]), "provenance": ["native-math-glyphs"], "display": False, "grouping_pending": False})
+                    regions.append({"kind": "math", "bbox": _union([g["bbox"] for g in run]), "glyph_ids": [g["id"] for g in run], "provenance": ["native-math-glyphs"], "display": False, "grouping_pending": False})
                 run = []
     for image in page.get_image_info():
         regions.append({"kind": "figure", "bbox": list(image["bbox"]), "provenance": ["native-image"], "display": True, "grouping_pending": False})
@@ -153,62 +164,64 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         bbox = list(drawing["rect"])
         bbox = [bbox[0] - 0.5, bbox[1] - 0.5, bbox[2] + 0.5, bbox[3] + 0.5]
         regions.append({"kind": "mixed-region", "bbox": bbox, "provenance": ["native-vector"], "display": True, "grouping_pending": True})
-    # Merge overlaps, including glyph extents, so no key glyph is cut into two assets.
-    changed = True
-    native_blocks = [b for b in page.get_text("rawdict")["blocks"] if b["type"] == 0]
-    operators = {"sin", "cos", "tan", "log", "exp", "lim", "sup", "inf", "max", "min", "det", "rank", "diag", "span", "arg", "dim", "ker", "poly"}
-    prose_words: list[list[dict[str, Any]]] = []
+    # Detector rectangles are proposals, not authority to consume prose. Font
+    # metrics overlap adjacent words even when the visible ink is disjoint.
+    native_ids = {gid for r in regions for gid in r.get("glyph_ids", [])}
+    prose_ids: set[str] = set()
     for line in lines.values():
         word: list[dict[str, Any]] = []
-        for glyph in [*line, {"text": " ", "font": ""}]:
-            prose_font = not MATH_FONT.search(glyph["font"]) and not (separate_roman_math and re.match(r"CMR\d", glyph["font"], re.I))
-            if prose_font and glyph["text"].isalpha():
+        for glyph in [*line, {"text": " "}]:
+            if glyph["text"].isalpha() and glyph.get("id") not in native_ids:
                 word.append(glyph)
             else:
-                if len(word) >= 2:
-                    prose_words.append(word)
+                if len(word) >= 2 and "".join(g["text"] for g in word).lower() not in MATH_OPERATORS:
+                    prose_ids.update(g["id"] for g in word)
                 word = []
+    clean = []
+    for region in regions:
+        if "glyph_ids" not in region:
+            owned = [g for g in glyphs if g["text"].strip() and _inside(g, region["bbox"])]
+            if region["kind"] == "math" and (not owned or any(g["id"] in prose_ids for g in owned)):
+                # Fall back to the finer native math runs, not the whole block.
+                continue
+            if region["kind"] in {"math", "mixed-region"} and owned:
+                region["glyph_ids"] = [g["id"] for g in owned if g["id"] not in prose_ids]
+                if not region["glyph_ids"]:
+                    # A vector crossing ordinary text still needs original evidence.
+                    if "native-vector" not in region["provenance"]:
+                        continue
+                    region.pop("glyph_ids")
+        clean.append(region)
+    regions = clean
+    # Merge formula components and their rules, but never expand to a PDF text
+    # block. Explicit ownership prevents overlapping font boxes stealing prose.
+    changed = True
     while changed:
         changed = False
-        for r in regions:
-            owned_glyphs = [g for g in glyphs if _inside(g, r["bbox"])]
-            owned = [g["bbox"] for g in owned_glyphs]
-            if owned:
-                r["bbox"] = _union([r["bbox"], *owned])
-            normal_text = "".join(g["text"] if not MATH_FONT.search(g["font"]) else " " for g in owned_glyphs)
-            words = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", normal_text) if w.lower() not in operators]
-            # Even one cut character from a prose word is a preservation failure.
-            # Expanding merely to that glyph can leave 'n{{asset}}orm' in source.
-            touched_words = [word for word in prose_words if any(_intersects(g["bbox"], r["bbox"]) for g in word)]
-            prose_word_intersection = bool(touched_words)
-            if r["kind"] in {"math", "mixed-region"} and (prose_word_intersection or len(words) >= 2 or any(len(w) >= 6 for w in words)):
-                # A parser box spanning several text lines can consume pieces of words
-                # in intervening lines. Preserve complete native blocks, not a false
-                # precise formula with disconnected prose scattered around it.
-                touched_glyphs = owned_glyphs + [g for word in touched_words for g in word]
-                blocks_to_keep = [b["bbox"] for b in native_blocks if any(_inside(g, b["bbox"]) for g in touched_glyphs)]
-                r["bbox"] = _union([r["bbox"], *blocks_to_keep])
-                r["kind"] = "mixed-region"
-                r["grouping_pending"] = True
-                r["display"] = True
-                r["provenance"] = sorted(set([*r["provenance"], "complete-prose-block-fallback"]))
         for i, left in enumerate(regions):
             for j in range(i + 1, len(regions)):
                 right = regions[j]
-                if _intersects(left["bbox"], right["bbox"]):
+                shared = set(left.get("glyph_ids", [])) & set(right.get("glyph_ids", []))
+                overlap = _intersects(left["bbox"], right["bbox"])
+                detector_math = left["kind"] == right["kind"] == "math" and any(p.startswith("PP-DocLayoutV2:") for p in left["provenance"] + right["provenance"])
+                left_g = [g for g in glyphs if g["id"] in left.get("glyph_ids", []) and g["text"].strip()]
+                right_g = [g for g in glyphs if g["id"] in right.get("glyph_ids", []) and g["text"].strip()]
+                near_baseline = not left_g or not right_g or min(abs(a.get("baseline", 0) - b.get("baseline", 0)) for a in left_g for b in right_g) < max(g.get("size", 10) for g in left_g + right_g) * .7
+                if shared or (overlap and not detector_math and near_baseline):
+                    display = any(r["display"] and any(p != "native-vector" for p in r["provenance"]) for r in (left, right))
                     left["bbox"] = _union([left["bbox"], right["bbox"]])
+                    if "glyph_ids" in left or "glyph_ids" in right:
+                        ids = set(left.get("glyph_ids", [])) | set(right.get("glyph_ids", []))
+                        left["glyph_ids"] = [g["id"] for g in glyphs if g["id"] in ids]
                     if left["kind"] != right["kind"]:
-                        if "table" in {left["kind"], right["kind"]}:
-                            left["kind"] = "table"
-                        elif "figure" in {left["kind"], right["kind"]}:
-                            left["kind"] = "figure"
-                        elif "math" in {left["kind"], right["kind"]} and "native-vector" in left["provenance"] + right["provenance"]:
-                            left["kind"] = "math"
-                        else:
-                            left["kind"] = "mixed-region"
+                        kinds = {left["kind"], right["kind"]}
+                        left["kind"] = "table" if "table" in kinds else "figure" if "figure" in kinds else "math" if "math" in kinds and "native-vector" in left["provenance"] + right["provenance"] else "mixed-region"
+                    if left["kind"] in {"figure", "table", "code"}:
+                        left.pop("glyph_ids", None)
                     left["provenance"] = sorted(set(left["provenance"] + right["provenance"]))
                     left["grouping_pending"] = left["kind"] == "mixed-region"
-                    left["display"] = left["display"] or right["display"]
+                    # A fraction bar/accent alone does not turn inline math into display math.
+                    left["display"] = display
                     regions.pop(j)
                     changed = True
                     break
@@ -254,8 +267,15 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
     owned_svg = None
     if export_method != "raw-region":
         from littrans.glyph_export import build_owned_fragment
-        owned_svg, geometry = build_owned_fragment(page, owned, list(rect))
-        rect = fitz.Rect(geometry["bbox"])
+        try:
+            owned_svg, geometry = build_owned_fragment(page, owned, list(rect))
+            rect = fitz.Rect(geometry["bbox"])
+        except ValueError as exc:
+            # Keep original evidence available, but require boundary correction.
+            # Do not claim a raw crop is an isolated mathematical expression.
+            export_method = "raw-region"
+            region = {**region, "kind": "mixed-region", "grouping_pending": True,
+                      "provenance": [*region.get("provenance", []), "precise-export-unavailable:" + str(exc)]}
     identity = {"source_sha256": source_hash, "page": page_number, "bbox": _box(rect), "glyph_ids": [g["id"] for g in owned]}
     if export_method != "raw-region":
         identity["export_method"] = export_method
@@ -304,6 +324,48 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
         kind = "equation"
         payload["kind"] = kind
     return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, translatable=not pure_math, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
+
+
+def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
+    """Keep display formulas selectable and bind their printed equation labels."""
+    result = []
+    number_pattern = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?)\)"
+    for unit in units:
+        text = unit.source_markdown or unit.source_text
+        refs = asset_reference_ids(text)
+        displays = [aid for aid in refs if assets[aid].kind == "math" and assets[aid].display]
+        plain = re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip()
+        label = re.fullmatch(number_pattern, plain)
+        if len(refs) == 1 and displays and (not plain or label):
+            result.append(_make_unit(unit.page, unit.unit_id, "{{asset:" + refs[0] + "}}", unit.bbox, assets, equation_number=label[1] if label else None))
+        elif displays:
+            chunks, pending = [], ""
+            for part in re.split(r"(\{\{asset:[^}]+\}\})", text):
+                part_ids = asset_reference_ids(part)
+                if part_ids and part_ids[0] in displays:
+                    if pending.strip():
+                        chunks.append((pending.strip(), unit.bbox, unit.kind.value))
+                    chunks.append((part, assets[part_ids[0]].fragments[0].bbox, "equation"))
+                    pending = ""
+                else:
+                    pending += part
+            if pending.strip():
+                chunks.append((pending.strip(), unit.bbox, unit.kind.value))
+            result.extend(_make_unit(unit.page, unit.unit_id if i == 0 else f"{unit.unit_id}-s{i + 1}", body, box, assets, kind=kind) for i, (body, box, kind) in enumerate(chunks))
+        else:
+            result.append(unit)
+    removed = set()
+    for index, unit in enumerate(result):
+        label = re.fullmatch(number_pattern, unit.source_text.strip())
+        if not label:
+            continue
+        y = (unit.bbox[1] + unit.bbox[3]) / 2
+        candidates = [(i, other) for i, other in enumerate(result) if other.kind == UnitKind.EQUATION and not other.equation_number and any(assets[aid].display and assets[aid].fragments[0].bbox[1] - 3 <= y <= assets[aid].fragments[0].bbox[3] + 3 for aid in asset_reference_ids(other.source_text))]
+        if len(candidates) == 1:
+            i, other = candidates[0]
+            result[i] = _make_unit(other.page, other.unit_id, other.source_text, _union([unit.bbox, other.bbox]), assets, equation_number=label[1])
+            removed.add(index)
+    return [unit for i, unit in enumerate(result) if i not in removed]
 
 
 def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str, layout: dict[str, Any], override: dict[str, Any] | None = None) -> tuple[list[SourceUnit], list[FidelityAsset], dict[str, Any]]:
@@ -365,6 +427,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         previous = [index for index, block in enumerate(blocks) if block["bbox"][3] <= unit.bbox[1]]
         return max(previous, default=-1) + 0.5
     units.sort(key=order)
+    units = _separate_display_units(units, by_id)
     if override and "units" in override:
         units = []
         for item in override["units"]:
@@ -553,6 +616,10 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             if by_page[p]["ledger"]["layout_status"] != "ok":
                 fields.append("layout_fallback_checked")
             passed = all(decision.get(key) is True for key in fields) and decision.get("issues") == []
+            opaque = _opaque_prose_assets(by_page[p])
+            if opaque:
+                passed = False
+                decision = {**decision, "extraction_issues": [{"code": "recoverable-prose-in-image", "assets": opaque}]}
             if passed:
                 approved.append(p)
             write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json", {"fingerprint": decision["fingerprint"], "source_sha256": config.source_sha256, "passed": passed, "reviewer": review["reviewer"], "packet_sha256": review["packet_sha256"], "decision": decision})
@@ -564,6 +631,21 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         write_jsonl(root / "derived/units.jsonl", units)
         write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
     return {"approved_pages": approved, "changed_pages": changed, "requires_new_packet": bool(changed)}
+
+
+def _opaque_prose_assets(current: dict[str, Any]) -> list[str]:
+    """Image ownership is not textual coverage of recoverable paragraphs."""
+    glyphs = current["ledger"]["glyphs"]
+    separate_roman = sum(g["font"].upper().startswith("SF") for g in glyphs) > len(glyphs) * .2
+    opaque = []
+    for asset in current["assets"]:
+        if asset["kind"] not in {"math", "mixed-region"}:
+            continue
+        ids = {gid for f in asset["fragments"] for gid in f["glyph_ids"]}
+        prose = "".join(g["text"] if g["id"] in ids and not MATH_FONT.search(g["font"]) and not (separate_roman and re.match(r"CM(?:R|BX)\d", g["font"], re.I)) else " " for g in glyphs)
+        if len([word for word in re.findall(r"[A-Za-z]{2,}", prose) if word.lower() not in MATH_OPERATORS]) >= 6:
+            opaque.append(asset["id"])
+    return opaque
 
 
 def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
@@ -586,6 +668,9 @@ def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
             if not source_current:
                 raise ValueError("source PDF changed")
             current = _current_page(root, p)
+            opaque = _opaque_prose_assets(current)
+            if opaque:
+                raise ValueError("recoverable prose remains inside image assets; re-prepare or split source regions: " + ", ".join(opaque))
             receipt_path = root / f"evidence/pages/fidelity-p{p:04d}.review.json"
             receipt = read_json(receipt_path) if receipt_path.is_file() else {}
             if not receipt.get("passed") or receipt.get("fingerprint") != current["fingerprint"]:

@@ -21,14 +21,21 @@ def test_explicit_original_glyphs_exclude_neighbor_ink(tmp_path: Path) -> None:
             export_owned_fragment(page, [{**glyph, "origin": [0, 0]}], tmp_path / "bad.svg", tmp_path / "bad.png", 300)
 
 
-def test_unknown_vector_structure_fails_instead_of_omitting_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize("center, intersects", [((53, 76), True), ((70, 90), False)])
+def test_unknown_vector_is_rejected_only_when_it_intersects_fragment(tmp_path: Path, center: tuple, intersects: bool) -> None:
     with fitz.open() as document:
         page = document.new_page()
         page.insert_text((50, 80), "x")
-        page.draw_circle((70, 90), 3)
+        page.draw_circle(center, 3)
         char = page.get_text("rawdict")["blocks"][0]["lines"][0]["spans"][0]["chars"][0]
-        with pytest.raises(ValueError, match="Unsupported"):
-            export_owned_fragment(page, [{"id": "x", "text": "x", "bbox": char["bbox"], "origin": char["origin"]}], tmp_path / "x.svg", tmp_path / "x.png", 300)
+        glyph = {"id": "x", "text": "x", "bbox": char["bbox"], "origin": char["origin"]}
+        if intersects:
+            with pytest.raises(ValueError, match="Unsupported"):
+                export_owned_fragment(page, [glyph], tmp_path / "x.svg", tmp_path / "x.png", 300)
+        else:
+            result = export_owned_fragment(page, [glyph], tmp_path / "x.svg", tmp_path / "x.png", 300)
+            assert result["matched_glyphs"] == 1
+            assert result["retained_paths"] == 0
 
 
 @pytest.mark.parametrize("symbol", ["^", "f"])
