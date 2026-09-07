@@ -437,7 +437,11 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target or unit.source_text
     safe_text = escape_markdown_prose(text)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
-        return safe_text + (f" ({unit.equation_number})" if unit.equation_number else "")
+        return safe_text + (
+            f" ({unit.equation_number})"
+            if unit.equation_number and f"({unit.equation_number})" not in text
+            else ""
+        )
     if unit.sidebar_role is SidebarRole.TITLE:
         return f"> **{safe_text}**"
     if unit.sidebar_role is SidebarRole.BODY:
@@ -481,6 +485,9 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 INLINE_TOKEN_RE = re.compile(
     r"(?P<code>(?<!\\)(?P<fence>`+)(?P<code_text>.+?)(?P=fence))"
     r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+    r"|(?P<strong_em>(?<!\\)\*\*\*(?P<strong_em_text>.+?)\*\*\*)"
+    r"|(?P<strong>(?<!\\)\*\*(?P<strong_text>.+?)\*\*)"
+    r"|(?P<footnote>\[\^(?P<footnote_number>\d+)\])"
     r"|(?P<emphasis>(?<!\\)(?<!\*)\*(?!\*)(?P<emphasis_text>[^*\n]+?)(?<!\\)\*(?!\*))"
 )
 
@@ -492,7 +499,7 @@ def _mathml(latex: str, display: str) -> str:
         return f'<code class="math-fallback">{html.escape(latex)}</code>'
 
 
-def _inline_html(text: str) -> str:
+def _inline_html(text: str, footnote_scope: str = "") -> str:
     parts: list[str] = []
     position = 0
     for match in INLINE_TOKEN_RE.finditer(text):
@@ -513,12 +520,19 @@ def _inline_html(text: str) -> str:
                 + _mathml(match.group("math_text"), "inline")
                 + "</span>"
             )
+        elif match.group("strong_em") is not None:
+            parts.append("<strong><em>" + _inline_html(match.group("strong_em_text"), footnote_scope) + "</em></strong>")
+        elif match.group("strong") is not None:
+            parts.append("<strong>" + _inline_html(match.group("strong_text"), footnote_scope) + "</strong>")
+        elif match.group("footnote") is not None:
+            number = match.group("footnote_number")
+            parts.append(f'<sup class="footnote-ref"><a href="#fn-{html.escape(footnote_scope)}-{number}">{number}</a></sup>')
         else:
             # Emphasis may legitimately contain inline code or math. Parse its
             # body through the same safe inline renderer so Markdown such as
             # ``*set the `Opacity` property*`` does not leak raw backticks into
             # bilingual HTML.
-            parts.append("<em>" + _inline_html(match.group("emphasis_text")) + "</em>")
+            parts.append("<em>" + _inline_html(match.group("emphasis_text"), footnote_scope) + "</em>")
         position = match.end()
     parts.append(html.escape(text[position:]).replace("\n", " "))
     return "".join(parts)
@@ -531,12 +545,18 @@ def _unit_html(
     *,
     source_view: bool,
 ) -> str:
+    scope = f"p{unit.page}-{'source' if source_view else 'target'}"
+    inline = lambda value: _inline_html(value, scope)
     text = target if target is not None else (unit.source_markdown or unit.source_text)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
-        number = f'<span class="equation-number">({html.escape(unit.equation_number)})</span>' if unit.equation_number else ""
-        return '<div class="fidelity-complex">' + _inline_html(text) + number + '</div>'
+        number = (
+            f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
+            if unit.equation_number and f"({unit.equation_number})" not in text
+            else ""
+        )
+        return '<div class="fidelity-complex">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
-        return '<aside class="sidebar-fragment sidebar-title"><h3>' + _inline_html(text) + "</h3></aside>"
+        return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
@@ -567,7 +587,7 @@ def _unit_html(
         ) + number + "</div>"
     if unit.kind is UnitKind.TABLE:
         table = target_table or unit.table
-        return table_to_html(table, _inline_html) if table else _inline_html(text)
+        return table_to_html(table, _inline_html) if table else inline(text)
     if unit.kind is UnitKind.NOTE:
         variant = _note_variant(unit.source_text, unit.callout_kind)
         source_labels = {
@@ -587,29 +607,29 @@ def _unit_html(
         label = source_labels[variant] if source_view else target_labels[variant]
         return (
             f'<aside class="source-note"><strong>{label}</strong><p>'
-            + _inline_html(_note_body(text))
+            + inline(_note_body(text))
             + "</p></aside>"
         )
     if unit.kind is UnitKind.HEADING:
-        return "<h2>" + _inline_html(text) + "</h2>"
+        return "<h2>" + inline(text) + "</h2>"
     if unit.kind is UnitKind.LIST_ITEM:
         ordinal = _list_ordinal(unit.source_text)
-        body = _inline_html(_list_body(text))
+        body = inline(_list_body(text))
         if ordinal is not None:
             return f'<ol start="{ordinal}"><li>{body}</li></ol>'
         return "<ul><li>" + body + "</li></ul>"
     if unit.kind is UnitKind.CAPTION:
-        return "<figcaption>" + _inline_html(text) + "</figcaption>"
+        return "<figcaption>" + inline(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:
         label = f'<strong>脚注 {html.escape(unit.footnote_number)}：</strong>' if unit.footnote_number else ""
-        return '<aside class="footnote">' + label + _inline_html(text) + "</aside>"
+        return f'<aside class="footnote" id="fn-{scope}-{html.escape(unit.footnote_number or chr(48))}">' + label + inline(text) + "</aside>"
     if unit.kind is UnitKind.FIGURE and unit.figure_labels:
         labels = "".join(
             f"<li>{_inline_html(label.source if source_view else (label.target or label.source))}</li>"
             for label in unit.figure_labels
         )
         return "<ul class=figure-labels>" + labels + "</ul>"
-    return "<p>" + _inline_html(text) + "</p>"
+    return "<p>" + inline(text) + "</p>"
 
 
 def _asset_companions(record: Any) -> tuple[str, str]:

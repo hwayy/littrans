@@ -354,6 +354,8 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             unit,
             [label.source for label in rendered_figure_labels],
         )
+        if Counter(re.findall(r"\[\^(\d+)\]", unit.source_markdown or unit.source_text)) != Counter(re.findall(r"\[\^(\d+)\]", record.target_text)):
+            errors.append(QAItem(code="footnote-call-mismatch", severity="error", unit_id=unit_id, message="Preserve explicit footnote calls in the translated paragraph"))
         for problem in validate_asset_references(root, unit.source_markdown or unit.source_text,
                                                  record.target_text):
             errors.append(QAItem(**problem, severity="error", unit_id=unit_id))

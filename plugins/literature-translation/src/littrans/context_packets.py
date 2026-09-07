@@ -53,6 +53,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         "candidate_access": False,
         "instructions": (
             "Read original English and actually view the referenced source images before writing. "
+            "Preserve Markdown emphasis and [^number] footnote calls. Units sharing parent_id form one logical paragraph, including intervening display equations. "
             "Preserve each {{asset:ID}} in its corresponding unit; source formulas remain images. "
             "Keep each inline mathematical referent explicit at its corresponding location; do not replace it with a vague verbal category. "
             "If recoverable prose and formulas are trapped in a mixed-region, request source splitting before translating its companion. "
@@ -65,7 +66,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         ),
         "units": [{"unit_id": u.unit_id, "source_hash": u.source_hash,
                    "source": u.source_markdown or u.source_text, "page": u.page,
-                   "equation_number": u.equation_number} for u in units],
+                   "equation_number": u.equation_number, "parent_id": u.parent_id, "footnote_number": u.footnote_number, "footnote_refs": u.footnote_refs} for u in units],
         "read_only_context": [{"unit_id": u.unit_id, "source": u.source_markdown or u.source_text,
                                "page": u.page, "source_hash": u.source_hash} for u in adjacent],
         "assets": [assets[aid].model_dump(mode="json") for aid in selected],

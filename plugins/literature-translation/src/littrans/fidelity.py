@@ -318,12 +318,15 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
     refs = asset_reference_ids(text)
     hashes = {aid: assets[aid].content_sha256 for aid in refs}
     extra.setdefault("protected_tokens", protected_tokens(re.sub(r"\{\{asset:[^}]+\}\}", "", text)))
+    extra.setdefault("translatable", True)
     payload = {"page": page, "text": text, "bbox": _box(bbox), "asset_content_hashes": hashes, "kind": kind, **extra}
-    pure_math = bool(refs) and not re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip() and all(assets[aid].kind == "math" for aid in refs)
+    pure_math = kind != "footnote" and bool(refs) and not re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip() and all(assets[aid].kind == "math" for aid in refs)
     if pure_math:
         kind = "equation"
         payload["kind"] = kind
-    return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, translatable=not pure_math, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
+        extra["translatable"] = False
+        payload["translatable"] = False
+    return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
 
 
 def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
@@ -351,7 +354,7 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
                     pending += part
             if pending.strip():
                 chunks.append((pending.strip(), unit.bbox, unit.kind.value))
-            result.extend(_make_unit(unit.page, unit.unit_id if i == 0 else f"{unit.unit_id}-s{i + 1}", body, box, assets, kind=kind) for i, (body, box, kind) in enumerate(chunks))
+            result.extend(_make_unit(unit.page, unit.unit_id if i == 0 else f"{unit.unit_id}-displaypart{i + 1}", body, box, assets, kind=kind) for i, (body, box, kind) in enumerate(chunks))
         else:
             result.append(unit)
     removed = set()
@@ -372,7 +375,11 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     page = doc[number - 1]
     glyphs, blocks = _native(page)
     image_path = root / f"evidence/pages/fidelity-p{number:04d}.png"
-    regions = override["regions"] if override and "regions" in override else _regions(page, glyphs, layout.get("pages", {}).get(str(image_path.resolve()), []))
+    from littrans.source_structure import plan_structure, assemble_structure, styled_text, coalesce_inline_assets
+    items = layout.get("pages", {}).get(str(image_path.resolve()), [])
+    structure = plan_structure(glyphs, blocks, items, page.rect.height)
+    blocks = structure["blocks"]
+    regions = override["regions"] if override and "regions" in override else _regions(page, [g for g in glyphs if g["id"] not in structure["markers"]], items)
     if not glyphs and not regions and page.get_images():
         regions = [{"kind": "mixed-region", "bbox": list(page.rect), "grouping_pending": True, "display": True, "provenance": ["no-text-layer"]}]
     assets = [_asset(root, doc, number, source_hash, r, glyphs) for r in regions]
@@ -393,20 +400,30 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     glyph_by_id = {g["id"]: g for g in glyphs}
     for block in blocks:
         lines = []
+        footnote_refs = []
         for line in block["lines"]:
-            chars = []
+            tokens = []
             for gid in line:
                 aid = owners.get(gid)
-                if aid:
+                marker = structure["markers"].get(gid)
+                font = glyph_by_id[gid]["font"]
+                style = "***" if re.search(r"SFBI|BoldItalic|BoldOblique", font, re.I) else "**" if re.search(r"SFBX|Bold", font, re.I) else "*" if re.search(r"SFTI|Italic|Oblique", font, re.I) else ""
+                if marker:
+                    if not marker["definition"]:
+                        tokens.append(("[^" + marker["number"] + "]", ""))
+                        footnote_refs.append(f"p{number:04d}-" + marker["note_block"])
+                elif aid:
                     if aid not in emitted:
                         before, after = edge_spaces[aid]
-                        chars.append((" " if before else "") + "{{asset:" + aid + "}}" + (" " if after else ""))
+                        tokens.append(((" " if before else "") + "{{asset:" + aid + "}}" + (" " if after else ""), ""))
                         emitted.add(aid)
                 else:
-                    chars.append(glyph_by_id[gid]["text"])
-            if "".join(chars).strip():
-                lines.append("".join(chars).strip())
+                    tokens.append((glyph_by_id[gid]["text"], style))
+            rendered = styled_text(tokens).strip()
+            if rendered:
+                lines.append(rendered)
         text = " ".join(lines)
+        text = re.sub(r"([a-z])-\s+([a-z])", r"\1\2", text)
         if text:
             kind = "paragraph"
             semantic_labels = {"doc_title": "heading", "paragraph_title": "heading", "title": "heading", "figure_caption": "caption", "table_caption": "caption", "footnote": "footnote", "reference": "bibliography", "list": "list_item"}
@@ -414,7 +431,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                 if item.get("label") in semantic_labels and _inside({"bbox": block["bbox"]}, [v / 2 for v in item["bbox"]]):
                     kind = semantic_labels[item["label"]]
                     break
-            units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, block["bbox"], by_id, kind=kind))
+            units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, block["bbox"], by_id, kind=kind, footnote_refs=list(dict.fromkeys(footnote_refs))))
     for asset in assets:
         if asset.id not in emitted:
             units.append(_make_unit(number, f"p{number:04d}-visual-{asset.id}", "{{asset:" + asset.id + "}}", asset.fragments[0].bbox, by_id, kind="figure" if asset.kind == "figure" else "paragraph"))
@@ -428,17 +445,22 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         return max(previous, default=-1) + 0.5
     units.sort(key=order)
     units = _separate_display_units(units, by_id)
+    units = assemble_structure(units, by_id, structure, _make_unit)
+    if not (override and "units" in override):
+        units = coalesce_inline_assets(units, by_id, _make_unit, _hash)
+    assets = list(by_id.values())
+    owners = {gid:a.id for a in assets for f in a.fragments for gid in f.glyph_ids}
     if override and "units" in override:
         units = []
         for item in override["units"]:
             if item.get("latex") is not None:
                 raise ValueError("source preservation cannot import LaTeX")
-            extra = {k: item[k] for k in ("equation_number", "footnote_number", "footnote_refs", "parent_id", "continues_from_previous", "continued_to_next") if k in item}
+            extra = {k: item[k] for k in ("equation_number", "footnote_number", "footnote_refs", "parent_id", "continues_from_previous", "continued_to_next", "render_policy", "translatable") if k in item}
             units.append(_make_unit(number, item["unit_id"], item["source_markdown"], item["bbox"], by_id, item.get("kind", "paragraph"), **extra))
         refs = Counter(aid for unit in units for aid in asset_reference_ids(unit.source_text))
         if refs != Counter({aid: 1 for aid in by_id}):
             raise ValueError("unit overrides must reference each page asset exactly once")
-    ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override}
+    ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
     ledger["fingerprint"] = _hash({"ledger": ledger, "units": [u.model_dump(mode="json", exclude={"verification_status"}) for u in units], "assets": [a.model_dump(mode="json") for a in assets]})
     return units, assets, ledger
 

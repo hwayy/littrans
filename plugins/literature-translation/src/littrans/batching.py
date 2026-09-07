@@ -171,6 +171,9 @@ def create_batches(
         missing = requested - {unit.unit_id for unit in selected}
         if missing:
             raise ValueError(f"Unknown, excluded or out-of-page source unit IDs: {sorted(missing)}")
+        parents = {unit.parent_id for unit in selected if unit.unit_id in requested and unit.parent_id}
+        if any(unit.parent_id in parents and unit.unit_id not in requested for unit in selected):
+            raise ValueError("Unit selection cuts a logical paragraph; include its prose and display equations")
         selected = [unit for unit in selected if unit.unit_id in requested]
         for index, unit in enumerate(all_units):
             if unit.unit_id not in requested:
