@@ -105,6 +105,71 @@ def _native(page: fitz.Page) -> tuple[list[dict[str, Any]], list[dict[str, Any]]
     return glyphs, blocks
 
 
+def _prose_boundary_ids(glyphs: list[dict[str, Any]]) -> set[str]:
+    """Protect evidenced prose delimiters/citation keys, not unbalanced math.
+
+    Work across native lines in each block. A normal-font delimiter is not
+    sufficient evidence alone: mathematical intervals and continued expressions
+    commonly use the same font as prose.
+    """
+    protected: set[str] = set()
+    separate_roman_math = sum(g["font"].upper().startswith("SF") for g in glyphs) > len(glyphs) * 0.2
+
+    def math_font(glyph: dict[str, Any]) -> bool:
+        return bool(MATH_FONT.search(glyph["font"]) or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
+
+    blocks: dict[str, list[dict[str, Any]]] = {}
+    for glyph in glyphs:
+        blocks.setdefault(glyph["line"].split("-l")[0], []).append(glyph)
+    for block in blocks.values():
+        text = "".join(g["text"] for g in block)
+        # Native glyphs normally encode one character, but retain offset mapping
+        # for ligatures/multi-character recovery values as well.
+        offsets = [g for g in block for _ in g["text"]]
+        for match in re.finditer(r"\[(?:[A-Za-z]{2,}\+?\d{2,4}[a-z]?)(?:[,;]\s*[A-Za-z]{2,}\+?\d{2,4}[a-z]?)*\]", text):
+            candidate = offsets[match.start():match.end()]
+            # A superscript citation '+' may use CMR even with SF prose.
+            # Mathematical letters in a similar-looking expression veto this.
+            if all(not math_font(g) for g in candidate if g["text"] != "+"):
+                protected.update(g["id"] for g in candidate)
+        stack: list[int] = []
+        for index, glyph in enumerate(block):
+            char = glyph["text"]
+            if char in {"(", "[", "{"}:
+                stack.append(index)
+            elif char in {")", "]", "}"} and stack:
+                start = stack.pop()
+                opening = block[start]
+                if opening["text"] != {")": "(", "]": "[", "}": "{"}[char]:
+                    stack.clear()
+                    continue
+                # Attached function arguments, including textual labels such as
+                # Cost(classical), remain mathematical candidate evidence.
+                if start and not block[start - 1]["text"].isspace():
+                    continue
+                if math_font(opening) or math_font(glyph):
+                    continue
+                inside = "".join(g["text"] if not math_font(g) else " " for g in block[start + 1:index])
+                words = re.findall(r"[A-Za-z]{2,}", inside)
+                if any(word.lower() not in MATH_OPERATORS for word in words) or re.search(r"\b(?:i\.e\.|e\.g\.)", inside, re.I):
+                    protected.update((opening["id"], glyph["id"]))
+    return protected
+
+
+def _boundary_diagnostics(glyphs: list[dict[str, Any]], assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    protected = _prose_boundary_ids(glyphs)
+    diagnostics = []
+    for asset in assets:
+        if asset["kind"] != "math":
+            continue
+        ids = {gid for fragment in asset["fragments"] for gid in fragment["glyph_ids"]}
+        contaminated = [g["id"] for g in glyphs if g["id"] in ids & protected]
+        if contaminated:
+            diagnostics.append({"code": "prose-boundary-in-math", "asset_id": asset["id"], "glyph_ids": contaminated,
+                                "action": "Inspect original prose/citation context and correct glyph ownership before approval."})
+    return diagnostics
+
+
 def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Use original visible paths when available: TeX accents and radicals often
     # have misleading native metric rectangles on an adjacent line.
@@ -129,15 +194,18 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     separate_roman_math = sum(g["font"].upper().startswith("SF") for g in glyphs) > len(glyphs) * 0.2
     for glyph in glyphs:
         lines.setdefault(glyph["line"], []).append(glyph)
+    protected_prose = _prose_boundary_ids(glyphs)
     for line in lines.values():
         run: list[dict[str, Any]] = []
         for position, glyph in enumerate([*line, {"text": "\u0000", "font": "", "bbox": [0, 0, 0, 0]}]):
             mathematical = bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
-            if mathematical or (run and glyph["text"] in "0123456789()[]{}+-*/., "):
+            if glyph.get("id") not in protected_prose and (mathematical or (run and glyph["text"] in "0123456789()[]{}+-*/., ")):
                 if mathematical and not run and not glyph["text"].isspace():
                     # Normal-font prefixes are common in U(N), diag(...), 2π.
                     prefix: list[dict[str, Any]] = []
                     for previous in reversed(line[:position]):
+                        if previous["id"] in protected_prose:
+                            break
                         if previous["text"].isspace() and not prefix:
                             continue
                         if previous["text"].isspace() or not re.fullmatch(r"[A-Za-z0-9([{}.*+/-]", previous["text"]):
@@ -167,7 +235,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     # Detector rectangles are proposals, not authority to consume prose. Font
     # metrics overlap adjacent words even when the visible ink is disjoint.
     native_ids = {gid for r in regions for gid in r.get("glyph_ids", [])}
-    prose_ids: set[str] = set()
+    prose_ids: set[str] = set(protected_prose)
     for line in lines.values():
         word: list[dict[str, Any]] = []
         for glyph in [*line, {"text": " "}]:
@@ -656,6 +724,8 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     profile_context = structure_context(root)
     if profile_context:
         payload["document_structure"] = profile_context
+    for page in payload["pages"]:
+        page["boundary_diagnostics"] = _boundary_diagnostics(page["ledger"]["glyphs"], page["assets"])
     packet_id = "source-" + _hash(payload)[:20]
     directory = root / "packets" / packet_id
     directory.mkdir(parents=True, exist_ok=True)
@@ -668,6 +738,8 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         sections.append('<h2>Document-specific structure guidance</h2><pre>' + html.escape(json.dumps(profile_context, ensure_ascii=False, indent=2)) + '</pre>')
     for p in payload["pages"]:
         ledger = p["ledger"]
+        if p["boundary_diagnostics"]:
+            sections.append("<h3>Prose/formula boundary diagnostics</h3><pre>" + html.escape(json.dumps(p["boundary_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
         boxes = "".join(f'<rect x="{f["bbox"][0]}" y="{f["bbox"][1]}" width="{f["width"]}" height="{f["height"]}" fill="none" stroke="red" stroke-width="0.6"><title>{html.escape(a["id"])}</title></rect>' for a in p["assets"] for f in a["fragments"])
         image_uri = _path(root, ledger["page_image"]).as_uri()
         if ledger.get("overflow_evidence"):

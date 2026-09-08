@@ -57,10 +57,11 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             if prior is not None and translations_semantically_equal(
                 unit, prior, record
             ):
-                if prior.source_hash != record.source_hash:
+                if prior.source_hash != record.source_hash or prior.image_evidence != record.image_evidence:
                     binding_update = prior.model_copy(
                         update={
                             "source_hash": record.source_hash,
+                            "image_evidence": record.image_evidence,
                             "status": ProjectStatus.REVISED,
                             "updated_at": utc_now(),
                         }

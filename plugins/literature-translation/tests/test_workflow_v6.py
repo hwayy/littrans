@@ -186,3 +186,87 @@ def test_nontranslatable_asset_ignores_historic_translation(project):
     output = render_project(project, "1", "historic-formula-draft", allow_draft=True, originals_only=True)
     assert all("removed-original" not in Path(path).read_text(encoding="utf-8")
                for key, path in output.items() if key in {"markdown", "html"})
+
+
+@pytest.mark.parametrize("same_source_hash", [False, True])
+def test_unchanged_translation_retains_fresh_images_after_boundary_repair(tmp_path, monkeypatch, same_source_hash):
+    """A real glyph ownership repair changes the image without changing Chinese."""
+    import littrans.fidelity as fidelity
+    from littrans.context_packets import validate_translation_images
+
+    monkeypatch.setattr(fidelity, "detect_layout", lambda images, output: {
+        "status": "unavailable", "reason": "Synthetic boundary oracle", "pages": {},
+    })
+    source = tmp_path / "boundary.pdf"
+    with fitz.open() as doc:
+        page = doc.new_page()
+        # The incomplete prose parenthesis context deliberately leaves the
+        # automatic candidate needing an explicit reviewer correction.
+        page.insert_text((50, 60), "Let x = 1) be the size.")
+        doc.save(source)
+    root = tmp_path / "boundary-project"
+    initialize_project(source, root, "technical-book")
+    prepare_source(root)
+
+    def review_source(override=None):
+        packet = build_source_review_packet(root)
+        review = read_json(Path(packet["review_template"]))
+        review["reviewer"] = "generated-boundary-oracle"
+        for decision in review["pages"]:
+            for key in ("viewed_original", "coverage_complete", "boundaries_complete",
+                        "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
+                decision[key] = True
+            if override:
+                decision["override"] = override
+        write_json(root / "boundary-review.json", review)
+        return import_source_review(root, root / "boundary-review.json", True)
+
+    review_source()
+    create_batches(root, "1", prefix="boundary")
+    bid = "boundary-b001"
+    units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+    old_records = [TranslationRecord(unit_id=u.unit_id, source_hash=u.source_hash,
+                   target_text=u.source_text.replace("Let", "Suppose"),
+                   image_evidence=original_context(root, [u])["required_images"])
+                   for u in units if u.translatable]
+    write_jsonl(root / "input.jsonl", old_records)
+    submit_translation(root, bid, root / "input.jsonl")
+    history = (root / "translations/history.jsonl").read_bytes()
+    packet = build_source_review_packet(root)
+    page = read_json(Path(packet["packet_path"]))["pages"][0]
+    glyphs = {g["id"]: g for g in page["ledger"]["glyphs"]}
+    regions = []
+    removed = []
+    for asset in page["assets"]:
+        fragment = asset["fragments"][0]
+        ids = fragment["glyph_ids"]
+        removed.extend(gid for gid in ids if glyphs[gid]["text"] == ")")
+        regions.append({"id": asset["id"], "kind": asset["kind"], "bbox": fragment["bbox"],
+                        "glyph_ids": [gid for gid in ids if glyphs[gid]["text"] != ")"],
+                        "display": asset["display"], "grouping_pending": False})
+    assert removed
+    assert review_source({"regions": regions})["requires_new_packet"]
+    review_source()
+    units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+    old_by_id = {record.unit_id: record for record in old_records}
+    fresh = [old_by_id[u.unit_id].model_copy(update={"source_hash": u.source_hash,
+             "image_evidence": original_context(root, [u])["required_images"]})
+             for u in units if u.translatable]
+    assert any(old_by_id[r.unit_id].image_evidence != r.image_evidence for r in fresh)
+    assert any(old_by_id[r.unit_id].source_hash != r.source_hash for r in fresh)
+    if same_source_hash:
+        # Reproduce a prior rebind that already refreshed the source hash but
+        # accidentally retained the obsolete receipt, as in the reported bug.
+        write_jsonl(root / "translations/current.jsonl", [
+            old_by_id[r.unit_id].model_copy(update={"source_hash": r.source_hash}) for r in fresh])
+    write_jsonl(root / "input.jsonl", fresh)
+    returned = submit_translation(root, bid, root / "input.jsonl")
+    current = read_jsonl(root / "translations/current.jsonl", TranslationRecord)
+    batch = read_jsonl(root / "batches" / bid / "translation.jsonl", TranslationRecord)
+    assert returned == current == batch
+    assert (root / "translations/history.jsonl").read_bytes() == history
+    for record in current:
+        assert record.revision == old_by_id[record.unit_id].revision
+        unit = next(u for u in units if u.unit_id == record.unit_id)
+        validate_translation_images(root, unit, record.image_evidence)
+        assert record.image_evidence == original_context(root, [unit])["required_images"]
