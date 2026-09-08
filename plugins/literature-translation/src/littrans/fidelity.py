@@ -383,10 +383,10 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
 def _expanded_native(page: fitz.Page, original_glyphs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Retain original glyph identities when a wider canvas changes PDF blocks."""
     from collections import defaultdict, deque
-    def key(glyph: dict[str, Any]) -> tuple:
+    def key(glyph: dict[str, Any]) -> tuple[Any, ...]:
         return (glyph["text"], glyph["font"], round(glyph["size"], 6),
                 *(round(value, 6) for value in glyph["origin"]))
-    available: dict[tuple, Any] = defaultdict(deque)
+    available: dict[tuple[Any, ...], Any] = defaultdict(deque)
     for glyph in original_glyphs:
         available[key(glyph)].append(glyph)
     glyphs, blocks = _native(page)
@@ -436,9 +436,18 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         overflow_path = root / f"evidence/pages/fidelity-p{number:04d}-overflow-{_hash(canvas)[:12]}.png"
         page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(overflow_path)
         overflow_evidence = {"path": overflow_path.relative_to(root).as_posix(), "sha256": sha256_file(overflow_path)}
-    from littrans.source_structure import plan_structure, assemble_structure, styled_text, coalesce_inline_assets
+    from littrans.source_structure import (
+        assemble_structure,
+        coalesce_inline_assets,
+        plan_structure,
+        styled_text,
+    )
     items = layout.get("pages", {}).get(str(image_path.resolve()), [])
     structure = plan_structure(glyphs, blocks, items, page.rect.height)
+    from littrans.structure_profile import structure_context
+    profile_context = structure_context(root)
+    if profile_context:
+        structure["document_profile"] = {key: profile_context[key] for key in ("path", "sha256", "authority")}
     blocks = structure["blocks"]
     regions = override["regions"] if override and "regions" in override else _regions(page, [g for g in glyphs if g["id"] not in structure["markers"]], items)
     if not glyphs and not regions and page.get_images():
@@ -553,12 +562,14 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False) ->
     if digest != config.source_sha256:
         raise ValueError("source PDF changed; rebuild project before preparing")
     pages = parse_page_spec(page_spec, config.source_pages)
+    from littrans.structure_profile import structure_context
+    profile_context = structure_context(root)
     with project_write_lock(root), _authority_transaction(root, pages), fitz.open(source) as doc:
         old = read_jsonl(root / "derived/units.jsonl", SourceUnit)
         registry = load_assets(root)
         needed = [p for p in pages if replace or not _page_path(root, p).is_file()]
         if not needed:
-            return {"pages": pages, "prepared_pages": [], "cached_pages": pages, "assets": len(registry), "requires_visual_review": True}
+            return {"pages": pages, "prepared_pages": [], "cached_pages": pages, "assets": len(registry), "requires_visual_review": True, "document_structure": profile_context}
         images = []
         for number in needed:
             image = root / f"evidence/pages/fidelity-p{number:04d}.png"
@@ -582,7 +593,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False) ->
             write_json(_page_path(root, ledger["page"]), ledger)
             (root / f"evidence/pages/fidelity-p{ledger['page']:04d}.review.json").unlink(missing_ok=True)
     packet = build_source_review_packet(root, ",".join(map(str, pages)))
-    return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry), "layout_status": layout["status"], "requires_visual_review": True, "review_packet": packet["packet_path"], "visual_report": packet["visual_report"]}
+    return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry), "layout_status": layout["status"], "requires_visual_review": True, "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context}
 
 
 def _current_page(root: Path, number: int) -> dict[str, Any]:
@@ -641,6 +652,10 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     all_units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
     pages = sorted(set(pages) | {u.page for page in pages for u in page_evidence_units(page, all_units)})
     payload: dict[str, Any] = {"schema_version": 6, "kind": "source-fidelity-review", "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p) for p in pages]}
+    from littrans.structure_profile import structure_context
+    profile_context = structure_context(root)
+    if profile_context:
+        payload["document_structure"] = profile_context
     packet_id = "source-" + _hash(payload)[:20]
     directory = root / "packets" / packet_id
     directory.mkdir(parents=True, exist_ok=True)
@@ -649,6 +664,8 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "reviewer": "", "pages": [{"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False, "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False, "issues": [], "notes": ""} for p in payload["pages"]]}
     write_json(directory / "review-template.json", review_template)
     sections = []
+    if profile_context:
+        sections.append('<h2>Document-specific structure guidance</h2><pre>' + html.escape(json.dumps(profile_context, ensure_ascii=False, indent=2)) + '</pre>')
     for p in payload["pages"]:
         ledger = p["ledger"]
         boxes = "".join(f'<rect x="{f["bbox"][0]}" y="{f["bbox"][1]}" width="{f["width"]}" height="{f["height"]}" fill="none" stroke="red" stroke-width="0.6"><title>{html.escape(a["id"])}</title></rect>' for a in p["assets"] for f in a["fragments"])
@@ -677,6 +694,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
     if not review.get("reviewer", "").strip():
         raise ValueError("source review requires reviewer identity")
     packet = read_json(packet_path)
+    from littrans.structure_profile import structure_context
+    if packet.get("document_structure") != structure_context(root):
+        raise ValueError("source structure guidance changed since packet creation; create a new packet")
     config = load_project(root)
     if sha256_file(config.source(root)) != packet["source_sha256"]:
         raise ValueError("source PDF changed since packet creation")

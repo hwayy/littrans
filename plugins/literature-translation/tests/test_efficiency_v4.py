@@ -2797,14 +2797,15 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
         _submit(root, manifest.batch_id)
         assert run_qa(root, manifest.batch_id).passed
     batch_ids = [manifest.batch_id for manifest in manifests]
-    legacy_bytes = sum(
-        (root / "batches" / batch_id / filename).stat().st_size
-        for batch_id in batch_ids
-        for filename in ("source.md", "context.md")
-    )
     for lens in ("fidelity", "technical", "chinese-style"):
+        # Compare equal-evidence schema-6 packets. Raw legacy Markdown excludes
+        # image/ownership metadata and is not a valid tiny-fixture size baseline.
+        separate_bytes = sum(
+            create_workflow_packet(root, "audit", [batch_id], lens).total_bytes
+            for batch_id in batch_ids
+        )
         packet = create_workflow_packet(root, "audit", batch_ids, lens)
-        assert packet.total_bytes < legacy_bytes
+        assert packet.total_bytes < separate_bytes
         issues = _packet_dir(root, packet) / "issues.jsonl"
         write_jsonl(issues, [])
         result = import_review_set(

@@ -116,6 +116,10 @@ def _context_text(
     root: Path, units: list[SourceUnit], before: SourceUnit | None, after: SourceUnit | None
 ) -> str:
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
+    from littrans.structure_profile import structure_context
+    structure = structure_context(root)
+    if structure:
+        brief += "\n\n# Document structure rules\n\n" + yaml.safe_dump({"profile_sha256": structure["sha256"], "pages": structure["profile"]["pages"], "handling_rules": structure["profile"]["handling_rules"]}, allow_unicode=True, sort_keys=False)
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
     terms = relevant_terms(root, units)
     adjacent = []
@@ -200,10 +204,22 @@ def create_batches(
 
     require_verified_extraction(root, pages)
 
+    # A footnote/running interruption must not split a reviewed parent. Mark
+    # every cut spanned by a parent or caller/note dependency, not only adjacency.
+    positions = {unit.unit_id: i for i, unit in enumerate(selected)}
+    spans: dict[str, list[int]] = {}
+    for i, unit in enumerate(selected):
+        if unit.parent_id:
+            spans.setdefault(unit.parent_id, []).append(i)
+        for ref in unit.footnote_refs:
+            if ref in positions:
+                spans.setdefault("footnote:" + ref, []).extend([i, positions[ref]])
+    protected_cuts = {cut for indices in spans.values()
+                      for cut in range(min(indices) + 1, max(indices) + 1)}
     groups: list[list[SourceUnit]] = []
     current: list[SourceUnit] = []
     words = 0
-    for unit in selected:
+    for selected_index, unit in enumerate(selected):
         unit_words = _word_count(unit.source_text) if unit.translatable else 0
         heading_boundary = unit.kind == "heading" and current and words >= max_words * 0.55
         page_gap = bool(current and unit.page - current[-1].page > 1)
@@ -218,7 +234,7 @@ def create_batches(
             current[-1].continued_to_next or unit.continues_from_previous
             or (unit.parent_id and unit.parent_id == current[-1].parent_id)
         ))
-        if current and not connected and (word_boundary or hard_boundary or heading_boundary or page_gap or asset_boundary):
+        if current and selected_index not in protected_cuts and not connected and (word_boundary or hard_boundary or heading_boundary or page_gap or asset_boundary):
             groups.append(current)
             current, words = [], 0
         current.append(unit)

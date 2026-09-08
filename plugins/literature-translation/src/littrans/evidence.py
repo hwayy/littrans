@@ -238,7 +238,7 @@ def continuation_neighbors(units: list[SourceUnit]) -> dict[str, set[str]]:
     """
     body = [unit for unit in units if unit.render_policy.value == "include" and unit.kind.value != "footnote"]
     neighbors: dict[str, set[str]] = {}
-    for left, right in zip(body, body[1:]):
+    for left, right in zip(body, body[1:], strict=False):
         if (0 <= right.page - left.page <= 1
                 and (left.continued_to_next or right.continues_from_previous)):
             neighbors.setdefault(left.unit_id, set()).add(right.unit_id)

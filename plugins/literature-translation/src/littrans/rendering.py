@@ -546,7 +546,8 @@ def _unit_html(
     source_view: bool,
 ) -> str:
     scope = f"p{unit.page}-{'source' if source_view else 'target'}"
-    inline = lambda value: _inline_html(value, scope)
+    def inline(value: str) -> str:
+        return _inline_html(value, scope)
     text = target if target is not None else (unit.source_markdown or unit.source_text)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
         number = (

@@ -135,6 +135,13 @@ def project_rebuild(old: PathArg, new: PathArg) -> None:
     emit(rebuild_project(old, new))
 
 
+@source_app.command("probe")
+def source_probe(project: PathArg, pages: str = typer.Option("all")) -> None:
+    """Create a source-bound document structure profile before preparation."""
+    from littrans.structure_profile import probe_structure
+    emit(probe_structure(project, pages))
+
+
 @source_app.command("prepare")
 def source_prepare(project: PathArg, pages: str = typer.Option("all"), replace: bool = typer.Option(False)) -> None:
     """Preserve original prose and complex visual assets without formula transcription."""

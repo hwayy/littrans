@@ -2,7 +2,7 @@
 
 LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex and Cursor:
 
-**Preserve the source faithfully → translate with original images → audit translation → optionally enhance assets independently → render a reading edition.**
+**Probe document structure → preserve the source faithfully → translate with original images → audit translation → optionally enhance assets independently → render a reading edition.**
 
 Formula recognition is deferred until faithful text and original-image assets are available. Translation reads the original images with full paragraph context; it does not wait for LaTeX. Original images remain available even after a structured candidate is verified.
 
@@ -14,7 +14,7 @@ Initialize a new private project with `project init`, or rebuild an older projec
 
 ## The workflow
 
-1. **Prepare.** `source prepare` combines native glyph geometry and isolated layout detection. It saves prose plus stable `{{asset:ID}}` references and PDF/SVG/PNG originals. Whole circuit diagrams remain intact. A missing detector or text layer is visible in source review, not an invitation to silently omit content.
+1. **Probe and prepare.** Run `source probe PROJECT --pages PAGES`, inspect representative originals and complete the document-specific [structure profile](references/document-structure.md). Use it to guide extraction and supported corrections. `source prepare` combines native glyph geometry and isolated layout detection. It saves prose plus stable `{{asset:ID}}` references and PDF/SVG/PNG originals. Whole circuit diagrams remain intact. A missing detector or text layer is visible in source review, not an invitation to silently omit content.
 2. **Verify fidelity.** `source review-packets`, `source import-review` and `source verify` check original-page coverage, reading order, crop completeness, numbering and source ownership. A full-page fallback alone does not prove completeness. Formula LaTeX is not part of this gate.
 3. **Translate; optionally enhance assets.** Formula transcription is optional and can be scheduled after the reading edition is complete. `workflow packet --stage transcribe` and `--stage translate` provide the same source context and original images to fresh tasks. Codex defaults to gpt-5.6-luna at max effort for both. Translators preserve asset references and record the original images actually inspected; transcribers submit separate structured candidates.
 4. **Review independently.** `--stage asset-audit` compares candidates and their renders with original images. Translation retains fidelity, technical/terminology and Chinese-expression lenses via `--stage audit --lens all`, followed by configured external review. Neither confidence nor compilation substitutes for visual review.
@@ -26,6 +26,7 @@ Use `continue-literature-translation` to coordinate this workflow. Codex waves c
 
 ```text
 littrans project rebuild OLD NEW
+littrans source probe PROJECT --pages 1-3
 littrans source prepare PROJECT --pages 1-3
 littrans source review-packets PROJECT --pages 1-3
 littrans source verify PROJECT --pages 1-3

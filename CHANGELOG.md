@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.
+- Preserved complete parent groups and caller/footnote spans when batch budgets are exceeded, including intervening footnotes.
+
 - Unified source preparation around faithful native prose and original PDF/SVG/PNG assets,
   with source-bound coverage review before parallel transcription and translation.
 - Separated structured-asset candidates and independent visual/render review from translation

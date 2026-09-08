@@ -331,8 +331,8 @@ def test_prose_article_before_math_font_space_stays_text() -> None:
 
 
 def test_declared_formula_conditions_need_specific_review_and_translation(project):
-    from littrans.representations import validate_asset_translations
     from littrans.models import AssetTranslation
+    from littrans.representations import validate_asset_translations
     pdf = project / 'source/book.pdf'
     with fitz.open() as doc:
         page = doc.new_page()
