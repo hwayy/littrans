@@ -110,7 +110,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.2-original-assets-and-unresolved-understanding|"
+        "deterministic-qa-v6.3-localized-chapters-and-decades|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -158,6 +158,13 @@ def _token_counts(pattern: re.Pattern[str], text: str) -> Counter[str]:
 def _semantic_comparison_text(text: str) -> str:
     """Flatten verified LaTeX without weakening exact-LaTeX preservation checks."""
     value = text.replace("−", "-")
+    # Normalize explicit decades before the unit scanner mistakes the plural s
+    # for seconds. Spaced quantities (1940 s) and non-decadal years stay exact.
+    value = re.sub(r"(?<![\w.])([1-9]\d{2}0)s\b",
+                   lambda match: f"{match.group(1)} decade", value)
+    value = re.sub(r"(?<![\d.])([1-9]\d{0,2})\s*世纪\s*([0-9]0)\s*年代",
+                   lambda match: f"{(int(match.group(1)) - 1) * 100 + int(match.group(2))} decade",
+                   value)
     value = re.sub(
         r"\b([23])\s*[-‐‑‒–—]?\s*[Dd]\b",
         lambda match: f"dimension-{match.group(1)}",
@@ -213,6 +220,15 @@ def _semantic_token_present(token: str, raw_target: str, semantic_target: str) -
         return True
     normalized = _semantic_comparison_text(token)
     return bool(normalized and normalized in semantic_target)
+
+
+def _localized_heading_token_present(unit: SourceUnit, token: str, target: str) -> bool:
+    """Allow CHAPTER only for a numbered heading with the same explicit number."""
+    if unit.kind is not UnitKind.HEADING or token != "CHAPTER":
+        return False
+    source = re.match(r"^\s*CHAPTER\s+([1-9]\d*)\b", unit.source_text)
+    translated = re.match(r"^\s*第\s*([1-9]\d*)\s*章(?:\s|$|[：:、])", target)
+    return bool(source and translated and source.group(1) == translated.group(1))
 
 
 def _comparison_source_text(
@@ -401,7 +417,8 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         for token in unit.protected_tokens:
             if ASSET_RE.fullmatch(token):
                 continue
-            if not _semantic_token_present(token, effective_target, semantic_target):
+            if not (_semantic_token_present(token, effective_target, semantic_target)
+                    or _localized_heading_token_present(unit, token, effective_target)):
                 errors.append(
                     QAItem(
                         code="protected-token-missing",

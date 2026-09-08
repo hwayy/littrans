@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Keep bilingual HTML anchor targets visible below the fixed header on desktop and mobile.
+- Recognize explicit English/Chinese decade equivalents and numbered CHAPTER headings in deterministic QA while retaining number, unit and acronym protection.
+
 - Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.
 - Preserved complete parent groups and caller/footnote spans when batch budgets are exceeded, including intervening footnotes.
 
