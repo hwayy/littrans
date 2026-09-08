@@ -1,6 +1,7 @@
 """Preserve explicitly reviewed PDF glyph paths; never infer a character/LaTeX.
 
-This narrow adapter supports ungrouped MuPDF glyph uses and horizontal rules.
+This narrow adapter supports MuPDF glyph uses and horizontal rules.
+Unrelated grouped drawings are measured with their transforms and clipping intact.
 It fails closed on unknown structure instead of silently dropping drawing paths.
 The raw PDF region remains separate original evidence.
 """
@@ -51,7 +52,7 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
             matrix = _matrix(node)
         except ValueError:
             continue
-        matches = [g for g in glyphs if g["text"].strip() and abs(g["origin"][0] - matrix[4]) < .03 and abs(g["origin"][1] - matrix[5]) < .03]
+        matches = [g for g in glyphs if abs(g["origin"][0] - matrix[4]) < .03 and abs(g["origin"][1] - matrix[5]) < .03]
         if not matches:
             continue
         href = node.get(f"{{{XLINK}}}href", "")
@@ -78,7 +79,17 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
 
 def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                          bbox: list[float] | None = None) -> tuple[str, dict[str, Any]]:
-    glyphs = [g for g in owned if str(g["text"]).strip()]
+    source = ET.fromstring(page.get_svg_image(text_as_path=True))
+    # Some PDF math fonts encode visible stretch delimiters as a space.
+    # Native Unicode whitespace is not evidence that the original path is blank.
+    use_origins = []
+    for node in source:
+        if node.tag.split("}")[-1] == "use":
+            use_origins.append(_matrix(node)[4:])
+    glyphs = [g for g in owned if str(g["text"]).strip() or any(
+        abs(g.get("origin", [float("inf"), float("inf")])[0] - xy[0]) < .03
+        and abs(g.get("origin", [float("inf"), float("inf")])[1] - xy[1]) < .03
+        for xy in use_origins)]
     if not glyphs or any("origin" not in g for g in glyphs):
         raise ValueError("Explicit source glyph origins are required")
     if len({g["id"] for g in glyphs}) != len(glyphs):
@@ -133,6 +144,22 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
             if nearby and box.x0 - 2 <= x0 <= x1 <= box.x1 + 2 and box.y0 - 2 <= y <= box.y1 + 2:
                 target.append(copy.deepcopy(node))
                 paths += 1
+        elif tag == "g":
+            # Figures elsewhere on a page may use transformed or clipped groups.
+            # Preserve all definitions and measure the intact group, including
+            # raster images. Never flatten transforms or discard an intersecting
+            # group: its glyph/path ownership has not been established here.
+            probe_svg = ET.Element(f"{{{SVG}}}svg", dict(target.attrib))
+            original_defs = source.find(f"{{{SVG}}}defs")
+            if original_defs is not None:
+                probe_svg.append(copy.deepcopy(original_defs))
+            probe_svg.append(copy.deepcopy(node))
+            with fitz.open("svg", ET.tostring(probe_svg)) as probe:
+                drawing_boxes = [fitz.Rect(entry[1]) + (-1, -1, 1, 1)
+                                 for entry in probe[0].get_bboxlog()]
+            if drawing_boxes and all(not bounds.intersects(box) for bounds in drawing_boxes):
+                continue
+            raise ValueError("Unsupported intersecting PDF SVG group; retain raw region")
         else:
             raise ValueError(f"Unsupported PDF SVG structure {tag}; retain raw region")
     missing = {g["id"] for g in glyphs} - matched

@@ -62,6 +62,7 @@ def assemble_structure(units, assets, plan, make_unit):
     from littrans.fidelity_models import asset_reference_ids
     from littrans.models import RenderPolicy
     result, group, active_note = [], None, None
+    statement = None
     def rebuild(u, text=None, **changes):
         extra={k:getattr(u,k) for k in ('equation_number','footnote_number','footnote_refs','parent_id','continues_from_previous','continued_to_next','render_policy','translatable')}
         extra.update(changes)
@@ -83,15 +84,24 @@ def assemble_structure(units, assets, plan, make_unit):
         else:
             x=plan['first_x'].get(bid,plan['margin'])
             indented=plan['margin']+plan['font_size']*.8 < x < plan['margin']+plan['font_size']*2.8
-            boundary=u.kind.value in {'heading','list_item'} or bool(re.match(r'\**(?:Theorem|Lemma|Proposition|Definition|Corollary)\b',u.source_text))
-            if group is None or (u.kind.value!='equation' and (indented or boundary)):
+            starts_statement = bool(re.match(r'\**(?:Theorem|Lemma|Proposition|Definition|Corollary|Claim)\b',u.source_text))
+            enumerated = bool(re.match(r'[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)', u.source_text, re.I))
+            proof = bool(re.match(r'[*\s]*Proof\b', u.source_text))
+            boundary = u.kind.value in {'heading','list_item'} or starts_statement or proof
+            if starts_statement:
+                statement = u.unit_id
+            elif u.kind.value == 'heading' or proof or (indented and not enumerated and u.kind.value != 'equation'):
+                statement = None
+            if statement and (starts_statement or enumerated or u.kind.value == 'equation'):
+                group = statement
+            elif group is None or (u.kind.value!='equation' and (indented or boundary)):
                 group=u.unit_id
             u=rebuild(u,parent_id=group)
         # Merge prose fragments within one paragraph, retaining display children.
         previous=result[-1] if result else None
         display=any(assets[aid].display for aid in refs)
         previous_display=previous and any(assets[aid].display for aid in asset_reference_ids(previous.source_text))
-        if previous and previous.render_policy!=RenderPolicy.OMIT and previous.parent_id==u.parent_id and not display and not previous_display and previous.kind.value!='heading' and u.kind.value!='heading':
+        if previous and previous.render_policy!=RenderPolicy.OMIT and previous.parent_id==u.parent_id and not display and not previous_display and previous.kind.value!='heading' and u.kind.value!='heading' and not re.match(r'[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)', u.source_text, re.I):
             joined=previous.source_text.rstrip()+' '+u.source_text.lstrip()
             joined=re.sub(r'\s+([,.;])',r'\1',joined)
             joined=re.sub(r'([a-z])-\s+([a-z])',r'\1\2',joined)

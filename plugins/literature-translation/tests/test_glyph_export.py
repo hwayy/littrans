@@ -72,3 +72,40 @@ def test_original_ink_survives_inaccurate_reported_font_bbox(tmp_path: Path, sym
         with fitz.open("svg", svg_path.read_bytes()) as preserved_svg:
             assert preserved_svg[0].rect.height == pytest.approx(result["height"], abs=.01)
             assert preserved_svg[0].get_drawings()
+
+
+@pytest.mark.parametrize("offset, intersects", [(0, True), (150, False)])
+def test_grouped_drawing_is_measured_before_excluding(tmp_path, offset, intersects):
+    from littrans.glyph_export import build_owned_fragment
+    with fitz.open() as document:
+        page = document.new_page()
+        page.insert_text((50, 80), "x")
+        char = page.get_text("rawdict")["blocks"][0]["lines"][0]["spans"][0]["chars"][0]
+        glyph = {"id": "x", "text": "x", "bbox": char["bbox"], "origin": char["origin"]}
+        svg = ET.fromstring(page.get_svg_image(text_as_path=True))
+        ns = "{http://www.w3.org/2000/svg}"
+        group = ET.SubElement(svg, ns + "g", {"transform": f"matrix(1 0 0 1 {offset} 0)"})
+        ET.SubElement(group, ns + "path", {"d": "M50 70H55V80H50Z", "fill": "black"})
+        class PageWithGroup:
+            rect = page.rect
+            def get_svg_image(self, **kwargs):
+                return ET.tostring(svg, encoding="unicode")
+        if intersects:
+            with pytest.raises(ValueError, match="intersecting"):
+                build_owned_fragment(PageWithGroup(), [glyph])
+        else:
+            result, metadata = build_owned_fragment(PageWithGroup(), [glyph])
+            assert metadata["matched_glyphs"] == 1
+            assert not ET.fromstring(result).findall(ns + "g")
+
+
+def test_visible_pdf_path_survives_whitespace_unicode_mapping(tmp_path):
+    with fitz.open() as document:
+        page = document.new_page()
+        page.insert_text((50, 80), "(", fontsize=24)
+        char = page.get_text("rawdict")["blocks"][0]["lines"][0]["spans"][0]["chars"][0]
+        glyph = {"id": "delimiter", "text": " ", "font": "CMEX10", "bbox": char["bbox"], "origin": char["origin"]}
+        result = export_owned_fragment(page, [glyph], tmp_path / "delimiter.svg", tmp_path / "delimiter.png", 300)
+        assert result["matched_glyphs"] == 1
+        with fitz.open("svg", (tmp_path / "delimiter.svg").read_bytes()) as preserved:
+            assert preserved[0].get_drawings()

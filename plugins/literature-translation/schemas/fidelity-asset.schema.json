@@ -103,6 +103,31 @@
       ],
       "title": "FidelityFragment",
       "type": "object"
+    },
+    "FormulaCondition": {
+      "additionalProperties": false,
+      "description": "Source-native language belonging inside one displayed formula line.",
+      "properties": {
+        "glyph_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Glyph Ids",
+          "type": "array"
+        },
+        "source_text": {
+          "minLength": 1,
+          "title": "Source Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "glyph_ids",
+        "source_text"
+      ],
+      "title": "FormulaCondition",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -161,6 +186,13 @@
         "type": "string"
       },
       "title": "Provenance",
+      "type": "array"
+    },
+    "formula_conditions": {
+      "items": {
+        "$ref": "#/$defs/FormulaCondition"
+      },
+      "title": "Formula Conditions",
       "type": "array"
     }
   },

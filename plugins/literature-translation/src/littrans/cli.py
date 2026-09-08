@@ -330,11 +330,12 @@ def render_command(
     batch_ids: str | None = typer.Option(None),
     name: str | None = typer.Option(None),
     allow_draft: bool = typer.Option(False),
+    originals_only: bool = typer.Option(False, help="Render original images only, even when verified candidates exist."),
 ) -> None:
     parsed_batch_ids = (
         [value.strip() for value in batch_ids.split(",") if value.strip()] if batch_ids else None
     )
-    emit(render_project(project, pages, name, allow_draft, batch_id, parsed_batch_ids))
+    emit(render_project(project, pages, name, allow_draft, batch_id, parsed_batch_ids, originals_only=originals_only))
 
 
 @workflow_app.command("next")

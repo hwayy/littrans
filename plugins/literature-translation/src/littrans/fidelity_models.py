@@ -46,6 +46,12 @@ class FidelityFragment(StrictModel):
         return self
 
 
+class FormulaCondition(StrictModel):
+    """Source-native language belonging inside one displayed formula line."""
+    glyph_ids: list[str] = Field(min_length=1)
+    source_text: str = Field(min_length=1)
+
+
 class FidelityAsset(StrictModel):
     schema_version: Literal[6] = 6
     id: str
@@ -56,6 +62,17 @@ class FidelityAsset(StrictModel):
     grouping_pending: bool = False
     display: bool = False
     provenance: list[str] = Field(default_factory=list)
+    formula_conditions: list[FormulaCondition] = Field(default_factory=list, exclude_if=lambda value: not value)
+
+    @model_validator(mode="after")
+    def valid_formula_conditions(self) -> FidelityAsset:
+        if self.formula_conditions and (self.kind != "math" or not self.display):
+            raise ValueError("formula_conditions require a displayed math asset")
+        owned = {gid for fragment in self.fragments for gid in fragment.glyph_ids}
+        declared = [gid for condition in self.formula_conditions for gid in condition.glyph_ids]
+        if len(declared) != len(set(declared)) or not set(declared) <= owned:
+            raise ValueError("formula condition glyphs must be unique and owned by this asset")
+        return self
 
 
 def load_assets(root: Path) -> dict[str, FidelityAsset]:

@@ -320,18 +320,13 @@ def _asset_lane(root: Path, manifest: BatchManifest, units: dict[str, SourceUnit
 
 
 def _dispatch_stage(translation_stage: str, lane: dict[str, Any]) -> str:
-    if translation_stage == "translate" and lane["pending"]["transcribe"]:
-        return "parallel"
-    if translation_stage != "complete":
-        return translation_stage
-    for name in ("transcribe", "asset-audit"):
-        if lane["pending"][name]:
-            return name
-    return "complete"
+    # Original images are a complete reading representation. Enhancement work
+    # remains available independently, including after translation completion.
+    return translation_stage
 
 
 def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
-                 host: str) -> list[dict[str, Any]]:
+                 host: str, *, optional_assets: bool = False) -> list[dict[str, Any]]:
     config = load_project(root)
     model_policy = config.agent_models.get(host, {})
     tasks: list[dict[str, Any]] = []
@@ -339,14 +334,14 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
     for bid in batch_ids:
         stage = _batch_stage(root, bid, snapshot)
         lane = _asset_lane(root, by_id[bid], snapshot.unit_map)
-        if stage != "complete":
+        if stage != "complete" and not optional_assets:
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
                           "model": model_policy.get(stage),
                           "reasoning_effort": model_policy.get("reasoning_effort") if stage == "translate" else None,
                           "fresh_context": True})
         for role, ids in lane["pending"].items():
-            if ids:
-                tasks.append({"batch_id": bid, "stage": role, "asset_ids": ids,
+            if ids and optional_assets:
+                tasks.append({"batch_id": bid, "stage": role, "asset_ids": ids, "optional": True,
                               "depends_on": ["source-fidelity"] if role == "transcribe" else ["candidate"],
                               "model": model_policy.get(role),
                               "reasoning_effort": model_policy.get("reasoning_effort") if role == "transcribe" else None,
@@ -487,7 +482,8 @@ def workflow_next(
         "start_at": start_at,
         "through": through,
         "ready_tasks": _ready_tasks(root, batch_ids, snapshot, resolved_host),
-        "schedule": "independent-parallel",
+        "optional_asset_tasks": _ready_tasks(root, batch_ids, snapshot, resolved_host, optional_assets=True),
+        "schedule": "translation-first-optional-assets",
     }
 
 
@@ -570,7 +566,9 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
         "reading_complete": all(stage == "complete" for stage in stages.values()),
         "assets": lanes,
         "ready_tasks": _ready_tasks(root, requested, snapshot, resolve_coordination_host(None)),
-        "complete": all(stage == "complete" for stage in stages.values()) and all(x["complete"] for x in lanes.values()),
+        "optional_asset_tasks": _ready_tasks(root, requested, snapshot, resolve_coordination_host(None), optional_assets=True),
+        "assets_complete": all(x["complete"] for x in lanes.values()),
+        "complete": all(stage == "complete" for stage in stages.values()),
     }
 
 
@@ -676,6 +674,9 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
         source += "\n\nFigure label sources:\n" + "\n".join(
             f"- {label.source}" for label in unit.figure_labels
         )
+    # Historic records for a now source-only formula are not translation content.
+    if not unit.translatable:
+        record = None
     target = record.target_text if record else "[source-only]"
     if record and unit.kind is UnitKind.CAPTION:
         target = normalize_zh_caption(target)

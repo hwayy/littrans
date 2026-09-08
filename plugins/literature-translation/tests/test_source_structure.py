@@ -84,3 +84,79 @@ def test_inline_components_keep_order_and_all_original_fragments():
     ids=asset_reference_ids(result[0].source_text)
     assert len(ids)==1 and len(assets)==1
     assert [f.glyph_ids for f in assets[ids[0]].fragments]==[['g1'],['g2']]
+
+
+def test_enumerated_theorem_keeps_children_and_stops_at_proof():
+    assets = {}
+    texts = ['Theorem 12.11. For each function:', '(a) First condition.',
+             '(b) Second condition.', 'Proof. A new argument.', 'Next paragraph.']
+    units = [_make_unit(1, f'p0001-b{i}', text, [68, 50+i*20, 220, 60+i*20], assets)
+             for i, text in enumerate(texts, 1)]
+    plan = {'omitted': {}, 'notes': {}, 'note_top': 999, 'margin': 50,
+            'font_size': 10, 'first_x': {f'b{i}': 68 for i in range(1, 6)}}
+    result = assemble_structure(units, assets, plan, _make_unit)
+    assert len(result) == 5  # No clause or proof is folded into the lead-in.
+    assert [u.parent_id for u in result] == ['p0001-b1']*3 + ['p0001-b4', 'p0001-b5']
+
+
+def test_parent_rows_keep_clause_markup_and_child_anchors():
+    from littrans.rendering import _group_parent_rows
+    units = [_make_unit(1, f'p0001-b{i}', text, [50, 50+i*20, 200, 60+i*20], {}, parent_id='p0001-b1')
+             for i, text in enumerate(['Theorem.', '(a) First.', '(b) Second.'], 1)]
+    rows = [{'unit': u, 'source_html': f'<p>{u.source_text}</p>', 'target_html': f'<p>译文{i}</p>',
+             'assets': [], 'reader_notes': [], 'last_page': 1} for i, u in enumerate(units)]
+    grouped = _group_parent_rows(rows)
+    assert len(grouped) == 1
+    assert grouped[0]['source_html'].count('<p>') == 3
+    assert 'id="p0001-b2"' in grouped[0]['source_html']
+    assert 'id="p0001-b3"' in grouped[0]['source_html']
+    assert grouped[0]['target_html'].count('<p>') == 3
+
+
+def test_parent_dependency_crosses_page_and_batch_scope(tmp_path):
+    from littrans.evidence import dependency_closure, page_evidence_units
+    units = [_make_unit(page, f'p{page:04d}-b1', 'Clause.', [50, 50, 200, 60], {}, parent_id='p0001-b1')
+             for page in (1, 2, 3)]
+    assert dependency_closure(tmp_path, [], ['p0002-b1'], all_units=units) == [u.unit_id for u in units]
+    assert [u.unit_id for u in page_evidence_units(2, units)] == [u.unit_id for u in units]
+
+
+def test_continuation_skips_omitted_headers_but_never_missing_pages(tmp_path):
+    from littrans.evidence import dependency_closure
+    from littrans.models import RenderPolicy
+    left = _make_unit(1, 'p0001-b1', 'Continued', [50, 50, 200, 60], {}, continued_to_next=True)
+    header = _make_unit(2, 'p0002-b0', 'Header', [50, 10, 200, 20], {}, render_policy=RenderPolicy.OMIT, translatable=False)
+    right = _make_unit(2, 'p0002-b1', 'body.', [50, 50, 200, 60], {})
+    distant = _make_unit(5, 'p0005-b1', 'Different page.', [50, 50, 200, 60], {}, continues_from_previous=True)
+    assert dependency_closure(tmp_path, [], [left.unit_id], all_units=[left, header, right, distant]) == [left.unit_id, right.unit_id]
+    assert dependency_closure(tmp_path, [], [distant.unit_id], all_units=[left, header, right, distant]) == [distant.unit_id]
+
+
+def test_batch_budget_cannot_split_theorem(tmp_path, monkeypatch):
+    from littrans.storage import write_jsonl, save_project, initialize_project_dirs
+    from littrans.models import ProjectConfig
+    from littrans.batching import create_batches
+    initialize_project_dirs(tmp_path)
+    save_project(tmp_path, ProjectConfig(project_id='statement', title='Statement', source_path='source.pdf', source_sha256='a'*64, source_pages=1, profile='technical-book'))
+    units = [_make_unit(1, f'p0001-b{i}', 'word '*90, [50, i*20, 200, i*20+10], {}, parent_id='p0001-b1' if i < 4 else 'p0001-b4') for i in range(1, 5)]
+    write_jsonl(tmp_path/'derived/units.jsonl', units)
+    monkeypatch.setattr('littrans.batching.require_verified_extraction', lambda *args: None)
+    monkeypatch.setattr('littrans.batching._context_text', lambda *args: '')
+    batches = create_batches(tmp_path, '1', max_words=100)
+    assert [b.unit_ids for b in batches] == [[u.unit_id for u in units[:3]], [units[3].unit_id]]
+
+
+def test_formula_condition_declaration_cannot_hide_multiple_lines_or_wrong_text():
+    import pytest
+    from littrans.fidelity import _formula_condition_glyphs, _opaque_prose_assets
+    glyphs = [{'id': str(i), 'text': word, 'baseline': 50 if i < 3 else 80, 'size': 10, 'font': 'Helvetica'}
+              for i, word in enumerate(['and ', 'is ', 'odd ', 'recoverable ', 'neighboring ', 'paragraph ', 'contains ', 'many ', 'words '])]
+    asset = {'id': 'cases', 'kind': 'math', 'display': True, 'fragments': [{'glyph_ids': [g['id'] for g in glyphs]}],
+             'formula_conditions': [{'glyph_ids': ['0', '1', '2'], 'source_text': 'and is odd '}]}
+    assert _opaque_prose_assets({'ledger': {'glyphs': glyphs}, 'assets': [asset]}) == ['cases']
+    asset['formula_conditions'] = [{'glyph_ids': ['0', '3'], 'source_text': 'and recoverable '}]
+    with pytest.raises(ValueError, match='visual line'):
+        _formula_condition_glyphs(asset, glyphs)
+    asset['formula_conditions'] = [{'glyph_ids': ['0'], 'source_text': 'different'}]
+    with pytest.raises(ValueError, match='exactly match'):
+        _formula_condition_glyphs(asset, glyphs)

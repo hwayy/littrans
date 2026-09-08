@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from littrans.evidence import (
+    continuation_neighbors,
     record_audit_invalidation,
     relevant_terms,
     translation_memory,
@@ -175,15 +176,9 @@ def create_batches(
         if any(unit.parent_id in parents and unit.unit_id not in requested for unit in selected):
             raise ValueError("Unit selection cuts a logical paragraph; include its prose and display equations")
         selected = [unit for unit in selected if unit.unit_id in requested]
-        for index, unit in enumerate(all_units):
-            if unit.unit_id not in requested:
-                continue
-            linked = []
-            if unit.continues_from_previous and index:
-                linked.append(all_units[index - 1])
-            if unit.continued_to_next and index + 1 < len(all_units):
-                linked.append(all_units[index + 1])
-            if any(other.unit_id not in requested for other in linked):
+        neighbors = continuation_neighbors(all_units)
+        for unit in selected:
+            if any(other not in requested for other in neighbors.get(unit.unit_id, ())):
                 raise ValueError(f"Unit selection cuts a continuation at {unit.unit_id}")
         pages = {unit.page for unit in selected}
     if untranslated_only:
@@ -191,6 +186,11 @@ def create_batches(
         selected = [
             unit for unit in selected if unit.translatable and unit.unit_id not in translated_ids
         ]
+    selected_ids = {unit.unit_id for unit in selected}
+    parents = {unit.parent_id for unit in selected if unit.parent_id}
+    if any(unit.render_policy is RenderPolicy.INCLUDE and unit.parent_id in parents
+           and unit.unit_id not in selected_ids for unit in all_units):
+        raise ValueError("Selection cuts a logical paragraph or statement; include its complete parent group")
     if not selected:
         raise ValueError(
             "No matching untranslated units remain"
@@ -214,7 +214,7 @@ def create_batches(
         )
         hard_boundary = bool(current and words + unit_words > max_words * 1.5)
         asset_boundary = sum(len(u.asset_content_hashes) for u in current) >= soft_max_assets
-        connected = bool(current and (
+        connected = bool(current and 0 <= unit.page - current[-1].page <= 1 and (
             current[-1].continued_to_next or unit.continues_from_previous
             or (unit.parent_id and unit.parent_id == current[-1].parent_id)
         ))

@@ -235,14 +235,19 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
         existing = load_assets(root)[region["preserve_asset_id"]]
         if existing.source_sha256 != source_hash or any(f.page != page_number for f in existing.fragments):
             raise ValueError("preserved asset belongs to different source/page")
-        changes = {k: region[k] for k in ("kind", "display", "grouping_pending") if k in region}
+        changes = {k: region[k] for k in ("kind", "display", "grouping_pending", "formula_conditions") if k in region}
+        if "formula_conditions" in changes:
+            hashes = [_hash({"source_sha256": existing.source_sha256, "page": f.page, "bbox": f.bbox, "glyph_ids": f.glyph_ids,
+                             **({"export_method": f.export_method} if f.export_method != "raw-region" else {})}) for f in existing.fragments]
+            original = hashes[0] if len(hashes) == 1 else _hash(hashes)
+            changes["content_sha256"] = _hash({"original_content": original, "formula_conditions": changes["formula_conditions"]}) if changes["formula_conditions"] else original
         return FidelityAsset.model_validate({**existing.model_dump(mode="json"), **changes})
     if "fragments" in region:
         children = []
         for fragment in region["fragments"]:
             if fragment.get("page", page_number) != page_number:
                 raise ValueError("page review fragments must remain on their reviewed page; use continuation links across pages")
-            child = {k: v for k, v in region.items() if k not in {"fragments", "id"}}
+            child = {k: v for k, v in region.items() if k not in {"fragments", "id", "formula_conditions"}}
             child["bbox"] = fragment["bbox"]
             if "glyph_ids" in fragment:
                 child["glyph_ids"] = fragment["glyph_ids"]
@@ -250,7 +255,9 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
         if not children:
             raise ValueError("region fragments must not be empty")
         content = children[0].content_sha256 if len(children) == 1 else _hash([a.content_sha256 for a in children])
-        return FidelityAsset(id=region.get("id") or f"a-p{page_number:04d}-{content[:12]}", kind=region["kind"], source_sha256=source_hash, content_sha256=content, fragments=[f for a in children for f in a.fragments], grouping_pending=region.get("grouping_pending", False), display=region.get("display", True), provenance=region.get("provenance", ["visual-multifragment-correction"]))
+        if region.get("formula_conditions"):
+            content = _hash({"original_content": content, "formula_conditions": region["formula_conditions"]})
+        return FidelityAsset(id=region.get("id") or f"a-p{page_number:04d}-{content[:12]}", kind=region["kind"], source_sha256=source_hash, content_sha256=content, fragments=[f for a in children for f in a.fragments], grouping_pending=region.get("grouping_pending", False), display=region.get("display", True), provenance=region.get("provenance", ["visual-multifragment-correction"]), formula_conditions=region.get("formula_conditions", []))
     page = doc[page_number - 1]
     rect = fitz.Rect(region["bbox"]) & page.rect
     if rect.is_empty:
@@ -280,6 +287,8 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
     if export_method != "raw-region":
         identity["export_method"] = export_method
     content = _hash(identity)
+    if region.get("formula_conditions"):
+        content = _hash({"original_content": content, "formula_conditions": region["formula_conditions"]})
     aid = region.get("id") or f"a-p{page_number:04d}-{content[:12]}"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", aid):
         raise ValueError("invalid region asset ID")
@@ -311,7 +320,7 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
         write_json(cache_receipt, {"identity": identity, "files": {p.name: sha256_file(p) for p in (fragment_pdf, fragment_svg, fragment_png)}})
     paths = {name: str(p.relative_to(root)).replace("\\", "/") for name, p in {"png": fragment_png, "svg": fragment_svg, "pdf": fragment_pdf}.items()}
     fragment = FidelityFragment(page=page_number, bbox=_box(rect), png_path=paths["png"], svg_path=paths["svg"], pdf_path=paths["pdf"], glyph_ids=[g["id"] for g in owned], width=rect.width, height=rect.height, baseline=(max(g["baseline"] for g in owned) - rect.y0) if owned else None, dpi=dpi, export_method=export_method, file_sha256={paths[k]: sha256_file(root / paths[k]) for k in paths})
-    return FidelityAsset(id=aid, kind=region["kind"], source_sha256=source_hash, content_sha256=content, fragments=[fragment], grouping_pending=region.get("grouping_pending", False), display=region.get("display", False), provenance=region.get("provenance", ["visual-region-correction"]))
+    return FidelityAsset(id=aid, kind=region["kind"], source_sha256=source_hash, content_sha256=content, fragments=[fragment], grouping_pending=region.get("grouping_pending", False), display=region.get("display", False), provenance=region.get("provenance", ["visual-region-correction"]), formula_conditions=region.get("formula_conditions", []))
 
 
 def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, FidelityAsset], kind: str = "paragraph", **extra: Any) -> SourceUnit:
@@ -324,8 +333,8 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
     if pure_math:
         kind = "equation"
         payload["kind"] = kind
-        extra["translatable"] = False
-        payload["translatable"] = False
+        extra["translatable"] = any(assets[aid].formula_conditions for aid in refs)
+        payload["translatable"] = extra["translatable"]
     return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
 
 
@@ -371,10 +380,62 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
     return [unit for i, unit in enumerate(result) if i not in removed]
 
 
+def _expanded_native(page: fitz.Page, original_glyphs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Retain original glyph identities when a wider canvas changes PDF blocks."""
+    from collections import defaultdict, deque
+    def key(glyph: dict[str, Any]) -> tuple:
+        return (glyph["text"], glyph["font"], round(glyph["size"], 6),
+                *(round(value, 6) for value in glyph["origin"]))
+    available: dict[tuple, Any] = defaultdict(deque)
+    for glyph in original_glyphs:
+        available[key(glyph)].append(glyph)
+    glyphs, blocks = _native(page)
+    remap, old_ids = {}, {g["id"] for g in original_glyphs}
+    for glyph in glyphs:
+        previous = available[key(glyph)].popleft() if available[key(glyph)] else None
+        old_id = glyph["id"]
+        glyph["id"] = previous["id"] if previous else "overflow-" + old_id
+        if previous:
+            glyph["line"] = previous["line"]
+        else:
+            glyph["line"] = "overflow-" + glyph["line"]
+        remap[old_id] = glyph["id"]
+    if any(available.values()) or len({g["id"] for g in glyphs}) != len(glyphs):
+        raise ValueError("expanded canvas cannot preserve original glyph identities")
+    used_blocks: set[str] = set()
+    for block in blocks:
+        block["lines"] = [[remap[gid] for gid in line] for line in block["lines"]]
+        originals = [gid for line in block["lines"] for gid in line if gid in old_ids]
+        preferred = originals[0].split("-", 1)[0] if originals else "overflow-" + block["id"]
+        block["id"] = preferred if preferred not in used_blocks else "overflow-" + block["id"]
+        used_blocks.add(block["id"])
+    return glyphs, blocks
+
+
 def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str, layout: dict[str, Any], override: dict[str, Any] | None = None) -> tuple[list[SourceUnit], list[FidelityAsset], dict[str, Any]]:
     page = doc[number - 1]
-    glyphs, blocks = _native(page)
+    original_page_bbox = list(page.rect)
+    original_glyphs, original_blocks = _native(page)
+    canvas = override.get("page_canvas_bbox") if override else None
+    if canvas is not None:
+        expanded = fitz.Rect(canvas)
+        if (page.rotation or page.rect.x0 or page.rect.y0 or expanded.is_empty
+                or expanded.x0 != 0 or expanded.y0 != 0
+                or expanded.width < page.rect.width or expanded.height < page.rect.height):
+            raise ValueError("page_canvas_bbox must expand an unrotated origin-zero source page")
+        # Change only this in-memory PDF instance; the immutable source file is
+        # never rewritten. This reveals existing content-stream ink, not new ink.
+        page.set_mediabox(expanded)
+        page.set_cropbox(expanded)
+    glyphs, blocks = _expanded_native(page, original_glyphs) if canvas is not None else (original_glyphs, original_blocks)
     image_path = root / f"evidence/pages/fidelity-p{number:04d}.png"
+    overflow_evidence = None
+    if canvas is not None:
+        if not any(g["bbox"][2] > original_page_bbox[2] or g["bbox"][3] > original_page_bbox[3] for g in glyphs):
+            raise ValueError("expanded canvas must recover existing off-page native glyphs")
+        overflow_path = root / f"evidence/pages/fidelity-p{number:04d}-overflow-{_hash(canvas)[:12]}.png"
+        page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(overflow_path)
+        overflow_evidence = {"path": overflow_path.relative_to(root).as_posix(), "sha256": sha256_file(overflow_path)}
     from littrans.source_structure import plan_structure, assemble_structure, styled_text, coalesce_inline_assets
     items = layout.get("pages", {}).get(str(image_path.resolve()), [])
     structure = plan_structure(glyphs, blocks, items, page.rect.height)
@@ -383,6 +444,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     if not glyphs and not regions and page.get_images():
         regions = [{"kind": "mixed-region", "bbox": list(page.rect), "grouping_pending": True, "display": True, "provenance": ["no-text-layer"]}]
     assets = [_asset(root, doc, number, source_hash, r, glyphs) for r in regions]
+    for asset in assets:
+        _formula_condition_glyphs(asset.model_dump(mode="json"), glyphs)
     by_id = {a.id: a for a in assets}
     if len(by_id) != len(assets):
         raise ValueError("duplicate region asset IDs")
@@ -461,6 +524,9 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         if refs != Counter({aid: 1 for aid in by_id}):
             raise ValueError("unit overrides must reference each page asset exactly once")
     ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
+    if overflow_evidence:
+        ledger["original_page_bbox"] = original_page_bbox
+        ledger["overflow_evidence"] = overflow_evidence
     ledger["fingerprint"] = _hash({"ledger": ledger, "units": [u.model_dump(mode="json", exclude={"verification_status"}) for u in units], "assets": [a.model_dump(mode="json") for a in assets]})
     return units, assets, ledger
 
@@ -536,12 +602,19 @@ def _current_page(root: Path, number: int) -> dict[str, Any]:
     files = {ledger["page_image"]: sha256_file(_path(root, ledger["page_image"]))}
     if files[ledger["page_image"]] != ledger["page_image_sha256"]:
         raise ValueError("original page image changed")
+    if ledger.get("overflow_evidence"):
+        overflow = ledger["overflow_evidence"]
+        files[overflow["path"]] = sha256_file(_path(root, overflow["path"]))
+        if files[overflow["path"]] != overflow["sha256"]:
+            raise ValueError("overflow canvas image changed")
     for asset in selected:
         if asset.source_sha256 != ledger["source_sha256"]:
             raise ValueError("asset PDF fingerprint does not match page")
         fragment_hashes = [_hash({"source_sha256": asset.source_sha256, "page": f.page, "bbox": f.bbox, "glyph_ids": f.glyph_ids,
                                  **({"export_method": f.export_method} if f.export_method != "raw-region" else {})}) for f in asset.fragments]
         expected_content = fragment_hashes[0] if len(fragment_hashes) == 1 else _hash(fragment_hashes)
+        if asset.formula_conditions:
+            expected_content = _hash({"original_content": expected_content, "formula_conditions": [c.model_dump(mode="json") for c in asset.formula_conditions]})
         if asset.content_sha256 != expected_content:
             raise ValueError("asset region content fingerprint does not match original provenance")
         for fragment in asset.fragments:
@@ -573,13 +646,16 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     directory.mkdir(parents=True, exist_ok=True)
     packet = directory / "packet.json"
     write_json(packet, payload)
-    review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "reviewer": "", "pages": [{"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False, "grouping_checked": False, "layout_fallback_checked": False, "issues": [], "notes": ""} for p in payload["pages"]]}
+    review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "reviewer": "", "pages": [{"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False, "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False, "issues": [], "notes": ""} for p in payload["pages"]]}
     write_json(directory / "review-template.json", review_template)
     sections = []
     for p in payload["pages"]:
         ledger = p["ledger"]
         boxes = "".join(f'<rect x="{f["bbox"][0]}" y="{f["bbox"][1]}" width="{f["width"]}" height="{f["height"]}" fill="none" stroke="red" stroke-width="0.6"><title>{html.escape(a["id"])}</title></rect>' for a in p["assets"] for f in a["fragments"])
         image_uri = _path(root, ledger["page_image"]).as_uri()
+        if ledger.get("overflow_evidence"):
+            sections.append(f'<p>PDF page {p["page"]}: <a href="{image_uri}">original page canvas</a>. The overlay below uses the separately preserved expanded content-stream canvas.</p>')
+            image_uri = _path(root, ledger["overflow_evidence"]["path"]).as_uri()
         source = "\n\n".join(u["source_text"] for u in p["units"])
         sections.append(f'<section><h2>PDF page {p["page"]}</h2><p>Layout: {html.escape(ledger["layout_status"])}; visual review required.</p><svg viewBox="0 0 {ledger["width"]} {ledger["height"]}"><image href="{image_uri}" width="{ledger["width"]}" height="{ledger["height"]}"/>{boxes}</svg><pre>{html.escape(source)}</pre></section>')
     report = directory / "coverage.html"
@@ -637,6 +713,10 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             fields = ["viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked"]
             if by_page[p]["ledger"]["layout_status"] != "ok":
                 fields.append("layout_fallback_checked")
+            if by_page[p]["ledger"].get("overflow_evidence"):
+                fields.append("overflow_canvas_checked")
+            if any(asset.get("formula_conditions") for asset in by_page[p]["assets"]):
+                fields.append("formula_conditions_checked")
             passed = all(decision.get(key) is True for key in fields) and decision.get("issues") == []
             opaque = _opaque_prose_assets(by_page[p])
             if opaque:
@@ -655,6 +735,31 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
     return {"approved_pages": approved, "changed_pages": changed, "requires_new_packet": bool(changed)}
 
 
+def _formula_condition_glyphs(asset: dict[str, Any], glyphs: list[dict[str, Any]]) -> set[str]:
+    """Validate explicit language ownership without recognizing/transcribing math."""
+    conditions = asset.get("formula_conditions", [])
+    if not conditions:
+        return set()
+    if asset["kind"] != "math" or not asset.get("display"):
+        raise ValueError("formula_conditions require a displayed math asset")
+    owned = {gid for fragment in asset["fragments"] for gid in fragment["glyph_ids"]}
+    declared: set[str] = set()
+    for condition in conditions:
+        ids = condition["glyph_ids"]
+        selected = [g for g in glyphs if g["id"] in ids]
+        if (not ids or len(ids) != len(set(ids)) or declared.intersection(ids)
+                or not set(ids) <= owned or [g["id"] for g in selected] != ids):
+            raise ValueError("formula condition glyph IDs must be unique, owned and in native order")
+        if "".join(g["text"] for g in selected) != condition["source_text"]:
+            raise ValueError("formula condition source_text must exactly match its native glyphs")
+        if not re.search(r"[A-Za-z]{2,}", condition["source_text"]):
+            raise ValueError("formula condition must identify native language")
+        if max(g["baseline"] for g in selected) - min(g["baseline"] for g in selected) > max(g["size"] for g in selected) * .8:
+            raise ValueError("each formula condition must stay on one visual line")
+        declared.update(ids)
+    return declared
+
+
 def _opaque_prose_assets(current: dict[str, Any]) -> list[str]:
     """Image ownership is not textual coverage of recoverable paragraphs."""
     glyphs = current["ledger"]["glyphs"]
@@ -663,7 +768,7 @@ def _opaque_prose_assets(current: dict[str, Any]) -> list[str]:
     for asset in current["assets"]:
         if asset["kind"] not in {"math", "mixed-region"}:
             continue
-        ids = {gid for f in asset["fragments"] for gid in f["glyph_ids"]}
+        ids = {gid for f in asset["fragments"] for gid in f["glyph_ids"]} - _formula_condition_glyphs(asset, glyphs)
         prose = "".join(g["text"] if g["id"] in ids and not MATH_FONT.search(g["font"]) and not (separate_roman and re.match(r"CM(?:R|BX)\d", g["font"], re.I)) else " " for g in glyphs)
         if len([word for word in re.findall(r"[A-Za-z]{2,}", prose) if word.lower() not in MATH_OPERATORS]) >= 6:
             opaque.append(asset["id"])

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from littrans.models import SourceUnit
-from littrans.storage import load_project, read_jsonl, sha256_file
+from littrans.storage import load_project, read_json, read_jsonl, sha256_file
 
 
 def adjacent_source_units(root: Path, units: list[SourceUnit]) -> list[SourceUnit]:
@@ -44,6 +44,10 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         path = f"evidence/pages/fidelity-p{page:04d}.png"
         if (root / path).exists():
             images[path] = sha256_file(root / path)
+        ledger_path = root / f"derived/fidelity-pages/p{page:04d}.json"
+        overflow = read_json(ledger_path).get("overflow_evidence") if ledger_path.is_file() else None
+        if overflow:
+            images[overflow["path"]] = sha256_file(root / overflow["path"])
     config = load_project(root)
     return {
         "source_sha256": config.source_sha256,
@@ -63,7 +67,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
             "table cells or figure labels. If an image has only mathematical/technical notation, "
             "set language_present=false and explain in notes; the technical auditor must verify this. "
             "The v6 asset-reference contract overrides incompatible historical style instructions."
-        ),
+        ) + (" Displayed math with formula_conditions contains source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
         "units": [{"unit_id": u.unit_id, "source_hash": u.source_hash,
                    "source": u.source_markdown or u.source_text, "page": u.page,
                    "equation_number": u.equation_number, "parent_id": u.parent_id, "footnote_number": u.footnote_number, "footnote_refs": u.footnote_refs} for u in units],

@@ -60,6 +60,7 @@ def test_source_assets_and_review_gate(project: Path) -> None:
     assert not verify_fidelity(project)["passed"]
     assets = load_assets(project)
     assert assets
+    assert all("formula_conditions" not in asset.model_dump(mode="json") for asset in assets.values())
     for asset in assets.values():
         fragment = asset.fragments[0]
         assert fragment.dpi in (300, 450)
@@ -327,3 +328,78 @@ def test_prose_article_before_math_font_space_stays_text() -> None:
     assert len(regions) == 1
     assert "8" not in regions[0]["glyph_ids"]
     assert {"10", "11"} <= set(regions[0]["glyph_ids"])
+
+
+def test_declared_formula_conditions_need_specific_review_and_translation(project):
+    from littrans.representations import validate_asset_translations
+    from littrans.models import AssetTranslation
+    pdf = project / 'source/book.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((60, 80), 'x = 1 and n is odd')
+        page.insert_text((60, 100), 'x = 2 and n is even')
+        doc.new_page()
+        doc.save(pdf)
+    config = ProjectConfig(project_id='test', title='test', source_path='source/book.pdf', source_sha256=sha256_file(pdf), source_pages=2, profile='technical-book')
+    save_project(project, config)
+    prepare_source(project, '1')
+    packet = build_source_review_packet(project, '1')
+    payload = read_json(Path(packet['packet_path']))['pages'][0]
+    conditions = []
+    glyphs = payload['ledger']['glyphs']
+    for baseline in (80, 100):
+        line = [g for g in glyphs if g['baseline'] == baseline]
+        start = next(i for i, g in enumerate(line) if g['text'] == 'a')
+        selected = line[start:]
+        conditions.append({'glyph_ids': [g['id'] for g in selected], 'source_text': ''.join(g['text'] for g in selected)})
+    review = read_json(Path(packet['review_template']))
+    review['reviewer'] = 'synthetic-formula-oracle'
+    review['pages'][0]['override'] = {'regions': [{'id': 'cases', 'kind': 'math', 'display': True, 'bbox': [58, 65, 200, 104], 'formula_conditions': conditions}]}
+    write_json(project/'formula-override.json', review)
+    assert import_source_review(project, project/'formula-override.json', True)['changed_pages'] == [1]
+    assert approve(project)['approved_pages'] == []  # Generic review is insufficient.
+    packet = build_source_review_packet(project, '1')
+    review = read_json(Path(packet['review_template']))
+    review['reviewer'] = 'synthetic-formula-oracle'
+    for key in ('viewed_original', 'coverage_complete', 'boundaries_complete', 'reading_order_correct', 'grouping_checked', 'layout_fallback_checked', 'formula_conditions_checked'):
+        review['pages'][0][key] = True
+    write_json(project/'formula-review.json', review)
+    assert import_source_review(project, project/'formula-review.json', True)['approved_pages'] == [1]
+    assert verify_fidelity(project, '1')['passed']
+    unit = next(u for u in read_jsonl(project/'derived/units.jsonl', SourceUnit) if 'cases' in u.source_text)
+    assert unit.translatable
+    assert validate_asset_translations(project, unit.source_text, [])
+    assert validate_asset_translations(project, unit.source_text, [AssetTranslation(asset_id='cases', language_present=False, notes='Not acceptable')])
+    assert not validate_asset_translations(project, unit.source_text, [AssetTranslation(asset_id='cases', target_text='\u7b2c\u4e00\u884c\u4e3a\u5947\u6570\uff0c\u7b2c\u4e8c\u884c\u4e3a\u5076\u6570\u3002')])
+
+
+def test_canvas_override_recovers_existing_ink_without_changing_pdf(project):
+    pdf = project/'source/book.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=140, height=150)
+        page.insert_text((90, 60), 'x=1)')
+        page.set_mediabox(fitz.Rect(0, 0, 100, 150))
+        page.set_cropbox(fitz.Rect(0, 0, 100, 150))
+        doc.new_page()
+        doc.save(pdf)
+    digest = sha256_file(pdf)
+    save_project(project, ProjectConfig(project_id='test', title='test', source_path='source/book.pdf', source_sha256=digest, source_pages=2, profile='technical-book'))
+    prepare_source(project, '1')
+    original_glyphs = read_json(project/'derived/fidelity-pages/p0001.json')['glyphs']
+    packet = build_source_review_packet(project, '1')
+    review = read_json(Path(packet['review_template']))
+    review['reviewer'] = 'synthetic-offpage-oracle'
+    review['pages'][0]['override'] = {'page_canvas_bbox': [0, 0, 140, 150], 'regions': [{'id': 'full-equation', 'kind': 'math', 'display': True, 'bbox': [88, 45, 130, 65]}]}
+    write_json(project/'canvas-override.json', review)
+    assert import_source_review(project, project/'canvas-override.json', True)['changed_pages'] == [1]
+    ledger = read_json(project/'derived/fidelity-pages/p0001.json')
+    assert any(g['text'] == ')' and g['bbox'][2] > 100 for g in ledger['glyphs'])
+    mapped = {g['id']: g for g in ledger['glyphs']}
+    for old in original_glyphs:
+        assert (mapped[old['id']]['text'], mapped[old['id']]['origin']) == (old['text'], old['origin'])
+    assert any(g['id'].startswith('overflow-') for g in ledger['glyphs'])
+    assert ledger['original_page_bbox'] == [0, 0, 100, 150]
+    assert (project/ledger['overflow_evidence']['path']).is_file()
+    assert sha256_file(pdf) == digest
+    assert approve(project)['approved_pages'] == []
+    assert build_source_review_packet(project, '1')['packet_id']

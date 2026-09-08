@@ -231,6 +231,21 @@ def changed_units(
     }
 
 
+def continuation_neighbors(units: list[SourceUnit]) -> dict[str, set[str]]:
+    """Connect real adjacent reading units, skipping omitted running material.
+
+    A page-edge flag alone never bridges missing PDF pages.
+    """
+    body = [unit for unit in units if unit.render_policy.value == "include" and unit.kind.value != "footnote"]
+    neighbors: dict[str, set[str]] = {}
+    for left, right in zip(body, body[1:]):
+        if (0 <= right.page - left.page <= 1
+                and (left.continued_to_next or right.continues_from_previous)):
+            neighbors.setdefault(left.unit_id, set()).add(right.unit_id)
+            neighbors.setdefault(right.unit_id, set()).add(left.unit_id)
+    return neighbors
+
+
 def dependency_closure(
     root: Path,
     batch_ids: Iterable[str],
@@ -263,22 +278,11 @@ def dependency_closure(
     # Continued structures and sidebars may pull one another into the closure.
     while True:
         previous_size = len(selected)
+        neighbors = continuation_neighbors(units)
         for unit_id in list(selected):
-            index = positions[unit_id]
-            left = index
-            while left > 0 and (
-                units[left].continues_from_previous
-                or units[left - 1].continued_to_next
-            ):
-                left -= 1
-                selected.add(units[left].unit_id)
-            right = index
-            while right + 1 < len(units) and (
-                units[right].continued_to_next
-                or units[right + 1].continues_from_previous
-            ):
-                right += 1
-                selected.add(units[right].unit_id)
+            selected.update(neighbors.get(unit_id, ()))
+        parent_ids = {units[positions[uid]].parent_id for uid in selected if units[positions[uid]].parent_id}
+        selected.update(unit.unit_id for unit in units if unit.parent_id in parent_ids)
         sidebar_ids = {
             units[positions[unit_id]].sidebar_id
             for unit_id in selected
@@ -338,6 +342,8 @@ def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
     selected_indices = {index for index, unit in enumerate(units) if unit.page == page}
     while True:
         previous_size = len(selected_indices)
+        parent_ids = {units[index].parent_id for index in selected_indices if units[index].parent_id}
+        selected_indices.update(index for index, unit in enumerate(units) if unit.parent_id in parent_ids)
         sidebar_ids = {
             units[index].sidebar_id
             for index in selected_indices
@@ -350,21 +356,10 @@ def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
         referenced = {ref for index in selected_indices for ref in units[index].footnote_refs}
         selected_indices.update(index for index, unit in enumerate(units)
                                 if unit.unit_id in referenced or selected_ids.intersection(unit.footnote_refs))
+        neighbors = continuation_neighbors(units)
+        positions = {unit.unit_id: index for index, unit in enumerate(units)}
         for index in list(selected_indices):
-            left = index
-            while left > 0 and (
-                units[left].continues_from_previous
-                or units[left - 1].continued_to_next
-            ):
-                left -= 1
-                selected_indices.add(left)
-            right = index
-            while right + 1 < len(units) and (
-                units[right].continued_to_next
-                or units[right + 1].continues_from_previous
-            ):
-                right += 1
-                selected_indices.add(right)
+            selected_indices.update(positions[uid] for uid in neighbors.get(units[index].unit_id, ()))
         if len(selected_indices) == previous_size:
             break
     return [units[index] for index in sorted(selected_indices)]

@@ -516,6 +516,8 @@ def validate_asset_translations(root: Path, source: str, supplements: list[Any],
             continue
         mapped[key] = item
         if not item.get("language_present", True):
+            if assets.get(key, {}).get("formula_conditions"):
+                errors.append({"code": "formula-language-required", "message": "Declared formula conditions require a translated companion: " + key})
             if not item.get("notes", "").strip():
                 errors.append({"code": "asset-language-attestation", "message":
                                "No-language claims require an explanation and independent technical review: " + key})
@@ -534,7 +536,7 @@ def validate_asset_translations(root: Path, source: str, supplements: list[Any],
         if not body or (load_project(root).target_language == "zh-CN" and not re.search(r"[\u3400-\u9fff]", body)):
             errors.append({"code": "asset-language-untranslated", "message": "Source image language needs a translated companion: " + key})
     for key in ids & assets.keys():
-        if assets[key]["kind"] in {"mixed-region", "table", "figure"} and key not in mapped:
+        if (assets[key]["kind"] in {"mixed-region", "table", "figure"} or assets[key].get("formula_conditions")) and key not in mapped:
             # Old structured table records remain expressible; image-only table
             # records must use the explicit per-asset language contract.
             if assets[key]["kind"] == "table" and target_table is not None:
@@ -610,7 +612,7 @@ def _href(root: Path, name: str, output: Path) -> str:
     return html.escape(Path(os.path.relpath(destination, output)).as_posix(), quote=True)
 
 
-def _original_html(root: Path, asset: dict[str, Any], output: Path) -> str:
+def _original_html(root: Path, asset: dict[str, Any], output: Path, *, linked: bool = False) -> str:
     rendered = []
     for fragment in asset["fragments"]:
         png, svg = fragment.get("png_path"), fragment.get("svg_path")
@@ -626,7 +628,11 @@ def _original_html(root: Path, asset: dict[str, Any], output: Path) -> str:
         if svg:
             fallback = "this.onerror=null;this.src=" + json.dumps(html.unescape(_href(root, png, output))) + ";"
             image += f' onerror="{html.escape(fallback, quote=True)}"'
-        rendered.append(image + ">")
+        image += ">"
+        if linked:
+            href = _href(root, fragment.get("pdf_path") or png, output)
+            image = f'<a class="original-image-link" href="{href}" title="查看高清原式" aria-label="查看高清原式 {html.escape(asset["id"], quote=True)}">{image}</a>'
+        rendered.append(image)
     return '<span class="asset-original">' + "".join(rendered) + "</span>"
 
 
@@ -640,12 +646,14 @@ def _candidate_html(candidate: dict[str, Any]) -> str:
 
 
 def _asset_html(root: Path, asset: dict[str, Any], output: Path,
-                candidate: dict[str, Any] | None = None, verified: bool = False) -> str:
+                candidate: dict[str, Any] | None = None, verified: bool = False, *, originals_only: bool = False) -> str:
     key = html.escape(asset["id"], quote=True)
-    original = _original_html(root, asset, output)
+    original = _original_html(root, asset, output, linked=originals_only)
     display = asset.get("display", False) or asset.get("kind") in {"mixed-region", "table", "code", "figure"}
     attributes = f' class="fidelity-asset" data-asset-id="{key}" data-display="{str(display).lower()}"'
     label = "结构化表达已核验" if verified else "转写未完成／待核验"
+    if originals_only:
+        return "<span" + attributes + ' data-original-only="true">' + original + "</span>"
     content = original
     if candidate and not candidate["validation_errors"] and candidate["status"] != "unresolved":
         if candidate["format"] == "latex":
@@ -657,43 +665,45 @@ def _asset_html(root: Path, asset: dict[str, Any], output: Path,
     return "<span" + attributes + ">" + content + f'<small class="asset-state">{label}</small><span class="asset-original-links">{originals}</span></span>'
 
 
-def resolve_asset_html(root: Path, text: str, output: Path) -> str:
+def resolve_asset_html(root: Path, text: str, output: Path, *, originals_only: bool = False) -> str:
     if not ASSET_RE.search(text):
         return text
     assets = _assets(root)
     ids = ASSET_RE.findall(text)
-    status = representation_status(root, ids)["assets"] if ids else {}
+    status = representation_status(root, ids)["assets"] if ids and not originals_only else {}
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
         if key not in assets:
             raise ValueError("Unknown asset reference: " + key)
         candidate = None
-        if status[key]["state"] == "verified":
+        if not originals_only and status[key]["state"] == "verified":
             candidate = read_json(_directory(root) / "candidates" / f"{status[key]['candidate_sha256']}.json")
-        return _asset_html(root, assets[key], output, candidate, candidate is not None)
+        return _asset_html(root, assets[key], output, candidate, candidate is not None, originals_only=originals_only)
 
     return ASSET_RE.sub(replace, text)
 
 
-def resolve_asset_markdown(root: Path, text: str, output: Path) -> str:
+def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_only: bool = False) -> str:
     if not ASSET_RE.search(text):
         return text
     assets = _assets(root)
     ids = ASSET_RE.findall(text)
-    status = representation_status(root, ids)["assets"] if ids else {}
+    status = representation_status(root, ids)["assets"] if ids and not originals_only else {}
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
         asset = assets[key]
         pictures = " ".join(f'![原式 {key}](<{_href(root, fragment["png_path"], output)}>)' for fragment in asset["fragments"])
-        if status[key]["state"] == "verified":
+        if not originals_only and status[key]["state"] == "verified":
             sha = status[key]["candidate_sha256"]
             candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
             if candidate["format"] == "latex":
                 display = asset.get("display", asset.get("kind") not in {"inline_math", "inline", "variable"})
                 delimiter = "$$" if display else "$"
                 return f'{delimiter}{candidate["content"]}{delimiter} {pictures}（已核验；原式备查）'
+        if originals_only:
+            return pictures
         return pictures + "（转写未完成／待核验）"
 
     return ASSET_RE.sub(replace, text)

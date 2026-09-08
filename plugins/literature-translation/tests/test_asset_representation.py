@@ -425,3 +425,19 @@ def test_known_mathematical_defects_require_independent_rejection_gate_oracle(
     assert "data-candidate-latex" not in rendered
     assert "![原式 a1]" in resolve_asset_markdown(project, "{{asset:a1}}", project)
     assert all(hashlib.sha256((project / name).read_bytes()).hexdigest() == expected for name, expected in files.items())
+
+
+def test_originals_only_ignores_verified_candidates_without_changing_state(project):
+    candidate_input(project)
+    submit_candidates(project, project / 'candidate.json')
+    review_input(project)
+    import_asset_review(project, project / 'review.json', True)
+    rendered = resolve_asset_html(project, '{{asset:a1}}', project, originals_only=True)
+    markdown = resolve_asset_markdown(project, '{{asset:a1}}', project, originals_only=True)
+    assert 'asset-original' in rendered
+    assert 'asset-candidate' not in rendered
+    assert 'data-candidate-latex' not in rendered
+    assert 'original-image-link' in rendered and 'href=' in rendered
+    assert 'asset-state' not in rendered and 'asset-original-links' not in rendered
+    assert '$' not in markdown and '![' in markdown
+    assert representation_status(project)['assets']['a1']['state'] == 'verified'

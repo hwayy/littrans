@@ -617,6 +617,8 @@ def _unit_html(
         body = inline(_list_body(text))
         if ordinal is not None:
             return f'<ol start="{ordinal}"><li>{body}</li></ol>'
+        if re.match(r"^\s*\([A-Za-z]\)", unit.source_text):
+            return '<ul style="list-style:none"><li>' + body + "</li></ul>"
         return "<ul><li>" + body + "</li></ul>"
     if unit.kind is UnitKind.CAPTION:
         return "<figcaption>" + inline(text) + "</figcaption>"
@@ -654,6 +656,31 @@ def _asset_companions(record: Any) -> tuple[str, str]:
     return "\n\n".join(markdown), "".join(markup)
 
 
+def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep a source paragraph or statement's prose and displays in one row.
+
+    Preserve each child's markup and stable anchor: parent membership expresses
+    a semantic container, not permission to concatenate distinct list items.
+    """
+    grouped: list[dict[str, Any]] = []
+    for row in rows:
+        unit = row["unit"]
+        if (grouped and unit.parent_id
+                and grouped[-1]["unit"].parent_id == unit.parent_id
+                and not unit.sidebar_id
+                and unit.kind not in {UnitKind.HEADING, UnitKind.FOOTNOTE, UnitKind.NOTE}):
+            previous = grouped[-1]
+            anchor = html.escape(unit.unit_id)
+            previous["source_html"] += f'<a id="{anchor}"></a>' + row["source_html"]
+            previous["target_html"] += row["target_html"]
+            previous["reader_notes"].extend(row["reader_notes"])
+            previous["assets"].extend(row["assets"])
+            previous["last_page"] = max(previous["last_page"], row["last_page"])
+        else:
+            grouped.append({**row, "reader_notes": list(row["reader_notes"]), "assets": list(row["assets"])})
+    return grouped
+
+
 def render_project(
     root: Path,
     page_spec: str | None,
@@ -661,6 +688,7 @@ def render_project(
     allow_draft: bool = False,
     batch_id: str | None = None,
     batch_ids: list[str] | None = None,
+    originals_only: bool = False,
 ) -> dict[str, str]:
     config = load_project(root)
     publishable = (
@@ -726,6 +754,11 @@ def render_project(
     else:
         units = [unit for unit in all_units if unit.page in pages]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
+    parent_ids = {unit.parent_id for unit in units if unit.parent_id}
+    included_ids = {unit.unit_id for unit in units}
+    if any(unit.render_policy is RenderPolicy.INCLUDE and unit.parent_id in parent_ids
+           and unit.unit_id not in included_ids for unit in all_units):
+        raise ValueError("Rendering selection cuts a logical paragraph or statement; include its complete parent group")
     pages |= {unit.page for unit in units}
     if not allow_draft:
         require_verified_extraction(root, pages)
@@ -952,7 +985,7 @@ def render_project(
                     "",
                 ]
             )
-        record = translations.get(unit.unit_id)
+        record = translations.get(unit.unit_id) if unit.translatable else None
         target = _render_target_text(unit, record.target_text if record else None)
         if target is not None:
             bilingual_target = target
@@ -987,7 +1020,7 @@ def render_project(
             rendered += "\n\n" + companion_md
         if ASSET_RE.search(render_unit.source_text) and target_table:
             rendered += "\n\n" + table_to_markdown(target_table)
-        rendered = resolve_asset_markdown(root, rendered, output)
+        rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
             for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])
@@ -995,6 +1028,7 @@ def render_project(
         if (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.NOTE
             and unit.kind is UnitKind.NOTE
             and markdown
@@ -1006,6 +1040,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.LIST_ITEM
             and unit.kind is UnitKind.LIST_ITEM
             and markdown
@@ -1019,6 +1054,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.PARAGRAPH
             and unit.kind is UnitKind.PARAGRAPH
             and previous_unit.sidebar_role is SidebarRole.BODY
@@ -1034,6 +1070,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.PARAGRAPH
             and markdown
         ):
@@ -1055,6 +1092,7 @@ def render_project(
         )
         next_continues_this_unit = bool(
             next_unit
+            and 0 <= next_unit.page - unit_last_page <= 1
             and next_unit.continues_from_previous
             and next_unit.kind is unit.kind
             and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
@@ -1082,8 +1120,8 @@ def render_project(
         target_html += companion_html
         if ASSET_RE.search(render_unit.source_text) and target_table:
             target_html += table_to_html(target_table, _inline_html)
-        source_html = resolve_asset_html(root, source_html, output)
-        target_html = resolve_asset_html(root, target_html, output)
+        source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only)
+        target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only)
         if unit.unit_id in grouped_unit_ids:
             extra_anchors = "".join(
                 f'<span id="{html.escape(unit_id)}"></span>'
@@ -1093,6 +1131,7 @@ def render_project(
         if (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.NOTE
             and unit.kind is UnitKind.NOTE
         ):
@@ -1126,6 +1165,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.LIST_ITEM
             and unit.kind is UnitKind.LIST_ITEM
         ):
@@ -1159,6 +1199,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
             and unit.kind is UnitKind.PARAGRAPH
             and rows[-1]["unit"].sidebar_role is SidebarRole.BODY
@@ -1194,6 +1235,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
             and source_html.startswith("<p>")
             and rows[-1]["source_html"].endswith("</p>")
@@ -1232,6 +1274,7 @@ def render_project(
         previous_unit = unit
     for reader_note in pending_markdown_reader_notes:
         markdown.extend([*_reader_note_markdown(reader_note), ""])
+    rows = _group_parent_rows(rows)
     for index, row in enumerate(rows):
         sidebar_id = row["unit"].sidebar_id
         row["sidebar_start"] = bool(
@@ -1257,10 +1300,10 @@ def render_project(
     html_text = template.render(
         config=config,
         rows=rows,
-        pages=f"{min(pages)}–{max(pages)}",
+        pages=(f"{min(pages)}–{max(pages)}" if len(set(pages)) == max(pages) - min(pages) + 1 else "、".join(map(str, sorted(set(pages))))),
         pdf_uri=config.source(root).as_uri(),
         allow_draft=allow_draft,
-        mathjax_bootstrap=mathjax_bootstrap(),
+        mathjax_bootstrap="" if originals_only else mathjax_bootstrap(),
     )
     render_errors = _render_quality_errors(markdown_text, html_text, units)
     if render_errors:
@@ -1287,7 +1330,7 @@ def render_project(
             publication_paths.append(external_path)
         publication_snapshot = snapshot_files(publication_paths)
         try:
-            if any(ASSET_RE.search(unit.source_markdown or unit.source_text) for unit in units):
+            if not originals_only and any(ASSET_RE.search(unit.source_markdown or unit.source_text) for unit in units):
                 install_mathjax(output)
             atomic_write_text(markdown_path, markdown_text)
             atomic_write_text(html_path, html_text)
@@ -1304,6 +1347,7 @@ def render_project(
                             "batch_id": batch_id,
                             "batch_ids": selected_batch_ids or None,
                             "pages": sorted(pages),
+                            "originals_only": originals_only,
                         },
                         "unit_ids": [unit.unit_id for unit in units],
                         "errors": render_errors,

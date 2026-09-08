@@ -59,11 +59,12 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_parallel_jobs_and_reviewed_translation_with_untranscribed_assets(project: Path) -> None:
+def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(project: Path) -> None:
     bid = "sample-one-b001"
     ready = workflow_next(project, host="codex")
-    assert ready["stage"] == "parallel"
-    assert {task["stage"] for task in ready["ready_tasks"]} == {"translate", "transcribe"}
+    assert ready["stage"] == "translate"
+    assert {task["stage"] for task in ready["ready_tasks"]} == {"translate"}
+    assert {task["stage"] for task in ready["optional_asset_tasks"]} == {"transcribe"}
     packet = create_workflow_packet(project, "translate", [bid])
     assert isinstance(packet, WorkflowPacketManifest)
     packet_dir = project / packet.storage_root / packet.packet_id
@@ -76,7 +77,7 @@ def test_parallel_jobs_and_reviewed_translation_with_untranscribed_assets(projec
     assert transcription["asset_ids"]
     units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit) if u.page == 1]
     records = [TranslationRecord(unit_id=u.unit_id, source_hash=u.source_hash,
-                  target_text="该恒等式成立。", image_evidence=original_context(project, [u])["required_images"])
+                  target_text=u.source_text.replace("The identity holds.", "\u8be5\u6052\u7b49\u5f0f\u6210\u7acb\u3002"), image_evidence=original_context(project, [u])["required_images"])
                for u in units if u.translatable]
     write_jsonl(project / "translation-input.jsonl", records)
     submit_translation(project, bid, project / "translation-input.jsonl")
@@ -90,7 +91,11 @@ def test_parallel_jobs_and_reviewed_translation_with_untranscribed_assets(projec
     approve_batch(project, bid, "machine")
     state = workflow_status(project, [bid])
     assert state["reading_complete"]
-    assert not state["complete"]
+    assert state["complete"]
+    assert not state["assets_complete"]
+    assert not state["ready_tasks"]
+    assert workflow_next(project, start_at=bid, through=bid)["stage"] == "complete"
+    assert create_workflow_packet(project, "transcribe", [bid])["asset_ids"]
     assert representation_status(project)["counts"]["transcribe"] > 0
     output = render_project(project, None, batch_id=bid)
     html_path = next(Path(v) for v in output.values() if isinstance(v, str) and v.endswith(".html"))
@@ -99,6 +104,11 @@ def test_parallel_jobs_and_reviewed_translation_with_untranscribed_assets(projec
     assert "该恒等式成立" in rendered
     assert "asset-original" in rendered
     assert "https://cdn" not in rendered
+    originals = render_project(project, None, name="originals-only", batch_id=bid, originals_only=True)
+    original_html = Path(originals["html"]).read_text(encoding="utf-8")
+    assert "asset-candidate" not in original_html.replace(".asset-candidate", "")
+    assert "tex2svgPromise" not in original_html
+    assert read_json(Path(originals["render_qa"]))["selection"]["originals_only"] is True
 
 
 def test_asset_submission_does_not_leak_into_translation_packet(project: Path) -> None:
@@ -119,7 +129,8 @@ def test_asset_submission_does_not_leak_into_translation_packet(project: Path) -
     assert isinstance(before, WorkflowPacketManifest) and isinstance(after, WorkflowPacketManifest)
     assert before.packet_id == after.packet_id
     state = workflow_status(project, [bid])
-    assert {task["stage"] for task in state["ready_tasks"]} == {"translate", "asset-audit"}
+    assert {task["stage"] for task in state["ready_tasks"]} == {"translate"}
+    assert {task["stage"] for task in state["optional_asset_tasks"]} == {"asset-audit"}
 
 
 def test_only_unified_source_commands_are_exposed() -> None:
@@ -144,7 +155,7 @@ def test_recorded_understanding_problem_blocks_only_its_reading_batch(project: P
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     for page, bid in ((1, "sample-one-b001"), (2, "sample-two-b001")):
         records = [TranslationRecord(unit_id=u.unit_id, source_hash=u.source_hash,
-                   target_text="该恒等式成立。", image_evidence=original_context(project, [u])["required_images"],
+                   target_text=u.source_text.replace("The identity holds.", "\u8be5\u6052\u7b49\u5f0f\u6210\u7acb\u3002"), image_evidence=original_context(project, [u])["required_images"],
                    uncertainties=["Cannot determine whether the condition is necessary or sufficient."] if page == 1 else [])
                    for u in units if u.page == page and u.translatable]
         write_jsonl(project / f"input-{page}.jsonl", records)
@@ -155,3 +166,23 @@ def test_recorded_understanding_problem_blocks_only_its_reading_batch(project: P
     assert run_qa(project, "sample-two-b001").passed
     with pytest.raises(ValueError, match="passing QA"):
         approve_batch(project, "sample-one-b001", "machine")
+
+
+def test_nontranslatable_asset_ignores_historic_translation(project):
+    from littrans.workflow import _audit_unit_text
+    units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
+    unit = next(u for u in units if "{{asset:" in u.source_text)
+    # Synthetic source-only formula can retain a historical record after rebuilding.
+    unit.translatable = False
+    old = TranslationRecord(unit_id=unit.unit_id, source_hash="obsolete", target_text="{{asset:removed-original}}")
+    assert "removed-original" not in _audit_unit_text(unit, old)
+    assert "[source-only]" in _audit_unit_text(unit, old)
+    # Test the production render path against a now-nontranslatable selected unit.
+    for current in units:
+        if current.unit_id == unit.unit_id:
+            current.translatable = False
+    write_jsonl(project / "derived/units.jsonl", units)
+    write_jsonl(project / "translations/current.jsonl", [old])
+    output = render_project(project, "1", "historic-formula-draft", allow_draft=True, originals_only=True)
+    assert all("removed-original" not in Path(path).read_text(encoding="utf-8")
+               for key, path in output.items() if key in {"markdown", "html"})

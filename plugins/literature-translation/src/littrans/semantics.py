@@ -23,12 +23,12 @@ MATH_FONT_MARKERS = (
 MATH_SIGNAL_RE = re.compile(r"[=∑∏∫√∂∇±≤≥∞≠≈∝⟨⟩ρτλσνεημχ′·×]")
 TERMINAL_RE = re.compile(r"[.!?。！？:：;；][\"'”’）)\]]*$")
 ZH_FIGURE_CAPTION_RE = re.compile(
-    r"^\s*图\s*(?P<number>\d+(?:\s*[-–—]\s*\d+)*)\s*"
+    r"^\s*图\s*(?P<number>\d+(?:\s*[-–—.．]\s*\d+)*)\s*"
     r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
     re.DOTALL,
 )
 ZH_TABLE_CAPTION_RE = re.compile(
-    r"^\s*表\s*(?P<number>\d+(?:\s*[-–—]\s*\d+)*)\s*"
+    r"^\s*表\s*(?P<number>\d+(?:\s*[-–—.．]\s*\d+)*)\s*"
     r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
     re.DOTALL,
 )

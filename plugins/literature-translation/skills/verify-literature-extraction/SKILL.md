@@ -14,3 +14,7 @@ The pretranslation gate is faithful, complete source preservation. Use [runtime.
 5. Rerun `source verify`. Fix uncovered source content or stale evidence through supported source corrections and new review packets. Source PDF/region changes invalidate the affected verification; never reuse a receipt with a changed fingerprint.
 
 A faithful original image may pass while its LaTeX remains unfinished. Missing mathematical understanding belongs in translation uncertainties; it is different from missing source content. Do not infer zero omissions from aggregate detector scores or an enclosing page box.
+
+For a displayed formula with source-native condition words, review its explicit `formula_conditions` entries (ordered original `glyph_ids` plus exact `source_text`). Confirm that each is language inside the formula, not neighboring prose swallowed by the region, before setting `formula_conditions_checked`. These assets require translated companions even though their mathematical image remains intact.
+
+When original content-stream ink lies beyond the PDF page box, a source override may specify `page_canvas_bbox` to expand an unrotated origin-zero page in memory. Inspect the original page, the separately hashed overflow canvas image, and the recovered fragment before setting `overflow_canvas_checked`. This does not rewrite the source PDF or reconstruct missing characters. Reject arbitrary canvas expansion without existing off-page native glyphs.

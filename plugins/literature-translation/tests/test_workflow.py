@@ -259,6 +259,8 @@ def test_chinese_table_caption_separator_is_normalized(
 def test_chinese_caption_normalizer_handles_figures_and_tables() -> None:
     assert normalize_zh_caption("图 1-2。架构") == "图 1-2 架构"
     assert normalize_zh_caption("表 1-2。属性") == "表 1-2 属性"
+    assert normalize_zh_caption("表 1.1。属性") == "表 1.1 属性"
+    assert normalize_zh_caption("图 12.3。架构") == "图 12.3 架构"
 
 
 def test_only_caption_target_views_use_the_chinese_caption_separator() -> None:

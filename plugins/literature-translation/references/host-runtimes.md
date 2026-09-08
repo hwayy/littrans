@@ -9,7 +9,7 @@ LitTrans supports local Codex and Cursor orchestration through the launcher in [
 | Codex | 3 | 3 | Fresh `gpt-5.6-luna`, `max` effort |
 | Cursor | 6 | 9 | Explicit host-available role model configuration |
 
-A wave is a coordination scope, not permission to exceed the host's active task capacity. Independent transcribe and translate tasks receive the same source text and original images with no shared candidate output. Queue work when slots are full; a finished translation may enter its audit while other work continues.
+A wave is a coordination scope, not permission to exceed the host's active task capacity. Transcription is optional and can run at any later time. When selected, independent transcribe and translate tasks receive the same source text and original images with no shared candidate output. Queue work when slots are full; a finished translation may enter its audit while other work continues.
 
 `workflow next` auto-detects the host; mixed or unknown environments use Codex. Explicit `--host codex` or `--host cursor` overrides detection. Once selected, keep batch IDs fixed and use `workflow status --batch-ids`. Assign a translation audit lens across at most three consecutive batches; split larger Cursor waves accordingly.
 
