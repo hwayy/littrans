@@ -3533,6 +3533,50 @@ def test_memory_is_current_approved_relevant_and_bounded(tmp_path: Path) -> None
     assert memories[0]["unit_id"] in {"u001", "u003"}
 
 
+def test_memory_rechecks_changed_qa_evidence(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+    candidate_id = manifests[0].unit_ids[0]
+    assert candidate_id in {
+        item["unit_id"] for item in translation_memory(root, manifests[1].unit_ids)
+    }
+    qa_path = root / "qa" / f"{manifests[0].batch_id}.json"
+    report = json.loads(qa_path.read_text(encoding="utf-8"))
+    report["passed"] = False
+    qa_path.write_text(json.dumps(report), encoding="utf-8")
+    assert candidate_id not in {
+        item["unit_id"] for item in translation_memory(root, manifests[1].unit_ids)
+    }
+
+
+def test_memory_without_candidates_skips_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+
+    def unexpected_snapshot(*args: object, **kwargs: object) -> None:
+        pytest.fail("empty translation memory must not load a workflow snapshot")
+
+    monkeypatch.setattr("littrans.workflow._load_workflow_snapshot", unexpected_snapshot)
+    assert translation_memory(root, manifests[0].unit_ids) == []
+
+
+@pytest.mark.parametrize("error", [KeyError, OSError, ValueError])
+def test_memory_snapshot_errors_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    from littrans.evidence import _memory_complete_batch_ids
+
+    def broken_snapshot(*args: object, **kwargs: object) -> None:
+        raise error("unreadable evidence")
+
+    monkeypatch.setattr("littrans.workflow._load_workflow_snapshot", broken_snapshot)
+    assert _memory_complete_batch_ids(str(tmp_path), "shared", "evidence") == frozenset()
+
+
 def test_memory_excludes_stored_approval_with_stale_qa(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=2)
     for manifest in manifests:

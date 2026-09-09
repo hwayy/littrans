@@ -494,6 +494,8 @@ def translation_memory(
         union = current_tokens | candidate_tokens
         similarity = len(current_tokens & candidate_tokens) / len(union) if union else 0.0
         ranked.append((similarity + adjacent * 2.0, adjacent, unit_id, source, target))
+    if not ranked:
+        return []
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     manifest_paths = sorted((root / "batches").glob("*/manifest.yaml"))
     manifest_state = _memory_state_token(manifest_paths)
@@ -514,19 +516,19 @@ def translation_memory(
             ]
         )
     )
-    batch_complete: dict[str, bool] = {}
+    evidence_state = _memory_state_token(
+        path
+        for batch_id in sorted({bid for ids in manifest_index.values() for bid in ids})
+        for path in _memory_batch_evidence_paths(root, batch_id)
+    )
+    complete_batch_ids = _memory_complete_batch_ids(
+        str(root.resolve()), shared_state, evidence_state
+    )
     memories: list[dict[str, str]] = []
     for _, _, unit_id, source, target in ranked:
         batch_ids = manifest_index.get(unit_id, ())
         for batch_id in batch_ids:
-            if batch_id not in batch_complete:
-                batch_complete[batch_id] = _memory_batch_is_complete(
-                    str(root.resolve()),
-                    batch_id,
-                    shared_state,
-                    _memory_state_token(_memory_batch_evidence_paths(root, batch_id)),
-                )
-            if batch_complete[batch_id]:
+            if batch_id in complete_batch_ids:
                 memories.append(
                     {"unit_id": unit_id, "source": source, "target": target}
                 )
@@ -576,20 +578,28 @@ def _memory_manifest_index(
     )
 
 
-@lru_cache(maxsize=4096)
-def _memory_batch_is_complete(
-    root_text: str,
-    batch_id: str,
-    shared_state: str,
-    batch_state: str,
-) -> bool:
-    del shared_state, batch_state
-    from littrans.workflow import _batch_stage
+@lru_cache(maxsize=8)
+def _memory_complete_batch_ids(
+    root_text: str, shared_state: str, evidence_state: str
+) -> frozenset[str]:
+    """Resolve complete batch IDs from one current, evidence-keyed snapshot."""
+    del shared_state, evidence_state
+    from littrans.workflow import _batch_stage, _load_workflow_snapshot
 
+    root = Path(root_text)
     try:
-        return _batch_stage(Path(root_text), batch_id) == "complete"
+        snapshot = _load_workflow_snapshot(root)
     except (KeyError, OSError, ValueError):
-        return False
+        return frozenset()
+    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None] = {}
+    complete: set[str] = set()
+    for manifest in snapshot.manifests:
+        try:
+            if _batch_stage(root, manifest.batch_id, snapshot, context_cache) == "complete":
+                complete.add(manifest.batch_id)
+        except (KeyError, OSError, ValueError):
+            continue
+    return frozenset(complete)
 
 
 def _memory_tokens(text: str) -> set[str]:

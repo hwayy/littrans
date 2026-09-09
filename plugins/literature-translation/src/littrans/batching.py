@@ -245,6 +245,7 @@ def create_batches(
     base_prefix = validate_batch_identifier(
         prefix or f"p{min(pages):04}-p{max(pages):04}"
     )
+    all_unit_positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     manifests: list[BatchManifest] = []
     for index, group in enumerate(groups, 1):
         batch_id = f"{base_prefix}-b{index:03}"
@@ -260,8 +261,8 @@ def create_batches(
             translatable_unit_ids=[unit.unit_id for unit in group if unit.translatable],
             source_words=sum(_word_count(unit.source_text) for unit in group if unit.translatable),
         )
-        start_index = all_units.index(group[0])
-        end_index = all_units.index(group[-1])
+        start_index = all_unit_positions[group[0].unit_id]
+        end_index = all_unit_positions[group[-1].unit_id]
         before = all_units[start_index - 1] if start_index > 0 else None
         after = all_units[end_index + 1] if end_index + 1 < len(all_units) else None
         write_yaml(batch_dir / "manifest.yaml", manifest.model_dump(mode="json"))
