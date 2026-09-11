@@ -99,6 +99,8 @@ def test_select_base_python_rejects_unsupported_versions(monkeypatch: pytest.Mon
 
 
 def test_install_is_idempotent_and_refuses_external_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LITTRANS_LAYOUT_PYTHON", raising=False)
+    monkeypatch.delenv("LITTRANS_LAYOUT_MODEL", raising=False)
     monkeypatch.setattr(layout_runtime, "layout_runtime_status", lambda: {"ok": True, "python": "p", "model": "m"})
     assert layout_runtime.install_layout_runtime()["installed"] is False
     monkeypatch.setenv("LITTRANS_LAYOUT_PYTHON", "elsewhere")

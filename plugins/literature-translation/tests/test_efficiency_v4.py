@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import json
 import runpy
+import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -870,7 +873,34 @@ def test_workflow_metrics_ignores_history_for_removed_source_units(
     assert metrics["semantic_noop_records"] == 0
 
 
+_PROJECT_TEMPLATES: dict[tuple[int, int], tuple[Path, list[object]]] = {}
+
+
 def _make_project(
+    tmp_path: Path, pages: int = 3, max_words: int = 100
+) -> tuple[Path, list[object]]:
+    """Return a private copy of the reviewed synthetic project for these parameters.
+
+    Building the fixture (PDF, preparation, two review rounds, verification, batching)
+    costs seconds; the same shape is requested by dozens of tests, so it is built once per
+    parameter set and copied.
+    """
+    key = (pages, max_words)
+    if key not in _PROJECT_TEMPLATES:
+        base = Path(tempfile.mkdtemp(prefix="littrans-efficiency-fixture-"))
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
+        _PROJECT_TEMPLATES[key] = (base, _build_project(base, pages, max_words)[1])
+    base, manifests = _PROJECT_TEMPLATES[key]
+    shutil.copy2(base / "source.pdf", tmp_path / "source.pdf")
+    shutil.copytree(base / "project", tmp_path / "project")
+    root = tmp_path / "project"
+    config = load_project(root)
+    config.source_path = str(tmp_path / "source.pdf")
+    save_project(root, config)
+    return root, [m.model_copy(deep=True) for m in manifests]  # type: ignore[attr-defined]
+
+
+def _build_project(
     tmp_path: Path, pages: int = 3, max_words: int = 100
 ) -> tuple[Path, list[object]]:
     pdf = tmp_path / "source.pdf"

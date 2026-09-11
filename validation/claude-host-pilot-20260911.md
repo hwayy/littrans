@@ -40,3 +40,23 @@
 - 三条 chinese-style 非阻断意见保持 open（`b001.unresolved.md` 已列出）；其中一条与首轮意见互相矛盾（「存在解等」），未再起修订。
 - 本次未运行 Codex/Cursor 宿主；`--host` 检测与波次上限仅由单元测试覆盖。
 - 布局运行时在本机已预先存在，`layout install` 仅验证了幂等分支，未做全新安装实测。
+
+## 后续（2026-09-12）：提取结构增强与检查点
+
+针对 `b001.bilingual.html` 的目视意见（标题截断并成为父节点、插图与图注混入段落、`where … and …` 显示行被挤成一行、粗体向量 **b**/**B** 未识别为公式、行内公式截入引号/连字符且上边界过大），在插件层做了通用性修正，并在同一 PDF 上以全新项目 `project-v2` 重新提取第 10–12 页（未做任何人工覆盖）：
+
+| 项目 | 首轮提取（人工 5 轮覆盖前） | 增强后自动提取 |
+| --- | --- | --- |
+| 标题 | `1.1. … DIFFERENTIAL` / `EQUATIONS` 两个单元，且成为后续段落 parent | 一个 heading 单元；heading 不再拥有后续正文 |
+| 插图 | 图为 paragraph，图注为 paragraph 并与正文合并 | figure 单元 + caption 单元同组，渲染为 `<figure>` |
+| 显示行 | `where B… and ξ…` 合并成一段 | `where` / 显示行 / `and` / 显示行 四个单元 |
+| 项目列表 | 三个项目合并为一段，圆点成为公式资产 | 8 个 list_item 单元，圆点不再是资产 |
+| 公式 (3) | 碎为 5 段 | 一个显示公式并绑定编号 3；尾随短语 `for all times t > 0.` 回到正文 |
+| 方程标签 | 仅数字编号 | `(ODE)`、`(SDE)` 也绑定为 equation_number |
+| 精确字形导出 | 0/44（空裁剪组导致全部回退原始截图） | 45/51（余 6 个为图形与装饰性横线） |
+| 行内裁剪 | 含引号、连字符，上边界含上一行 | 仅自有字形墨迹；引号、连字符、句末标点留在正文 |
+| 页码/装饰线 | 页码泄入段落；横线成为正文段落 | 页码分离为 omitted note；细长横线 omitted |
+
+评审包 `boundary_diagnostics` 与 `grouping_pending` 均为空。新增 `source render` 生成 `output/source-pNNNN-pNNNN.html` 作为翻译前的人工检查点（已在浏览器目视：标题层级、图+图注、列表、显示行、行内公式同行）。
+
+测试耗时：本机装有布局检测器时原先每个未打桩的 `prepare_source` 都会启动 torch 子进程并哈希 205 MB 权重，全套超过 20 分钟；现在 conftest 默认把检测器桩为不可用（`@pytest.mark.layout_runtime` 可选择真实运行），`prepared_project` 与 `_make_project` 改为每会话构建一次再复制，全套 1 分 49 秒（Python 3.13，本机）。

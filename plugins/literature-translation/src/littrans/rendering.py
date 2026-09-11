@@ -555,6 +555,8 @@ def _unit_html(
             if unit.equation_number and f"({unit.equation_number})" not in text
             else ""
         )
+        if unit.kind is UnitKind.FIGURE:
+            return '<figure class="fidelity-complex source-figure">' + inline(text) + "</figure>"
         return '<div class="fidelity-complex">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"

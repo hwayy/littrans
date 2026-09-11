@@ -33,6 +33,30 @@ def _matrix(node: ET.Element) -> list[float]:
     return numbers
 
 
+def _horizontal_rule(node: ET.Element, matrix: list[float]) -> tuple[float, float, float] | None:
+    """Recognize a fraction bar/underline drawn as a stroked line or a thin filled rectangle.
+
+    Returns page-space (x0, x1, y) for an axis-aligned rule, or None for any other path.
+    """
+    if any(abs(matrix[i] - v) > .0001 for i, v in enumerate((1, 0, 0))) or abs(abs(matrix[3]) - 1) > .0001:
+        return None
+    d = node.get("d", "")
+    stroked = re.fullmatch("M0 0H(" + NUMBER + ")", d)
+    if stroked:
+        return matrix[4], matrix[4] + float(stroked[1]), matrix[5]
+    filled = re.fullmatch(
+        "M(" + NUMBER + ") (" + NUMBER + ")H(" + NUMBER + ")V(" + NUMBER + ")H(" + NUMBER + ")Z?", d
+    )
+    if not filled:
+        return None
+    left, top, right, bottom, back = (float(v) for v in filled.groups())
+    if abs(back - left) > .01 or abs(bottom - top) > 1.5:
+        return None
+    x0, x1 = sorted((left + matrix[4], right + matrix[4]))
+    y = matrix[5] + matrix[3] * (top + bottom) / 2
+    return x0, x1, y
+
+
 def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, list[float]]:
     """Measure original glyph paths for grouping; font metrics are not ink bounds.
 
@@ -125,8 +149,8 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
             target.append(copy.deepcopy(node))
         elif tag == "path":
             matrix = _matrix(node)
-            rule = re.fullmatch("M0 0H(" + NUMBER + ")", node.get("d", ""))
-            if not rule or any(abs(matrix[i] - v) > .0001 for i, v in enumerate((1, 0, 0))) or abs(abs(matrix[3]) - 1) > .0001:
+            rule = _horizontal_rule(node, matrix)
+            if rule is None:
                 # Unrelated drawings elsewhere on the page do not prevent a
                 # precise text fragment. Measure the original path before
                 # excluding it; intersecting unsupported paths still fail closed.
@@ -137,14 +161,17 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                 if drawing_boxes and all(not b.intersects(box) for b in drawing_boxes):
                     continue
                 raise ValueError("Unsupported PDF vector primitive; retain raw region")
-            x0, y = matrix[4:]
-            x1 = x0 + float(rule[1])
+            x0, x1, y = rule
             nearby = any(g["bbox"][0] < x1 + 1 and g["bbox"][2] > x0 - 1
                          and g["bbox"][1] - 2 <= y <= g["bbox"][3] + 2 for g in glyphs)
             if nearby and box.x0 - 2 <= x0 <= x1 <= box.x1 + 2 and box.y0 - 2 <= y <= box.y1 + 2:
                 target.append(copy.deepcopy(node))
                 paths += 1
         elif tag == "g":
+            # Clip-only wrappers without any drawable descendant carry no ink;
+            # some PDF producers emit an empty page-sized clip group per page.
+            if not any(child.tag.split("}")[-1] != "g" for child in node.iter() if child is not node):
+                continue
             # Figures elsewhere on a page may use transformed or clipped groups.
             # Preserve all definitions and measure the intact group, including
             # raster images. Never flatten transforms or discard an intersecting

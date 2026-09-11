@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -367,8 +368,26 @@ def _review_synthetic_workflow_source(root: Path) -> None:
     assert import_source_review(root, path, confirm_visual_review=True)["approved_pages"] == packet["pages"]
 
 
+@pytest.fixture(scope="session")
+def _prepared_project_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build the reviewed synthetic project once; tests receive private copies."""
+    base = tmp_path_factory.mktemp("prepared-template")
+    _build_prepared_project(base)
+    return base
+
+
 @pytest.fixture()
-def prepared_project(tmp_path: Path) -> Path:
+def prepared_project(tmp_path: Path, _prepared_project_template: Path) -> Path:
+    shutil.copy2(_prepared_project_template / "synthetic.pdf", tmp_path / "synthetic.pdf")
+    shutil.copytree(_prepared_project_template / "project", tmp_path / "project")
+    root = tmp_path / "project"
+    config = load_project(root)
+    config.source_path = str(tmp_path / "synthetic.pdf")
+    save_project(root, config)
+    return root
+
+
+def _build_prepared_project(tmp_path: Path) -> Path:
     source, root = tmp_path / "synthetic.pdf", tmp_path / "project"
     make_pdf(source)
     initialize_project(source, root, "technical-book", "Synthetic")

@@ -25,6 +25,20 @@ versioning and correspond to Git tags named `v<version>`.
 - Made the isolated layout detector (MinerU 3.4.5, PP-DocLayoutV2) a required preparation
   component: `doctor` reports `layout_runtime`, `layout install` provisions it, and
   `source prepare` refuses to run without it unless `--allow-missing-layout` is given.
+- Improved source structure recovery: wrapped headings stay one unit and never own the
+  following prose; figures/tables group with their captions and render as `<figure>`; bullet
+  lists become list items; displayed lines that mix notation and prose keep their own position;
+  page numbers merged into a text block are detached as omitted running material; bare vector
+  rules are omitted from reading; equation tags such as `(ODE)` bind like numbers.
+- Improved formula region ownership: bold single letters in prose are notation, quotation
+  marks, joining hyphens and sentence punctuation are trimmed from formula edges, detector
+  boxes shrink to the owned glyph ink, a trailing prose phrase is split off a displayed formula,
+  and the precise glyph exporter accepts empty clip groups and filled-rectangle rules.
+- Added `source render`, a readable HTML checkpoint of the verified source with the original
+  assets inline, as the last check before batching.
+- Cut the test suite from over twenty minutes on a machine with the layout detector to under two:
+  tests stub the detector unless marked `layout_runtime`, and the synthetic reviewed projects
+  are built once per session and copied.
 - Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
   only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
 - Added the transcription skill, asset review role and offline MathJax reading contract.

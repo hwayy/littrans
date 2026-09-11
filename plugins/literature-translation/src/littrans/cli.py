@@ -179,6 +179,17 @@ def source_prepare(
     emit(prepare_source(project, pages, replace, allow_missing_layout))
 
 
+@source_app.command("render")
+def source_render(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    name: str | None = typer.Option(None, help="Output file name (default source-pNNNN-pNNNN)."),
+) -> None:
+    """Write a readable HTML checkpoint of the preserved source with original assets inline."""
+    from littrans.source_render import render_source_review
+    emit(render_source_review(project, pages, name))
+
+
 @source_app.command("review-packets")
 def source_review_packets(project: PathArg, pages: str = typer.Option("all")) -> None:
     from littrans.fidelity import build_source_review_packet

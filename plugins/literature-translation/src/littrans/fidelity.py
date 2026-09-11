@@ -38,6 +38,96 @@ from littrans.storage import (
 MATH_FONT = re.compile(r"cmmi|cmsy|cmex|msam|msbm|math|symbol|stix|cm[a-z]*sy", re.I)
 MATH_CHAR = re.compile(r"[\u0370-\u03ff\u2100-\u214f\u2190-\u22ff\u27c0-\u27ef=<>^_|]")
 MATH_OPERATORS = {"sin", "cos", "tan", "log", "ln", "exp", "lim", "sup", "inf", "max", "min", "det", "rank", "diag", "span", "arg", "dim", "ker", "poly", "tr"}
+BOLD_FONT = re.compile(r"bx|bold|heavy|black|semibold|demi", re.I)
+LIST_BULLETS = set("\u2022\u25e6\u25aa\u25a0\u25cf")
+# Bare vector rules: thin relative to their width, no glyphs, no other drawing.
+DECORATIVE_RULE_MAX_HEIGHT = 10.0
+DECORATIVE_RULE_MIN_ASPECT = 3.0
+
+
+def _line_bullet_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
+    """A bullet glyph that opens a line marks a list item, even in a symbol font."""
+    ids: set[str] = set()
+    for line in lines.values():
+        inked = [g for g in line if g["text"].strip()]
+        if len(inked) >= 2 and inked[0]["text"] in LIST_BULLETS and inked[1]["text"].strip():
+            ids.add(inked[0]["id"])
+    return ids
+# Prose punctuation that a detector rectangle or font-metric overlap can drag into a formula.
+EDGE_PROSE_PUNCTUATION = set("\u201c\u201d\u2018\u2019\"',;:. ")
+
+
+def _bold_variable_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
+    """Single bold letters inside ordinary prose are mathematical notation (vectors, matrices).
+
+    A bold word of three or more letters, or any letter on a predominantly bold line
+    (a heading or run-in label), stays prose.
+    """
+    ids: set[str] = set()
+    for line in lines.values():
+        # Bold phrases: bold letter runs separated only by spaces or punctuation
+        # in the bold font ("modeling problems:"). A phrase containing a bold word
+        # is emphasis or a heading; a phrase of isolated letters is notation.
+        phrases: list[list[list[dict[str, Any]]]] = []
+        phrase: list[list[dict[str, Any]]] = []
+        run: list[dict[str, Any]] = []
+        for glyph in [*line, {"text": "\u0000", "font": ""}]:
+            bold = bool(BOLD_FONT.search(glyph["font"]))
+            if glyph["text"].isalpha() and bold:
+                run.append(glyph)
+                continue
+            if run:
+                phrase.append(run)
+                run = []
+            if not (bold or glyph["text"].isspace()) or glyph["text"] == "\u0000":
+                if phrase:
+                    phrases.append(phrase)
+                phrase = []
+        for phrase in phrases:
+            if all(len(word) <= 2 for word in phrase):
+                ids.update(g["id"] for word in phrase for g in word)
+    return ids
+
+
+def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop quotation marks, sentence punctuation and hyphens joining prose words from the
+    ends of a mathematical run; those glyphs belong to the surrounding prose."""
+    positions = {g["id"]: index for index, g in enumerate(line)}
+
+    def neighbour(glyph: dict[str, Any], step: int) -> dict[str, Any] | None:
+        index = positions.get(glyph["id"])
+        if index is None or not 0 <= index + step < len(line):
+            return None
+        return line[index + step]
+
+    def prose_edge(glyph: dict[str, Any], step: int) -> bool:
+        text = glyph["text"]
+        if step == 1 and text in ".,;:":
+            # Sentence punctuation closing the run belongs to the prose even when
+            # the PDF sets it in the mathematical font.
+            following = neighbour(glyph, 1)
+            return following is None or following["text"].isspace() or following["text"].isalpha()
+        if MATH_FONT.search(glyph["font"]) and not text.isspace():
+            return False
+        if text in EDGE_PROSE_PUNCTUATION:
+            return True
+        if text == "-":
+            other = neighbour(glyph, step)
+            return bool(other and other["text"].isalpha() and not MATH_FONT.search(other["font"]))
+        return False
+
+    changed = True
+    while changed and run:
+        changed = False
+        if prose_edge(run[0], -1):
+            run = run[1:]
+            changed = True
+        if run and prose_edge(run[-1], 1):
+            run = run[:-1]
+            changed = True
+    # Delimiters stay: intervals, function arguments and expressions continuing
+    # on the next line are legitimately unbalanced within one crop.
+    return run
 KINDS = {"math", "figure", "table", "code", "mixed-region"}
 
 
@@ -170,6 +260,74 @@ def _boundary_diagnostics(glyphs: list[dict[str, Any]], assets: list[dict[str, A
     return diagnostics
 
 
+def _strip_display_prose(owned: list[dict[str, Any]], prose_ids: set[str]) -> list[dict[str, Any]]:
+    """Cut a prose phrase set off by a horizontal gap from a displayed formula box.
+
+    "X(t) = ...   for all times t > 0." keeps the formula and returns the phrase
+    (with its own inline notation) to the paragraph. Prose that touches the notation
+    ("m-dimensional", "(= space of n x m matrices)") is left alone, so the caller
+    treats the whole line as native text with inline assets.
+    """
+    prose = [g for g in owned if g["id"] in prose_ids]
+    mathematical = [g["id"] for g in owned if MATH_FONT.search(g["font"]) or MATH_CHAR.search(g["text"])]
+    if not prose or not mathematical:
+        return owned
+    sizes = sorted(g.get("size", 10) for g in owned)
+    gap = sizes[len(sizes) // 2] * 1.2
+    left_edge = min(g["bbox"][0] for g in prose)
+    right_edge = max(g["bbox"][2] for g in prose)
+    for side in ("head", "tail"):
+        if side == "head":
+            kept = [g for g in owned if g["bbox"][2] <= left_edge - gap]
+            between = [g for g in owned if g not in kept and g["bbox"][0] < left_edge and g["id"] not in prose_ids]
+        else:
+            kept = [g for g in owned if g["bbox"][0] >= right_edge + gap]
+            between = [g for g in owned if g not in kept and g["bbox"][2] > right_edge and g["id"] not in prose_ids]
+        kept_math = sum(1 for g in kept if g["id"] in mathematical)
+        if kept and not between and kept_math >= len(mathematical) * 0.6 and not any(g["id"] in prose_ids for g in kept):
+            return kept
+    return owned
+
+
+def _prose_word_ids(glyphs: list[dict[str, Any]]) -> set[str]:
+    """Glyphs of ordinary words: two or more letters in a non-mathematical font."""
+    ids: set[str] = set()
+    lines: dict[str, list[dict[str, Any]]] = {}
+    for glyph in glyphs:
+        lines.setdefault(glyph["line"], []).append(glyph)
+    for line in lines.values():
+        word: list[dict[str, Any]] = []
+        for glyph in [*line, {"text": " ", "font": ""}]:
+            if glyph["text"].isalpha() and not MATH_FONT.search(glyph["font"]):
+                word.append(glyph)
+            else:
+                if len(word) >= 2 and "".join(g["text"] for g in word).lower() not in MATH_OPERATORS:
+                    ids.update(g["id"] for g in word)
+                word = []
+    return ids
+
+
+def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> set[str]:
+    """Glyphs of detector display formulas that also contain prose words.
+
+    Such a line ("B : R^n -> M (= space of n x m matrices)") stays native text with
+    inline assets, but it keeps its own structural position instead of being merged
+    into the surrounding paragraph.
+    """
+    prose = _prose_word_ids(glyphs)
+    ids: set[str] = set()
+    for item in layout:
+        if item.get("label") != "display_formula":
+            continue
+        box = [float(v) / 2 for v in item["bbox"]]
+        owned = [g for g in glyphs if g["text"].strip() and _inside(g, box)]
+        if owned and any(g["id"] in prose for g in owned):
+            stripped = _strip_display_prose(owned, prose)
+            if any(g["id"] in prose for g in stripped):
+                ids.update(g["id"] for g in owned)
+    return ids
+
+
 def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Use original visible paths when available: TeX accents and radicals often
     # have misleading native metric rectangles on an adjacent line.
@@ -195,11 +353,13 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     for glyph in glyphs:
         lines.setdefault(glyph["line"], []).append(glyph)
     protected_prose = _prose_boundary_ids(glyphs)
+    bold_variables = _bold_variable_ids(lines)
+    bullets = _line_bullet_ids(lines)
     for line in lines.values():
         run: list[dict[str, Any]] = []
         for position, glyph in enumerate([*line, {"text": "\u0000", "font": "", "bbox": [0, 0, 0, 0]}]):
-            mathematical = bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
-            if glyph.get("id") not in protected_prose and (mathematical or (run and glyph["text"] in "0123456789()[]{}+-*/., ")):
+            mathematical = bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
+            if glyph.get("id") not in protected_prose and glyph.get("id") not in bullets and (mathematical or (run and glyph["text"] in "0123456789()[]{}+-*/.,: ")):
                 if mathematical and not run and not glyph["text"].isspace():
                     # Normal-font prefixes are common in U(N), diag(...), 2π.
                     prefix: list[dict[str, Any]] = []
@@ -220,8 +380,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                         run.extend(prefix)
                 run.append(glyph)
             elif run:
-                while run and run[-1]["text"] in " .,":
-                    run.pop()
+                run = _trim_prose_edges(run, line)
                 if run:
                     regions.append({"kind": "math", "bbox": _union([g["bbox"] for g in run]), "glyph_ids": [g["id"] for g in run], "provenance": ["native-math-glyphs"], "display": False, "grouping_pending": False})
                 run = []
@@ -246,12 +405,18 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                     prose_ids.update(g["id"] for g in word)
                 word = []
     clean = []
+    glyph_by_id = {g["id"]: g for g in glyphs}
     for region in regions:
         if "glyph_ids" not in region:
             owned = [g for g in glyphs if g["text"].strip() and _inside(g, region["bbox"])]
+            if region["kind"] == "math" and region["display"] and owned and any(g["id"] in prose_ids for g in owned):
+                owned = _strip_display_prose(owned, prose_ids)
             if region["kind"] == "math" and (not owned or any(g["id"] in prose_ids for g in owned)):
-                # Fall back to the finer native math runs, not the whole block.
+                # Fall back to the finer native math runs, not the whole block; see
+                # _display_line_glyph_ids for the structural handling of such lines.
                 continue
+            if region["kind"] == "math" and region["display"]:
+                region["bbox"] = _union([g["bbox"] for g in owned])
             if region["kind"] in {"math", "mixed-region"} and owned:
                 region["glyph_ids"] = [g["id"] for g in owned if g["id"] not in prose_ids]
                 if not region["glyph_ids"]:
@@ -259,6 +424,19 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                     if "native-vector" not in region["provenance"]:
                         continue
                     region.pop("glyph_ids")
+        if region["kind"] == "math" and region.get("glyph_ids"):
+            owned = [glyph_by_id[gid] for gid in region["glyph_ids"] if gid in glyph_by_id]
+            if not region["display"]:
+                by_line: dict[str, list[dict[str, Any]]] = {}
+                for g in owned:
+                    by_line.setdefault(g["line"], []).append(g)
+                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group))]
+            if not owned:
+                continue
+            region["glyph_ids"] = [g["id"] for g in owned]
+            # Detector rectangles and font metrics overshoot the visible ink; the
+            # owned glyph ink is the region. Rules and accents merge back below.
+            region["bbox"] = _union([g["bbox"] for g in owned if g["text"].strip()] or [g["bbox"] for g in owned])
         clean.append(region)
     regions = clean
     # Merge formula components and their rules, but never expand to a PDF text
@@ -409,7 +587,8 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
 def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
     """Keep display formulas selectable and bind their printed equation labels."""
     result = []
-    number_pattern = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?)\)"
+    # Printed labels: (1), (2.3a), (A.4); named tags such as (ODE), (SDE); starred (*).
+    number_pattern = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?|[A-Z]{2,6}\d?|\*{1,3})\)"
     for unit in units:
         text = unit.source_markdown or unit.source_text
         refs = asset_reference_ids(text)
@@ -511,7 +690,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         styled_text,
     )
     items = layout.get("pages", {}).get(str(image_path.resolve()), [])
-    structure = plan_structure(glyphs, blocks, items, page.rect.height)
+    structure = plan_structure(glyphs, blocks, items, page.rect.height,
+                               display_glyph_ids=_display_line_glyph_ids(glyphs, items))
     from littrans.structure_profile import structure_context
     profile_context = structure_context(root)
     if profile_context:
@@ -562,19 +742,48 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             rendered = styled_text(tokens).strip()
             if rendered:
                 lines.append(rendered)
-        text = " ".join(lines)
+        text = re.sub(r" {2,}", " ", " ".join(lines))
         text = re.sub(r"([a-z])-\s+([a-z])", r"\1\2", text)
         if text:
             kind = "paragraph"
-            semantic_labels = {"doc_title": "heading", "paragraph_title": "heading", "title": "heading", "figure_caption": "caption", "table_caption": "caption", "footnote": "footnote", "reference": "bibliography", "list": "list_item"}
+            semantic_labels = {"doc_title": "heading", "paragraph_title": "heading", "title": "heading", "figure_caption": "caption", "figure_title": "caption", "table_caption": "caption", "table_title": "caption", "vision_footnote": "caption", "footnote": "footnote", "reference": "bibliography", "list": "list_item"}
             for item in layout.get("pages", {}).get(str(image_path.resolve()), []):
                 if item.get("label") in semantic_labels and _inside({"bbox": block["bbox"]}, [v / 2 for v in item["bbox"]]):
                     kind = semantic_labels[item["label"]]
                     break
+            if kind == "paragraph" and text.lstrip()[:1] in LIST_BULLETS and len(text.split()) >= 2 and text.lstrip()[1:2].isspace():
+                kind = "list_item"
+            if kind == "paragraph" and len(text.split()) <= 8:
+                sizes = [glyph_by_id[gid]["size"] for line in block["lines"] for gid in line if glyph_by_id[gid]["text"].isalpha()]
+                if sizes and sorted(sizes)[len(sizes) // 2] >= structure["font_size"] * 1.25:
+                    kind = "heading"
+            block_refs = asset_reference_ids(text)
+            if block_refs and not re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip():
+                # A block that only carries a whole figure/table (its internal labels are
+                # native glyphs) is that element, not a prose paragraph.
+                kinds = {by_id[aid].kind for aid in block_refs}
+                if kinds == {"figure"}:
+                    kind = "figure"
+                elif kinds == {"table"}:
+                    kind = "table"
             units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, block["bbox"], by_id, kind=kind, footnote_refs=list(dict.fromkeys(footnote_refs))))
     for asset in assets:
         if asset.id not in emitted:
-            units.append(_make_unit(number, f"p{number:04d}-visual-{asset.id}", "{{asset:" + asset.id + "}}", asset.fragments[0].bbox, by_id, kind="figure" if asset.kind == "figure" else "paragraph"))
+            fragment = asset.fragments[0]
+            decorative = (
+                asset.kind == "mixed-region"
+                and asset.provenance == ["native-vector"]
+                and not fragment.glyph_ids
+                and fragment.height <= DECORATIVE_RULE_MAX_HEIGHT
+                and fragment.width >= DECORATIVE_RULE_MIN_ASPECT * fragment.height
+            )
+            if decorative:
+                # A bare horizontal rule (chapter ornament, running-head line) is
+                # layout, not content; it stays in the ledger but is not read.
+                by_id[asset.id] = asset.model_copy(update={"grouping_pending": False})
+                units.append(_make_unit(number, f"p{number:04d}-visual-{asset.id}", "{{asset:" + asset.id + "}}", fragment.bbox, by_id, kind="note", render_policy="omit", translatable=False))
+                continue
+            units.append(_make_unit(number, f"p{number:04d}-visual-{asset.id}", "{{asset:" + asset.id + "}}", fragment.bbox, by_id, kind="figure" if asset.kind == "figure" else "paragraph"))
     # Native block order preserves PDF column flow and inline continuations;
     # y-sorting interleaves columns and moves tall formula suffixes before prose.
     native_order = {f"p{number:04d}-{block['id']}": index for index, block in enumerate(blocks)}
