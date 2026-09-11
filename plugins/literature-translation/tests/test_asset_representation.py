@@ -441,3 +441,11 @@ def test_originals_only_ignores_verified_candidates_without_changing_state(proje
     assert 'asset-state' not in rendered and 'asset-original-links' not in rendered
     assert '$' not in markdown and '![' in markdown
     assert representation_status(project)['assets']['a1']['state'] == 'verified'
+
+
+def test_unknown_asset_reference_is_reported_in_both_renderings(project: Path) -> None:
+    text = "For {{asset:a-p0016-7d5e4044c658}}."
+    for resolve in (resolve_asset_html, resolve_asset_markdown):
+        with pytest.raises(ValueError) as raised:
+            resolve(project, text, project)
+        assert "a-p0016-7d5e4044c658" in str(raised.value)

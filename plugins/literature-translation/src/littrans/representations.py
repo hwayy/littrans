@@ -693,6 +693,8 @@ def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_onl
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
+        if key not in assets:
+            raise ValueError("Unknown asset reference: " + key)
         asset = assets[key]
         pictures = " ".join(f'![原式 {key}](<{_href(root, fragment["png_path"], output)}>)' for fragment in asset["fragments"])
         if not originals_only and status[key]["state"] == "verified":
