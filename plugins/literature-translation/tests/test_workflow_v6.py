@@ -39,7 +39,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         doc.save(source)
     root = tmp_path / "project"
     initialize_project(source, root, "technical-book")
-    prepare_source(root)
+    prepare_source(root, allow_missing_layout=True)
     packet = build_source_review_packet(root)
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "generated-pdf-test-oracle"
@@ -206,7 +206,7 @@ def test_unchanged_translation_retains_fresh_images_after_boundary_repair(tmp_pa
         doc.save(source)
     root = tmp_path / "boundary-project"
     initialize_project(source, root, "technical-book")
-    prepare_source(root)
+    prepare_source(root, allow_missing_layout=True)
 
     def review_source(override=None):
         packet = build_source_review_packet(root)

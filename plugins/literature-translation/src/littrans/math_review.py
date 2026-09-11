@@ -1629,7 +1629,7 @@ def _structural_layout_overrides(
     for raw_override in raw_overrides:
         unit_id = str(raw_override["unit_id"])
         unit = units_by_id[unit_id]
-        reviewed_updates = {
+        reviewed_updates: dict[str, Any] = {
             field: raw_override[field]
             for field in ("source_markdown", "latex", "equation_number")
             if field in raw_override

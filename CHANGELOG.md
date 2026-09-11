@@ -15,8 +15,16 @@ versioning and correspond to Git tags named `v<version>`.
   with source-bound coverage review before parallel transcription and translation.
 - Separated structured-asset candidates and independent visual/render review from translation
   approval; unfinished representations retain an explicit original-image reading fallback.
-- Defaulted Codex transcription and translation to fresh gpt-5.6-luna tasks at max effort,
-  preserving the three translation audit lenses and configured external review.
+- Moved per-host role model defaults out of code into `profiles/host-models.yaml`; `project init`
+  copies them into `agent_models` for per-project confirmation (recommended: Codex `gpt-5.6-luna`
+  at `max`, Claude Code `sonnet` at `high`), preserving the three translation audit lenses and
+  configured external review.
+- Added Claude Code as a supported coordinator host: `.claude-plugin` manifests and marketplace,
+  `CLAUDECODE` host detection with 3/6 waves, `--host claude`, tool-restricted read-only reviewer
+  agents and host documentation. Claude-hosted external review remains a later revision.
+- Made the isolated layout detector (MinerU 3.4.5, PP-DocLayoutV2) a required preparation
+  component: `doctor` reports `layout_runtime`, `layout install` provisions it, and
+  `source prepare` refuses to run without it unless `--allow-missing-layout` is given.
 - Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
   only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
 - Added the transcription skill, asset review role and offline MathJax reading contract.
@@ -25,6 +33,14 @@ versioning and correspond to Git tags named `v<version>`.
 
 - Reported an unresolved `{{asset:ID}}` reference by name during Markdown rendering, matching the
   existing bilingual HTML behavior, instead of aborting the render with an unlabeled lookup error.
+- Reused the page's cached layout-detector result when a source review override re-prepares a
+  page, so corrections no longer lose heading and block structure.
+- Stopped treating every word of an all-caps heading as a protected acronym in deterministic QA;
+  headings can be translated without appending the English words.
+- Labelled non-translatable equation units explicitly in audit packets so reviewers do not report
+  the original-image reading content as an omission.
+- Kept inline formulas that fell back to a raw mixed region inline in the reading edition instead
+  of forcing block display and breaking the sentence.
 
 ## Historical changes before 0.6
 

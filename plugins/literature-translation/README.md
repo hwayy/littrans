@@ -1,6 +1,6 @@
 # Literature Translation 0.6
 
-LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex and Cursor:
+LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex, Cursor and Claude Code:
 
 **Probe document structure → preserve the source faithfully → translate with original images → audit translation → optionally enhance assets independently → render a reading edition.**
 
@@ -8,19 +8,19 @@ Formula recognition is deferred until faithful text and original-image assets ar
 
 ## First use
 
-Requires Python 3.12 or later. Run `python <plugin-root>/scripts/littrans.py doctor`; the launcher manages a private environment outside the plugin and project. See [runtime.md](references/runtime.md) and [host-runtimes.md](references/host-runtimes.md).
+Requires Python 3.12 or later. Run `python <plugin-root>/scripts/littrans.py doctor`; the launcher manages a private environment outside the plugin and project. Source preparation also requires the isolated layout detector; `doctor` reports it under `layout_runtime`, and `layout install` sets it up. See [runtime.md](references/runtime.md) and [host-runtimes.md](references/host-runtimes.md).
 
 Initialize a new private project with `project init`, or rebuild an older project with `project rebuild OLD NEW`. Schema 6 does not write into older project schemas. Rebuild copies the PDF, project context and glossary, leaving historical outputs and reviews in the old project. See [MIGRATING.md](MIGRATING.md).
 
 ## The workflow
 
-1. **Probe and prepare.** Run `source probe PROJECT --pages PAGES`, inspect representative originals and complete the document-specific [structure profile](references/document-structure.md). Use it to guide extraction and supported corrections. `source prepare` combines native glyph geometry and isolated layout detection. It saves prose plus stable `{{asset:ID}}` references and PDF/SVG/PNG originals. Whole circuit diagrams remain intact. A missing detector or text layer is visible in source review, not an invitation to silently omit content.
+1. **Probe and prepare.** Run `source probe PROJECT --pages PAGES`, inspect representative originals and complete the document-specific [structure profile](references/document-structure.md). Use it to guide extraction and supported corrections. `source prepare` combines native glyph geometry and the required isolated layout detector. It saves prose plus stable `{{asset:ID}}` references and PDF/SVG/PNG originals. Whole circuit diagrams remain intact. A missing detector or text layer is visible in source review, not an invitation to silently omit content.
 2. **Verify fidelity.** `source review-packets`, `source import-review` and `source verify` check original-page coverage, reading order, crop completeness, numbering and source ownership. A full-page fallback alone does not prove completeness. Formula LaTeX is not part of this gate.
-3. **Translate; optionally enhance assets.** Formula transcription is optional and can be scheduled after the reading edition is complete. `workflow packet --stage transcribe` and `--stage translate` provide the same source context and original images to fresh tasks. Codex defaults to gpt-5.6-luna at max effort for both. Translators preserve asset references and record the original images actually inspected; transcribers submit separate structured candidates.
+3. **Translate; optionally enhance assets.** Formula transcription is optional and can be scheduled after the reading edition is complete. `workflow packet --stage transcribe` and `--stage translate` provide the same source context and original images to fresh tasks. Both use the role models configured per host in the project's `agent_models` (seeded from `profiles/host-models.yaml`). Translators preserve asset references and record the original images actually inspected; transcribers submit separate structured candidates.
 4. **Review independently.** `--stage asset-audit` compares candidates and their renders with original images. Translation retains fidelity, technical/terminology and Chinese-expression lenses via `--stage audit --lens all`, followed by configured external review. Neither confidence nor compilation substitutes for visual review.
 5. **Read.** A reviewed translation can render while LaTeX remains unfinished. The shared asset resolver uses a verified, renderable candidate or the complete original image with an unfinished status. Offline MathJax and original-image fallback protect reading when typesetting is unavailable.
 
-Use `continue-literature-translation` to coordinate this workflow. Codex waves contain up to three batches; Cursor defaults to six, maximum nine. Actual simultaneous tasks obey host capacity. Batches target about 900 source words and a soft limit of 60 assets without splitting a logical derivation.
+Use `continue-literature-translation` to coordinate this workflow. Codex and Claude Code waves default to three batches (Claude Code maximum six); Cursor defaults to six, maximum nine. Actual simultaneous tasks obey host capacity. Batches target about 900 source words and a soft limit of 60 assets without splitting a logical derivation.
 
 ## Commands and evidence
 

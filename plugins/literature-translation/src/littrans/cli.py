@@ -37,6 +37,7 @@ qa_app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
 workflow_app = typer.Typer(no_args_is_help=True)
 assets_app = typer.Typer(no_args_is_help=True)
+layout_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(source_app, name="source")
 app.add_typer(batch_app, name="batch")
@@ -45,6 +46,7 @@ app.add_typer(qa_app, name="qa")
 app.add_typer(review_app, name="review")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(assets_app, name="assets")
+app.add_typer(layout_app, name="layout")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -62,7 +64,8 @@ def emit(payload: object) -> None:
 
 @app.command()
 def doctor() -> None:
-    """Check the local runtime without changing it."""
+    """Check the local runtime, including the required layout detector, without changing it."""
+    from littrans.layout_runtime import layout_runtime_status
     modules = [
         "fitz",
         "httpx",
@@ -81,8 +84,27 @@ def doctor() -> None:
             "modules": {name: importlib.util.find_spec(name) is not None for name in modules},
             "pdftoppm": shutil.which("pdftoppm"),
             "pdfinfo": shutil.which("pdfinfo"),
+            "layout_runtime": layout_runtime_status(),
         }
     )
+
+
+@layout_app.command("status")
+def layout_status() -> None:
+    """Report the isolated layout detector runtime required by source preparation."""
+    from littrans.layout_runtime import layout_runtime_status
+    emit(layout_runtime_status())
+
+
+@layout_app.command("install")
+def layout_install(
+    python: Path | None = typer.Option(None, help="Python 3.10-3.13 base interpreter for the isolated MinerU environment."),
+    force: bool = typer.Option(False, help="Recreate the environment and re-download the weights."),
+    model_source: str = typer.Option("huggingface", help="huggingface or modelscope."),
+) -> None:
+    """Create the isolated MinerU 3.4.5 environment and fetch PP-DocLayoutV2 weights."""
+    from littrans.layout_runtime import install_layout_runtime
+    emit(install_layout_runtime(python, force, model_source))
 
 
 @project_app.command("init")
@@ -143,10 +165,18 @@ def source_probe(project: PathArg, pages: str = typer.Option("all")) -> None:
 
 
 @source_app.command("prepare")
-def source_prepare(project: PathArg, pages: str = typer.Option("all"), replace: bool = typer.Option(False)) -> None:
+def source_prepare(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    replace: bool = typer.Option(False),
+    allow_missing_layout: bool = typer.Option(
+        False, "--allow-missing-layout",
+        help="Only at the user's explicit request: prepare without the layout detector; every region then needs full visual review.",
+    ),
+) -> None:
     """Preserve original prose and complex visual assets without formula transcription."""
     from littrans.fidelity import prepare_source
-    emit(prepare_source(project, pages, replace))
+    emit(prepare_source(project, pages, replace, allow_missing_layout))
 
 
 @source_app.command("review-packets")
@@ -350,13 +380,13 @@ def workflow_get_next(
     project: PathArg,
     limit: int | None = typer.Option(
         None,
-        help="Wave size. Defaults to 3 on Codex and 6 on Cursor.",
+        help="Wave size. Defaults to 3 on Codex and Claude Code, 6 on Cursor.",
     ),
     start_at: str | None = typer.Option(None),
     through: str | None = typer.Option(None),
     host: str = typer.Option(
         "auto",
-        help="Coordination host: auto, codex, or cursor.",
+        help="Coordination host: auto, codex, cursor, or claude.",
     ),
 ) -> None:
     emit(workflow_next(project, limit, start_at, through, host))

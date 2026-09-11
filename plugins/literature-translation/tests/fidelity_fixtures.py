@@ -20,7 +20,7 @@ def prepare_plain_text_fixture(root: Path, expected_units: list[SourceUnit]) -> 
     with fitz.open(config.source(root)) as document:
         for unit in expected_units:
             assert document[unit.page - 1].get_text().split() == unit.source_text.split()
-    prepare_source(root)
+    prepare_source(root, allow_missing_layout=True)
     packet = build_source_review_packet(root)
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "synthetic-source-fixture-oracle"
@@ -121,7 +121,7 @@ def make_asset_fixture(tmp_path: Path, entries: list[tuple[str, str, str]]) -> t
     drawing.save()
     root = tmp_path / "asset-project"
     initialize_project(pdf, root, "technical-book", "Original asset fixture")
-    prepare_source(root)
+    prepare_source(root, allow_missing_layout=True)
     packet = build_source_review_packet(root)
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "synthetic-region-fixture-oracle"

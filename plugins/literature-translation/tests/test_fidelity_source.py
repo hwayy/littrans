@@ -55,7 +55,7 @@ def approve(root: Path, pages: str = "1") -> dict:
 
 
 def test_source_assets_and_review_gate(project: Path) -> None:
-    result = prepare_source(project)
+    result = prepare_source(project, allow_missing_layout=True)
     assert result["prepared_pages"] == [1, 2]
     assert not verify_fidelity(project)["passed"]
     assets = load_assets(project)
@@ -71,12 +71,12 @@ def test_source_assets_and_review_gate(project: Path) -> None:
     assert approve(project)["approved_pages"] == [1]
     assert verify_fidelity(project, "1")["passed"]
     assert not verify_fidelity(project, "2")["passed"]
-    assert prepare_source(project)["prepared_pages"] == []
+    assert prepare_source(project, allow_missing_layout=True)["prepared_pages"] == []
     assert verify_fidelity(project, "1")["passed"]
 
 
 def test_missing_and_changed_crop_cannot_pass(project: Path) -> None:
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     approve(project)
     asset = next(iter(load_assets(project).values()))
     path = project / asset.fragments[0].png_path
@@ -85,11 +85,11 @@ def test_missing_and_changed_crop_cannot_pass(project: Path) -> None:
     with pytest.raises(ValueError, match="changed original crop"):
         build_source_review_packet(project, "1")
     with pytest.raises(ValueError, match="cache is corrupt"):
-        prepare_source(project, "1", replace=True)
+        prepare_source(project, "1", replace=True, allow_missing_layout=True)
 
 
 def test_review_bound_to_packet_and_page(project: Path) -> None:
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     packet = build_source_review_packet(project, "1")
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "test"
@@ -105,7 +105,7 @@ def test_review_bound_to_packet_and_page(project: Path) -> None:
 
 
 def test_review_override_needs_fresh_visual_evidence(project: Path) -> None:
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     packet = build_source_review_packet(project, "1")
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "test"
@@ -120,7 +120,7 @@ def test_review_override_needs_fresh_visual_evidence(project: Path) -> None:
 
 
 def test_multifragment_asset_keeps_order_without_filling_gap(project: Path) -> None:
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     packet = build_source_review_packet(project, "1")
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "test"
@@ -135,7 +135,7 @@ def test_multifragment_asset_keeps_order_without_filling_gap(project: Path) -> N
 
 
 def test_source_mutation_invalidates_visual_receipt(project: Path) -> None:
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     approve(project)
     path = project / "derived/units.jsonl"
     units = read_jsonl(path, SourceUnit)
@@ -145,7 +145,7 @@ def test_source_mutation_invalidates_visual_receipt(project: Path) -> None:
 
 
 def test_review_import_rolls_back_if_later_override_invalid(project: Path) -> None:
-    prepare_source(project)
+    prepare_source(project, allow_missing_layout=True)
     packet = build_source_review_packet(project)
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "test"
@@ -160,7 +160,7 @@ def test_review_import_rolls_back_if_later_override_invalid(project: Path) -> No
 
 
 def test_page_image_and_region_provenance_are_bound(project: Path) -> None:
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     assets = load_assets(project)
     next(iter(assets.values())).content_sha256 = "0" * 64
     write_jsonl(project / "derived/fidelity-assets.jsonl", assets.values())
@@ -171,7 +171,7 @@ def test_page_image_and_region_provenance_are_bound(project: Path) -> None:
 def test_verify_is_read_only_and_safe_under_project_lock(project: Path) -> None:
     from littrans.storage import project_write_lock
 
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     approve(project)
     before = (project / "derived/units.jsonl").read_bytes()
     with project_write_lock(project):
@@ -180,7 +180,7 @@ def test_verify_is_read_only_and_safe_under_project_lock(project: Path) -> None:
 
 
 def test_partial_verification_rejects_global_duplicate_unit_ids(project: Path) -> None:
-    prepare_source(project)
+    prepare_source(project, allow_missing_layout=True)
     approve(project)
     path = project / "derived/units.jsonl"
     units = read_jsonl(path, SourceUnit)
@@ -273,7 +273,7 @@ def test_roman_operator_does_not_discard_display_formula() -> None:
 
 def test_display_equation_is_separate_and_numbered(project: Path) -> None:
     from littrans.fidelity import _make_unit, _separate_display_units
-    prepare_source(project, "1")
+    prepare_source(project, "1", allow_missing_layout=True)
     assets = load_assets(project)
     asset = next(a for a in assets.values() if a.kind == "math")
     assets[asset.id] = asset.model_copy(update={"display": True})
@@ -342,7 +342,7 @@ def test_declared_formula_conditions_need_specific_review_and_translation(projec
         doc.save(pdf)
     config = ProjectConfig(project_id='test', title='test', source_path='source/book.pdf', source_sha256=sha256_file(pdf), source_pages=2, profile='technical-book')
     save_project(project, config)
-    prepare_source(project, '1')
+    prepare_source(project, '1', allow_missing_layout=True)
     packet = build_source_review_packet(project, '1')
     payload = read_json(Path(packet['packet_path']))['pages'][0]
     conditions = []
@@ -384,7 +384,7 @@ def test_canvas_override_recovers_existing_ink_without_changing_pdf(project):
         doc.save(pdf)
     digest = sha256_file(pdf)
     save_project(project, ProjectConfig(project_id='test', title='test', source_path='source/book.pdf', source_sha256=digest, source_pages=2, profile='technical-book'))
-    prepare_source(project, '1')
+    prepare_source(project, '1', allow_missing_layout=True)
     original_glyphs = read_json(project/'derived/fidelity-pages/p0001.json')['glyphs']
     packet = build_source_review_packet(project, '1')
     review = read_json(Path(packet['review_template']))

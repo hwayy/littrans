@@ -26,7 +26,7 @@ def build(output: Path) -> dict[str, object]:
     subprocess.run([sys.executable, str(ROOT / "scripts/validate_release.py")], env=env, check=True)
     subprocess.run([sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(output)], cwd=PLUGIN, check=True)
     wheel = output / f"littrans-{version}-py3-none-any.whl"
-    allowed = {".codex-plugin", ".cursor-plugin", "agents", "profiles", "references", "schemas", "scripts", "skills", "src"}
+    allowed = {".claude-plugin", ".codex-plugin", ".cursor-plugin", "agents", "profiles", "references", "schemas", "scripts", "skills", "src"}
     standalone = {"pyproject.toml", "README.md", "MIGRATING.md"}
     archive = output / f"literature-translation-{version}.zip"
     source_hashes = {}

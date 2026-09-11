@@ -10,10 +10,15 @@ from typing import Any
 from littrans.storage import read_json, sha256_file, sha256_text, write_json
 
 
+def layout_cache_root() -> Path:
+    """Managed location of the isolated layout environment and its weights."""
+    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "littrans/layout"
+
+
 def runtime_paths() -> tuple[Path | None, Path | None]:
     interpreter = os.environ.get("LITTRANS_LAYOUT_PYTHON")
     weight = os.environ.get("LITTRANS_LAYOUT_MODEL")
-    cache = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "littrans/layout"
+    cache = layout_cache_root()
     if not interpreter:
         candidates = [cache / "venv/Scripts/python.exe", cache / "venv/bin/python"]
         interpreter = next((str(p) for p in candidates if p.is_file()), None)
@@ -26,7 +31,7 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     """Return per-image pixel boxes, retaining inline formulas, or explicit unavailable state."""
     python, model = runtime_paths()
     if not python or not python.is_file() or not model or not model.is_dir():
-        return {"status": "unavailable", "reason": "Configure LITTRANS_LAYOUT_PYTHON and LITTRANS_LAYOUT_MODEL (MinerU 3.4.5, PP-DocLayoutV2); native evidence requires full visual region review.", "pages": {}}
+        return {"status": "unavailable", "reason": "Layout runtime missing: run `littrans layout install` (MinerU 3.4.5, PP-DocLayoutV2) or configure LITTRANS_LAYOUT_PYTHON and LITTRANS_LAYOUT_MODEL; native evidence requires full visual region review.", "pages": {}}
     weights = {str(p.relative_to(model)): sha256_file(p) for p in sorted(model.rglob("*")) if p.is_file()}
     request = {"images": [str(p.resolve()) for p in images], "image_sha256": {str(p.resolve()): sha256_file(p) for p in images}, "model": str(model.resolve()), "weights": weights}
     request["fingerprint"] = sha256_text(str(request))

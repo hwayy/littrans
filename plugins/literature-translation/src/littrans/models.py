@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from littrans.hosts import WAVE_BATCH_SET_MAX
+from littrans.hosts import WAVE_BATCH_SET_MAX, host_model_defaults
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
@@ -285,10 +285,7 @@ class ProjectConfig(StrictModel):
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
     external_review: ExternalReviewConfig | None = None
-    agent_models: dict[str, dict[str, str]] = Field(default_factory=lambda: {
-        "codex": {"transcribe": "gpt-5.6-luna", "translate": "gpt-5.6-luna", "reasoning_effort": "max"},
-        "cursor": {},
-    })
+    agent_models: dict[str, dict[str, str]] = Field(default_factory=host_model_defaults)
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)

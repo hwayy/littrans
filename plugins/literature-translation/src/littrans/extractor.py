@@ -174,9 +174,21 @@ def _is_caption(text: str) -> bool:
     return bool(CAPTION_RE.match(text) and not PROSE_FIGURE_TABLE_RE.match(text))
 
 
-def protected_tokens(text: str) -> list[str]:
+ACRONYM_PATTERN = PROTECTED_PATTERNS[3]
+
+
+def _is_all_caps_text(text: str, minimum_words: int = 2) -> bool:
+    """Small-caps or uppercase display headings style every word, not acronyms."""
+    words = re.findall(r"[A-Za-z][A-Za-z'’]*", re.sub(r"\{\{asset:[^}]+\}\}", " ", text))
+    return len(words) >= minimum_words and all(word.upper() == word for word in words)
+
+
+def protected_tokens(text: str, *, heading: bool = False) -> list[str]:
     found: list[str] = []
+    all_caps = _is_all_caps_text(text, minimum_words=1 if heading else 2)
     for pattern in PROTECTED_PATTERNS:
+        if all_caps and pattern is ACRONYM_PATTERN:
+            continue
         found.extend(match.group(0) for match in pattern.finditer(text))
     found = [
         token.rstrip(".,;:!?") if token.lower().startswith(("http://", "https://")) else token

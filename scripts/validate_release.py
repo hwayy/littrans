@@ -76,6 +76,8 @@ def main() -> None:
     cursor_marketplace_path = ROOT / ".cursor-plugin" / "marketplace.json"
     manifest_path = PLUGIN_ROOT / ".codex-plugin" / "plugin.json"
     cursor_manifest_path = PLUGIN_ROOT / ".cursor-plugin" / "plugin.json"
+    claude_marketplace_path = ROOT / ".claude-plugin" / "marketplace.json"
+    claude_manifest_path = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
     pyproject_path = PLUGIN_ROOT / "pyproject.toml"
 
     unexpected_workspaces = unexpected_plugin_workspaces()
@@ -89,6 +91,8 @@ def main() -> None:
     cursor_marketplace = load_json(cursor_marketplace_path)
     manifest = load_json(manifest_path)
     cursor_manifest = load_json(cursor_manifest_path)
+    claude_marketplace = load_json(claude_marketplace_path)
+    claude_manifest = load_json(claude_manifest_path)
     with pyproject_path.open("rb") as stream:
         pyproject = tomllib.load(stream)
 
@@ -96,6 +100,10 @@ def main() -> None:
         raise ValueError("Marketplace name must be 'littrans'")
     if cursor_marketplace.get("name") != "littrans":
         raise ValueError("Cursor marketplace name must be 'littrans'")
+    if claude_marketplace.get("name") != "littrans":
+        raise ValueError("Claude Code marketplace name must be 'littrans'")
+    if not isinstance(claude_marketplace.get("owner"), dict) or not claude_marketplace["owner"].get("name"):
+        raise ValueError("Claude Code marketplace must name an owner")
 
     entries = marketplace.get("plugins")
     if not isinstance(entries, list) or len(entries) != 1:
@@ -111,6 +119,13 @@ def main() -> None:
     if not isinstance(cursor_entry, dict):
         raise ValueError("Cursor marketplace plugin entry must be an object")
 
+    claude_entries = claude_marketplace.get("plugins")
+    if not isinstance(claude_entries, list) or len(claude_entries) != 1:
+        raise ValueError("Claude Code marketplace must contain exactly one plugin entry")
+    claude_entry = claude_entries[0]
+    if not isinstance(claude_entry, dict):
+        raise ValueError("Claude Code marketplace plugin entry must be an object")
+
     plugin_name = manifest.get("name")
     if plugin_name != "literature-translation" or entry.get("name") != plugin_name:
         raise ValueError("Plugin names in the marketplace and manifest do not match")
@@ -120,6 +135,13 @@ def main() -> None:
     ):
         raise ValueError(
             "Plugin names in the Cursor marketplace and manifest do not match"
+        )
+    if (
+        claude_manifest.get("name") != plugin_name
+        or claude_entry.get("name") != plugin_name
+    ):
+        raise ValueError(
+            "Plugin names in the Claude Code marketplace and manifest do not match"
         )
 
     source = entry.get("source")
@@ -131,15 +153,21 @@ def main() -> None:
         raise ValueError(
             "Cursor marketplace plugin path is not the canonical repository path"
         )
+    if claude_entry.get("source") != "./plugins/literature-translation":
+        raise ValueError(
+            "Claude Code marketplace plugin path is not the canonical repository path"
+        )
 
     manifest_version = manifest.get("version")
     cursor_version = cursor_manifest.get("version")
+    claude_version = claude_manifest.get("version")
     project = pyproject.get("project")
     if not isinstance(project, dict):
         raise ValueError("pyproject.toml is missing [project]")
     versions = {
         manifest_version,
         cursor_version,
+        claude_version,
         project.get("version"),
         package_version(),
     }
@@ -157,6 +185,12 @@ def main() -> None:
     skills_path = manifest.get("skills")
     if skills_path != "./skills/" or not (PLUGIN_ROOT / "skills").is_dir():
         raise ValueError("Plugin skills path is invalid")
+    if claude_manifest.get("skills") != "./skills/":
+        raise ValueError("Claude Code plugin skills path is invalid")
+    if "agents" in claude_manifest:
+        raise ValueError(
+            "Claude Code plugin manifest must rely on the default agents/ directory"
+        )
     skill_files = sorted((PLUGIN_ROOT / "skills").glob("*/SKILL.md"))
     if not skill_files:
         raise ValueError("Plugin contains no skills")
@@ -200,7 +234,7 @@ def main() -> None:
     actual_agents = {path.name for path in agent_files}
     if actual_agents != set(expected_agents):
         raise ValueError(
-            "Cursor plugin agent set is invalid: "
+            "Plugin agent set is invalid: "
             f"missing={sorted(set(expected_agents) - actual_agents)}, "
             f"unexpected={sorted(actual_agents - set(expected_agents))}"
         )
@@ -216,11 +250,17 @@ def main() -> None:
             raise ValueError(f"Agent is missing YAML frontmatter: {agent_path.name}")
         frontmatter, body = parsed.group(1), parsed.group(2)
         readonly = bool(re.search(r"^readonly:\s*true\s*$", frontmatter, re.MULTILINE))
+        tools_match = re.search(r"^tools:\s*(.+?)\s*$", frontmatter, re.MULTILINE)
+        tools = set(yaml.safe_load(tools_match.group(1))) if tools_match else None
         contract = expected_agents[agent_path.name]
-        if contract == "writer" and readonly:
+        if contract == "writer" and (readonly or tools is not None):
             raise ValueError(f"Production agent must not be read-only: {agent_path.name}")
         if contract != "writer" and not readonly:
             raise ValueError(f"Reviewer agent must be read-only: {agent_path.name}")
+        if contract != "writer" and tools != {"Read", "Glob", "Grep"}:
+            raise ValueError(
+                f"Reviewer agent must restrict Claude Code tools to Read, Glob, Grep: {agent_path.name}"
+            )
         if readonly:
             if write_file_re.search(body):
                 raise ValueError(

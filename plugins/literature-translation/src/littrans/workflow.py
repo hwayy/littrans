@@ -677,7 +677,11 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     # Historic records for a now source-only formula are not translation content.
     if not unit.translatable:
         record = None
-    target = record.target_text if record else "[source-only]"
+    target = record.target_text if record else (
+        "[source-only] non-translatable unit: the original image is the reading content; "
+        "no translation is expected and its absence is not an omission"
+        if not unit.translatable else "[source-only]"
+    )
     if record and unit.kind is UnitKind.CAPTION:
         target = normalize_zh_caption(target)
     if record and record.target_table:

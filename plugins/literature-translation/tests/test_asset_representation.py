@@ -449,3 +449,17 @@ def test_unknown_asset_reference_is_reported_in_both_renderings(project: Path) -
         with pytest.raises(ValueError) as raised:
             resolve(project, text, project)
         assert "a-p0016-7d5e4044c658" in str(raised.value)
+
+
+def test_inline_mixed_region_stays_inline_in_reading_html(project: Path) -> None:
+    """A raw-region fallback for an inline formula must not break the sentence into blocks."""
+    from littrans.fidelity_models import load_assets
+    from littrans.storage import write_jsonl
+
+    assets = load_assets(project)
+    inline = assets["a1"].model_copy(update={"kind": "mixed-region", "display": False})
+    block = assets["a2"].model_copy(update={"kind": "mixed-region", "display": True})
+    write_jsonl(project / "derived/fidelity-assets.jsonl", [inline, block])
+    rendered = resolve_asset_html(project, "For {{asset:a1}} and {{asset:a2}}.", project)
+    assert 'data-asset-id="a1" data-display="false"' in rendered
+    assert 'data-asset-id="a2" data-display="true"' in rendered

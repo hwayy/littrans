@@ -303,7 +303,7 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
         existing = load_assets(root)[region["preserve_asset_id"]]
         if existing.source_sha256 != source_hash or any(f.page != page_number for f in existing.fragments):
             raise ValueError("preserved asset belongs to different source/page")
-        changes = {k: region[k] for k in ("kind", "display", "grouping_pending", "formula_conditions") if k in region}
+        changes: dict[str, Any] = {k: region[k] for k in ("kind", "display", "grouping_pending", "formula_conditions") if k in region}
         if "formula_conditions" in changes:
             hashes = [_hash({"source_sha256": existing.source_sha256, "page": f.page, "bbox": f.bbox, "glyph_ids": f.glyph_ids,
                              **({"export_method": f.export_method} if f.export_method != "raw-region" else {})}) for f in existing.fragments]
@@ -394,7 +394,7 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
 def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, FidelityAsset], kind: str = "paragraph", **extra: Any) -> SourceUnit:
     refs = asset_reference_ids(text)
     hashes = {aid: assets[aid].content_sha256 for aid in refs}
-    extra.setdefault("protected_tokens", protected_tokens(re.sub(r"\{\{asset:[^}]+\}\}", "", text)))
+    extra.setdefault("protected_tokens", protected_tokens(re.sub(r"\{\{asset:[^}]+\}\}", "", text), heading=kind == "heading"))
     extra.setdefault("translatable", True)
     payload = {"page": page, "text": text, "bbox": _box(bbox), "asset_content_hashes": hashes, "kind": kind, **extra}
     pure_math = kind != "footnote" and bool(refs) and not re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip() and all(assets[aid].kind == "math" for aid in refs)
@@ -622,7 +622,8 @@ def _invalidate(root: Path, old: list[SourceUnit], new: list[SourceUnit]) -> Non
             record_audit_invalidation(root, manifest["batch_id"], affected)
 
 
-def prepare_source(root: Path, page_spec: str = "all", replace: bool = False) -> dict[str, Any]:
+def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
+                   allow_missing_layout: bool = False) -> dict[str, Any]:
     root = Path(root).resolve()
     config = load_project(root)
     source = config.source(root)
@@ -645,6 +646,11 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False) ->
             doc[number - 1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(image)
             images.append(image)
         layout = detect_layout(images, root / f"derived/fidelity-layout/{_hash([digest, needed])}.json")
+        if layout["status"] != "ok" and not allow_missing_layout:
+            raise ValueError(
+                "Layout runtime unavailable: " + str(layout.get("reason")) + ". Run `littrans layout install` "
+                "or, only at the user's explicit request, rerun with --allow-missing-layout."
+            )
         units = [u for u in old if u.page not in needed]
         registry = {aid: a for aid, a in registry.items() if not any(f.page in needed for f in a.fragments)}
         ledgers = []
@@ -662,6 +668,21 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False) ->
             (root / f"evidence/pages/fidelity-p{ledger['page']:04d}.review.json").unlink(missing_ok=True)
     packet = build_source_review_packet(root, ",".join(map(str, pages)))
     return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry), "layout_status": layout["status"], "requires_visual_review": True, "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context}
+
+
+def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the page's recorded detector result so corrections keep its layout evidence."""
+    fallback = {"status": ledger["layout_status"], "reason": ledger.get("layout_reason"), "pages": {}}
+    fingerprint = ledger.get("layout_fingerprint")
+    if ledger["layout_status"] != "ok" or not fingerprint:
+        return fallback
+    for path in sorted((root / "derived/fidelity-layout").glob("*.json")):
+        if path.name.endswith(".request.json"):
+            continue
+        payload = read_json(path)
+        if payload.get("fingerprint") == fingerprint and payload.get("status") == "ok":
+            return payload
+    return {**fallback, "status": "unavailable", "reason": "cached layout result missing; re-run source prepare --replace"}
 
 
 def _current_page(root: Path, number: int) -> dict[str, Any]:
@@ -791,7 +812,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             p = decision["page"]
             if decision.get("override"):
                 with fitz.open(config.source(root)) as doc:
-                    layout = {"status": by_page[p]["ledger"]["layout_status"], "reason": by_page[p]["ledger"].get("layout_reason"), "pages": {}}
+                    layout = _cached_layout(root, by_page[p]["ledger"])
                     new_units, new_assets, ledger = _page_prepare(root, doc, p, config.source_sha256, layout, decision["override"])
                 old_units = units
                 units = [u for u in units if u.page != p] + new_units

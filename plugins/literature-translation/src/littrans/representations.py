@@ -32,8 +32,6 @@ from littrans.storage import (
 ASSET_RE = re.compile(r"\{\{asset:([A-Za-z0-9][A-Za-z0-9._-]*)\}\}")
 FORMAT_TYPES = {"latex", "table", "code", "text"}
 PROMPT_VERSION = "fidelity-contextual-representations-0.6.0-1"
-MODEL = "gpt-5.6-luna"
-EFFORT = "max"
 
 
 def _hash(value: Any) -> str:
@@ -649,7 +647,10 @@ def _asset_html(root: Path, asset: dict[str, Any], output: Path,
                 candidate: dict[str, Any] | None = None, verified: bool = False, *, originals_only: bool = False) -> str:
     key = html.escape(asset["id"], quote=True)
     original = _original_html(root, asset, output, linked=originals_only)
-    display = asset.get("display", False) or asset.get("kind") in {"mixed-region", "table", "code", "figure"}
+    # An inline formula whose precise glyph export fell back to a raw mixed
+    # region is still inline reading content; only whole tables, code and
+    # figures force block display regardless of the recorded flag.
+    display = asset.get("display", False) or asset.get("kind") in {"table", "code", "figure"}
     attributes = f' class="fidelity-asset" data-asset-id="{key}" data-display="{str(display).lower()}"'
     label = "结构化表达已核验" if verified else "转写未完成／待核验"
     if originals_only:

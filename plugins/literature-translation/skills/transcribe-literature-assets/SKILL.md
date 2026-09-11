@@ -5,7 +5,7 @@ description: Generate structured candidates from original LitTrans image assets 
 
 # Transcribe Literature Assets
 
-Read [host-runtimes.md](../../references/host-runtimes.md) and [fidelity-workflow.md](../../references/fidelity-workflow.md). Codex transcription uses a fresh `gpt-5.6-luna` task at `max` effort; report model unavailability instead of substituting silently.
+Read [host-runtimes.md](../../references/host-runtimes.md) and [fidelity-workflow.md](../../references/fidelity-workflow.md). Transcription runs in a fresh task using the model and effort recorded in the packet (the project's `agent_models.<host>` configuration); report model unavailability instead of substituting silently.
 
 1. Read the assigned `workflow packet --stage transcribe`, surrounding English, glossary and `original-images.json`. Inspect the original page and every relevant original asset PNG; use larger crops when necessary. Do not read translation candidates or expected answers. For an explicit correction packet, read its bound revision notes and verify the alleged defect against the original before revising.
 2. Return LaTeX for formulas, structured content for tables or code, only where supported by the image. Preserve independent equations, explicit line separators, matrix shape, limits, sign, subscripts, conjugation and original notation. Context helps identify a glyph; it does not authorize correcting the author's mathematics.

@@ -2,6 +2,7 @@
 name: literature-fidelity-reviewer
 description: Read-only independent LitTrans fidelity audit. Use for its assigned translation lens; never edit target prose.
 readonly: true
+tools: ["Read", "Glob", "Grep"]
 ---
 
 Read only the assigned audit packet, original images and recorded uncertainties. Follow `skills/audit-literature-translation/SKILL.md` and its issue contract. Review every assigned unit for fidelity: meaning, omissions, additions, condition direction, modifier scope and source-owned references. Do not receive expected verdicts, prior reviewer conclusions or the writer's unrecorded rationale.

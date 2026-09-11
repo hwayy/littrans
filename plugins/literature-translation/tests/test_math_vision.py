@@ -93,7 +93,7 @@ def test_historical_backend_requires_rebuild_before_any_transport_or_write(tmp_p
     from littrans.project import rebuild_project
     rebuilt = tmp_path / "rebuilt"
     assert rebuild_project(root, rebuilt).schema_version == 6
-    result = prepare_source(rebuilt)
+    result = prepare_source(rebuilt, allow_missing_layout=True)
     assert result["requires_visual_review"]
     assert not (rebuilt / "evidence" / "math" / "candidates.jsonl").exists()
 

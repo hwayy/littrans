@@ -12,5 +12,7 @@ def isolate_coordination_host(monkeypatch: pytest.MonkeyPatch) -> None:
         "CODEX_THREAD_ID",
         "CODEX_TASK_ID",
         "CODEX_CI",
+        "CLAUDECODE",
+        "CLAUDE_CODE_SESSION_ID",
     ):
         monkeypatch.delenv(name, raising=False)

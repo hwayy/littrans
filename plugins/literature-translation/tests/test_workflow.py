@@ -217,6 +217,16 @@ def test_protected_urls_exclude_trailing_sentence_punctuation() -> None:
     assert "https://example.com/reference," not in tokens
 
 
+def test_all_caps_headings_do_not_protect_every_word() -> None:
+    assert protected_tokens("DETERMINISTIC AND RANDOM DIFFERENTIAL EQUATIONS") == []
+    assert protected_tokens("1.3. ITÔ’S CHAIN RULE") == []
+    assert protected_tokens("INTRODUCTION") == ["INTRODUCTION"]
+    assert protected_tokens("INTRODUCTION", heading=True) == []
+    assert protected_tokens("Chapter 1", heading=True) == []
+    assert protected_tokens("We call this the ODE trajectory.") == ["ODE"]
+    assert protected_tokens("STOCHASTIC DIFFERENTIALS {{asset:a-p0011-1a338d8ac556}}") == []
+
+
 def test_continuation_separator_does_not_split_hyphenated_urls() -> None:
     assert _continuation_separator("http://shazzam-", "tool.com") == ""
     assert _continuation_separator("ordinary", "words") == " "
@@ -362,7 +372,7 @@ def prepared_project(tmp_path: Path) -> Path:
     source, root = tmp_path / "synthetic.pdf", tmp_path / "project"
     make_pdf(source)
     initialize_project(source, root, "technical-book", "Synthetic")
-    prepare_source(root)
+    prepare_source(root, allow_missing_layout=True)
     packet = build_source_review_packet(root)
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "generated-workflow-fixture-oracle"
