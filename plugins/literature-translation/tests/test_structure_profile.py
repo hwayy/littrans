@@ -95,3 +95,31 @@ def test_batch_parent_cannot_be_split_by_intervening_footnote(tmp_path, monkeypa
     batches = create_batches(root, '1', max_words=100)
     assert batches[0].unit_ids == [u.unit_id for u in units[:3]]
     assert batches[1].unit_ids == [units[3].unit_id]
+
+
+def test_probe_extends_reviewed_profile_with_new_pages_only(tmp_path):
+    initialize_project_dirs(tmp_path)
+    source = tmp_path / 'source.pdf'
+    with fitz.open() as doc:
+        doc.new_page().insert_text((50, 60), 'Case study 1. Native prose.')
+        doc.new_page().insert_text((50, 60), 'Lemma 2. A later form.')
+        doc.save(source)
+    save_project(tmp_path, ProjectConfig(project_id='profile', title='Profile',
+        source_path='source.pdf', source_sha256=sha256_file(source), source_pages=2,
+        profile='technical-book'))
+    path = Path(probe_structure(tmp_path, '1')['profile'])
+    value = read_json(path)
+    value.update(status='reviewed', inspected_pages=[1], review_notes='Inspected page 1.')
+    value['handling_rules'] = {'case_studies': 'Keep the closing label with its case.'}
+    write_json(path, value)
+    result = probe_structure(tmp_path, '1-2')
+    assert result['new_pages'] == [2] and result['status'] == 'draft'
+    extended = read_json(path)
+    assert extended['pages'] == [1, 2]
+    assert [o['page'] for o in extended['observations']] == [1, 2]
+    assert 'Lemma 2' in extended['observations'][1]['line_openings'][0]
+    # Reviewed guidance survives; only the status asks for another look.
+    assert extended['handling_rules'] == value['handling_rules']
+    assert extended['review_notes'] == 'Inspected page 1.' and extended['inspected_pages'] == [1]
+    with pytest.raises(FileExistsError):
+        probe_structure(tmp_path, '2')

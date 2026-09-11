@@ -30,7 +30,7 @@ littrans source probe PROJECT --pages 1-3
 littrans source prepare PROJECT --pages 1-3
 littrans source review-packets PROJECT --pages 1-3
 littrans source verify PROJECT --pages 1-3
-littrans source render PROJECT --pages 1-3
+littrans source render PROJECT --pages 1-3 [--standalone]
 littrans workflow next PROJECT
 littrans workflow status PROJECT --batch-ids ID1,ID2
 littrans workflow packet PROJECT --stage transcribe --batch-ids ID1

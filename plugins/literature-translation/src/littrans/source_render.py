@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ html { scroll-padding-top:7rem; }
 .body h2 { margin:.6rem 0 .3rem; font:700 1.35em/1.25 Georgia,serif; }
 .kind-heading .body h2 { font-size:1.5em; }
 .kind-list_item .body ul,.kind-list_item .body ol { margin:.1rem 0; padding-left:1.6rem; }
+.kind-list_item + .kind-list_item { margin-top:-.1rem; }
 .kind-equation .body { text-align:center; padding:.35rem 2.5rem; }
 .kind-equation .fidelity-complex { position:relative; }
 .kind-equation .fidelity-complex > .equation-number { display:inline; position:absolute; right:.25rem; top:50%; transform:translateY(-50%); }
@@ -62,6 +64,8 @@ figcaption { margin:.35rem 0; font-size:.95em; color:var(--muted); font-style:it
 .body .fidelity-asset img { background:white; vertical-align:middle; }
 .fidelity-complex { position:relative; overflow-x:auto; }
 .fidelity-complex > .equation-number { display:block; text-align:right; }
+.kind-equation .display-line { padding-right:3.5rem; }
+.kind-equation .display-line .fidelity-asset[data-display="true"] { display:inline-block; margin:.2em .4em; vertical-align:middle; }
 .omitted { margin:.5rem 0 0; padding:.4rem .8rem; border:1px dashed var(--line); border-radius:.4rem; color:var(--muted); font-size:.8rem; }
 .omitted code { font-size:.8rem; }
 pre { margin:.25rem 0; padding:1rem; overflow:auto; border:1px solid var(--line); border-radius:.4rem; }
@@ -95,7 +99,26 @@ def _groups(units: list[SourceUnit]) -> list[list[SourceUnit]]:
     return groups
 
 
-def render_source_review(root: Path, page_spec: str = "all", name: str | None = None) -> dict[str, Any]:
+def _embed_assets(document: str, output: Path) -> str:
+    """Inline the referenced asset images as data URIs for a single shareable file."""
+    import base64
+    import mimetypes
+
+    def replace(match: re.Match[str]) -> str:
+        relative = match[1]
+        path = output / relative
+        if not path.is_file():
+            return match[0]
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.suffix == ".svg":
+            mime = "image/svg+xml"
+        payload = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f'src="data:{mime};base64,{payload}"'
+
+    return re.sub(r'src="(original-assets/[^"]+)"', replace, document)
+
+
+def render_source_review(root: Path, page_spec: str = "all", name: str | None = None, *, standalone: bool = False) -> dict[str, Any]:
     root = Path(root).resolve()
     config = load_project(root)
     pages = parse_page_spec(page_spec, config.source_pages)
@@ -186,9 +209,12 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         f' · <a href="{html.escape(config.source(root).as_uri())}">PDF</a></p></header><main>'
         f'<div class="summary">{summary}</div>{attention_html}' + "".join(sections) + "</main></body></html>"
     )
+    if standalone:
+        document = _embed_assets(document, output)
     atomic_write_text(html_path, document)
     return {
         "html": str(html_path),
+        "standalone": standalone,
         "pages": pages,
         "units": sum(kinds.values()),
         "kinds": dict(sorted(kinds.items())),

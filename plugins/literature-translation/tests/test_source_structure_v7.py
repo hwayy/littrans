@@ -41,12 +41,12 @@ class _Page:
         return []
 
 
-def _line(text: str, fonts: str | list[str], line: str = "b0-l0", y: float = 20.0, size: float = 10.0) -> list[dict[str, Any]]:
+def _line(text: str, fonts: str | list[str], line: str = "b0-l0", y: float = 20.0, size: float = 10.0, x: float = 0.0) -> list[dict[str, Any]]:
     if isinstance(fonts, str):
         fonts = [fonts] * len(text)
     return [
-        {"id": f"{line}-{i}", "text": c, "font": fonts[i], "bbox": [i * 6.0, y, i * 6.0 + 5.0, y + 10.0],
-         "line": line, "size": size, "baseline": y + 8.0, "origin": [i * 6.0, y + 8.0]}
+        {"id": f"{line}-{i}", "text": c, "font": fonts[i], "bbox": [x + i * 6.0, y, x + i * 6.0 + 5.0, y + 10.0],
+         "line": line, "size": size, "baseline": y + 8.0, "origin": [x + i * 6.0, y + 8.0]}
         for i, c in enumerate(text)
     ]
 
@@ -130,13 +130,14 @@ def test_display_prose_tail_is_stripped_only_across_a_gap() -> None:
 
 def test_display_lines_with_embedded_prose_split_the_paragraph() -> None:
     glyphs = _line("where", "CMR10", line="b0-l0", y=0)
-    line = _line("B : R (= space of matrices)", ["CMBX10", "CMR10", "CMR10", "CMR10", "MSBM10"] + ["CMR10"] * 22, line="b0-l1", y=14)
+    # The displayed line is centred; the paragraph lines start at the margin.
+    line = _line("B : R (= space of matrices)", ["CMBX10", "CMR10", "CMR10", "CMR10", "MSBM10"] + ["CMR10"] * 22, line="b0-l1", y=14, x=40)
     glyphs += line
     glyphs += _line("and so on", "CMR10", line="b0-l2", y=28)
-    layout = [{"label": "display_formula", "bbox": [0, 2 * 13, 2 * 170, 2 * 25]}]
+    layout = [{"label": "display_formula", "bbox": [0, 2 * 13, 2 * 210, 2 * 25]}]
     display_ids = _display_line_glyph_ids(glyphs, layout)
     assert display_ids == {g["id"] for g in line if g["text"].strip()}
-    blocks = [{"id": "b0", "bbox": [0, 0, 170, 38], "lines": [[g["id"] for g in glyphs if g["line"] == f"b0-l{i}"] for i in range(3)]}]
+    blocks = [{"id": "b0", "bbox": [0, 0, 210, 38], "lines": [[g["id"] for g in glyphs if g["line"] == f"b0-l{i}"] for i in range(3)]}]
     plan = plan_structure(glyphs, blocks, layout, 100, display_glyph_ids=display_ids)
     assert [b["id"] for b in plan["blocks"]] == ["b0", "b0-s2", "b0-s3"]
     assert plan["display_blocks"] == ["b0-s2"]
@@ -226,3 +227,6 @@ def test_source_render_writes_a_checkpoint(figure_project: Path, monkeypatch: py
     assert "source checkpoint" in page and "Prose before the figure." in page
     assert 'class="unit kind-' in page and "omitted running-material" not in page or "omitted" in page
     assert (figure_project / "output" / "original-assets").is_dir()
+    shared = render_source_review(figure_project, "1", "shared", standalone=True)
+    page = Path(shared["html"]).read_text(encoding="utf-8")
+    assert shared["standalone"] and 'src="original-assets/' not in page and "data:image/svg+xml;base64," in page

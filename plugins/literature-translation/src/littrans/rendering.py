@@ -557,7 +557,9 @@ def _unit_html(
         )
         if unit.kind is UnitKind.FIGURE:
             return '<figure class="fidelity-complex source-figure">' + inline(text) + "</figure>"
-        return '<div class="fidelity-complex">' + inline(text) + number + '</div>'
+        # A displayed line that also carries prose keeps its assets on the line.
+        mixed = " display-line" if unit.kind is UnitKind.EQUATION and ASSET_RE.sub("", text).strip() else ""
+        return f'<div class="fidelity-complex{mixed}">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
     if unit.sidebar_role is SidebarRole.BODY:

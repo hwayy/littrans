@@ -60,3 +60,24 @@
 评审包 `boundary_diagnostics` 与 `grouping_pending` 均为空。新增 `source render` 生成 `output/source-pNNNN-pNNNN.html` 作为翻译前的人工检查点（已在浏览器目视：标题层级、图+图注、列表、显示行、行内公式同行）。
 
 测试耗时：本机装有布局检测器时原先每个未打桩的 `prepare_source` 都会启动 torch 子进程并哈希 205 MB 权重，全套超过 20 分钟；现在 conftest 默认把检测器桩为不可用（`@pytest.mark.layout_runtime` 可选择真实运行），`prepared_project` 与 `_make_project` 改为每会话构建一次再复制，全套 1 分 49 秒（Python 3.13，本机）。
+
+## 后续（2026-09-12，第三轮）：排版保真、列表/语句分组与新增测试页
+
+针对 `source-p0010-p0012.html` 检查稿的意见（斜体未识别、列表项散落、公式 (3) 的行尾短语被移入下一段、`ITˆO`），并新增 PDF 第 13、21–23 页（书页 4、12–14：多行对齐推导、含文字的显示公式、EXAMPLE/NOTATION/LEMMA/Proof/IMPORTANT REMARK 等粗体标签语句、证明结束符、(i)/(ii)/(iii) 子项、粗体行内小节标题、含无衬线标注的矢量插图）。所有页面均在 `project-v2` 中自动提取，未做任何人工 `regions`/`units` 覆盖；`source probe` 现在可为已有档案追加新页观察，规则按新页面扩展后重新标记为 reviewed。
+
+| 项目 | 之前 | 现在 |
+| --- | --- | --- |
+| 斜体/粗体 | 仅识别 SFTI/SFBX 等 T1 字体名；TeX 的 CMTI/CMSL/CMBX 不识别 | `*Brownian motion*`、`*solves*`、`**EXAMPLE 1.**`；强调跨行连续（`mo-tion` 连字后仍为一个斜体片段）；整段粗体标题不加标记 |
+| 列表 | 每个 list_item 自成一组 | 列表项与引出段落同组（`p0011-b11` → 3 项；`p0012-b7` → 3 项） |
+| 公式 (3) 行尾短语 | `for all times t > 0.` 被并入下一段 | 一个 `equation` 单元：`{{asset:公式}} for all times {{asset:t>0}}.`，编号 3 绑定；渲染为同一显示行 |
+| 重音 | `ITˆO`、`Itˆo` | `ITÔ’S CHAIN RULE`、`Itô’s chain rule`（页眉 `IT ˆO` 的字距空格一并去除） |
+| 连字 | `diﬀerential` | `differential` |
+| 语句标签 | 仅 Theorem/Lemma/… 开头识别 | `**NOTATION.** (i)…(iii)`、`**EXAMPLE 2.** … 显示 … is a random variable` 各成一组；`**2.1.4. Stochastic processes.**` 从上一段分离 |
+| 显示公式内文字 | 含英文单词的显示框整体丢弃并碎裂 | `sup_{Y≤X, Y simple}`、`{terms of order (dt)^{3/2} and higher}` 随公式整体截图（三行对齐推导为一个资产）；探测框越界吞入的下一行正文退回段落 |
+| CMEX 大算符 | `Σ`、`∫` 解码为控制字符被当作空白，Σ 与公式分离 | 计入墨迹，`X = Σ a_i χ` 为一个显示资产 |
+| 证明结束符、页码引用 | `□` 成为行内资产；`see page 77` 的 `77` 被探测器标为公式 | 均保留为正文 |
+| 字距 | `“ ½u″dt ”` | `“½u″dt”` |
+
+7 页共 122 个阅读单元、149 个资产（138 个精确字形导出，11 个为插图与装饰线的原始区域）；评审包 `boundary_diagnostics`/`grouping_pending` 为空；`source verify` 通过；`source render --standalone` 生成 `output/evans-source-checkpoint-p10-13-21-23-standalone.html`（2.3 MB，图片内嵌）作为交付的翻译前人工检查稿。本轮新增 `tests/test_source_structure_v8.py`（13 个合成用例）与档案追加用例。
+
+遗留：粗体行内小节标题仍为 paragraph 单元（带 `**…**`），未另设 kind；`(3)` 一类左侧标签的单元 id 带 `-s2` 后缀；本书 3 幅矢量插图与页眉线仍为原始区域截图。

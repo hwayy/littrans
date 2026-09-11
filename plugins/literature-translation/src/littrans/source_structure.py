@@ -10,6 +10,52 @@ from typing import Any
 from littrans.fidelity_models import FidelityAsset
 from littrans.models import SourceUnit
 
+# Bold faces: style names and the TeX families (CMBX, CMB, SFBX, SFBI, ECBX, CMSSBX ...).
+BOLD_FONT = re.compile(r"bx|bold|heavy|black|semibold|demi|(?<![a-z])(?:cm|sf|ec|ae|lm|tc)(?:ss|tt)?b(?:i|x)?(?:ti|sl)?\d", re.I)
+# Text italic/slanted faces: PostScript/OpenType style names and the TeX families
+# (CMTI, CMSL, CMBXTI, SFTI, SFBI, ECTI ...). Math italic (CMMI) is notation, not emphasis.
+ITALIC_FONT = re.compile(r"ital|oblique|slant|(?<![a-z])(?:cm|sf|ec|ae|lm|tc)(?:bx|b|ss|tt)?(?:ti|sl|it|bi|ri)\d", re.I)
+FORMAT_CONTROLS = {chr(9), chr(10), chr(13)}
+
+
+def font_style(font: str) -> str:
+    """Markdown emphasis markers for a text face: bold, italic, or both."""
+    bold = bool(BOLD_FONT.search(font))
+    italic = bool(ITALIC_FONT.search(font))
+    return "***" if bold and italic else "**" if bold else "*" if italic else ""
+
+
+def _bold_run_in(glyphs: list[dict[str, Any]], previous: list[dict[str, Any]]) -> bool:
+    """A line opening with a bold label ("EXAMPLE 1.", "Proof.", "2.1.4. Stochastic
+    processes.") followed by ordinary text on the same line. A bold phrase that
+    merely wraps from the previous line ("modeling / problems:") is not a label."""
+    if previous and BOLD_FONT.search([g for g in previous if inked_glyph(g)][-1]["font"]):
+        return False
+    letters, closed = 0, False
+    for g in glyphs:
+        text = str(g["text"])
+        if not text.strip():
+            continue
+        bold = bool(BOLD_FONT.search(g["font"]))
+        if closed:
+            return not bold and letters >= 3
+        if not bold:
+            return False
+        if text.isalpha():
+            letters += len(text)
+        elif text == ".":
+            closed = bool(letters)
+        elif not (text.isdigit() or text in "-:,()"):
+            return False
+    return False
+
+
+def inked_glyph(glyph: dict[str, Any]) -> bool:
+    """Whether a native glyph prints ink. Large TeX operators (CMEX braces, sums,
+    integrals) decode to control characters, which Python counts as whitespace."""
+    text = str(glyph["text"])
+    return bool(text.strip()) or any(ord(c) < 32 and c not in FORMAT_CONTROLS for c in text)
+
 
 def _contains(g: dict[str, Any], box: Sequence[float]) -> bool:
     b = g["bbox"]
@@ -17,7 +63,33 @@ def _contains(g: dict[str, Any], box: Sequence[float]) -> bool:
 
 
 TITLE_LABELS = {"doc_title", "paragraph_title", "title"}
-LIST_BULLETS = set("\u2022\u25e6\u25aa\u25a0\u25cf")
+# Bullet glyphs; base-14 fonts report the bullet as a middle dot, which is a list
+# marker only when it opens a line and is followed by a spaced word.
+LIST_BULLETS = set("\u2022\u25e6\u25aa\u25a0\u25cf\u00b7")
+
+
+def is_bullet_line(inked: list[dict[str, Any]]) -> bool:
+    """A list item line: a bullet glyph opening the line, then spaced content."""
+    if len(inked) < 2 or inked[0]["text"] not in LIST_BULLETS:
+        return False
+    following = str(inked[1]["text"])[:1]
+    return bool(following) and (following.isalnum() or (inked[0]["text"] != "\u00b7" and following not in LIST_BULLETS))
+STATEMENT_NAMES = (
+    "Theorem|Lemma|Proposition|Definition|Corollary|Claim|Example|Remark|Notation|Exercise|"
+    "Assumption|Conjecture|Problem|Warning|Hypothesis|Axiom|Fact|Observation|Convention"
+)
+# The classic capitalised label, or a bold/small-caps run-in label that may carry
+# qualifiers ("IMPORTANT REMARK.", "**Example 2.**", "WARNING ABOUT NOTATION.").
+STATEMENT_START = re.compile(r"\**(?:Theorem|Lemma|Proposition|Definition|Corollary|Claim)\b")
+STATEMENT_RUN_IN = re.compile(rf"\*{{2,3}}(?:[A-Za-z0-9.]+\s+){{0,3}}(?:{STATEMENT_NAMES})s?\b", re.I)
+STATEMENT_CAPS = re.compile(rf"(?:[A-Z]+\s+){{0,3}}(?:{STATEMENT_NAMES.upper()})S?\b")
+
+
+RUN_IN_LABEL = re.compile(r"\*{2,3}[^*]*[A-Za-z]{3,}[^*]*\*{2,3}")
+
+
+def _starts_statement(text: str) -> bool:
+    return bool(STATEMENT_START.match(text) or STATEMENT_RUN_IN.match(text) or STATEMENT_CAPS.match(text))
 
 
 def plan_structure(
@@ -105,6 +177,15 @@ def plan_structure(
     # on the same visual line. PDF blocks may span multiple author paragraphs.
     split, first_x, display_blocks = [], {}, set()
     title_boxes = [box for label, box in labels if label in TITLE_LABELS]
+    # The page's usual baseline pitch; a gap well beyond it is paragraph white space.
+    pitches = sorted(
+        gm[b["lines"][i + 1][0]]["origin"][1] - gm[b["lines"][i][0]]["origin"][1]
+        for b in blocks
+        for i in range(len(b["lines"]) - 1)
+        if 0 < gm[b["lines"][i + 1][0]]["origin"][1] - gm[b["lines"][i][0]]["origin"][1] < font_size * 3
+    )
+    pitch = pitches[len(pitches) // 2] if pitches else font_size * 1.2
+    gap_threshold = max(font_size * 1.75, pitch * 1.45)
     for b in blocks:
         gs = [gm[gid] for line in b["lines"] for gid in line]
         # A wrapped heading keeps its continuation line even though the wrap is indented.
@@ -118,13 +199,22 @@ def plan_structure(
             g = gm[line[0]]
             x, y = g["origin"]
             indent = margin + font_size * 0.8 < x < margin + font_size * 2.8
-            inked = [gid for gid in line if gm[gid]["text"].strip()]
+            inked = [gid for gid in line if inked_glyph(gm[gid])]
             display_line = bool(inked) and sum(gid in display_glyph_ids for gid in inked) >= len(inked) * 0.8
-            bullet_line = len(inked) >= 2 and gm[inked[0]]["text"] in LIST_BULLETS
+            bullet_line = is_bullet_line([gm[gid] for gid in inked])
             # Prose returning left of the bullet column ends the list item.
             list_end = bullet_x is not None and not bullet_line and x < bullet_x - font_size * 0.5
+            # Vertical white space, or a bold run-in label at the margin, opens a new
+            # paragraph even when the PDF block and the indent do not show it.
+            new_line = last_y is not None and y - last_y > font_size * 0.7
+            gap = last_y is not None and y - last_y > gap_threshold
+            run_in = new_line and x < margin + font_size * 0.8 and _bold_run_in(
+                [gm[gid] for gid in line], [gm[gid] for gid in current[-1]] if current else []
+            )
             if current and not heading_block and (
-                (indent and last_y is not None and y - last_y > font_size * 0.7)
+                (indent and new_line)
+                or gap
+                or run_in
                 or display_line != previous_display
                 or bullet_line
                 or list_end
@@ -149,7 +239,7 @@ def plan_structure(
                 max(g["bbox"][3] for g in gg),
             ]
             split.append({"id": bid, "bbox": box, "lines": lines})
-            inked_ids = [gid for line in lines for gid in line if gm[gid]["text"].strip()]
+            inked_ids = [gid for line in lines for gid in line if inked_glyph(gm[gid])]
             if inked_ids and sum(gid in display_glyph_ids for gid in inked_ids) >= len(inked_ids) * 0.8:
                 display_blocks.add(bid)
             # Ignore a formula suffix far to the right when finding the prose indent.
@@ -245,14 +335,12 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
                 < x
                 < plan["margin"] + plan["font_size"] * 2.8
             )
-            starts_statement = bool(
-                re.match(
-                    r"\**(?:Theorem|Lemma|Proposition|Definition|Corollary|Claim)\b", u.source_text
-                )
-            )
+            starts_statement = _starts_statement(u.source_text)
             enumerated = bool(re.match(r"[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)", u.source_text, re.I))
             proof = bool(re.match(r"[*\s]*Proof\b", u.source_text))
-            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption"} or starts_statement or proof
+            # A bold run-in label ("2.1.4. Stochastic processes.") opens a paragraph.
+            run_in = bool(RUN_IN_LABEL.match(u.source_text))
+            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption"} or starts_statement or proof or run_in
             if starts_statement:
                 statement = u.unit_id
             elif (
@@ -261,7 +349,7 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
                 or (indented and not enumerated and u.kind.value != "equation")
             ):
                 statement = None
-            previous_body = result[-1] if result else None
+            previous_body = next((r for r in reversed(result) if r.render_policy != RenderPolicy.OMIT), None)
             # Headings, list items and figure/table elements close their group;
             # the prose that follows starts a new logical paragraph.
             after_heading = previous_body is not None and (
@@ -274,8 +362,18 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
                 and previous_body.kind.value != u.kind.value
                 and previous_body.render_policy != RenderPolicy.OMIT
             )
+            list_member = (
+                u.kind.value == "list_item"
+                and previous_body is not None
+                and previous_body.render_policy != RenderPolicy.OMIT
+                and previous_body.kind.value in {"list_item", "paragraph", "equation"}
+            )
             if figure_pair and previous_body is not None:
                 # A figure/table and its adjacent caption form one element.
+                group = previous_body.parent_id or previous_body.unit_id
+            elif list_member and previous_body is not None:
+                # List items belong to the paragraph that introduces them and to
+                # each other; the list is one structure, not scattered elements.
                 group = previous_body.parent_id or previous_body.unit_id
             elif statement and (starts_statement or enumerated or u.kind.value == "equation"):
                 group = statement
@@ -291,16 +389,28 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
         )
         # A PDF block boundary inside one visual line (a tall inline integral splits
         # the line into blocks) continues the previous fragment, whatever its kind.
+        # Likewise the prose set beside a displayed formula on its line ("for all
+        # times t > 0.") completes that display unit rather than starting a paragraph.
         same_line = bool(
             previous
             and previous.render_policy != RenderPolicy.OMIT
-            and not display
-            and not previous_display
-            and u.kind.value in {"paragraph", "list_item"}
-            and previous.kind.value in {"paragraph", "list_item"}
             and u.bbox[0] > previous.bbox[0]
             and min(previous.bbox[3], u.bbox[3]) - max(previous.bbox[1], u.bbox[1])
             > 0.5 * min(previous.bbox[3] - previous.bbox[1], u.bbox[3] - u.bbox[1])
+            and (
+                (
+                    not display
+                    and not previous_display
+                    and u.kind.value in {"paragraph", "list_item"}
+                    and previous.kind.value in {"paragraph", "list_item"}
+                )
+                or (
+                    bid in display_blocks
+                    and previous_display
+                    and previous.kind.value == "equation"
+                    and u.kind.value == "equation"
+                )
+            )
         )
         if same_line and previous is not None:
             u = rebuild(u, parent_id=previous.parent_id)
@@ -314,7 +424,7 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
             and not re.match(r"[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)", u.source_text, re.I)
         )):
             joined = previous.source_text.rstrip() + " " + u.source_text.lstrip()
-            joined = re.sub(r"\s+([,.;])", r"\1", joined)
+            joined = re.sub(r"\s+([,.;:”’)\]])", r"\1", joined)
             joined = re.sub(r"([a-z])-\s+([a-z])", r"\1\2", joined)
             merged = rebuild(
                 previous,
@@ -356,11 +466,21 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
 def styled_text(tokens: list[tuple[str, str]]) -> str:
     from itertools import groupby
 
+    # Whitespace between two runs of the same style joins them (*Brownian motion*),
+    # whichever face the PDF assigned to the space glyph itself.
+    tokens = list(tokens)
+    for index, (text, style) in enumerate(tokens):
+        if text.isspace() and 0 < index < len(tokens) - 1:
+            before = tokens[index - 1][1]
+            after = next((s for t, s in tokens[index + 1:] if not t.isspace()), "")
+            if before == after and before != style:
+                tokens[index] = (text, before)
     parts = []
     for style, group in groupby(tokens, key=lambda item: item[1]):
         text = "".join(item[0] for item in group)
         core = text.strip()
-        if not core or not style:
+        if not core or not style or not any(c.isalnum() for c in core):
+            # Punctuation alone carries no emphasis worth marking.
             parts.append(text)
         else:
             leading = text[: len(text) - len(text.lstrip())]

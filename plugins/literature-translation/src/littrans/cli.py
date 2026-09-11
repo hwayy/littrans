@@ -184,10 +184,11 @@ def source_render(
     project: PathArg,
     pages: str = typer.Option("all"),
     name: str | None = typer.Option(None, help="Output file name (default source-pNNNN-pNNNN)."),
+    standalone: bool = typer.Option(False, "--standalone", help="Embed the asset images so the single HTML file can be shared."),
 ) -> None:
     """Write a readable HTML checkpoint of the preserved source with original assets inline."""
     from littrans.source_render import render_source_review
-    emit(render_source_review(project, pages, name))
+    emit(render_source_review(project, pages, name, standalone=standalone))
 
 
 @source_app.command("review-packets")

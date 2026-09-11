@@ -35,7 +35,25 @@ versioning and correspond to Git tags named `v<version>`.
   boxes shrink to the owned glyph ink, a trailing prose phrase is split off a displayed formula,
   and the precise glyph exporter accepts empty clip groups and filled-rectangle rules.
 - Added `source render`, a readable HTML checkpoint of the verified source with the original
-  assets inline, as the last check before batching.
+  assets inline, as the last check before batching; `--standalone` embeds the images so the
+  single file can be shared with a reviewer.
+- Preserved typography in the extracted source: italic and slanted text faces (CMTI/CMSL as well
+  as style names) become emphasis, bold and italic runs continue across line breaks, whole-heading
+  markers are dropped, ligature glyphs expand to their letters, TeX spacing accents compose with
+  the letter they sit on (`ITÔ`, `Itô`), and kerns reported as narrow spaces are not word spaces.
+- Grouped list items with the paragraph that introduces them and with each other; a bold run-in
+  label (`EXAMPLE 1.`, `Proof.`, `2.1.4. Stochastic processes.`) or vertical white space opens a
+  new paragraph even inside one PDF text block, and statement labels in bold or capitals start a
+  statement group.
+- Kept a displayed formula and the prose set beside it on its line (`... for all times t > 0.`) as
+  one displayed unit with the formula asset and translatable text; words inside the notation
+  (`sup` conditions, braces annotations) stay in the formula image, while a prose line the
+  detector rectangle overshoots into returns to its paragraph.
+- Treated large TeX operators encoded as control characters as ink, end-of-proof tombstones and
+  plain numbers in the text face as text rather than notation, and gave displayed units the
+  formula's geometry.
+- `source probe` extends an existing structure profile with observations for pages not yet probed
+  instead of refusing, returning it to draft until the rules cover the new pages.
 - Cut the test suite from over twenty minutes on a machine with the layout detector to under two:
   tests stub the detector unless marked `layout_runtime`, and the synthetic reviewed projects
   are built once per session and copied.
