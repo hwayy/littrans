@@ -9,10 +9,8 @@ versioning and correspond to Git tags named `v<version>`.
 
 - Keep bilingual HTML anchor targets visible below the fixed header on desktop and mobile.
 - Recognize explicit English/Chinese decade equivalents and numbered CHAPTER headings in deterministic QA while retaining number, unit and acronym protection.
-
 - Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.
 - Preserved complete parent groups and caller/footnote spans when batch budgets are exceeded, including intervening footnotes.
-
 - Unified source preparation around faithful native prose and original PDF/SVG/PNG assets,
   with source-bound coverage review before parallel transcription and translation.
 - Separated structured-asset candidates and independent visual/render review from translation
@@ -22,6 +20,11 @@ versioning and correspond to Git tags named `v<version>`.
 - Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
   only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
 - Added the transcription skill, asset review role and offline MathJax reading contract.
+
+### Fixed
+
+- Reported an unresolved `{{asset:ID}}` reference by name during Markdown rendering, matching the
+  existing bilingual HTML behavior, instead of aborting the render with an unlabeled lookup error.
 
 ## Historical changes before 0.6
 

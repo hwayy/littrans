@@ -1,26 +1,39 @@
 # LitTrans 0.6 验收摘要
 
-本摘要记录统一流程“保真保存 → 独立并行转写与翻译 → 独立核验 → 阅读输出”的实现与样本验收。实施分支为 `feat/littrans-fidelity-v06`，从 `main` 的 `38918b0` 建立；插件版本为 0.6.0，项目 schema 为 6。稳定安装未切换，旧项目内容保留，新项目不继承旧审批。
+本摘要记录统一流程“保真保存 → 独立并行转写与翻译 → 独立核验 → 阅读输出”的实现与样本验收。实施分支为 `feat/littrans-fidelity-v06`，从 `main` 的 `38918b0` 建立，本摘要的复核对应代码状态 `f208aea`，即本文档提交前的分支 HEAD（领先 `main` 11 个提交），此后仅有文档提交；插件版本为 0.6.0，项目 schema 为 6，确定性 QA 指纹为 `deterministic-qa-v6.3-localized-chapters-and-decades`。稳定安装未切换，旧项目内容保留，新项目不继承旧审批。
 
-**当前状态：软件回归与隔离分发验收通过；64 个公式最终核验通过；8 个 batch 的 `complete` 与 `reading_complete` 均为 true。u05 已修订、三类独立审校复审通过且问题已 resolved。最终阅读布局的浏览器 DOM 检查与主审目视复核通过。以上均不是人类批准。**
+本摘要区分两类记录：**本轮复核**为在上述 HEAD 上重新执行并当场观察到的结果；**历史验收记录**为早前运行的结论，其工作日志位于 `tmp/` 且已随清理丢失，未在本轮复现。两类不可互相替代。
+
+**当前状态：软件回归在当前 HEAD 复核通过；隔离分发验收通过但对应早前构建，发布前需重建产物；64 个公式最终核验通过；8 个 batch 的 `complete` 与 `reading_complete` 均为 true。u05 已修订、三类独立审校复审通过且问题已 resolved。最终阅读布局的浏览器 DOM 检查与主审目视复核通过。以上均不是人类批准。**
 
 ## 软件与兼容性
 
+### 本轮复核（HEAD `f208aea`）
+
 | 检查 | 结果 |
 | --- | --- |
-| 完整测试 | 491 passed，2 skipped，221.23 秒，进程退出码 0 |
-| 公式编号 CSS 调整后的相关回归 | 渲染、工作流、资产及打包相关 152 项通过，108.70 秒；该调整不修改语义源码或独立资产渲染运行时 |
+| 完整测试 | 558 passed，2 skipped，0 failed，进程退出码 0 |
 | 跳过原因 | 两个既有本地 WPF／Bodenschatz PDF 测试样本不可用；未用跳过掩盖本轮失败 |
-| 静态检查 | Ruff 通过；Mypy 检查 30 个源文件通过 |
-| 插件／schema 校验 | 0.6.0 版本一致；7 个技能、7 个代理；生成 schema 与模型一致 |
+| 静态检查 | Ruff 通过；Mypy 检查 32 个源文件通过 |
+| 插件／schema 校验 | 四处版本记录一致为 0.6.0；7 个技能、7 个代理；13 个生成 schema 与运行时模型一致 |
+| 运行依赖 | `littrans doctor` 九项运行依赖可用；Python 3.13.14；`pdftoppm`／`pdfinfo` 可定位 |
+| 内置 profiles | `en-zh-cn`、`research-paper`、`technical-book` 三个均可读取 |
+| 离线运行组件 | MathJax 4.1.3，清单所列 45 个文件哈希逐一比对通过；损坏读者副本的恢复与损坏内置来源的拒绝由上述套件覆盖 |
+| Cursor | 模型配置契约测试包含在上述套件中并通过；未运行实际 Cursor 模型任务 |
+
+复核方式为在仓库根目录执行 `./scripts/check.ps1` 所含的各步骤（发布元数据校验、Ruff、Mypy、pytest、`doctor`）。工作日志写入 `tmp/`，该目录不受版本控制且会随清理丢失，因此本摘要以可重跑的命令而非具体日志文件名作为复核依据。
+
+### 历史验收记录（日志未保留，未在本轮复现）
+
+| 检查 | 结果 |
+| --- | --- |
+| 公式编号 CSS 调整后的相关回归 | 渲染、工作流、资产及打包相关 152 项通过，108.70 秒；该调整不修改语义源码或独立资产渲染运行时 |
 | 实际安装环境 | Windows，Python 3.13.14；wheel 用 `pip --target --no-deps --no-index` 安装到独立新目录，依赖由已验证的解释器环境提供且未被重装 |
-| wheel 验收 | 导入路径指向独立安装目录；版本 0.6.0；QA 策略 v6.2；三个内置 profiles 可读取；合成 PDF 可初始化 schema-6 项目并生成源审查包 |
+| wheel 验收 | 导入路径指向独立安装目录；版本 0.6.0；三个内置 profiles 可读取；合成 PDF 可初始化 schema-6 项目并生成源审查包 |
 | 模型不可用回退 | 合成样本的版面检测明确 unavailable，保留原式资产和待审查状态，没有自动授予保真审批 |
 | ZIP 验收 | 独立解压后使用其中的 `src` 启动 CLI `doctor`，九项运行依赖可用；plugin-creator 校验通过 |
-| 离线运行组件 | MathJax 4.1.3，共 45 个文件哈希通过；损坏的读者副本可恢复；损坏的内置来源被拒绝 |
-| Cursor | 模型配置契约测试通过；未运行实际 Cursor 模型任务 |
 
-完整测试本地日志为 `tmp/v06-qa62-lockfix-pytest.log`，JUnit 为 `tmp/v06-qa62-lockfix-pytest.xml`；编号 CSS 修正后的相关回归记录为 `tmp/v06-reading-number-pytest.log`／`.xml`；静态检查日志为 `tmp/v06-qa62-ruff.log`、`tmp/v06-qa62-mypy.log`。这些工作日志及私有 PDF 验收产物不随公开插件分发。本轮实际安装结果不能扩展为所有 Python 3.12+ 环境、所有宿主或所有显卡均已实测。
+该轮记录的“QA 策略 v6.2”已被取代：`b1ad678` 的 QA 本地化修正将确定性 QA 指纹升至 v6.3，此前生成的 QA 证据须重新生成，见 [qa-localization-20260908/verification.md](qa-localization-20260908/verification.md)。上述隔离安装结论对应当时的构建产物，不能扩展为所有 Python 3.12+ 环境、所有宿主或所有显卡均已实测；其产物指纹状态见“分发产物与恢复”。
 
 ### Windows 锁目录交接
 
@@ -28,7 +41,7 @@
 
 修复仅对 Windows `mkdir` 的 `WinError 5` 在既定 deadline 内等待；未取得锁不会进入临界区，持续权限错误到期仍抛出原异常，其他平台或错误不被吞掉。确定性的暂时拒绝、持续拒绝、非目标错误测试以及真实线程互斥回归通过；相同双线程压力脚本修复后完成 1000／1000 次且无异常。
 
-复现与修复证据分别为 `tmp/v06-qa62-project-lock-stress.log`、`tmp/v06-qa62-project-lock-fixed-stress.log` 和 `tmp/v06-qa62-lock-fixed.log`。
+该复现与修复属于历史验收记录，当时的压力脚本日志写在 `tmp/` 且已随清理丢失，本轮未重新复现双线程压力。对应的确定性锁重试单元测试保留在仓库内，包含在本轮 558 项通过的套件中。
 
 ### 已知数学错误的审核关卡回归
 
@@ -75,7 +88,9 @@
 | `littrans-0.6.0-py3-none-any.whl` | 4337506 | `e204c37a6ff98bfbdb324c1f68c16e865f96442a4f1b7d37ea7d9d7c7f04c070` |
 | `literature-translation-0.6.0.zip` | 4391107 | `cd04740d06fb08e68842d4cd7b3379f0e482e37a74b8d8ab04ddd6904fa71ca9` |
 
-私有验收目录 `experiments/littrans-v06-acceptance/` 内，当前分发清单为 `distribution/build-manifest.json`，当前安装报告为 `final-smoke/reading-number/report.json`。早期 smoke 报告保留的是旧构建指纹，不能代替上述当前产物证据。
+**这两个指纹早于当前 HEAD。** 其后的 `0398786`（插件清单版本回退到共享的 0.6.0）与 `f208aea`（Markdown 资产解析的未知引用报错）都改动了打包内容，因此上表哈希不对应 `f208aea` 的构建结果。发布前必须按 [RELEASING.md](../RELEASING.md#local-installable-builds-and-recovery) 重建 wheel 与 ZIP、重跑隔离安装验收，并以新指纹替换上表；本轮按“不急于发布”的范围未执行重建。
+
+私有验收目录的分发清单与安装报告同属上述早前构建，早期 smoke 报告保留的是更旧的构建指纹，两者都不能代替重建后的产物证据。
 
 构建、隔离安装和失败恢复操作见 [RELEASING.md](../RELEASING.md#local-installable-builds-and-recovery)。安装或解析失败应保留已成功响应和历史报告，在新目录复核；源指纹或资产含义变化后必须重新核验受影响依赖，不能继承旧项目审批。
 
