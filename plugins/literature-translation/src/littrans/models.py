@@ -490,6 +490,8 @@ class GlossaryTerm(StrictModel):
 class ReviewIssue(StrictModel):
     schema_version: int = 1
     issue_id: str
+    # Reviewer-supplied id retained when a packet import canonicalizes issue_id.
+    source_issue_id: str | None = None
     batch_id: BatchId
     unit_id: str
     severity: Severity
@@ -899,6 +901,9 @@ class AuditRun(StrictModel):
     packet_id: str | None = None
     unit_fingerprints: dict[str, str]
     context_fingerprint: str | None = None
+    # Brief, style guide and relevant-term hash alone, so staleness can tell a
+    # context edit apart from a changed dependency unit.
+    shared_context_fingerprint: str | None = None
     context_unit_ids: list[str] = Field(default_factory=list)
     issue_ids: list[str] = Field(default_factory=list)
     reviewed_at: str = Field(default_factory=utc_now)
@@ -933,8 +938,10 @@ class WorkflowPacketManifest(StrictModel):
     @field_validator("stage")
     @classmethod
     def require_supported_packet_stage(cls, value: str) -> str:
-        if value not in {"translate", "audit", "transcribe", "asset-audit"}:
-            raise ValueError("workflow packet stage must be translate, transcribe, asset-audit or audit")
+        if value not in {"translate", "revise", "audit", "transcribe", "asset-audit"}:
+            raise ValueError(
+                "workflow packet stage must be translate, revise, transcribe, asset-audit or audit"
+            )
         return value
 
     @model_validator(mode="after")
@@ -945,7 +952,7 @@ class WorkflowPacketManifest(StrictModel):
             "chinese-style",
         }:
             raise ValueError("audit packets require one supported lens")
-        if self.stage == "translate" and self.lens is not None:
+        if self.stage in {"translate", "revise"} and self.lens is not None:
             raise ValueError("translation packets must not set a lens")
         return self
 

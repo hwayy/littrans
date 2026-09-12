@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import yaml
 from pydantic import BaseModel
 
@@ -92,18 +92,18 @@ def initialize_project(
     save_project(root, config)
     write_yaml(root / "glossary" / "approved.yaml", {"terms": []})
     write_yaml(root / "glossary" / "candidates.yaml", {"terms": []})
-    (root / "context" / "document-brief.md").write_text(
+    atomic_write_text(
+        root / "context" / "document-brief.md",
         "# Document brief\n\nComplete this brief before translating: subject, argument, audience, "
         "terminology, and source style.\n",
-        encoding="utf-8",
     )
-    (root / "context" / "style-guide.md").write_text(
+    atomic_write_text(
+        root / "context" / "style-guide.md",
         "# Translation style\n\n- Translate faithfully into clear Simplified Chinese.\n"
         "- Preserve every {{asset:ID}} reference in its corresponding source block.\n"
         "- Read original formula and table images in context; do not assume candidates verified.\n"
         "- Preserve code indentation, citations, numbers, and protected identifiers.\n"
         "- Keep reader notes separate from translated text.\n",
-        encoding="utf-8",
     )
     write_json(
         root / "derived" / "provenance.json",
@@ -253,9 +253,9 @@ def schema_mismatches(output: Path) -> list[str]:
 def write_schemas(output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     for filename, model in schema_models().items():
-        (output / filename).write_text(
+        atomic_write_text(
+            output / filename,
             json.dumps(model.model_json_schema(), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
         )
 
 

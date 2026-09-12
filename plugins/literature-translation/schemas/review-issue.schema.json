@@ -47,6 +47,18 @@
       "title": "Issue Id",
       "type": "string"
     },
+    "source_issue_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Issue Id"
+    },
     "batch_id": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
       "title": "Batch Id",

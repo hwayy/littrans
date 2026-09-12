@@ -4,7 +4,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from littrans.fidelity_models import FidelityAsset, FidelityFragment

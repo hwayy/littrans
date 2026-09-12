@@ -83,6 +83,18 @@
       "default": null,
       "title": "Context Fingerprint"
     },
+    "shared_context_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Shared Context Fingerprint"
+    },
     "context_unit_ids": {
       "items": {
         "type": "string"

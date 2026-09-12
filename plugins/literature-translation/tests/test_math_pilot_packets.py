@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from littrans.math_pilot_packets import build_math_pilot_packets

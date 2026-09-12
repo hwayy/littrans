@@ -1,7 +1,7 @@
 """Production entry points, exercised against an explicitly generated source oracle."""
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 from typer.testing import CliRunner
 
@@ -97,18 +97,45 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
     assert workflow_next(project, start_at=bid, through=bid)["stage"] == "complete"
     assert create_workflow_packet(project, "transcribe", [bid])["asset_ids"]
     assert representation_status(project)["counts"]["transcribe"] > 0
+    # No candidate exists anywhere in the project, so the edition is originals-only.
     output = render_project(project, None, batch_id=bid)
-    html_path = next(Path(v) for v in output.values() if isinstance(v, str) and v.endswith(".html"))
-    rendered = html_path.read_text(encoding="utf-8")
-    assert "转写未完成" in rendered
+    assert output["originals_only_reason"] == "no-transcription-candidates"
+    rendered = Path(output["html"]).read_text(encoding="utf-8")
+    assert "转写未完成" not in rendered
     assert "该恒等式成立" in rendered
-    assert "asset-original" in rendered
+    assert 'data-original-only="true"' in rendered
+    assert "tex2svgPromise" not in rendered
     assert "https://cdn" not in rendered
+    auto_qa = read_json(Path(output["render_qa"]))
+    assert auto_qa["selection"]["originals_only"] is True
+    assert auto_qa["selection"]["originals_only_reason"] == "no-transcription-candidates"
+    assert auto_qa["rendered_status"] == "machine-reviewed"
     originals = render_project(project, None, name="originals-only", batch_id=bid, originals_only=True)
     original_html = Path(originals["html"]).read_text(encoding="utf-8")
     assert "asset-candidate" not in original_html.replace(".asset-candidate", "")
     assert "tex2svgPromise" not in original_html
-    assert read_json(Path(originals["render_qa"]))["selection"]["originals_only"] is True
+    assert originals["originals_only_reason"] == "requested"
+    assert read_json(Path(originals["render_qa"]))["selection"] == {
+        **auto_qa["selection"], "originals_only_reason": "requested",
+    }
+
+    # One candidate anywhere restores the labelled candidate path.
+    from littrans.representations import submit_candidates
+
+    write_json(project / "candidate.json", {
+        "packet_id": transcription["packet_id"], "author_task_id": "test-transcriber",
+        "model": "gpt-5.6-luna", "reasoning_effort": "max",
+        "image_evidence": transcription["required_images"], "usage": None,
+        "candidates": [{"asset_id": aid, "format": "latex", "content": "1+1=2"}
+                       for aid in transcription["asset_ids"]],
+    })
+    submit_candidates(project, project / "candidate.json")
+    labelled = render_project(project, None, name="with-candidate", batch_id=bid)
+    assert "originals_only_reason" not in labelled
+    labelled_html = Path(labelled["html"]).read_text(encoding="utf-8")
+    assert "转写未完成" in labelled_html
+    assert "asset-original" in labelled_html
+    assert read_json(Path(labelled["render_qa"]))["selection"]["originals_only_reason"] is None
 
 
 def test_asset_submission_does_not_leak_into_translation_packet(project: Path) -> None:

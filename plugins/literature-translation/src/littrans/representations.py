@@ -532,7 +532,7 @@ def validate_asset_translations(root: Path, source: str, supplements: list[Any],
                            "Translated image companions must not bypass independent structured-expression review: " + key})
         body = ASSET_RE.sub("", "\n".join(texts)).strip()
         if not body or (load_project(root).target_language == "zh-CN" and not re.search(r"[\u3400-\u9fff]", body)):
-            errors.append({"code": "asset-language-untranslated", "message": "Source image language needs a translated companion: " + key})
+            errors.append({"code": "asset-language-untranslated", "message": "Source image language needs a translated companion, or language_present=false with notes when the image holds only notation: " + key})
     for key in ids & assets.keys():
         if (assets[key]["kind"] in {"mixed-region", "table", "figure"} or assets[key].get("formula_conditions")) and key not in mapped:
             # Old structured table records remain expressible; image-only table

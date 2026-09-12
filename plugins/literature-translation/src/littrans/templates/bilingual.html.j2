@@ -62,7 +62,7 @@
 <body>
 <header>
   <h1>{{ config.title }}</h1>
-  <p>PDF 页 {{ pages }} · {{ config.source_language }} → {{ config.target_language }} · {{ config.status }}{% if allow_draft %}<span class="badge">预览</span>{% endif %}</p>
+  <p>PDF 页 {{ pages }} · {{ config.source_language }} → {{ config.target_language }} · {{ status }}{% if allow_draft %}<span class="badge">预览</span>{% endif %}</p>
 </header>
 <main>
 {% for row in rows %}

@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 from fidelity_fixtures import original_image_evidence
 from reportlab.lib.pagesizes import letter
@@ -125,7 +125,7 @@ from littrans.verification import (
     _semantic_errors,
     verify_extraction,
 )
-from littrans.workflow import _audit_unit_text
+from littrans.workflow import _audit_unit_text, create_workflow_packet
 
 
 def make_pdf(path: Path) -> None:
@@ -1053,6 +1053,30 @@ def test_audit_packet_does_not_duplicate_structured_table_rows() -> None:
     assert packet.count("属性 | 说明") == 1
 
 
+def _submit_one_transcription_candidate(root: Path, batch_id: str) -> None:
+    from littrans.representations import submit_candidates
+
+    packet = create_workflow_packet(root, "transcribe", [batch_id])
+    assert isinstance(packet, dict) and packet["asset_ids"]
+    submission = root / "candidate-input.json"
+    write_json(
+        submission,
+        {
+            "packet_id": packet["packet_id"],
+            "author_task_id": "test-transcriber",
+            "model": packet["model"],
+            "reasoning_effort": packet["reasoning_effort"],
+            "image_evidence": packet["required_images"],
+            "usage": None,
+            "candidates": [
+                {"asset_id": asset_id, "format": "latex", "content": "a = b + 3"}
+                for asset_id in packet["asset_ids"]
+            ],
+        },
+    )
+    submit_candidates(root, submission)
+
+
 def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
     manifests = create_batches(prepared_project, "1-3", max_words=300, prefix="synthetic")
     assert manifests
@@ -1068,12 +1092,20 @@ def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
             == ProjectStatus.MACHINE_REVIEWED
         )
 
+    # One transcription candidate keeps the candidate-labelled render path in
+    # play; without any candidate the render switches to originals-only.
+    _submit_one_transcription_candidate(prepared_project, manifests[0].batch_id)
     outputs = render_project(prepared_project, "1-3", "synthetic")
     assert Path(outputs["markdown"]).is_file()
+    assert "originals_only_reason" not in outputs
     html = Path(outputs["html"]).read_text(encoding="utf-8")
     assert "双语译本" in html
     assert "DependencyObject" in html
     assert "machine-reviewed" in html
+    render_qa = json.loads(Path(outputs["render_qa"]).read_text(encoding="utf-8"))
+    assert render_qa["rendered_status"] == "machine-reviewed"
+    assert render_qa["selection"]["originals_only"] is False
+    assert render_qa["selection"]["originals_only_reason"] is None
     assert 'mathjax/tex-svg.js' in html
     assert 'class="fidelity-asset' in html
     assert "转写未完成" in html

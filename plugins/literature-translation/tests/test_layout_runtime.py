@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import pytest
 from typer.testing import CliRunner
 

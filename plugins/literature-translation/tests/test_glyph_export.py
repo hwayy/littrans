@@ -1,7 +1,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from littrans.glyph_export import export_owned_fragment

@@ -26,6 +26,7 @@ from littrans.models import (
     BatchManifest,
     CalloutKind,
     IssueStatus,
+    ProjectConfig,
     ProjectStatus,
     RenderPolicy,
     ReviewIssue,
@@ -33,12 +34,14 @@ from littrans.models import (
     SidebarRole,
     SourceUnit,
     TableData,
+    TranslationRecord,
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
-from littrans.quality import audit_coverage, qa_report_is_current
+from littrans.quality import STATUS_ORDER, audit_coverage, qa_report_is_current
 from littrans.representations import (
     ASSET_RE,
+    _index,
     install_mathjax,
     mathjax_bootstrap,
     resolve_asset_html,
@@ -686,6 +689,36 @@ def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return grouped
 
 
+def _intersecting_manifests(root: Path, selected_ids: set[str]) -> list[BatchManifest]:
+    return [
+        manifest
+        for path in (root / "batches").iterdir()
+        if path.is_dir() and (path / "manifest.yaml").is_file()
+        for manifest in [load_manifest(root, path.name)]
+        if selected_ids & set(manifest.unit_ids)
+    ]
+
+
+def _rendered_status(
+    config: ProjectConfig,
+    units: list[SourceUnit],
+    translations: dict[str, TranslationRecord],
+) -> ProjectStatus:
+    """Lowest record status among the rendered units.
+
+    The project status is a high-water mark across every batch, so a single
+    batch render must not borrow it.
+    """
+    statuses = [
+        translations[unit.unit_id].status
+        for unit in units
+        if unit.translatable and unit.unit_id in translations
+    ]
+    if not statuses:
+        return config.status
+    return min(statuses, key=lambda status: STATUS_ORDER[status])
+
+
 def render_project(
     root: Path,
     page_spec: str | None,
@@ -696,6 +729,12 @@ def render_project(
     originals_only: bool = False,
 ) -> dict[str, str]:
     config = load_project(root)
+    originals_only_reason: str | None = "requested" if originals_only else None
+    if not originals_only and not _index(root)["candidates"]:
+        # Without any transcription candidate the per-formula "transcription
+        # pending" labels are pure noise; the original images are the edition.
+        originals_only = True
+        originals_only_reason = "no-transcription-candidates"
     publishable = (
         {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
         if config.external_review and config.external_review.enabled
@@ -719,7 +758,7 @@ def render_project(
     if batch_ids is not None:
         from littrans.workflow import _validate_batch_set
 
-        _validate_batch_set(root, batch_ids)
+        _validate_batch_set(root, batch_ids, label="Render")
     selected_batch_ids = batch_ids or ([batch_id] if batch_id else [])
     manifests = [load_manifest(root, value) for value in selected_batch_ids]
     pages = (
@@ -830,14 +869,7 @@ def render_project(
         relevant_manifests = content_manifests
         gate_status: dict[str, tuple[bool, bool, bool]] = {}
         if not relevant_manifests:
-            candidate_manifests = [
-                manifest
-                for path in (root / "batches").iterdir()
-                if path.is_dir()
-                and (path / "manifest.yaml").is_file()
-                for manifest in [load_manifest(root, path.name)]
-                if selected_ids & set(manifest.unit_ids)
-            ]
+            candidate_manifests = _intersecting_manifests(root, selected_ids)
         current_unit_ids = {unit.unit_id for unit in all_units}
         if not relevant_manifests:
             if config.external_review and config.external_review.enabled:
@@ -969,10 +1001,11 @@ def render_project(
     unresolved_path = output / f"{output_name}.unresolved.md"
     render_qa_path = output / f"{output_name}.render-qa.json"
 
+    rendered_status = _rendered_status(config, units, translations)
     markdown: list[str] = [
         f"# {config.title}",
         "",
-        f"> 翻译状态：{config.status}；用途：{config.rights_status}。",
+        f"> 翻译状态：{rendered_status}；用途：{config.rights_status}。",
         "",
     ]
     rows: list[dict[str, Any]] = []
@@ -1304,6 +1337,7 @@ def render_project(
     template = environment.from_string(template_text)
     html_text = template.render(
         config=config,
+        status=rendered_status,
         rows=rows,
         pages=(f"{min(pages)}–{max(pages)}" if len(set(pages)) == max(pages) - min(pages) + 1 else "、".join(map(str, sorted(set(pages))))),
         pdf_uri=config.source(root).as_uri(),
@@ -1317,6 +1351,9 @@ def render_project(
         if name is None and batch_id is not None:
             _require_default_output_owner(output, output_name, batch_id)
         review_batch_ids = [manifest.batch_id for manifest in content_manifests]
+        quality_batch_ids = review_batch_ids or [
+            manifest.batch_id for manifest in _intersecting_manifests(root, selected_ids)
+        ]
         external_path = (
             output / f"{output_name}.external-review.md"
             if config.external_review
@@ -1340,7 +1377,14 @@ def render_project(
             atomic_write_text(markdown_path, markdown_text)
             atomic_write_text(html_path, html_text)
             _write_quality_summary(
-                qa_path, root, units, missing, unapproved, open_severe
+                qa_path,
+                root,
+                units,
+                missing,
+                unapproved,
+                open_severe,
+                batch_ids=quality_batch_ids,
+                rendered_status=rendered_status,
             )
             _write_unresolved(unresolved_path, root, selected_ids)
             atomic_write_text(
@@ -1348,11 +1392,14 @@ def render_project(
                 json.dumps(
                     {
                         "passed": not render_errors,
+                        "rendered_status": rendered_status,
+                        "review_batch_ids": quality_batch_ids,
                         "selection": {
                             "batch_id": batch_id,
                             "batch_ids": selected_batch_ids or None,
                             "pages": sorted(pages),
                             "originals_only": originals_only,
+                            "originals_only_reason": originals_only_reason,
                         },
                         "unit_ids": [unit.unit_id for unit in units],
                         "errors": render_errors,
@@ -1372,6 +1419,8 @@ def render_project(
             "unresolved": str(unresolved_path),
             "render_qa": str(render_qa_path),
         }
+        if originals_only_reason is not None:
+            outputs["originals_only_reason"] = originals_only_reason
         if external_path is not None:
             try:
                 _write_external_review_summary_set(
@@ -1479,12 +1528,19 @@ def _write_quality_summary(
     missing: list[str],
     unapproved: list[str],
     open_severe: list[str],
+    *,
+    batch_ids: list[str],
+    rendered_status: ProjectStatus,
 ) -> None:
     translations = translation_map(root)
     translated = sum(unit.unit_id in translations for unit in units if unit.translatable)
     translatable = sum(unit.translatable for unit in units)
+    # Only the batches covering this selection; the project holds reports for
+    # every batch and those would misstate a single-batch edition.
     qa_reports = [
-        json.loads(item.read_text(encoding="utf-8")) for item in (root / "qa").glob("*.json")
+        json.loads(qa_file.read_text(encoding="utf-8"))
+        for batch_id in batch_ids
+        if (qa_file := root / "qa" / f"{batch_id}.json").is_file()
     ]
     review_issues = [
         issue
@@ -1495,6 +1551,8 @@ def _write_quality_summary(
     lines = [
         "# Translation quality summary",
         "",
+        f"- Translation status: {rendered_status}",
+        f"- Batches: {', '.join(batch_ids) if batch_ids else 'none'}",
         f"- Source units: {len(units)}",
         f"- Translatable units: {translatable}",
         f"- Translated units: {translated}",

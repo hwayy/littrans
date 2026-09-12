@@ -4,6 +4,8 @@ from littrans.models import SourceUnit, UnitKind
 from littrans.quality import (
     NUMBER_RE,
     UNIT_RE,
+    _asset_spacing_hits,
+    _halfwidth_punctuation_hits,
     _localized_heading_token_present,
     _semantic_comparison_text,
     _semantic_token_present,
@@ -67,3 +69,32 @@ def test_bold_caps_run_in_labels_may_be_localized(source: str, token: str, targe
     unit = SourceUnit(unit_id="test", kind=UnitKind.PARAGRAPH, page=1, bbox=(0, 0, 1, 1),
                       source_text=source, source_hash="test", confidence=1)
     assert _localized_heading_token_present(unit, token, target) is expected
+
+
+@pytest.mark.parametrize(("target", "expected"), [
+    ("这是中文,然后继续", 1),
+    ("这是句子.", 1),
+    ("先说一点; 再说另一点: 结束!", 3),
+    ("版本 3.5 和 e.g. 值 v1.2 保持", 0),
+    ("见 `a,b` 代码和 $x,y$ 公式", 0),
+    ("公式{{asset:a1}},接着", 0),
+    ("链接 https://example.com/a,b 后", 0),
+    ("完整的中文，句子。没有问题；", 0),
+    ("English, text. stays", 0),
+    ("**记号.** (i) 我们通常写作", 0),
+    ("**2.1.4. 随机过程.** 接下来我们", 0),
+    ("**定义.** 若成立,则", 1),
+])
+def test_halfwidth_punctuation_hits(target: str, expected: int) -> None:
+    assert len(_halfwidth_punctuation_hits(target)) == expected
+
+
+@pytest.mark.parametrize(("target", "expected"), [
+    ("公式 {{asset:a1}} 成立", 2),
+    ("公式{{asset:a1}}成立", 0),
+    ("see {{asset:a1}} here", 0),
+    ("其中 {{asset:p1-f2}}", 1),
+    ("{{asset:a1}}\t于是", 1),
+])
+def test_asset_spacing_hits(target: str, expected: int) -> None:
+    assert len(_asset_spacing_hits(target)) == expected

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-import fitz
+import pymupdf as fitz
 import pytest
 from fidelity_fixtures import (
     correct_plain_fixture_units,
@@ -935,7 +935,9 @@ def _build_project(
     return root, manifests
 
 
-def _submit(root: Path, batch_id: str, suffix: str = "") -> list[TranslationRecord]:
+def _submit(
+    root: Path, batch_id: str, suffix: str = "", *, target_text: str | None = None
+) -> list[TranslationRecord]:
     manifest = load_manifest(root, batch_id)
     units = {
         unit.unit_id: unit
@@ -944,7 +946,7 @@ def _submit(root: Path, batch_id: str, suffix: str = "") -> list[TranslationReco
     records = [
         TranslationRecord(
             unit_id=unit_id,
-            target_text="这是经过技术审校的中文译文" + suffix,
+            target_text=(target_text if target_text is not None else "这是经过技术审校的中文译文") + suffix,
             source_hash=units[unit_id].source_hash,
             image_evidence=original_image_evidence(root, units[unit_id]),
         )

@@ -232,6 +232,17 @@ def _batch_stage(
     context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None]
     | None = None,
 ) -> str:
+    return _batch_stage_details(root, batch_id, snapshot, context_cache)[0]
+
+
+def _batch_stage_details(
+    root: Path,
+    batch_id: str,
+    snapshot: WorkflowSnapshot | None = None,
+    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None]
+    | None = None,
+) -> tuple[str, dict[str, list[str]]]:
+    """Return the batch stage and, for the audit stage, why coverage is stale."""
     snapshot = snapshot or _load_workflow_snapshot(root)
     manifest = next(
         (item for item in snapshot.manifests if item.batch_id == batch_id), None
@@ -240,7 +251,7 @@ def _batch_stage(
         raise ValueError(f"Unknown batch ID: {batch_id}")
     translations = snapshot.translations
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
-        return "translate"
+        return "translate", {}
     qa_report = snapshot.qa_reports[batch_id]
     if not (
         qa_report
@@ -249,8 +260,8 @@ def _batch_stage(
         == _translation_fingerprint_from_snapshot(snapshot, manifest)
         and qa_report.qa_context_fingerprint == snapshot.qa_context_fingerprints[manifest.batch_id]
     ):
-        return "qa"
-    if not audit_coverage(
+        return "qa", {}
+    coverage = audit_coverage(
         root,
         batch_id,
         manifest=manifest,
@@ -258,8 +269,21 @@ def _batch_stage(
         translations=translations,
         runs=snapshot.audit_runs[batch_id],
         context_cache=context_cache,
-    )["complete"]:
-        return "audit"
+    )
+    if not coverage["complete"]:
+        return "audit", {
+            lens: reasons
+            for lens, reasons in coverage["stale_reasons"].items()
+            if reasons
+        }
+    stage = _post_audit_stage(snapshot, manifest, batch_id)
+    return stage, {}
+
+
+def _post_audit_stage(
+    snapshot: WorkflowSnapshot, manifest: BatchManifest, batch_id: str
+) -> str:
+    translations = snapshot.translations
     open_issues = [
         issue for issue in snapshot.issues[batch_id] if issue.status is IssueStatus.OPEN
     ]
@@ -335,9 +359,11 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         stage = _batch_stage(root, bid, snapshot)
         lane = _asset_lane(root, by_id[bid], snapshot.unit_map)
         if stage != "complete" and not optional_assets:
+            # Revision is translator work: it reuses the translate model policy.
+            role = "translate" if stage == "revise" else stage
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
-                          "model": model_policy.get(stage),
-                          "reasoning_effort": model_policy.get("reasoning_effort") if stage == "translate" else None,
+                          "model": model_policy.get(role),
+                          "reasoning_effort": model_policy.get("reasoning_effort") if role == "translate" else None,
                           "fresh_context": True})
         for role, ids in lane["pending"].items():
             if ids and optional_assets:
@@ -444,10 +470,14 @@ def workflow_next(
     context_cache: dict[
         tuple[str, ...], tuple[str, dict[str, str]] | None
     ] = {}
+    stage_details = {
+        manifest.batch_id: _batch_stage_details(root, manifest.batch_id, snapshot, context_cache)
+        for manifest in manifests
+    }
     stages = [
         (
             manifest.batch_id,
-            _dispatch_stage(_batch_stage(root, manifest.batch_id, snapshot, context_cache),
+            _dispatch_stage(stage_details[manifest.batch_id][0],
                             _asset_lane(root, manifest, snapshot.unit_map)),
         )
         for manifest in manifests
@@ -488,6 +518,11 @@ def workflow_next(
         "through": through,
         "ready_tasks": _ready_tasks(root, batch_ids, snapshot, resolved_host),
         "optional_asset_tasks": _ready_tasks(root, batch_ids, snapshot, resolved_host, optional_assets=True),
+        "audit_stale": {
+            batch_id: stage_details[batch_id][1]
+            for batch_id in batch_ids
+            if stage_details[batch_id][1]
+        },
         "schedule": "translation-first-optional-assets",
     }
 
@@ -558,16 +593,20 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
     context_cache: dict[
         tuple[str, ...], tuple[str, dict[str, str]] | None
     ] = {}
-    stages = {
-        batch_id: _batch_stage(root, batch_id, snapshot, context_cache)
+    stage_details = {
+        batch_id: _batch_stage_details(root, batch_id, snapshot, context_cache)
         for batch_id in requested
     }
+    stages = {batch_id: details[0] for batch_id, details in stage_details.items()}
     unique_stages = set(stages.values())
     lanes = {m.batch_id: _asset_lane(root, m, snapshot.unit_map) for m in requested_manifests}
     return {
         "batch_ids": requested,
         "stage": next(iter(unique_stages)) if len(unique_stages) == 1 else "mixed",
         "stages": stages,
+        "audit_stale": {
+            batch_id: details[1] for batch_id, details in stage_details.items() if details[1]
+        },
         "reading_complete": all(stage == "complete" for stage in stages.values()),
         "assets": lanes,
         "ready_tasks": _ready_tasks(root, requested, snapshot, resolve_coordination_host(None)),
@@ -577,13 +616,20 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
     }
 
 
-def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
+def _validate_batch_set(
+    root: Path, batch_ids: list[str], *, label: str = "Workflow packet"
+) -> list[Any]:
+    """Validate one batch set for a packet or a render.
+
+    Batches may come from different series (page-range or prefix lineages) as
+    long as their units do not overlap and they follow source order; within a
+    series the selected batches must stay consecutive and ordered so a historic
+    re-batched lineage cannot interleave with an active one.
+    """
     if not 1 <= len(batch_ids) <= WAVE_BATCH_SET_MAX:
-        raise ValueError(
-            f"workflow packets require 1 to {WAVE_BATCH_SET_MAX} batch IDs"
-        )
+        raise ValueError(f"{label} sets require 1 to {WAVE_BATCH_SET_MAX} batch IDs")
     if len(set(batch_ids)) != len(batch_ids):
-        raise ValueError("workflow packet batch IDs must be unique")
+        raise ValueError(f"{label} batch IDs must be unique")
     ordered = _all_manifests(root)
     all_by_id = {manifest.batch_id: manifest for manifest in ordered}
     missing = [batch_id for batch_id in batch_ids if batch_id not in all_by_id]
@@ -597,28 +643,35 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
     )
     if requested_overlaps:
         raise ValueError(
-            "Workflow packet batches contain overlapping source units: "
-            f"{requested_overlaps}"
+            f"{label} batches contain overlapping source units: {requested_overlaps}"
         )
-    requested_series = {_batch_series(batch_id) for batch_id in batch_ids}
-    recognized_series = {series for series in requested_series if series is not None}
-    if len(recognized_series) > 1:
-        raise ValueError("workflow packet batch IDs belong to different batch series")
-    if len(requested_series) == 1 and None not in requested_series:
-        active_series = next(iter(requested_series))
-        ordered = [
-            manifest
-            for manifest in ordered
-            if _batch_series(manifest.batch_id) == active_series
-        ]
-    index = {manifest.batch_id: position for position, manifest in enumerate(ordered)}
-    positions = [index[batch_id] for batch_id in batch_ids]
-    if positions != list(range(min(positions), min(positions) + len(positions))):
-        raise ValueError("workflow packet batch IDs must be consecutive and ordered")
-    selected = [ordered[position] for position in positions]
+    by_series: dict[str | None, list[str]] = {}
+    for batch_id in batch_ids:
+        by_series.setdefault(_batch_series(batch_id), []).append(batch_id)
+    for series, series_batch_ids in by_series.items():
+        lineage = (
+            ordered
+            if series is None
+            else [m for m in ordered if _batch_series(m.batch_id) == series]
+        )
+        index = {manifest.batch_id: position for position, manifest in enumerate(lineage)}
+        positions = [index[batch_id] for batch_id in series_batch_ids]
+        if positions != list(range(min(positions), min(positions) + len(positions))):
+            raise ValueError(
+                f"{label} batch IDs must be consecutive and ordered within series "
+                f"{series or '(none)'}: {series_batch_ids}"
+            )
+    selected = [all_by_id[batch_id] for batch_id in batch_ids]
     current_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     current_unit_map = {unit.unit_id: unit for unit in current_units}
     current_unit_ids = set(current_unit_map)
+    unit_positions = {unit.unit_id: index for index, unit in enumerate(current_units)}
+    first_positions = [
+        min(unit_positions.get(unit_id, len(current_units)) for unit_id in manifest.unit_ids)
+        for manifest in selected
+    ]
+    if first_positions != sorted(first_positions):
+        raise ValueError(f"{label} batch IDs must follow source order: {batch_ids}")
     removed_units = {
         manifest.batch_id: [
             unit_id
@@ -648,17 +701,6 @@ def _validate_batch_set(root: Path, batch_ids: list[str]) -> list[Any]:
             "Workflow manifests have stale translatable-unit scope; refresh the "
             "affected batches before creating a packet: "
             f"batch_ids={stale_translatability}"
-        )
-    unit_counts = Counter(
-        unit_id for manifest in selected for unit_id in manifest.unit_ids
-    )
-    overlapping = sorted(
-        unit_id for unit_id, count in unit_counts.items() if count > 1
-    )
-    if overlapping:
-        raise ValueError(
-            "Workflow packet batches contain overlapping source units: "
-            f"{overlapping}"
         )
     return selected
 
@@ -737,9 +779,12 @@ def _audit_packet_text(
         "technical": "Check terminology, code, tables, formulas, and figures.",
         "chinese-style": "Check precise, idiomatic Simplified Chinese.",
     }[lens]
+    from littrans.context_packets import TARGET_TEXT_CONTRACTS
+
     return (
         f"# {lens} audit: {batch_id}\n\n{focus}\n\n"
         "Return ReviewIssue JSONL; empty means no issues.\n\n"
+        f"{TARGET_TEXT_CONTRACTS}\n\n"
         + (
             "Consult read-only-context.md for semantic seam context. Its units "
             "are outside this packet's review coverage.\n\n"
@@ -750,6 +795,66 @@ def _audit_packet_text(
             _audit_unit_text(unit, translations.get(unit.unit_id)) for unit in units
         )
     )
+
+
+def _jsonl_text(records: Iterable[Any]) -> str:
+    return "".join(
+        json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False) + "\n"
+        for record in records
+    )
+
+
+def _revise_packet_text(
+    batch_id: str, open_issues: list[ReviewIssue], qa_report: QAReport | None
+) -> str:
+    from littrans.context_packets import TARGET_TEXT_CONTRACTS
+
+    lines = [
+        f"# Revision: {batch_id}",
+        "",
+        f"Current translation records are in {batch_id}.translation.jsonl; open review "
+        f"issues are in {batch_id}.issues.jsonl. Read the source, the original images "
+        "and every open issue before revising.",
+        "",
+        "1. Address every open issue below in its unit, then sweep the whole batch for the "
+        "same defect class so consistency does not depend on the reviewer having listed "
+        "every instance.",
+        "2. Resubmit the full batch with `translation submit` (unchanged records may be "
+        "resubmitted verbatim) and run `qa run` until it passes.",
+        "3. Report the issue ids you addressed and, separately, any you deliberately left "
+        "unchanged with the reason; the coordinator resolves them with `review resolve`. "
+        "Do not resolve issues yourself.",
+        "",
+        TARGET_TEXT_CONTRACTS,
+        "",
+        "## Open issues",
+        "",
+    ]
+    if not open_issues:
+        lines.append("None open; revise only for the QA errors below.")
+    for issue in open_issues:
+        lines.extend(
+            [
+                f"### {issue.issue_id} ({issue.severity}; {issue.type}; unit {issue.unit_id})",
+                "",
+                issue.explanation,
+            ]
+        )
+        if issue.source_span:
+            lines.append(f"Source span: {issue.source_span}")
+        if issue.target_span:
+            lines.append(f"Target span: {issue.target_span}")
+        if issue.suggested_revision:
+            lines.append(f"Suggested revision: {issue.suggested_revision}")
+        lines.append("")
+    if qa_report is not None and not qa_report.passed:
+        lines.extend(["## Current QA errors", ""])
+        lines.extend(
+            f"- {item.code} ({item.unit_id or 'batch'}): {item.message}"
+            for item in qa_report.errors
+        )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def create_workflow_packet(
@@ -774,8 +879,8 @@ def create_workflow_packet(
             return {"stage": stage, "batch_ids": batch_ids, "asset_ids": [], "pending": False}
         from littrans.context_packets import adjacent_source_units
         return build_asset_packet(root, ids, stage=stage, context_units=context_units + adjacent_source_units(root, context_units))
-    if stage not in {"translate", "audit"}:
-        raise ValueError("workflow packet stage must be translate or audit")
+    if stage not in {"translate", "revise", "audit"}:
+        raise ValueError("workflow packet stage must be translate, revise or audit")
     if stage == "audit" and len(batch_ids) > LENS_REVIEWER_BATCH_MAX:
         raise ValueError(
             "audit packets require at most "
@@ -800,9 +905,9 @@ def create_workflow_packet(
         raise ValueError(
             "audit packets require --lens all|fidelity|technical|chinese-style"
         )
-    if stage == "translate" and lens is not None:
+    if stage in {"translate", "revise"} and lens is not None:
         raise ValueError("translation packets do not accept a lens")
-    if stage == "translate":
+    if stage in {"translate", "revise"}:
         host = resolve_coordination_host(None)
         policy = load_project(root).agent_models.get(host, {})
         if not policy.get("translate") or not policy.get("reasoning_effort"):
@@ -812,6 +917,17 @@ def create_workflow_packet(
     unit_map = {unit.unit_id: unit for unit in all_units}
     positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     translations = translation_map(root)
+    if stage == "revise":
+        untranslated = [
+            manifest.batch_id
+            for manifest in manifests
+            if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids)
+        ]
+        if untranslated:
+            raise ValueError(
+                "Revision packets require submitted translations for batches "
+                f"{untranslated}; create a translate packet instead"
+            )
     batch_unit_ids = {
         manifest.batch_id: list(manifest.unit_ids) for manifest in manifests
     }
@@ -887,7 +1003,7 @@ def create_workflow_packet(
             for unit_id in batch_unit_ids[manifest.batch_id]
             if unit_id in unit_map
         ]
-        if stage == "translate":
+        if stage in {"translate", "revise"}:
             planned_files[f"{manifest.batch_id}:source"] = (
                 f"{manifest.batch_id}.source.md",
                 batch_source_markdown(root, batch_units),
@@ -923,6 +1039,34 @@ def create_workflow_packet(
                 f"{manifest.batch_id}.context.md",
                 "\n".join(context).rstrip() + "\n",
             )
+            if stage == "revise":
+                open_issues = [
+                    issue
+                    for issue in read_jsonl(
+                        root / "reviews" / f"{manifest.batch_id}.issues.jsonl", ReviewIssue
+                    )
+                    if issue.status is IssueStatus.OPEN
+                ]
+                qa_path = root / "qa" / f"{manifest.batch_id}.json"
+                qa_report = (
+                    QAReport.model_validate(read_json(qa_path)) if qa_path.is_file() else None
+                )
+                planned_files[f"{manifest.batch_id}:translation"] = (
+                    f"{manifest.batch_id}.translation.jsonl",
+                    _jsonl_text(
+                        translations[unit_id]
+                        for unit_id in manifest.translatable_unit_ids
+                        if unit_id in translations
+                    ),
+                )
+                planned_files[f"{manifest.batch_id}:issues"] = (
+                    f"{manifest.batch_id}.issues.jsonl",
+                    _jsonl_text(open_issues),
+                )
+                planned_files[f"{manifest.batch_id}:revise"] = (
+                    f"{manifest.batch_id}.revise.md",
+                    _revise_packet_text(manifest.batch_id, open_issues, qa_report),
+                )
         else:
             context_ids = batch_context_unit_ids[manifest.batch_id]
             read_only_units = [
@@ -1146,7 +1290,14 @@ def import_review_set(
         if ordinal > 1:
             map_key += f"#{ordinal}"
         id_map[map_key] = canonical_id
-        issues.append(issue.model_copy(update={"issue_id": canonical_id}))
+        issues.append(
+            issue.model_copy(
+                update={
+                    "issue_id": canonical_id,
+                    "source_issue_id": issue.issue_id if canonicalize_ids else issue.source_issue_id,
+                }
+            )
+        )
     batches = {
         batch_id: load_manifest(root, batch_id) for batch_id in manifest.batch_ids
     }

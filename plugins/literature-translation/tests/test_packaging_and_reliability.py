@@ -159,3 +159,32 @@ def test_failed_override_validation_leaves_project_files_unchanged(tmp_path: Pat
 
     assert {path: path.read_bytes() for path in tracked} == before
     assert not list(root.glob(".littrans-overrides-*"))
+
+
+def test_console_streams_emit_utf8_with_lf() -> None:
+    import io
+
+    from littrans.cli import _configure_console_stream
+
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="gbk", newline=None)
+    _configure_console_stream(stream)
+    stream.write("• 列表项\n")
+    stream.flush()
+    assert buffer.getvalue() == "• 列表项\n".encode()
+
+    class NoReconfigure:
+        pass
+
+    _configure_console_stream(NoReconfigure())  # must not raise
+
+
+def test_generated_batch_files_use_lf(tmp_path: Path) -> None:
+    from test_efficiency_v4 import _make_project
+
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch_dir = root / "batches" / manifests[0].batch_id
+    for name in ("source.md", "context.md"):
+        assert b"\r\n" not in (batch_dir / name).read_bytes()
+    for name in ("document-brief.md", "style-guide.md"):
+        assert b"\r\n" not in (root / "context" / name).read_bytes()

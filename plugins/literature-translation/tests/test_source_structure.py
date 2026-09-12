@@ -1,4 +1,4 @@
-import fitz
+import pymupdf as fitz
 
 from littrans.fidelity import _make_unit, _native
 from littrans.rendering import _inline_html, _unit_html

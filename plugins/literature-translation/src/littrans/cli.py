@@ -5,7 +5,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from pydantic import BaseModel
@@ -15,7 +15,14 @@ from littrans.external_review import external_review_status, run_external_review
 from littrans.extractor import inspect_source
 from littrans.models import IssueStatus
 from littrans.project import initialize_project, project_status, rebuild_project
-from littrans.quality import approve_batch, import_review, resolve_issue, review_status, run_qa
+from littrans.quality import (
+    approve_batch,
+    import_review,
+    list_issues,
+    resolve_issues,
+    review_status,
+    run_qa,
+)
 from littrans.rendering import render_project
 from littrans.translation import submit_translation
 from littrans.verification import verify_extraction
@@ -48,8 +55,26 @@ app.add_typer(workflow_app, name="workflow")
 app.add_typer(assets_app, name="assets")
 app.add_typer(layout_app, name="layout")
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+
+
+def _configure_console_stream(stream: Any) -> None:
+    """Emit UTF-8 with LF line endings regardless of the console code page.
+
+    Windows consoles default to a legacy code page (GBK on zh-CN hosts) and
+    translate newlines when piped; both break coordinators that pipe JSON
+    containing Chinese text or bullet characters into files.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace", newline="\n")
+    except (ValueError, OSError):
+        pass
+
+
+for _stream in (sys.stdout, sys.stderr):
+    _configure_console_stream(_stream)
 
 PathArg = Annotated[Path, typer.Argument(resolve_path=True)]
 
@@ -67,7 +92,7 @@ def doctor() -> None:
     """Check the local runtime, including the required layout detector, without changing it."""
     from littrans.layout_runtime import layout_runtime_status
     modules = [
-        "fitz",
+        "pymupdf",
         "httpx",
         "jinja2",
         "latex2mathml",
@@ -313,11 +338,31 @@ def review_import_set(project: PathArg, packet_manifest: PathArg, issues_jsonl: 
 def review_resolve(
     project: PathArg,
     batch_id: str,
-    issue_id: str,
+    issue_id: str = typer.Argument(
+        ..., help="Canonical or reviewer-supplied issue id; comma-separate several."
+    ),
     status: IssueStatus = typer.Option(IssueStatus.RESOLVED),
     resolution: str = typer.Option(...),
 ) -> None:
-    emit(resolve_issue(project, batch_id, issue_id, status, resolution))
+    issue_ids = [value.strip() for value in issue_id.split(",") if value.strip()]
+    resolved = resolve_issues(project, batch_id, issue_ids, status, resolution)
+    emit(resolved[0] if len(resolved) == 1 else [issue.model_dump(mode="json") for issue in resolved])
+
+
+@review_app.command("issues")
+def review_list_issues(
+    project: PathArg,
+    batch_id: str,
+    all_issues: bool = typer.Option(False, "--all", help="Include resolved issues."),
+    jsonl: bool = typer.Option(False, help="One issue per line, ready to save as a JSONL file."),
+) -> None:
+    """List review issues for one batch (open issues by default)."""
+    issues = list_issues(project, batch_id, open_only=not all_issues)
+    if jsonl:
+        for issue in issues:
+            typer.echo(json.dumps(issue.model_dump(mode="json", exclude_none=True), ensure_ascii=False))
+        return
+    emit([issue.model_dump(mode="json") for issue in issues])
 
 
 @review_app.command("status")
@@ -417,7 +462,10 @@ def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...)) ->
 @workflow_app.command("packet")
 def workflow_create_packet(
     project: PathArg,
-    stage: str = typer.Option(...),
+    stage: str = typer.Option(
+        ...,
+        help="translate, revise (current translation plus open issues), audit, transcribe or asset-audit.",
+    ),
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
 ) -> None:

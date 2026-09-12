@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import yaml
 from rapidfuzz.fuzz import ratio
 
@@ -189,7 +189,8 @@ def protected_tokens(text: str, *, heading: bool = False) -> list[str]:
     found: list[str] = []
     all_caps = _is_all_caps_text(text, minimum_words=1 if heading else 2)
     # A bold, all-caps run-in label ("**EXAMPLE 1.**") is styled prose, not acronyms.
-    label_end = RUN_IN_LABEL_RE.match(text).end() if run_in_caps_label_words(text) else 0
+    label_match = RUN_IN_LABEL_RE.match(text) if run_in_caps_label_words(text) else None
+    label_end = label_match.end() if label_match else 0
     for pattern in PROTECTED_PATTERNS:
         if all_caps and pattern is ACRONYM_PATTERN:
             continue

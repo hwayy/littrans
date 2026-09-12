@@ -23,6 +23,7 @@ from littrans.models import (
 from littrans.project import load_profile, promote_status, translation_map
 from littrans.semantics import fenced_code, table_to_markdown
 from littrans.storage import (
+    atomic_write_text,
     load_project,
     project_write_lock,
     read_jsonl,
@@ -266,11 +267,9 @@ def create_batches(
         before = all_units[start_index - 1] if start_index > 0 else None
         after = all_units[end_index + 1] if end_index + 1 < len(all_units) else None
         write_yaml(batch_dir / "manifest.yaml", manifest.model_dump(mode="json"))
-        (batch_dir / "source.md").write_text(
-            batch_source_markdown(root, group), encoding="utf-8"
-        )
-        (batch_dir / "context.md").write_text(
-            _context_text(root, group, before, after), encoding="utf-8"
+        atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
+        atomic_write_text(
+            batch_dir / "context.md", _context_text(root, group, before, after)
         )
         write_json(batch_dir / "output-schema.json", _translation_output_schema())
         manifests.append(manifest)
@@ -335,11 +334,9 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
             # invalidate the newly adjacent units before the removed anchor is lost.
             record_audit_invalidation(root, batch_id, removed_unit_ids)
         write_yaml(batch_dir / "manifest.yaml", revised.model_dump(mode="json"))
-        (batch_dir / "source.md").write_text(
-            batch_source_markdown(root, group), encoding="utf-8"
-        )
-        (batch_dir / "context.md").write_text(
-            _context_text(root, group, before, after), encoding="utf-8"
+        atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
+        atomic_write_text(
+            batch_dir / "context.md", _context_text(root, group, before, after)
         )
         allowed = set(revised.translatable_unit_ids)
         current = translation_map(root)

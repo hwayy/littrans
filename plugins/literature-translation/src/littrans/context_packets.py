@@ -26,6 +26,18 @@ def adjacent_source_units(root: Path, units: list[SourceUnit]) -> list[SourceUni
     return [all_units[index] for index in sorted(neighbors)]
 
 
+TARGET_TEXT_CONTRACTS = (
+    "Contracts (writers follow them; auditors must not report them as defects): "
+    "list_item targets carry no leading bullet or number, heading targets carry no '#' "
+    "and note targets carry no admonition shell because the renderer owns those markers; "
+    "each {{asset:ID}} placeholder stays verbatim with no space between Chinese text and "
+    "the placeholder; Chinese prose uses full-width punctuation (，。；：！？) except inside "
+    "code, identifiers and formulas; an image containing only mathematical or technical "
+    "notation is declared with language_present=false plus notes instead of an invented "
+    "companion text."
+)
+
+
 def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *, include_adjacent: bool = False) -> dict[str, Any]:
     from littrans.fidelity_models import asset_reference_ids, load_assets
     assets = load_assets(root)
@@ -66,7 +78,8 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
             "For table, mixed-region and figure assets include asset_translations: translated text, "
             "table cells or figure labels. If an image has only mathematical/technical notation, "
             "set language_present=false and explain in notes; the technical auditor must verify this. "
-            "The v6 asset-reference contract overrides incompatible historical style instructions."
+            "The v6 asset-reference contract overrides incompatible historical style instructions. "
+            + TARGET_TEXT_CONTRACTS
         ) + (" Displayed math with formula_conditions contains source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
         "units": [{"unit_id": u.unit_id, "source_hash": u.source_hash,
                    "source": u.source_markdown or u.source_text, "page": u.page,

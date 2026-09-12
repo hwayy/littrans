@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from littrans.fidelity import build_source_review_packet, import_source_review, prepare_source
 from littrans.models import SourceUnit

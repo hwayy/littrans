@@ -34,15 +34,16 @@ from littrans.models import (
     utc_now,
 )
 from littrans.project import load_terms, promote_status, translation_map
-from littrans.semantics import run_in_caps_label_words
 from littrans.representations import (
     ASSET_RE,
     representation_status,
     validate_asset_references,
     validate_asset_translations,
 )
+from littrans.semantics import run_in_caps_label_words
 from littrans.storage import (
     append_jsonl,
+    atomic_write_text,
     load_project,
     project_write_lock,
     read_json,
@@ -65,6 +66,23 @@ UNIT_RE = re.compile(
 )
 MATH_OCR_SUSPECT_RE = re.compile(
     r"(?:\b(?:Re|R|St)\d+(?:/\d+)?\b|[ρντλ]\d+(?:/\d+)?\b|×\s*10\d{2,}\b)"
+)
+# Half-width punctuation directly after a CJK character. A period only counts
+# when followed by whitespace or the end so decimals and version numbers pass.
+HALFWIDTH_PUNCT_RE = re.compile(
+    r"(?<=[\u3400-\u9fff])(?:[,;:!?](?=\s|[\u3400-\u9fff]|$)|\.(?=\s|$))"
+)
+# Whitespace between Chinese text and an asset placeholder (either side).
+ASSET_SPACING_RE = re.compile(
+    r"(?<=[\u3400-\u9fff])[ \t]+(?=\{\{asset:)|(?<=\}\})[ \t]+(?=[\u3400-\u9fff])"
+)
+# A bold run-in label ("**记号.**", "**2.1.4. 随机过程.**") keeps the source's
+# label period; it is typography, not prose punctuation.
+_RUN_IN_LABEL_STRIP_RE = re.compile(r"(?m)^\s*\*\*[^*\n]{1,80}?[.:：。]\*\*")
+_PROSE_SCAN_STRIP_RE = re.compile(
+    r"```.*?```|`[^`\n]*`|\$\$.*?\$\$|\$[^$\n]+\$|\{\{asset:[^}]*\}\}"
+    r"|https?://\S+|\[\^[^\]]+\]|[*_]{1,3}",
+    re.S,
 )
 BLOCKING_SEVERITIES = {Severity.BLOCKER, Severity.MAJOR}
 REQUIRED_AUDIT_LENSES = {"fidelity", "technical", "chinese-style"}
@@ -111,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.3-localized-chapters-and-decades|"
+        "deterministic-qa-v6.4-punctuation-and-asset-spacing|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -150,6 +168,27 @@ def qa_report_is_current(root: Path, batch_id: str) -> bool:
         and report.translation_fingerprint == batch_translation_fingerprint(root, batch_id)
         and report.qa_context_fingerprint == current_qa_context_fingerprint(root, batch_id)
     )
+
+
+def _prose_scan_text(text: str) -> str:
+    """Drop code, math, placeholders, links and emphasis before punctuation scans."""
+    return _PROSE_SCAN_STRIP_RE.sub(" ", _RUN_IN_LABEL_STRIP_RE.sub(" ", text))
+
+
+def _halfwidth_punctuation_hits(text: str) -> list[str]:
+    scanned = _prose_scan_text(text)
+    hits: list[str] = []
+    for match in HALFWIDTH_PUNCT_RE.finditer(scanned):
+        start = max(0, match.start() - 6)
+        hits.append(scanned[start : match.end() + 4].replace("\n", " ").strip())
+    return hits
+
+
+def _asset_spacing_hits(text: str) -> list[str]:
+    return [
+        text[max(0, match.start() - 4) : match.end() + 12].replace("\n", " ")
+        for match in ASSET_SPACING_RE.finditer(text)
+    ]
 
 
 def _token_counts(pattern: re.Pattern[str], text: str) -> Counter[str]:
@@ -572,6 +611,38 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                         unit_id=unit_id,
                     )
                 )
+            if unit.kind not in {UnitKind.TABLE, UnitKind.EQUATION}:
+                prose_targets = [record.target_text]
+                prose_targets.extend(label.target or "" for label in rendered_figure_labels)
+                punctuation_hits = [
+                    hit for text in prose_targets for hit in _halfwidth_punctuation_hits(text)
+                ]
+                if punctuation_hits:
+                    warnings.append(
+                        QAItem(
+                            code="target-halfwidth-punctuation",
+                            severity="warning",
+                            message=(
+                                "Half-width punctuation after Chinese text; use full-width "
+                                "，。；：！？ in Chinese prose: "
+                                + " | ".join(punctuation_hits[:3])
+                            ),
+                            unit_id=unit_id,
+                        )
+                    )
+        spacing_hits = _asset_spacing_hits(record.target_text)
+        if spacing_hits:
+            warnings.append(
+                QAItem(
+                    code="asset-reference-spacing",
+                    severity="warning",
+                    message=(
+                        "No whitespace between Chinese text and {{asset:ID}}: "
+                        + " | ".join(spacing_hits[:3])
+                    ),
+                    unit_id=unit_id,
+                )
+            )
         if MATH_OCR_SUSPECT_RE.search(unit.source_text):
             warnings.append(
                 QAItem(
@@ -639,7 +710,7 @@ def _write_qa_markdown(path: Path, report: QAReport) -> None:
                 for item in items
             )
             lines.append("")
-    path.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines))
 
 
 def _audit_runs_path(root: Path, batch_id: str) -> Path:
@@ -719,6 +790,25 @@ def audit_coverage(
     )
     if not isinstance(invalidated, dict):
         invalidated = {}
+    # Runs that no longer count, with the reason, so coordinators can tell a
+    # context edit from changed translations without re-deriving hashes.
+    stale: dict[str, list[dict[str, Any]]] = {lens: [] for lens in REQUIRED_AUDIT_LENSES}
+
+    def _mark_stale(
+        run: AuditRun, reason: str | None, unit_reasons: dict[str, str] | None = None
+    ) -> None:
+        reasons = sorted(set((unit_reasons or {}).values())) if reason is None else [reason]
+        stale[run.lens].append(
+            {
+                "run_id": run.run_id,
+                "packet_id": run.packet_id,
+                "reviewed_at": run.reviewed_at,
+                "reasons": reasons,
+                "unit_ids": sorted(run.unit_fingerprints),
+                "unit_reasons": dict(sorted((unit_reasons or {}).items())),
+            }
+        )
+
     for run in runs if runs is not None else _audit_runs(root, batch_id):
         if run.lens not in coverage:
             continue
@@ -735,6 +825,7 @@ def audit_coverage(
                 )
             )
             if not required_context_ids.issubset(context_ids):
+                _mark_stale(run, "closure-incomplete")
                 continue
         if context_ids not in context_inputs:
             context_inputs[context_ids] = (
@@ -754,6 +845,7 @@ def audit_coverage(
             )
         inputs = context_inputs[context_ids]
         if inputs is None:
+            _mark_stale(run, "context-units-removed")
             continue
         shared_fingerprint, current_context_fingerprints = inputs
         effective_context_fingerprints = {
@@ -768,21 +860,60 @@ def audit_coverage(
             list(context_ids),
         )
         if current_context_fingerprint != run.context_fingerprint:
+            # A recorded shared hash tells a brief/style/glossary edit apart
+            # from a changed dependency unit; legacy runs only know "context".
+            if run.shared_context_fingerprint is None:
+                _mark_stale(run, "context-changed")
+            elif run.shared_context_fingerprint != shared_fingerprint:
+                _mark_stale(run, "context-changed")
+            else:
+                _mark_stale(run, "dependency-changed")
             continue
-        coverage[run.lens].update(
-            unit_id
-            for unit_id, fingerprint in run.unit_fingerprints.items()
-            if unit_id in expected
-            and current.get(unit_id) == fingerprint
-            and run.reviewed_at > str(invalidated.get(unit_id, ""))
-        )
+        unit_reasons: dict[str, str] = {}
+        for unit_id, fingerprint in run.unit_fingerprints.items():
+            if unit_id not in expected:
+                continue
+            if current.get(unit_id) != fingerprint:
+                unit_reasons[unit_id] = "unit-changed"
+            elif not run.reviewed_at > str(invalidated.get(unit_id, "")):
+                unit_reasons[unit_id] = "invalidated"
+            else:
+                coverage[run.lens].add(unit_id)
+        if unit_reasons:
+            _mark_stale(run, None, unit_reasons)
     missing = {
         lens: sorted(expected - unit_ids) for lens, unit_ids in coverage.items()
     }
+    # Only the newest stale run per missing unit explains that unit; older
+    # superseded runs and runs whose units are covered again are noise.
+    for lens, entries in stale.items():
+        unexplained = set(missing[lens])
+        kept: list[dict[str, Any]] = []
+        for entry in sorted(entries, key=lambda item: str(item["reviewed_at"]), reverse=True):
+            owned = sorted(set(entry["unit_ids"]) & unexplained)
+            if not owned:
+                continue
+            unexplained.difference_update(owned)
+            unit_reasons = {
+                unit_id: reason
+                for unit_id, reason in entry["unit_reasons"].items()
+                if unit_id in owned
+            }
+            entry["unit_ids"] = owned
+            entry["unit_reasons"] = unit_reasons
+            if unit_reasons:
+                entry["reasons"] = sorted(set(unit_reasons.values()))
+            kept.append(entry)
+        stale[lens] = kept
     return {
         "coverage": {lens: sorted(unit_ids) for lens, unit_ids in coverage.items()},
         "missing": missing,
         "complete": all(not unit_ids for unit_ids in missing.values()),
+        "stale": stale,
+        "stale_reasons": {
+            lens: sorted({reason for entry in entries for reason in entry["reasons"]})
+            for lens, entries in stale.items()
+        },
     }
 
 
@@ -814,6 +945,7 @@ class _ReviewImportPlan:
     coverage_ids: set[str]
     fingerprints: dict[str, str]
     context_fingerprint: str | None
+    shared_context_fingerprint: str | None
     context_unit_ids: list[str]
     preserve_status: bool
     reviewer: str | None
@@ -873,6 +1005,7 @@ def _prepare_review_import_locked(
             raise ValueError(f"Audit packet is stale for units: {stale}")
     run_context_ids: list[str] = []
     run_context_fingerprint: str | None = None
+    run_shared_fingerprint: str | None = None
     if internal_lenses:
         run_context_ids = list(
             manifest.unit_ids if context_unit_ids is None else context_unit_ids
@@ -896,10 +1029,11 @@ def _prepare_review_import_locked(
             )
             for unit_id in run_context_ids
         }
+        run_shared_fingerprint = audit_context_fingerprint(
+            root, [all_units[unit_id] for unit_id in run_context_ids]
+        )
         run_context_fingerprint = audit_evidence_context_fingerprint(
-            audit_context_fingerprint(
-                root, [all_units[unit_id] for unit_id in run_context_ids]
-            ),
+            run_shared_fingerprint,
             context_fingerprints,
             run_context_ids,
         )
@@ -933,6 +1067,7 @@ def _prepare_review_import_locked(
         coverage_ids=coverage_ids,
         fingerprints=fingerprints,
         context_fingerprint=run_context_fingerprint,
+        shared_context_fingerprint=run_shared_fingerprint,
         context_unit_ids=run_context_ids,
         preserve_status=preserve_status,
         reviewer=reviewer,
@@ -970,6 +1105,7 @@ def _apply_review_import_locked(root: Path, plan: _ReviewImportPlan) -> list[Rev
                 if unit_id in plan.coverage_ids
             },
             context_fingerprint=plan.context_fingerprint,
+            shared_context_fingerprint=plan.shared_context_fingerprint,
             context_unit_ids=plan.context_unit_ids,
             issue_ids=[issue.issue_id for issue in plan.issues],
         )
@@ -1036,35 +1172,73 @@ def import_review(
         return _apply_review_import_locked(root, plan)
 
 
+def list_issues(
+    root: Path, batch_id: str, *, open_only: bool = True
+) -> list[ReviewIssue]:
+    load_manifest(root, batch_id)
+    issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)
+    if open_only:
+        issues = [issue for issue in issues if issue.status is IssueStatus.OPEN]
+    return issues
+
+
 def resolve_issue(
     root: Path, batch_id: str, issue_id: str, status: IssueStatus, resolution: str
 ) -> ReviewIssue:
+    return resolve_issues(root, batch_id, [issue_id], status, resolution)[0]
+
+
+def resolve_issues(
+    root: Path,
+    batch_id: str,
+    issue_ids: list[str],
+    status: IssueStatus,
+    resolution: str,
+) -> list[ReviewIssue]:
+    """Close review issues by canonical id or by the reviewer-supplied id."""
     require_current_project_schema(root, "Review issue resolution")
     load_manifest(root, batch_id)
     if status is IssueStatus.OPEN:
         raise ValueError("Resolved review issue status must not be open")
     if not resolution.strip():
         raise ValueError("Review issue resolution must not be empty")
+    if not issue_ids:
+        raise ValueError("Review issue resolution requires at least one issue id")
     with project_write_lock(root):
         path = root / "reviews" / f"{batch_id}.issues.jsonl"
         issues = read_jsonl(path, ReviewIssue)
-        resolved: ReviewIssue | None = None
+        targets: dict[str, ReviewIssue] = {}
+        for requested in issue_ids:
+            matches = [
+                issue
+                for issue in issues
+                if issue.issue_id == requested or issue.source_issue_id == requested
+            ]
+            if not matches:
+                raise ValueError(f"Unknown review issue: {requested}")
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Ambiguous review issue id {requested}: matches "
+                    f"{[issue.issue_id for issue in matches]}; use the canonical id"
+                )
+            targets[matches[0].issue_id] = matches[0]
+        resolved_at = utc_now()
+        resolved: list[ReviewIssue] = []
         updated: list[ReviewIssue] = []
         for issue in issues:
-            if issue.issue_id == issue_id:
-                resolved = ReviewIssue.model_validate(
+            if issue.issue_id in targets:
+                closed = ReviewIssue.model_validate(
                     {
                         **issue.model_dump(mode="json"),
                         "status": status,
                         "resolution": resolution.strip(),
-                        "resolved_at": utc_now(),
+                        "resolved_at": resolved_at,
                     }
                 )
-                updated.append(resolved)
+                resolved.append(closed)
+                updated.append(closed)
             else:
                 updated.append(issue)
-        if resolved is None:
-            raise ValueError(f"Unknown review issue: {issue_id}")
         write_jsonl(path, updated)
         return resolved
 
@@ -1086,6 +1260,7 @@ def review_status(root: Path, batch_id: str) -> dict[str, Any]:
         "audit_exists": audit_path.exists(),
         "audit_lenses_complete": lenses_complete,
         "audit_coverage": coverage,
+        "audit_stale_reasons": coverage["stale_reasons"],
         "counts": dict(sorted(counts.items())),
         "open_blocking_issues": blocking,
         "publishable": not blocking and audit_path.exists() and lenses_complete,
