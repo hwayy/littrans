@@ -482,7 +482,9 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
             if previous["review_sha256"] != review_sha:
                 raise ValueError("Conflicting replay of an immutable asset review")
             for decision in decisions:
-                idx["reviews"][decision["candidate_sha256"]] = packet["packet_id"]
+                # Replay repairs a missing index, but cannot supersede another
+                # already-imported decision about the same candidate.
+                idx["reviews"].setdefault(decision["candidate_sha256"], packet["packet_id"])
             write_json(_directory(root) / "index.json", idx)
             return {"review_sha256": review_sha, "reviewed": len(decisions), "replayed": True}
         record = {"review_sha256": review_sha, **payload}

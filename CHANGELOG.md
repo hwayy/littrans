@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Keep later asset-review decisions authoritative when an older review is replayed;
+  replay only restores an absent index entry or retains its existing mapping.
+
 - Protect escaped footnote literals and backslash-delimited math in source/bilingual
   HTML; embed original PNG fallbacks alongside SVGs in standalone source checkpoints.
 
