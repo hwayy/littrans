@@ -145,6 +145,10 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+Source-review cache lookup skips unreadable entries and explicitly degrades when no valid
+matching layout remains. Continued-table rendering includes companions from every fragment,
+using each fragment's original source context for labels and footnote scope.
+
 Layout-worker cache results are published atomically. Unreadable or incomplete cached
 JSON triggers recomputation, and malformed worker results report unavailable rather than
 being accepted. HTML literal handling includes multiline backtick and tilde fences.

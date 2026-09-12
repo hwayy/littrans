@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Skip unreadable unrelated layout caches during source-review overrides, and retain
+  every fragment's image-language companions when rendering continued tables.
+
 - Publish isolated layout-worker results atomically and recompute unreadable caches;
   reject incomplete worker results. HTML protects multiline backtick and tilde fences.
 

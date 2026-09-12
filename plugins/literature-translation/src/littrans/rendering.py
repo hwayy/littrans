@@ -1095,8 +1095,11 @@ def render_project(
         render_unit = unit
         target_table = record.target_table if record else None
         reader_notes = [record.reader_note] if record and record.reader_note else []
+        companion_sources = [(record, unit)]
         if unit.unit_id in grouped_table_ids:
             table_records = [translations.get(unit_id) for unit_id in grouped_table_ids[unit.unit_id]]
+            companion_sources = [(translations.get(unit_id), footnote_unit_map[unit_id])
+                                 for unit_id in grouped_table_ids[unit.unit_id]]
             if all(item and item.target_table for item in table_records):
                 target_table = _merge_continued_table_data(
                     [item.target_table for item in table_records if item and item.target_table]
@@ -1113,7 +1116,10 @@ def render_project(
             )
         rendered = (escape_markdown_prose(target or render_unit.source_text)
                     if render_unit.kind is UnitKind.FOOTNOTE else _target_markdown(render_unit, target))
-        companion_md, companion_html = _asset_companions(record, unit, footnote_unit_map)
+        companions = [_asset_companions(item, source_unit, footnote_unit_map)
+                      for item, source_unit in companion_sources]
+        companion_md = "\n\n".join(md for md, _ in companions if md)
+        companion_html = "".join(markup for _, markup in companions)
         if companion_md:
             rendered += "\n\n" + companion_md
         rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
