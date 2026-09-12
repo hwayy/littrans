@@ -2,6 +2,10 @@
 
 Schema 6 uses one source preparation path. Native prose and layout regions produce immutable source-owned `{{asset:ID}}` references; original vector PDF/SVG and high-resolution PNG evidence remain available throughout the workflow. A detector warning requires a source decision, not an automatic formula-recognition retry.
 
+Managed layout components require a successful smoke-test READY marker both for status
+checks and before detector execution or cached result reuse. Fully external interpreter
+and model configurations retain their external-runtime exemption.
+
 ## Independent states
 
 - Source fidelity: all selected content has reviewed ownership, reading order and complete boundaries, bound to the source fingerprint.
@@ -29,14 +33,17 @@ Asset-audit packets bind `render_manifest` (relative render-directory paths to S
 and `render_manifest_sha256` into the packet identity. The manifest covers the comparison
 HTML, copied MathJax runtime and original SVG/PNG/PDF files. Review submissions must echo
 both `render_artifact_sha256` and `render_manifest_sha256` from the packet after inspecting
-the actual artifact. Imports and subsequent status queries verify all dependencies.
+the actual artifact. The manifest receipt is a required 64-character lowercase SHA-256
+string in the submission schema. Imports and subsequent status queries verify all dependencies.
+Stored review payloads must match their `review_sha256` before decisions are consumed,
+imports replayed or revision context built; corrupt evidence cannot grant verified status.
 Old packets without this manifest require a new audit and cannot retain verified status;
 their candidates and history remain available. Rebuilding a damaged render creates a
 new packet identity and requires a fresh review, never silently repairs an old approval.
 
 Use the emitted schemas as the authority for exact fields. `workflow packet` stages are `transcribe`, `translate`, `asset-audit` and `audit`. All model work reads original image evidence. A translate packet does not consume unverified transcription candidates.
 
-Submit transcription through `assets submit PROJECT INPUT`; the envelope includes `packet_id`, `author_task_id`, actual `model`, `reasoning_effort`, `image_evidence`, `candidates` and available `usage` (otherwise `null`). Candidates name `asset_id`, `format` and `content`; `status` is `candidate` or `unresolved`, with `notes` and `semantic_uncertainty` as needed. LaTeX content is a math body without dollar delimiters; table content uses a rectangular `rows` array of cell strings. Both candidate and review envelopes record actual viewing in `image_evidence` using the packet's `required_images` path/hash map. An asset reviewer has a different `reviewer_task_id` and returns `render_artifact_sha256` plus one decision per asset, with `candidate_sha256`, `verdict` (`accept`, `reject`, or `unresolved`), `visual_checked` and `render_checked`; import using `assets import-review PROJECT INPUT --confirm-visual-review` only when those checks were performed. Use `assets status PROJECT` for the remaining queue.
+Submit transcription through `assets submit PROJECT INPUT`; the envelope includes `packet_id`, `author_task_id`, actual `model`, `reasoning_effort`, `image_evidence`, `candidates` and available `usage` (otherwise `null`). Candidates name `asset_id`, `format` and `content`; `status` is `candidate` or `unresolved`, with `notes` and `semantic_uncertainty` as needed. LaTeX content is a math body without dollar delimiters; table content uses a rectangular `rows` array of cell strings. Both candidate and review envelopes record actual viewing in `image_evidence` using the packet's `required_images` path/hash map. An asset reviewer has a different `reviewer_task_id` and returns `render_artifact_sha256` and `render_manifest_sha256` plus one decision per asset, with `candidate_sha256`, `verdict` (`accept`, `reject`, or `unresolved`), `visual_checked` and `render_checked`; import using `assets import-review PROJECT INPUT --confirm-visual-review` only when those checks were performed. Use `assets status PROJECT` for the remaining queue.
 
 Translation records retain their unit's `source_hash`, references and an `image_evidence` map of inspected original image path to SHA-256 from `original-images.json`. Supplementary translations of image-contained language live in `asset_translations`, keyed by `asset_id`, using `target_text`, `target_table` or `figure_labels`. Declare `language_present: false` with explanatory `notes` only for an asset with no translatable natural language. Asset candidate content never replaces the source reference ID. Do not put raw LaTeX in translated image companions (`asset_translations`); preserve references and submit mathematical candidates through the independently reviewed asset channel.
 

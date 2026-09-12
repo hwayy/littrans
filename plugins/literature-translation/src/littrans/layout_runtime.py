@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from littrans.layout_detector import layout_cache_root, runtime_paths
+from littrans.layout_detector import READY_MARKER as READY_MARKER
+from littrans.layout_detector import layout_cache_root, runtime_paths, runtime_readiness_error
 
 MINERU_VERSION = "3.4.5"
 MODEL_NAME = "PP-DocLayoutV2"
@@ -26,7 +27,6 @@ LAYOUT_PACKAGES = (
     "safetensors>=0.4.0,<1",
 )
 SUPPORTED_BASE_VERSIONS = ((3, 13), (3, 12), (3, 11), (3, 10))
-READY_MARKER = ".littrans-layout-ready"
 
 
 def _run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -98,10 +98,9 @@ def layout_runtime_status() -> dict[str, Any]:
     if not model or not (model / "config.json").is_file() or not (model / "model.safetensors").is_file():
         status["reason"] = f"{MODEL_NAME} weights missing"
         return status
-    cache = layout_cache_root().resolve()
-    managed = python.resolve().is_relative_to(cache) or model.resolve().is_relative_to(cache)
-    if managed and not (cache / "venv" / READY_MARKER).is_file():
-        status["reason"] = "managed layout smoke test not completed; run littrans layout install"
+    readiness_error = runtime_readiness_error(python, model, layout_cache_root())
+    if readiness_error:
+        status["reason"] = readiness_error
         return status
     status["ok"] = True
     return status

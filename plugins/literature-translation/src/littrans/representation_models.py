@@ -41,6 +41,6 @@ class AssetReviewSubmission(StrictModel):
     packet_id: str = Field(pattern=r"^[a-f0-9]{64}$")
     reviewer_task_id: str = Field(min_length=1)
     image_evidence: dict[str, str]
-    render_manifest_sha256: str | None = None
+    render_manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     render_artifact_sha256: str
     decisions: list[AssetReviewItem] = Field(min_length=1)

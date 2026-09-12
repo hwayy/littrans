@@ -7,6 +7,10 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Enforce managed layout readiness before detector execution or cached evidence reuse.
+- Verify stored asset-review digests before consuming decisions or replaying imports; require
+  the manifest SHA-256 receipt in the public submission schema.
+
 - Keep bilingual HTML anchor targets visible below the fixed header on desktop and mobile.
 - Recognize explicit English/Chinese decade equivalents and numbered CHAPTER headings in deterministic QA while retaining number, unit and acronym protection.
 - Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.

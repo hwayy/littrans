@@ -165,7 +165,7 @@ def _revision_context(root: Path, asset_ids: list[str], fingerprints: dict[str, 
         if candidate["asset_fingerprint"] != fingerprints[key]:
             raise ValueError("A revision cannot reuse stale original evidence: " + key)
         review_packet_id = idx["reviews"].get(sha)
-        review = read_json(_directory(root) / "reviews" / f"{review_packet_id}.json") if review_packet_id else None
+        review = _load_review(root, review_packet_id) if review_packet_id else None
         decision = next(item for item in review["decisions"] if item["asset_id"] == key) if review else None
         result[key] = {"candidate_sha256": sha, "candidate": candidate,
                        "review_packet_id": review_packet_id,
@@ -289,6 +289,21 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
             payload["packet_id"] = packet_id
         _immutable(_directory(root) / "packets" / f"{packet_id}.json", payload)
         return payload
+
+
+def _load_review(root: Path, packet_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-f0-9]{64}", packet_id):
+        raise ValueError("Invalid review packet identity")
+    record = read_json(_directory(root) / "reviews" / f"{packet_id}.json")
+    if not isinstance(record, dict):
+        raise ValueError("Invalid stored review")
+    payload = {key: value for key, value in record.items() if key != "review_sha256"}
+    if record.get("review_sha256") != _hash(payload):
+        raise ValueError("Stored review digest mismatch; review evidence is corrupt")
+    AssetReviewSubmission.model_validate(payload)
+    if payload["packet_id"] != packet_id:
+        raise ValueError("Stored review packet mismatch")
+    return record
 
 
 def _load_packet(root: Path, packet_id: str, stage: str) -> dict[str, Any]:
@@ -463,7 +478,7 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
         review_sha = _hash(payload)
         path = _directory(root) / "reviews" / f"{packet['packet_id']}.json"
         if path.exists():
-            previous = read_json(path)
+            previous = _load_review(root, packet["packet_id"])
             if previous["review_sha256"] != review_sha:
                 raise ValueError("Conflicting replay of an immutable asset review")
             for decision in decisions:
@@ -507,11 +522,15 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
                     state["state"] = "fallback"
                 review_packet = idx["reviews"].get(sha)
                 if review_packet:
-                    review = read_json(_directory(root) / "reviews" / f"{review_packet}.json")
-                    decision = next(item for item in review["decisions"] if item["asset_id"] == key)
-                    state["state"] = "verified" if decision["verdict"] == "accept" else "fallback"
-                    state["semantic_uncertainty"] = decision.get("semantic_uncertainty", "")
                     try:
+                        review = _load_review(root, review_packet)
+                        decisions = [item for item in review["decisions"]
+                                     if item["asset_id"] == key and item["candidate_sha256"] == sha]
+                        if len(decisions) != 1:
+                            raise ValueError("Stored review candidate coverage mismatch")
+                        decision = decisions[0]
+                        state["state"] = "verified" if decision["verdict"] == "accept" else "fallback"
+                        state["semantic_uncertainty"] = decision.get("semantic_uncertainty", "")
                         packet = _load_packet(root, review_packet, "asset-audit")
                         _verify_render_artifact(root, packet)
                         if (review.get("render_manifest_sha256") != packet["render_manifest_sha256"]

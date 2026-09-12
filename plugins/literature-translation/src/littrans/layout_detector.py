@@ -9,6 +9,8 @@ from typing import Any
 
 from littrans.storage import read_json, sha256_file, sha256_text, write_json
 
+READY_MARKER = ".littrans-layout-ready"
+
 
 def layout_cache_root() -> Path:
     """Managed location of the isolated layout environment and its weights."""
@@ -27,11 +29,24 @@ def runtime_paths() -> tuple[Path | None, Path | None]:
     return Path(interpreter) if interpreter else None, Path(weight) if weight else None
 
 
+def runtime_readiness_error(python: Path, model: Path, cache: Path | None = None) -> str | None:
+    """Require the managed smoke receipt, including redirected cache components."""
+    cache = layout_cache_root() if cache is None else cache
+    managed = any(path.absolute().is_relative_to(cache.absolute())
+                  or path.resolve().is_relative_to(cache.resolve()) for path in (python, model))
+    if managed and not (cache / "venv" / READY_MARKER).is_file():
+        return "managed layout smoke test not completed; run littrans layout install"
+    return None
+
+
 def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     """Return per-image pixel boxes, retaining inline formulas, or explicit unavailable state."""
     python, model = runtime_paths()
     if not python or not python.is_file() or not model or not model.is_dir():
         return {"status": "unavailable", "reason": "Layout runtime missing: run `littrans layout install` (MinerU 3.4.5, PP-DocLayoutV2) or configure LITTRANS_LAYOUT_PYTHON and LITTRANS_LAYOUT_MODEL; native evidence requires full visual region review.", "pages": {}}
+    readiness_error = runtime_readiness_error(python, model)
+    if readiness_error:
+        return {"status": "unavailable", "reason": readiness_error, "pages": {}}
     weights = {str(p.relative_to(model)): sha256_file(p) for p in sorted(model.rglob("*")) if p.is_file()}
     request = {"images": [str(p.resolve()) for p in images], "image_sha256": {str(p.resolve()): sha256_file(p) for p in images}, "model": str(model.resolve()), "weights": weights}
     request["fingerprint"] = sha256_text(str(request))
