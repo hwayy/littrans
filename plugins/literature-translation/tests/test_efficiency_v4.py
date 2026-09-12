@@ -1438,6 +1438,14 @@ def test_explicit_fallback_figure_labels_are_semantic_noop(tmp_path: Path) -> No
     }
 
 
+def test_workflow_next_explains_missing_batches(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    for manifest_dir in (root / "batches").iterdir():
+        shutil.rmtree(manifest_dir)
+    with pytest.raises(ValueError, match="No batch manifests exist yet"):
+        workflow_next(root)
+
+
 def test_new_blocking_audit_reopens_approved_batch(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id

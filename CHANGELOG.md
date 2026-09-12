@@ -72,6 +72,8 @@ versioning and correspond to Git tags named `v<version>`.
 - Stopped treating the words of a bold all-caps run-in statement label (`**EXAMPLE 1.**`,
   `**WARNING ABOUT NOTATION.**`) as protected acronyms: new extractions no longer record them,
   and QA accepts a localized bold label (`**例 1.**`) for already prepared units.
+- `workflow next` on a project without batches now says that batches must be created first
+  instead of failing on an empty resume range.
 - Labelled non-translatable equation units explicitly in audit packets so reviewers do not report
   the original-image reading content as an omission.
 - Kept inline formulas that fell back to a raw mixed region inline in the reading edition instead

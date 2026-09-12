@@ -380,6 +380,11 @@ def workflow_next(
             }
     snapshot = _load_workflow_snapshot(root, external_batch_ids)
     manifests = list(snapshot.manifests)
+    if not manifests:
+        raise ValueError(
+            "No batch manifests exist yet; run `batch create PROJECT --pages PAGES` "
+            "on verified pages before workflow coordination"
+        )
     all_manifests = list(manifests)
     manifests = _bounded_manifest_series(manifests, start_at, through)
     units = list(snapshot.units)
