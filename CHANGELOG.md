@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Publish isolated layout-worker results atomically and recompute unreadable caches;
+  reject incomplete worker results. HTML protects multiline backtick and tilde fences.
+
 - Render asset-bearing target tables once in Markdown and bilingual HTML, preserving
   explicit empty target text. QA v6.8 ignores tilde-fenced literal footnote syntax.
 

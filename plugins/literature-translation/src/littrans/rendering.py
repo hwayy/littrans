@@ -516,7 +516,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 
 
 INLINE_TOKEN_RE = re.compile(
-    r"(?P<code>(?<!\\)(?P<fence>`+)(?P<code_text>.+?)(?P=fence))"
+    r"(?P<code>(?<!\\)(?P<fence>`+|~{3,})(?P<code_text>[\s\S]+?)(?P=fence))"
     r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
     r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
     r"|(?P<slash_display>\\\[(?P<slash_display_text>[\s\S]*?)\\\])"

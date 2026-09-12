@@ -145,6 +145,10 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+Layout-worker cache results are published atomically. Unreadable or incomplete cached
+JSON triggers recomputation, and malformed worker results report unavailable rather than
+being accepted. HTML literal handling includes multiline backtick and tilde fences.
+
 QA v6.8 also protects tilde-fenced code when counting real footnote calls. Structured
 target tables are rendered once, including when target_text is explicitly empty; source
 table cells remain available in bilingual and source-review HTML.

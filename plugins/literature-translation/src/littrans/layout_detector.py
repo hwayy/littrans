@@ -77,8 +77,12 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     request.update(runtime=runtime, worker_sha256=worker_sha)
     request["fingerprint"] = sha256_text(str(request))
     if output.is_file():
-        existing = read_json(output)
-        if existing.get("fingerprint") == request["fingerprint"] and existing.get("status") == "ok":
+        try:
+            existing = read_json(output)
+        except (OSError, ValueError):
+            existing = {}
+        if (existing.get("fingerprint") == request["fingerprint"] and existing.get("status") == "ok"
+                and isinstance(existing.get("pages"), dict) and set(existing["pages"]) == set(request["images"])):
             return existing
     request_path = output.with_suffix(".request.json")
     write_json(request_path, request)
@@ -91,10 +95,13 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         if result.returncode:
             raise RuntimeError(f"layout worker exit {result.returncode}; see {output.with_suffix('.log')}")
         payload = read_json(output)
+        if (payload.get("status") != "ok" or payload.get("fingerprint") != request["fingerprint"]
+                or not isinstance(payload.get("pages"), dict) or set(payload["pages"]) != set(request["images"])):
+            raise ValueError("layout worker returned incomplete or stale output")
         payload["elapsed_seconds"] = time.monotonic() - started
         write_json(output, payload)
         return payload
-    except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+    except (OSError, ValueError, subprocess.TimeoutExpired, RuntimeError) as exc:
         payload = {"status": "unavailable", "reason": str(exc), "pages": {}, "elapsed_seconds": time.monotonic() - started}
         write_json(output, payload)
         return payload
