@@ -64,7 +64,8 @@ def test_profile_change_rejects_old_review_packet(tmp_path):
     from littrans.fidelity import _hash, import_source_review
     root = project(tmp_path)
     profile_path = Path(probe_structure(root, '1')['profile'])
-    packet = {'source_sha256': sha256_file(root / 'source.pdf'), 'pages': [],
+    packet = {'schema_version': 6, 'kind': 'source-fidelity-review',
+              'source_sha256': sha256_file(root / 'source.pdf'), 'pages': [],
               'document_structure': structure_context(root)}
     packet_id = 'source-' + _hash(packet)[:20]
     packet_path = root / 'packets' / packet_id / 'packet.json'

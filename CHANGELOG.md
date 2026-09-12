@@ -7,6 +7,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Bind layout caches to worker code, interpreter identity and installed package versions.
+- Validate source-review receipt digests, packet provenance and visual approval conditions
+  whenever source approval is consumed; legacy receipts require fresh review.
+- Preserve page and language footnote scopes inside table cells.
+
 - Enforce managed layout readiness before detector execution or cached evidence reuse.
 - Verify stored asset-review digests before consuming decisions or replaying imports; require
   the manifest SHA-256 receipt in the public submission schema.

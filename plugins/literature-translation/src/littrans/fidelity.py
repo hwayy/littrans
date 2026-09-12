@@ -1178,20 +1178,64 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(report), "pages": pages}
 
 
+def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[str, Any]:
+    if not isinstance(packet_id, str) or not re.fullmatch(r"source-[a-f0-9]{20}", packet_id):
+        raise ValueError("invalid source packet ID")
+    packet_path = root / "packets" / packet_id / "packet.json"
+    if sha256_file(packet_path) != packet_sha256:
+        raise ValueError("source packet hash mismatch")
+    packet = read_json(packet_path)
+    if not isinstance(packet, dict) or "source-" + _hash(packet)[:20] != packet_id:
+        raise ValueError("source packet identity mismatch")
+    if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") != 6:
+        raise ValueError("invalid source packet contract")
+    return packet
+
+
+def _source_decision_passes(page: dict[str, Any], decision: dict[str, Any]) -> bool:
+    fields = ["viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked"]
+    if page["ledger"]["layout_status"] != "ok":
+        fields.append("layout_fallback_checked")
+    if page["ledger"].get("overflow_evidence"):
+        fields.append("overflow_canvas_checked")
+    if any(asset.get("formula_conditions") for asset in page["assets"]):
+        fields.append("formula_conditions_checked")
+    return (not decision.get("override") and all(decision.get(key) is True for key in fields)
+            and decision.get("issues") == [] and not _opaque_prose_assets(page))
+
+
+def _verify_source_receipt(root: Path, current: dict[str, Any], receipt: Any, source_sha: str) -> None:
+    if not isinstance(receipt, dict):
+        raise ValueError("invalid source review receipt")
+    payload = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    if receipt.get("receipt_sha256") != _hash(payload):
+        raise ValueError("source review receipt digest missing or changed; import a fresh visual review")
+    packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"])
+    from littrans.structure_profile import structure_context
+    if packet.get("document_structure") != structure_context(root):
+        raise ValueError("source structure guidance changed since review")
+    reviewer = receipt.get("reviewer")
+    decision = receipt.get("decision")
+    if (not isinstance(reviewer, str) or not reviewer.strip() or not isinstance(decision, dict)
+            or receipt.get("source_sha256") != source_sha or packet.get("source_sha256") != source_sha):
+        raise ValueError("invalid source review provenance")
+    pages = [page for page in packet["pages"] if page["page"] == current["page"]]
+    if (len(pages) != 1 or pages[0]["fingerprint"] != current["fingerprint"]
+            or receipt.get("fingerprint") != current["fingerprint"]
+            or decision.get("page") != current["page"] or decision.get("fingerprint") != current["fingerprint"]
+            or receipt.get("passed") is not True or not _source_decision_passes(pages[0], decision)):
+        raise ValueError("page requires current visual coverage and boundary review")
+
+
 def import_source_review(root: Path, input_file: Path, confirm_visual_review: bool = False) -> dict[str, Any]:
     root = Path(root).resolve()
     if not confirm_visual_review:
         raise ValueError("source review import requires explicit confirmation of actual visual review")
     review = read_json(Path(input_file))
     packet_id = review["packet_id"]
-    if not re.fullmatch(r"source-[a-f0-9]{20}", packet_id):
-        raise ValueError("invalid source packet ID")
-    packet_path = root / "packets" / packet_id / "packet.json"
-    if sha256_file(packet_path) != review["packet_sha256"]:
-        raise ValueError("source packet hash mismatch")
+    packet = _load_source_packet(root, packet_id, review["packet_sha256"])
     if not review.get("reviewer", "").strip():
         raise ValueError("source review requires reviewer identity")
-    packet = read_json(packet_path)
     from littrans.structure_profile import structure_context
     if packet.get("document_structure") != structure_context(root):
         raise ValueError("source structure guidance changed since packet creation; create a new packet")
@@ -1228,21 +1272,18 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
                 changed.append(p)
                 continue
-            fields = ["viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked"]
-            if by_page[p]["ledger"]["layout_status"] != "ok":
-                fields.append("layout_fallback_checked")
-            if by_page[p]["ledger"].get("overflow_evidence"):
-                fields.append("overflow_canvas_checked")
-            if any(asset.get("formula_conditions") for asset in by_page[p]["assets"]):
-                fields.append("formula_conditions_checked")
-            passed = all(decision.get(key) is True for key in fields) and decision.get("issues") == []
+            passed = _source_decision_passes(by_page[p], decision)
             opaque = _opaque_prose_assets(by_page[p])
             if opaque:
                 passed = False
                 decision = {**decision, "extraction_issues": [{"code": "recoverable-prose-in-image", "assets": opaque}]}
             if passed:
                 approved.append(p)
-            write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json", {"fingerprint": decision["fingerprint"], "source_sha256": config.source_sha256, "passed": passed, "reviewer": review["reviewer"], "packet_sha256": review["packet_sha256"], "decision": decision})
+            receipt = {"fingerprint": decision["fingerprint"], "source_sha256": config.source_sha256,
+                       "passed": passed, "reviewer": review["reviewer"], "packet_id": packet_id,
+                       "packet_sha256": review["packet_sha256"], "decision": decision}
+            write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json",
+                       {**receipt, "receipt_sha256": _hash(receipt)})
         decision_pages = {d["page"] for d in decisions}
         for unit in units:
             if unit.page in decision_pages:
@@ -1318,8 +1359,7 @@ def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
                 raise ValueError("recoverable prose remains inside image assets; re-prepare or split source regions: " + ", ".join(opaque))
             receipt_path = root / f"evidence/pages/fidelity-p{p:04d}.review.json"
             receipt = read_json(receipt_path) if receipt_path.is_file() else {}
-            if not receipt.get("passed") or receipt.get("fingerprint") != current["fingerprint"]:
-                raise ValueError("page requires current visual coverage and boundary review")
+            _verify_source_receipt(root, current, receipt, config.source_sha256)
             refs = Counter(aid for u in current["units"] for aid in asset_reference_ids(u["source_markdown"] or u["source_text"]))
             if refs != Counter({a["id"]: 1 for a in current["assets"]}):
                 raise ValueError("asset references are missing or duplicated")

@@ -1,6 +1,7 @@
 """Isolated CPU layout-only adapter. Never imports any formula decoder."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -39,6 +40,24 @@ def runtime_readiness_error(python: Path, model: Path, cache: Path | None = None
     return None
 
 
+def _runtime_identity(python: Path) -> dict[str, Any]:
+    probe = (
+        "import sys,json,importlib.metadata as m; "
+        "print(json.dumps({'python':sys.version,'executable':sys.executable,"
+        "'prefix':sys.prefix,'packages':sorted((d.metadata['Name'],d.version) "
+        "for d in m.distributions())}))"
+    )
+    result = subprocess.run([str(python), "-c", probe], capture_output=True, text=True,
+                            encoding="utf-8", timeout=30)
+    if result.returncode:
+        raise ValueError("layout runtime identity probe failed")
+    identity = json.loads(result.stdout)
+    if not isinstance(identity, dict) or not identity.get("python") or not identity.get("packages"):
+        raise ValueError("layout runtime identity probe returned invalid metadata")
+    return {"configured_python": str(python.absolute()), "resolved_python": str(python.resolve()),
+            "interpreter_sha256": sha256_file(python), **identity}
+
+
 def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     """Return per-image pixel boxes, retaining inline formulas, or explicit unavailable state."""
     python, model = runtime_paths()
@@ -47,8 +66,15 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     readiness_error = runtime_readiness_error(python, model)
     if readiness_error:
         return {"status": "unavailable", "reason": readiness_error, "pages": {}}
+    worker = Path(__file__).with_name("layout_worker.py")
+    try:
+        runtime = _runtime_identity(python)
+        worker_sha = sha256_file(worker)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return {"status": "unavailable", "reason": str(exc), "pages": {}}
     weights = {str(p.relative_to(model)): sha256_file(p) for p in sorted(model.rglob("*")) if p.is_file()}
     request = {"images": [str(p.resolve()) for p in images], "image_sha256": {str(p.resolve()): sha256_file(p) for p in images}, "model": str(model.resolve()), "weights": weights}
+    request.update(runtime=runtime, worker_sha256=worker_sha)
     request["fingerprint"] = sha256_text(str(request))
     if output.is_file():
         existing = read_json(output)
@@ -56,7 +82,6 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
             return existing
     request_path = output.with_suffix(".request.json")
     write_json(request_path, request)
-    worker = Path(__file__).with_name("layout_worker.py")
     env = os.environ.copy()
     env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", MINERU_DEVICE_MODE="cpu", OMP_NUM_THREADS="4", MKL_NUM_THREADS="4", PYTHONIOENCODING="utf-8")
     started = time.monotonic()

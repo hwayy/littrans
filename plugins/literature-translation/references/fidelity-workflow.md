@@ -4,7 +4,16 @@ Schema 6 uses one source preparation path. Native prose and layout regions produ
 
 Managed layout components require a successful smoke-test READY marker both for status
 checks and before detector execution or cached result reuse. Fully external interpreter
-and model configurations retain their external-runtime exemption.
+and model configurations retain their external-runtime exemption. Cache identities bind
+the worker SHA-256, configured/resolved interpreter, interpreter SHA-256, Python identity
+and installed distribution versions as well as images and weights. An unsuccessful
+runtime metadata probe cannot reuse cached layout evidence.
+
+Source-review receipts bind the decision, reviewer, source, page fingerprint and original
+packet identity/hash with `receipt_sha256`. Approval consumers verify the receipt and
+packet, then recheck the visual decision conditions. Keep the original packet available.
+Legacy receipts without this digest require a fresh visual review import; no automatic
+approval migration is performed. Project schema remains 6.
 
 ## Independent states
 

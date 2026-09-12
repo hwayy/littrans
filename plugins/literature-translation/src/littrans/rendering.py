@@ -595,7 +595,7 @@ def _unit_html(
         ) + number + "</div>"
     if unit.kind is UnitKind.TABLE:
         table = target_table or unit.table
-        return table_to_html(table, _inline_html) if table else inline(text)
+        return table_to_html(table, inline) if table else inline(text)
     if unit.kind is UnitKind.NOTE:
         variant = _note_variant(unit.source_text, unit.callout_kind)
         source_labels = {
