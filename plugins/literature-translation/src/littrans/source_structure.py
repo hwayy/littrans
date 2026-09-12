@@ -150,7 +150,7 @@ def plan_structure(
         ):
             omitted[b["id"]] = "running-header-or-footer"
         if any(label == "footnote" and any(_contains(g, box) for g in gs) for label, box in labels):
-            match = re.match(r"(\d+)(?=[A-Za-z])", "".join(g["text"] for g in gs))
+            match = re.match(r"(\d+)(?!\d)(?=\s|[^\W\d_]|[.)：:、．\]）])", "".join(g["text"] for g in gs))
             if match:
                 notes[b["id"]] = {
                     "number": match[1],

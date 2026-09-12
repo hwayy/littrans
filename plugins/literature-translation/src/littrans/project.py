@@ -144,6 +144,7 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
             payload.get("source_language", "en"), payload.get("target_language", "zh-CN"),
         )
         config.source_path = copied_source.relative_to(staging).as_posix()
+        config.rights_status = payload.get("rights_status", config.rights_status)
         for directory in ("context", "glossary"):
             if (old / directory).is_dir():
                 shutil.copytree(old / directory, staging / directory, dirs_exist_ok=True)

@@ -12,7 +12,7 @@ import pymupdf as fitz
 from pydantic import BaseModel, ConfigDict, Field
 
 from littrans.extractor import parse_page_spec
-from littrans.storage import load_project, read_json, sha256_file, write_json
+from littrans.storage import load_project, project_write_lock, read_json, sha256_file, write_json
 
 PROFILE_PATH = Path('context/source-structure.json')
 
@@ -83,6 +83,11 @@ def probe_structure(root: Path, page_spec: str = 'all') -> dict[str, Any]:
     returns to draft until the rules have been checked against the new pages.
     """
     root = root.resolve()
+    with project_write_lock(root):
+        return _probe_structure_locked(root, page_spec)
+
+
+def _probe_structure_locked(root: Path, page_spec: str) -> dict[str, Any]:
     config = load_project(root)
     if sha256_file(config.source(root)) != config.source_sha256:
         raise ValueError('Source PDF changed; rebuild before probing')

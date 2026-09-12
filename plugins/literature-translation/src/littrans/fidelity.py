@@ -643,6 +643,9 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
 
 
 def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, region: dict[str, Any], glyphs: list[dict[str, Any]]) -> FidelityAsset:
+    for key in ("id", "preserve_asset_id"):
+        if key in region and (not isinstance(region[key], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", region[key])):
+            raise ValueError("invalid region asset ID")
     if "preserve_asset_id" in region:
         existing = load_assets(root)[region["preserve_asset_id"]]
         if existing.source_sha256 != source_hash or any(f.page != page_number for f in existing.fragments):

@@ -255,12 +255,13 @@ def _batch_stage_details(
     qa_report = snapshot.qa_reports[batch_id]
     if not (
         qa_report
-        and qa_report.passed
         and qa_report.translation_fingerprint
         == _translation_fingerprint_from_snapshot(snapshot, manifest)
         and qa_report.qa_context_fingerprint == snapshot.qa_context_fingerprints[manifest.batch_id]
     ):
         return "qa", {}
+    if not qa_report.passed:
+        return "revise", {}
     coverage = audit_coverage(
         root,
         batch_id,

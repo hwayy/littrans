@@ -7,6 +7,12 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Validate explicit asset IDs before either single- or multi-fragment region export.
+- Recognize spaced, punctuated and Unicode footnote-definition labels in detected regions.
+- Preserve historical rights status when rebuilding a project.
+- Serialize structure-profile extensions with the project write lock.
+- Route current failed deterministic QA to revision; missing/stale QA still runs first.
+
 - Reject unsafe override unit IDs and escape legacy IDs in Markdown anchors.
 - Preserve footnote-like literals inside backslash-delimited inline/display math.
 - Prepare numeric/symbol-only pages using usable-glyph font sizes or a default.
