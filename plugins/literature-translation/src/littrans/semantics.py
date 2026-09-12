@@ -20,6 +20,24 @@ MATH_FONT_MARKERS = (
     "cmex",
     "stix",
 )
+RUN_IN_LABEL_RE = re.compile(r"^\s*\*{2,3}([^*\n]+?)\*{2,3}")
+
+
+def run_in_caps_label_words(text: str) -> list[str]:
+    """Uppercase words of a bold run-in label opening the text.
+
+    "**EXAMPLE 1.**", "**LEMMA.**" or "**WARNING ABOUT NOTATION.**" are styled
+    statement labels that a translation localizes, not acronyms to preserve.
+    """
+    match = RUN_IN_LABEL_RE.match(text)
+    if not match:
+        return []
+    words = re.findall(r"[A-Za-z][A-Za-z'’]*", match.group(1))
+    if not words or any(word.upper() != word for word in words):
+        return []
+    return words
+
+
 MATH_SIGNAL_RE = re.compile(r"[=∑∏∫√∂∇±≤≥∞≠≈∝⟨⟩ρτλσνεημχ′·×]")
 TERMINAL_RE = re.compile(r"[.!?。！？:：;；][\"'”’）)\]]*$")
 ZH_FIGURE_CAPTION_RE = re.compile(

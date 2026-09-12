@@ -34,6 +34,7 @@ from littrans.models import (
     utc_now,
 )
 from littrans.project import load_terms, promote_status, translation_map
+from littrans.semantics import run_in_caps_label_words
 from littrans.representations import (
     ASSET_RE,
     representation_status,
@@ -224,11 +225,22 @@ def _semantic_token_present(token: str, raw_target: str, semantic_target: str) -
 
 def _localized_heading_token_present(unit: SourceUnit, token: str, target: str) -> bool:
     """Allow CHAPTER only for a numbered heading with the same explicit number."""
+    if _localized_run_in_label_token(unit, token, target):
+        return True
     if unit.kind is not UnitKind.HEADING or token != "CHAPTER":
         return False
     source = re.match(r"^\s*CHAPTER\s+([1-9]\d*)\b", unit.source_text)
     translated = re.match(r"^\s*第\s*([1-9]\d*)\s*章(?:\s|$|[：:、])", target)
     return bool(source and translated and source.group(1) == translated.group(1))
+
+
+def _localized_run_in_label_token(unit: SourceUnit, token: str, target: str) -> bool:
+    """A bold all-caps run-in label ("**EXAMPLE 1.**") may be localized when the
+    target keeps a bold run-in label in the same position."""
+    source = unit.source_markdown or unit.source_text
+    if token not in run_in_caps_label_words(source):
+        return False
+    return bool(re.match(r"^\s*\*{2,3}[^*\n]+?\*{2,3}", target))
 
 
 def _comparison_source_text(

@@ -228,6 +228,16 @@ def test_all_caps_headings_do_not_protect_every_word() -> None:
     assert protected_tokens("STOCHASTIC DIFFERENTIALS {{asset:a-p0011-1a338d8ac556}}") == []
 
 
+def test_bold_caps_run_in_labels_are_not_acronyms() -> None:
+    assert protected_tokens("**EXAMPLE 1.** According to the SDE (6)") == ["SDE"]
+    assert protected_tokens("**WARNING ABOUT NOTATION.** Many books write") == []
+    assert protected_tokens("**IMPORTANT REMARK.** It is essential") == []
+    assert protected_tokens("**NOTATION.** (i) We usually write") == []
+    assert protected_tokens("**Proof.** Check that NASA") == ["NASA"]
+    assert protected_tokens("**2.1.4. Stochastic processes.** We introduce") == []
+    assert protected_tokens("NOTATION. When X is a random variable") == ["NOTATION"]
+
+
 def test_continuation_separator_does_not_split_hyphenated_urls() -> None:
     assert _continuation_separator("http://shazzam-", "tool.com") == ""
     assert _continuation_separator("ordinary", "words") == " "

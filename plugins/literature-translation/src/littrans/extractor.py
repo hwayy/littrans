@@ -38,6 +38,7 @@ from littrans.models import (
     canonical_math_review_unit_guard_sha256,
 )
 from littrans.semantics import (
+    RUN_IN_LABEL_RE,
     code_from_block,
     detect_code_language,
     inline_math_markdown,
@@ -45,6 +46,7 @@ from littrans.semantics import (
     looks_like_program_code,
     normalize_prose,
     prose_from_block,
+    run_in_caps_label_words,
     split_mixed_pdf_block,
     table_from_rows,
     unicode_math_to_latex,
@@ -186,10 +188,16 @@ def _is_all_caps_text(text: str, minimum_words: int = 2) -> bool:
 def protected_tokens(text: str, *, heading: bool = False) -> list[str]:
     found: list[str] = []
     all_caps = _is_all_caps_text(text, minimum_words=1 if heading else 2)
+    # A bold, all-caps run-in label ("**EXAMPLE 1.**") is styled prose, not acronyms.
+    label_end = RUN_IN_LABEL_RE.match(text).end() if run_in_caps_label_words(text) else 0
     for pattern in PROTECTED_PATTERNS:
         if all_caps and pattern is ACRONYM_PATTERN:
             continue
-        found.extend(match.group(0) for match in pattern.finditer(text))
+        found.extend(
+            match.group(0)
+            for match in pattern.finditer(text)
+            if not (pattern is ACRONYM_PATTERN and match.start() < label_end)
+        )
     found = [
         token.rstrip(".,;:!?") if token.lower().startswith(("http://", "https://")) else token
         for token in found

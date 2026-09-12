@@ -48,3 +48,22 @@ def test_heading_equivalence_is_scoped(kind: UnitKind, source: str, token: str,
                       source_text=source, source_hash="test", confidence=1)
     assert _localized_heading_token_present(unit, token, target) is expected
     assert not _semantic_token_present(token, target, _semantic_comparison_text(target))
+
+
+@pytest.mark.parametrize(("source", "token", "target", "expected"), [
+    ("**EXAMPLE 1.** According to the SDE", "EXAMPLE", "**例 1.** 根据 SDE", True),
+    ("**WARNING ABOUT NOTATION.** Many books", "ABOUT", "**关于记号的警告.** 许多书", True),
+    ("**IMPORTANT REMARK.** It is", "REMARK", "**重要注记.** 必须", True),
+    # The localized label must stay a bold run-in label.
+    ("**LEMMA.** *Let* X", "LEMMA", "引理. 设 X", False),
+    # Acronyms inside the prose are not label words.
+    ("**EXAMPLE 1.** According to the SDE", "SDE", "**例 1.** 根据方程", False),
+    # A capitalised or mixed-case label is not an all-caps label.
+    ("**Proof.** Check NASA", "NASA", "**证明.** 检查", False),
+    ("NOTATION. When X is", "NOTATION", "记号. 当 X", False),
+])
+def test_bold_caps_run_in_labels_may_be_localized(source: str, token: str, target: str,
+                                                  expected: bool) -> None:
+    unit = SourceUnit(unit_id="test", kind=UnitKind.PARAGRAPH, page=1, bbox=(0, 0, 1, 1),
+                      source_text=source, source_hash="test", confidence=1)
+    assert _localized_heading_token_present(unit, token, target) is expected
