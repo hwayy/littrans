@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 from littrans.extractor import parse_page_spec
 from littrans.models import MathCandidate, SemanticStatus, SourceUnit, UnitKind

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-import fitz
+import pymupdf as fitz
 
 from littrans.extractor import parse_page_spec, protected_tokens
 from littrans.fidelity_models import (

@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import yaml
 from latex2mathml.converter import convert as latex_to_mathml
 

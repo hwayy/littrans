@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 from littrans.models import MathCandidate, SourceUnit
 from littrans.storage import (

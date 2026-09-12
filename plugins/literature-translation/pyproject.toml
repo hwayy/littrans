@@ -54,3 +54,8 @@ strict = true
 packages = ["littrans"]
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+
+# pymupdf ships partial stubs; treat it like the untyped `fitz` alias it replaced.
+[[tool.mypy.overrides]]
+module = ["pymupdf", "pymupdf.*"]
+follow_imports = "skip"

@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
-import fitz
+import pymupdf as fitz
 import yaml
 
 from littrans.batching import load_manifest

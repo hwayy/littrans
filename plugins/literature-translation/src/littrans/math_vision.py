@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 from littrans.extractor import parse_page_spec
 from littrans.models import (

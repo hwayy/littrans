@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 from littrans.evidence import page_evidence_fingerprints, page_evidence_units
 from littrans.extractor import parse_page_spec

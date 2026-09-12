@@ -135,7 +135,7 @@ print(target)
 
 
 def _smoke_test(python: Path, model: Path) -> dict[str, Any]:
-    import fitz
+    import pymupdf as fitz
 
     with tempfile.TemporaryDirectory() as tmp:
         image = Path(tmp) / "blank.png"

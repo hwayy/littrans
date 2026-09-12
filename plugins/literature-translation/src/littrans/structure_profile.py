@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
-import fitz
+import pymupdf as fitz
 from pydantic import BaseModel, ConfigDict, Field
 
 from littrans.extractor import parse_page_spec

@@ -14,7 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 SVG = "http://www.w3.org/2000/svg"
 XLINK = "http://www.w3.org/1999/xlink"
