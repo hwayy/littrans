@@ -468,12 +468,14 @@ def workflow_create_packet(
     ),
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude."),
 ) -> None:
     result = create_workflow_packet(
         project,
         stage,
         [value.strip() for value in batch_ids.split(",") if value.strip()],
         lens,
+        host,
     )
     emit(
         [packet.model_dump(mode="json") for packet in result]

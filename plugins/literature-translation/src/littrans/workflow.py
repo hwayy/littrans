@@ -868,8 +868,10 @@ def create_workflow_packet(
     stage: str,
     batch_ids: list[str],
     lens: str | None = None,
+    host: str | None = None,
 ) -> WorkflowPacketManifest | list[WorkflowPacketManifest] | dict[str, Any]:
     require_current_project_schema(root, "Workflow packet creation")
+    host = resolve_coordination_host(host)
     if stage in {"transcribe", "asset-audit"}:
         if lens is not None:
             raise ValueError("Asset tasks do not accept a translation audit lens")
@@ -901,7 +903,7 @@ def create_workflow_packet(
                 for batch_id in batch_ids
             ):
                 continue
-            packet = create_workflow_packet(root, stage, batch_ids, selected_lens)
+            packet = create_workflow_packet(root, stage, batch_ids, selected_lens, host)
             if isinstance(packet, list):  # pragma: no cover - guarded above
                 packets.extend(packet)
             elif isinstance(packet, WorkflowPacketManifest):
@@ -914,7 +916,6 @@ def create_workflow_packet(
     if stage in {"translate", "revise"} and lens is not None:
         raise ValueError("translation packets do not accept a lens")
     if stage in {"translate", "revise"}:
-        host = resolve_coordination_host(None)
         policy = load_project(root).agent_models.get(host, {})
         if not policy.get("translate") or not policy.get("reasoning_effort"):
             raise ValueError(f"Configure agent_models.{host}.translate and reasoning_effort before creating translation tasks; no model substitution is allowed")

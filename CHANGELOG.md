@@ -7,6 +7,13 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Bind source coverage HTML and its original-page images to review packets and receipts;
+  damaged reports require new packet identities and fresh visual review.
+- Resolve cross-page footnotes through source unit references, including page-scoped output;
+  recognize Computer Modern Roman note calls while excluding mathematical bases.
+- Support explicit coordination hosts in workflow packet creation and reject source override
+  asset ID collisions before replacing reviewed page data.
+
 - Bind layout caches to worker code, interpreter identity and installed package versions.
 - Validate source-review receipt digests, packet provenance and visual approval conditions
   whenever source approval is consumed; legacy receipts require fresh review.

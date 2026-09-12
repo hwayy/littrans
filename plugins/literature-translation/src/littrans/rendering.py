@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from functools import partial
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -502,7 +503,7 @@ def _mathml(latex: str, display: str) -> str:
         return f'<code class="math-fallback">{html.escape(latex)}</code>'
 
 
-def _inline_html(text: str, footnote_scope: str = "") -> str:
+def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str, str] | None = None) -> str:
     parts: list[str] = []
     position = 0
     for match in INLINE_TOKEN_RE.finditer(text):
@@ -524,21 +525,29 @@ def _inline_html(text: str, footnote_scope: str = "") -> str:
                 + "</span>"
             )
         elif match.group("strong_em") is not None:
-            parts.append("<strong><em>" + _inline_html(match.group("strong_em_text"), footnote_scope) + "</em></strong>")
+            parts.append("<strong><em>" + _inline_html(match.group("strong_em_text"), footnote_scope, footnote_targets) + "</em></strong>")
         elif match.group("strong") is not None:
-            parts.append("<strong>" + _inline_html(match.group("strong_text"), footnote_scope) + "</strong>")
+            parts.append("<strong>" + _inline_html(match.group("strong_text"), footnote_scope, footnote_targets) + "</strong>")
         elif match.group("footnote") is not None:
             number = match.group("footnote_number")
-            parts.append(f'<sup class="footnote-ref"><a href="#fn-{html.escape(footnote_scope)}-{number}">{number}</a></sup>')
+            anchor = (footnote_targets or {}).get(number, f"fn-{footnote_scope}-{number}")
+            parts.append(f'<sup class="footnote-ref"><a href="#{html.escape(anchor)}">{number}</a></sup>')
         else:
             # Emphasis may legitimately contain inline code or math. Parse its
             # body through the same safe inline renderer so Markdown such as
             # ``*set the `Opacity` property*`` does not leak raw backticks into
             # bilingual HTML.
-            parts.append("<em>" + _inline_html(match.group("emphasis_text"), footnote_scope) + "</em>")
+            parts.append("<em>" + _inline_html(match.group("emphasis_text"), footnote_scope, footnote_targets) + "</em>")
         position = match.end()
     parts.append(html.escape(text[position:]).replace("\n", " "))
     return "".join(parts)
+
+
+def _footnote_targets(unit: SourceUnit, unit_map: dict[str, SourceUnit], source_view: bool) -> dict[str, str]:
+    side = "source" if source_view else "target"
+    return {note.footnote_number: f"fn-{side}-{note.unit_id}"
+            for uid in unit.footnote_refs if (note := unit_map.get(uid)) is not None
+            and note.kind is UnitKind.FOOTNOTE and note.footnote_number}
 
 
 def _unit_html(
@@ -547,10 +556,12 @@ def _unit_html(
     target_table: Any = None,
     *,
     source_view: bool,
+    unit_map: dict[str, SourceUnit] | None = None,
 ) -> str:
+    targets = _footnote_targets(unit, unit_map or {}, source_view)
     scope = f"p{unit.page}-{'source' if source_view else 'target'}"
     def inline(value: str) -> str:
-        return _inline_html(value, scope)
+        return _inline_html(value, scope, targets)
     text = target if target is not None else (unit.source_markdown or unit.source_text)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
         number = (
@@ -568,7 +579,7 @@ def _unit_html(
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
-            plain_unit, target, target_table, source_view=source_view
+            plain_unit, target, target_table, source_view=source_view, unit_map=unit_map
         ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
@@ -632,18 +643,22 @@ def _unit_html(
         return "<figcaption>" + inline(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:
         label = f'<strong>脚注 {html.escape(unit.footnote_number)}：</strong>' if unit.footnote_number else ""
-        return f'<aside class="footnote" id="fn-{scope}-{html.escape(unit.footnote_number or chr(48))}">' + label + inline(text) + "</aside>"
+        return (f'<span id="fn-{scope}-{html.escape(unit.footnote_number or chr(48))}"></span>'
+                f'<aside class="footnote" id="fn-{"source" if source_view else "target"}-{html.escape(unit.unit_id)}">'
+                + label + inline(text) + "</aside>")
     if unit.kind is UnitKind.FIGURE and unit.figure_labels:
         labels = "".join(
-            f"<li>{_inline_html(label.source if source_view else (label.target or label.source))}</li>"
+            f"<li>{inline(label.source if source_view else (label.target or label.source))}</li>"
             for label in unit.figure_labels
         )
         return "<ul class=figure-labels>" + labels + "</ul>"
     return "<p>" + inline(text) + "</p>"
 
 
-def _asset_companions(record: Any) -> tuple[str, str]:
+def _asset_companions(record: Any, unit: SourceUnit | None = None, unit_map: dict[str, SourceUnit] | None = None) -> tuple[str, str]:
     """Translate image-native prose/labels beside the unchanged original asset."""
+    inline = partial(_inline_html, footnote_scope=f"p{unit.page}-target" if unit else "",
+                     footnote_targets=_footnote_targets(unit, unit_map or {}, False) if unit else {})
     markdown: list[str] = []
     markup: list[str] = []
     for item in record.asset_translations if record is not None else []:
@@ -652,13 +667,13 @@ def _asset_companions(record: Any) -> tuple[str, str]:
         body: list[str] = []
         if item.target_text:
             markdown.append(escape_markdown_prose(item.target_text))
-            body.append("<p>" + _inline_html(item.target_text) + "</p>")
+            body.append("<p>" + inline(item.target_text) + "</p>")
         if item.target_table is not None:
             markdown.append(table_to_markdown(item.target_table))
-            body.append(table_to_html(item.target_table, _inline_html))
+            body.append(table_to_html(item.target_table, inline))
         for label in item.figure_labels:
             markdown.append(f"- {escape_markdown_prose(label.source)}：{escape_markdown_prose(label.target or '')}")
-            body.append("<p>" + _inline_html(label.source) + "：" + _inline_html(label.target or "") + "</p>")
+            body.append("<p>" + inline(label.source) + "：" + inline(label.target or "") + "</p>")
         markup.append('<aside class="asset-translation" data-asset-id="' + html.escape(item.asset_id, quote=True)
                       + '">' + "".join(body) + "</aside>")
     return "\n\n".join(markdown), "".join(markup)
@@ -767,6 +782,7 @@ def render_project(
         else set(parse_page_spec(page_spec or "", config.source_pages))
     )
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    footnote_unit_map = {u.unit_id: u for u in all_units}
     if manifests:
         unit_map = {unit.unit_id: unit for unit in all_units}
         selected_manifest_unit_ids = [
@@ -797,6 +813,13 @@ def render_project(
         units = [unit for unit in all_units if unit.unit_id in selected_set]
     else:
         units = [unit for unit in all_units if unit.page in pages]
+    selected_with_notes = {unit.unit_id for unit in units}
+    while True:
+        expanded = selected_with_notes | {ref for unit in all_units if unit.unit_id in selected_with_notes for ref in unit.footnote_refs}
+        if expanded == selected_with_notes:
+            break
+        selected_with_notes = expanded
+    units = [unit for unit in all_units if unit.unit_id in selected_with_notes]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
     parent_ids = {unit.parent_id for unit in units if unit.parent_id}
     included_ids = {unit.unit_id for unit in units}
@@ -1053,7 +1076,7 @@ def render_project(
                 update={"figure_labels": rendered_figure_labels}
             )
         rendered = _target_markdown(render_unit, target)
-        companion_md, companion_html = _asset_companions(record)
+        companion_md, companion_html = _asset_companions(record, unit, footnote_unit_map)
         if companion_md:
             rendered += "\n\n" + companion_md
         if ASSET_RE.search(render_unit.source_text) and target_table:
@@ -1148,16 +1171,19 @@ def render_project(
             unit,
             unit.source_markdown or unit.source_text,
             source_view=True,
+            unit_map=footnote_unit_map,
         )
         target_html = _unit_html(
             render_unit,
             bilingual_target,
             target_table,
             source_view=False,
+            unit_map=footnote_unit_map,
         )
         target_html += companion_html
         if ASSET_RE.search(render_unit.source_text) and target_table:
-            target_html += table_to_html(target_table, _inline_html)
+            target_html += table_to_html(target_table, partial(_inline_html,
+                footnote_scope=f"p{unit.page}-target", footnote_targets=_footnote_targets(unit, footnote_unit_map, False)))
         source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only)
         target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only)
         if unit.unit_id in grouped_unit_ids:

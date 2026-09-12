@@ -110,7 +110,7 @@ def test_review_override_needs_fresh_visual_evidence(project: Path) -> None:
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "test"
     payload = read_json(Path(packet["packet_path"]))
-    review["pages"][0]["override"] = {"regions": [{"id": a["id"], "bbox": a["fragments"][0]["bbox"], "kind": a["kind"], "grouping_pending": False} for a in payload["pages"][0]["assets"]]}
+    review["pages"][0]["override"] = {"regions": [{"preserve_asset_id": a["id"], "bbox": a["fragments"][0]["bbox"], "kind": a["kind"], "grouping_pending": False} for a in payload["pages"][0]["assets"]]}
     write_json(project / "override.json", review)
     result = import_source_review(project, project / "override.json", True)
     assert result["requires_new_packet"]

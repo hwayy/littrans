@@ -172,7 +172,7 @@ def plan_structure(
                 g = gm[gid]
                 eligible = (g["text"].isdigit() and g["size"] < font_size * 0.8
                             and height * 0.12 < g["bbox"][1] < note_top
-                            and not re.search(r"cmmi|cmsy|cmr|cmex", g["font"], re.I))
+                            and not re.search(r"cmmi|cmsy|cmex", g["font"], re.I))
                 adjacent = not digit_run or (
                     abs(g["origin"][1] - digit_run[-1]["origin"][1]) <= font_size * 0.15
                     and abs(g["size"] - digit_run[-1]["size"]) <= font_size * 0.1
@@ -188,6 +188,14 @@ def plan_structure(
             for run in runs:
                 number = "".join(g["text"] for g in run)
                 if number in note_numbers:
+                    if any(re.search(r"cmr", g["font"], re.I) for g in run):
+                        first = run[0]
+                        bases = [g for g in glyphs if g["size"] >= font_size * .8
+                                 and -1 <= first["bbox"][0] - g["bbox"][2] <= font_size * 2
+                                 and 0 < g["origin"][1] - first["origin"][1] < font_size]
+                        base = max(bases, key=lambda g: g["bbox"][2]) if bases else None
+                        if base is None or re.search(r"cmmi|cmsy|cmex", base["font"], re.I) or base["text"].isdigit():
+                            continue
                     for index, g in enumerate(run):
                         markers[g["id"]] = {"number": number, "note_block": note_numbers[number],
                                             "definition": False, "emit": index == 0}

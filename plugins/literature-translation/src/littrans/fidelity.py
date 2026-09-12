@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import pymupdf as fitz
 
@@ -1152,13 +1153,6 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         payload["document_structure"] = profile_context
     for page in payload["pages"]:
         page["boundary_diagnostics"] = _boundary_diagnostics(page["ledger"]["glyphs"], page["assets"])
-    packet_id = "source-" + _hash(payload)[:20]
-    directory = root / "packets" / packet_id
-    directory.mkdir(parents=True, exist_ok=True)
-    packet = directory / "packet.json"
-    write_json(packet, payload)
-    review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "reviewer": "", "pages": [{"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False, "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False, "issues": [], "notes": ""} for p in payload["pages"]]}
-    write_json(directory / "review-template.json", review_template)
     sections = []
     if profile_context:
         sections.append('<h2>Document-specific structure guidance</h2><pre>' + html.escape(json.dumps(profile_context, ensure_ascii=False, indent=2)) + '</pre>')
@@ -1167,14 +1161,39 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         if p["boundary_diagnostics"]:
             sections.append("<h3>Prose/formula boundary diagnostics</h3><pre>" + html.escape(json.dumps(p["boundary_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
         boxes = "".join(f'<rect x="{f["bbox"][0]}" y="{f["bbox"][1]}" width="{f["width"]}" height="{f["height"]}" fill="none" stroke="red" stroke-width="0.6"><title>{html.escape(a["id"])}</title></rect>' for a in p["assets"] for f in a["fragments"])
-        image_uri = _path(root, ledger["page_image"]).as_uri()
+        image_uri = "../../" + quote(ledger["page_image"], safe="/")
         if ledger.get("overflow_evidence"):
             sections.append(f'<p>PDF page {p["page"]}: <a href="{image_uri}">original page canvas</a>. The overlay below uses the separately preserved expanded content-stream canvas.</p>')
-            image_uri = _path(root, ledger["overflow_evidence"]["path"]).as_uri()
+            image_uri = "../../" + quote(ledger["overflow_evidence"]["path"], safe="/")
         source = "\n\n".join(u["source_text"] for u in p["units"])
         sections.append(f'<section><h2>PDF page {p["page"]}</h2><p>Layout: {html.escape(ledger["layout_status"])}; visual review required.</p><svg viewBox="0 0 {ledger["width"]} {ledger["height"]}"><image href="{image_uri}" width="{ledger["width"]}" height="{ledger["height"]}"/>{boxes}</svg><pre>{html.escape(source)}</pre></section>')
+    report_text = '<!doctype html><meta charset="utf-8"><title>Source fidelity review</title><style>body{font:16px sans-serif;max-width:1500px;margin:auto}svg{width:65%;vertical-align:top}pre{white-space:pre-wrap;display:inline-block;width:33%;font:14px sans-serif}</style><h1>Original page, region boundaries and reading sequence</h1>' + "".join(sections)
+    report_files = {}
+    for page in payload["pages"]:
+        ledger = page["ledger"]
+        report_files[ledger["page_image"]] = ledger["page_image_sha256"]
+        if ledger.get("overflow_evidence"):
+            relative = ledger["overflow_evidence"]["path"]
+            report_files[relative] = sha256_file(_path(root, relative))
+    payload["visual_report"] = {"path": "coverage.html", "sha256": sha256_text(report_text), "files": report_files}
+    packet_id = "source-" + _hash(payload)[:20]
+    # Do not repair a previously reviewed artifact under the same identity.
+    while (root / "packets" / packet_id).exists():
+        try:
+            existing_path = root / "packets" / packet_id / "packet.json"
+            _load_source_packet(root, packet_id, sha256_file(existing_path))
+            break
+        except (OSError, ValueError, KeyError):
+            payload["previous_visual_packet_id"] = packet_id
+            packet_id = "source-" + _hash(payload)[:20]
+    directory = root / "packets" / packet_id
+    directory.mkdir(parents=True, exist_ok=True)
+    packet = directory / "packet.json"
+    write_json(packet, payload)
+    review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "visual_report_sha256": payload["visual_report"]["sha256"], "reviewer": "", "pages": [{"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False, "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False, "issues": [], "notes": ""} for p in payload["pages"]]}
+    write_json(directory / "review-template.json", review_template)
     report = directory / "coverage.html"
-    atomic_write_text(report, '<!doctype html><meta charset="utf-8"><title>Source fidelity review</title><style>body{font:16px sans-serif;max-width:1500px;margin:auto}svg{width:65%;vertical-align:top}pre{white-space:pre-wrap;display:inline-block;width:33%;font:14px sans-serif}</style><h1>Original page, region boundaries and reading sequence</h1>' + "".join(sections))
+    atomic_write_text(report, report_text)
     return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(report), "pages": pages}
 
 
@@ -1189,6 +1208,17 @@ def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[
         raise ValueError("source packet identity mismatch")
     if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") != 6:
         raise ValueError("invalid source packet contract")
+    artifact = packet.get("visual_report", {})
+    if artifact.get("path") != "coverage.html" or not artifact.get("sha256"):
+        raise ValueError("source visual report manifest missing; create a new review packet")
+    if sha256_file(packet_path.parent / "coverage.html") != artifact["sha256"]:
+        raise ValueError("source visual report artifact changed")
+    files = artifact.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ValueError("source report image manifest missing")
+    for relative, expected in files.items():
+        if sha256_file(_path(root, relative)) != expected:
+            raise ValueError("source report image changed")
     return packet
 
 
@@ -1214,6 +1244,8 @@ def _verify_source_receipt(root: Path, current: dict[str, Any], receipt: Any, so
     from littrans.structure_profile import structure_context
     if packet.get("document_structure") != structure_context(root):
         raise ValueError("source structure guidance changed since review")
+    if receipt.get("visual_report_sha256") != packet["visual_report"]["sha256"]:
+        raise ValueError("source receipt visual report mismatch")
     reviewer = receipt.get("reviewer")
     decision = receipt.get("decision")
     if (not isinstance(reviewer, str) or not reviewer.strip() or not isinstance(decision, dict)
@@ -1234,6 +1266,8 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
     review = read_json(Path(input_file))
     packet_id = review["packet_id"]
     packet = _load_source_packet(root, packet_id, review["packet_sha256"])
+    if review.get("visual_report_sha256") != packet["visual_report"]["sha256"]:
+        raise ValueError("source review must identify the visual report inspected")
     if not review.get("reviewer", "").strip():
         raise ValueError("source review requires reviewer identity")
     from littrans.structure_profile import structure_context
@@ -1257,6 +1291,14 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 raise ValueError("source page changed while waiting for project write lock")
         units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
         assets = load_assets(root)
+        claimed: set[str] = set()
+        for decision in decisions:
+            for region in decision.get("override", {}).get("regions", []):
+                aid = region.get("preserve_asset_id") or region.get("id")
+                if aid and (aid in claimed or (aid in assets and any(f.page != decision["page"] for f in assets[aid].fragments))):
+                    raise ValueError("source override asset ID collision: " + aid)
+                if aid:
+                    claimed.add(aid)
         for decision in decisions:
             p = decision["page"]
             if decision.get("override"):
@@ -1267,6 +1309,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 units = [u for u in units if u.page != p] + new_units
                 _invalidate(root, old_units, units)
                 assets = {aid: a for aid, a in assets.items() if not any(f.page == p for f in a.fragments)}
+                new_ids = [a.id for a in new_assets]
+                if len(new_ids) != len(set(new_ids)) or set(new_ids).intersection(assets):
+                    raise ValueError("source override asset ID collision")
                 assets.update({a.id: a for a in new_assets})
                 write_json(_page_path(root, p), ledger)
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
@@ -1281,7 +1326,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 approved.append(p)
             receipt = {"fingerprint": decision["fingerprint"], "source_sha256": config.source_sha256,
                        "passed": passed, "reviewer": review["reviewer"], "packet_id": packet_id,
-                       "packet_sha256": review["packet_sha256"], "decision": decision}
+                       "packet_sha256": review["packet_sha256"], "visual_report_sha256": review["visual_report_sha256"], "decision": decision}
             write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json",
                        {**receipt, "receipt_sha256": _hash(receipt)})
         decision_pages = {d["page"] for d in decisions}

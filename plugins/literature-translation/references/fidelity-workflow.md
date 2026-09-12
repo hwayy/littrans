@@ -12,7 +12,18 @@ runtime metadata probe cannot reuse cached layout evidence.
 Source-review receipts bind the decision, reviewer, source, page fingerprint and original
 packet identity/hash with `receipt_sha256`. Approval consumers verify the receipt and
 packet, then recheck the visual decision conditions. Keep the original packet available.
-Legacy receipts without this digest require a fresh visual review import; no automatic
+Coverage HTML and its referenced page images are bound by the packet `visual_report`
+manifest. Submissions must echo `visual_report_sha256` after inspection, and receipts
+retain it. Import and later approval reads verify these files. Relative image URLs keep
+reports portable. A damaged report is rebuilt under a new packet identity and cannot
+silently restore prior approval.
+
+Source override IDs cannot collide across decisions or with assets owned by another page.
+Same-page boundary repairs may retain stable IDs; changed content fingerprints invalidate
+old evidence and require fresh source review. `preserve_asset_id` reuses an unchanged
+original crop on its own page.
+
+Legacy receipts without these bindings require a fresh visual review import; no automatic
 approval migration is performed. Project schema remains 6.
 
 ## Independent states

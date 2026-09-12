@@ -80,9 +80,9 @@ def _page_ledger(root: Path, page: int) -> dict[str, Any]:
     return read_json(path) if path.is_file() else {}
 
 
-def _unit_body(root: Path, unit: SourceUnit, output: Path) -> str:
+def _unit_body(root: Path, unit: SourceUnit, output: Path, unit_map: dict[str, SourceUnit] | None = None) -> str:
     text = unit.source_markdown or unit.source_text
-    body = _unit_html(unit, text, source_view=True)
+    body = _unit_html(unit, text, source_view=True, unit_map=unit_map)
     if unit.kind is UnitKind.FIGURE and "<figure" not in body:
         body = "<figure>" + body + "</figure>"
     return resolve_asset_html(root, body, output, originals_only=True)
@@ -123,7 +123,16 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     config = load_project(root)
     pages = parse_page_spec(page_spec, config.source_pages)
     all_units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+    unit_map = {u.unit_id: u for u in all_units}
     units = [u for u in all_units if u.page in pages]
+    selected_with_notes = {unit.unit_id for unit in units}
+    while True:
+        expanded = selected_with_notes | {ref for unit in all_units if unit.unit_id in selected_with_notes for ref in unit.footnote_refs}
+        if expanded == selected_with_notes:
+            break
+        selected_with_notes = expanded
+    units = [unit for unit in all_units if unit.unit_id in selected_with_notes]
+    pages = sorted(set(pages) | {unit.page for unit in units})
     if not units:
         raise ValueError(f"No prepared source units for pages {page_spec}; run source prepare first")
     assets = load_assets(root)
@@ -184,7 +193,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
                 meta += " · footnotes " + ", ".join(html.escape(r) for r in unit.footnote_refs)
             articles.append(
                 f'<article class="unit kind-{html.escape(unit.kind.value)}" id="{html.escape(unit.unit_id)}">'
-                f'<span class="meta">{meta}</span><div class="body">{_unit_body(root, unit, output)}</div></article>'
+                f'<span class="meta">{meta}</span><div class="body">{_unit_body(root, unit, output, unit_map)}</div></article>'
             )
         multi = " multi" if len(visible) > 1 else ""
         sections.append(f'<section class="group{multi}">' + "".join(articles) + "</section>")

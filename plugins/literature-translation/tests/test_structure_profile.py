@@ -61,18 +61,15 @@ def test_changed_pdf_and_empty_review_are_rejected(tmp_path):
 
 
 def test_profile_change_rejects_old_review_packet(tmp_path):
-    from littrans.fidelity import _hash, import_source_review
+    from littrans.fidelity import build_source_review_packet, import_source_review, prepare_source
     root = project(tmp_path)
     profile_path = Path(probe_structure(root, '1')['profile'])
-    packet = {'schema_version': 6, 'kind': 'source-fidelity-review',
-              'source_sha256': sha256_file(root / 'source.pdf'), 'pages': [],
-              'document_structure': structure_context(root)}
-    packet_id = 'source-' + _hash(packet)[:20]
-    packet_path = root / 'packets' / packet_id / 'packet.json'
-    write_json(packet_path, packet)
+    prepare_source(root, '1', allow_missing_layout=True)
+    packet = build_source_review_packet(root, '1')
     review = root / 'review.json'
-    write_json(review, {'packet_id': packet_id, 'packet_sha256': sha256_file(packet_path),
-                        'reviewer': 'test', 'pages': []})
+    payload = read_json(Path(packet['review_template']))
+    payload['reviewer'] = 'test'
+    write_json(review, payload)
     changed = read_json(profile_path)
     changed['handling_rules']['new_form'] = 'Inspect the new original layout.'
     write_json(profile_path, changed)
