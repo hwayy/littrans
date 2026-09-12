@@ -886,7 +886,7 @@ def create_workflow_packet(
         if not ids:
             return {"stage": stage, "batch_ids": batch_ids, "asset_ids": [], "pending": False}
         from littrans.context_packets import adjacent_source_units
-        return build_asset_packet(root, ids, stage=stage, context_units=context_units + adjacent_source_units(root, context_units))
+        return build_asset_packet(root, ids, stage=stage, context_units=context_units + adjacent_source_units(root, context_units), host=host)
     if stage not in {"translate", "revise", "audit"}:
         raise ValueError("workflow packet stage must be translate, revise or audit")
     if stage == "audit" and len(batch_ids) > LENS_REVIEWER_BATCH_MAX:

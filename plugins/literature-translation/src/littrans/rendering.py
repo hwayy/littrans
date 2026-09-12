@@ -414,6 +414,8 @@ def _coalesce_table_units(
             and units[cursor].kind is UnitKind.TABLE
             and units[cursor].table is not None
             and units[cursor].continues_from_previous
+            and not any(part.footnote_refs for part in group)
+            and not units[cursor].footnote_refs
         ):
             group.append(units[cursor])
             cursor += 1
@@ -435,6 +437,30 @@ def _coalesce_table_units(
             grouped_ids[first.unit_id] = [part.unit_id for part in group]
         index = cursor
     return rendered, grouped_ids
+
+
+def _markdown_note_label(unit: SourceUnit) -> str:
+    return "fn-" + unit.unit_id.encode("utf-8").hex()
+
+
+def _markdown_note_definition(unit: SourceUnit, text: str) -> str:
+    lines = text.splitlines() or [""]
+    return f"[^{_markdown_note_label(unit)}]: " + lines[0] + "".join("\n    " + line for line in lines[1:])
+
+
+def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, SourceUnit]) -> str:
+    notes = [unit_map[uid] for uid in unit.footnote_refs if uid in unit_map]
+    # Older units without explicit relationships retain same-page number lookup.
+    if not unit.footnote_refs:
+        notes = [note for note in unit_map.values() if note.page == unit.page and note.kind is UnitKind.FOOTNOTE]
+    labels = {note.footnote_number: _markdown_note_label(note) for note in notes if note.footnote_number}
+    tokens = re.compile(r"(?P<code>(?P<fence>`+|~{3,})[\s\S]*?(?P=fence))"
+                        r"|(?P<math>(?P<dollars>\${1,2})[\s\S]*?(?P=dollars))"
+                        r"|(?<!\\)\[\^(?P<number>\d+)\]")
+    def replace(match: re.Match[str]) -> str:
+        number = match.group("number")
+        return f"[^{labels[number]}]" if number in labels else match[0]
+    return tokens.sub(replace, text)
 
 
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
@@ -482,7 +508,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CAPTION:
         return f"*{safe_text}*"
     if unit.kind is UnitKind.FOOTNOTE:
-        return f"> **脚注{unit.footnote_number or ''}：** {safe_text}"
+        return _markdown_note_definition(unit, safe_text)
     return safe_text
 
 
@@ -1075,13 +1101,17 @@ def render_project(
             render_unit = unit.model_copy(
                 update={"figure_labels": rendered_figure_labels}
             )
-        rendered = _target_markdown(render_unit, target)
+        rendered = (escape_markdown_prose(target or render_unit.source_text)
+                    if render_unit.kind is UnitKind.FOOTNOTE else _target_markdown(render_unit, target))
         companion_md, companion_html = _asset_companions(record, unit, footnote_unit_map)
         if companion_md:
             rendered += "\n\n" + companion_md
         if ASSET_RE.search(render_unit.source_text) and target_table:
             rendered += "\n\n" + table_to_markdown(target_table)
         rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
+        rendered = _markdown_footnote_calls(rendered, unit, footnote_unit_map)
+        if unit.kind is UnitKind.FOOTNOTE:
+            rendered = _markdown_note_definition(unit, rendered)
         anchor = "".join(
             f'<a id="{unit_id}"></a>'
             for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])

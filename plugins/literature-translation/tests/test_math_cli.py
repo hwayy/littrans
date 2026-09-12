@@ -93,7 +93,8 @@ def test_asset_packet_rejects_duplicate_ids_and_uses_source_context(tmp_path: Pa
 def test_asset_revision_packet_forwards_bound_review_feedback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, units, _ = make_asset_fixture(tmp_path, [("Original context.", "figure", "Label")])
     observed = []
-    def build(*args: Any) -> dict[str, Any]:
+    def build(*args: Any, host: str | None = None) -> dict[str, Any]:
+        assert host == "auto"
         observed.append(args)
         return {"stage": "transcribe"}
     monkeypatch.setattr(representations, "build_asset_packet", build)

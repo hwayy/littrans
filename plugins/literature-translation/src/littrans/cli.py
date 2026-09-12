@@ -240,6 +240,7 @@ def assets_packet(
     asset_ids: str = typer.Option(..., help="Comma-separated stable asset IDs."),
     stage: str = typer.Option("transcribe"),
     revision_notes: str | None = typer.Option(None, help="Explicit correction request bound to existing candidate/review evidence."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude."),
 ) -> None:
     from littrans.context_packets import adjacent_source_units
     from littrans.fidelity_models import asset_reference_ids
@@ -249,7 +250,7 @@ def assets_packet(
     ids = [aid.strip() for aid in asset_ids.split(",")]
     units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit)
              if set(ids) & set(asset_reference_ids(u.source_markdown or u.source_text))]
-    emit(build_asset_packet(project, ids, stage, units + adjacent_source_units(project, units), revision_notes))
+    emit(build_asset_packet(project, ids, stage, units + adjacent_source_units(project, units), revision_notes, host=host))
 
 
 @assets_app.command("import-review")

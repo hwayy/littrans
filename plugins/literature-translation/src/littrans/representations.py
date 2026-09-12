@@ -176,7 +176,7 @@ def _revision_context(root: Path, asset_ids: list[str], fingerprints: dict[str, 
 
 def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcribe",
                        context_units: list[Any] | None = None,
-                       revision_notes: str | None = None) -> dict[str, Any]:
+                       revision_notes: str | None = None, host: str | None = None) -> dict[str, Any]:
     """Persist a reproducible source-only or independent asset-review work packet."""
     if stage not in {"transcribe", "asset-audit"}:
         raise ValueError("Asset packet stage must be transcribe or asset-audit")
@@ -193,7 +193,7 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
             _require_format(assets[key])
         from littrans.hosts import resolve_coordination_host
 
-        host = resolve_coordination_host(None)
+        host = resolve_coordination_host(host)
         profile = load_project(root).agent_models.get(host, {})
         if stage == "transcribe" and (not profile.get("transcribe", "").strip()
                                       or not profile.get("reasoning_effort", "").strip()):

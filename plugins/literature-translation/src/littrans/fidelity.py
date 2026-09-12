@@ -1292,7 +1292,14 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
         assets = load_assets(root)
         claimed: set[str] = set()
+        claimed_units: set[str] = set()
+        unit_owners = {unit.unit_id: unit.page for unit in units}
         for decision in decisions:
+            for item in decision.get("override", {}).get("units", []):
+                uid = item["unit_id"]
+                if uid in claimed_units or (uid in unit_owners and unit_owners[uid] != decision["page"]):
+                    raise ValueError("source override unit ID collision: " + uid)
+                claimed_units.add(uid)
             for region in decision.get("override", {}).get("regions", []):
                 aid = region.get("preserve_asset_id") or region.get("id")
                 if aid and (aid in claimed or (aid in assets and any(f.page != decision["page"] for f in assets[aid].fragments))):
@@ -1305,6 +1312,10 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 with fitz.open(config.source(root)) as doc:
                     layout = _cached_layout(root, by_page[p]["ledger"])
                     new_units, new_assets, ledger = _page_prepare(root, doc, p, config.source_sha256, layout, decision["override"])
+                new_unit_ids = [unit.unit_id for unit in new_units]
+                retained_unit_ids = {unit.unit_id for unit in units if unit.page != p}
+                if len(new_unit_ids) != len(set(new_unit_ids)) or retained_unit_ids.intersection(new_unit_ids):
+                    raise ValueError("source override unit ID collision")
                 old_units = units
                 units = [u for u in units if u.page != p] + new_units
                 _invalidate(root, old_units, units)

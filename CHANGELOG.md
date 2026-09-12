@@ -7,6 +7,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Carry explicit host selection into asset transcription/audit packets and the asset CLI.
+- Emit unique Markdown footnote calls/definitions, preserving code literals and expanded
+  note content; keep continued table fragments with scoped notes separate.
+- Reject source-unit ID collisions across pages and within a source-review import.
+
 - Bind source coverage HTML and its original-page images to review packets and receipts;
   damaged reports require new packet identities and fresh visual review.
 - Resolve cross-page footnotes through source unit references, including page-scoped output;

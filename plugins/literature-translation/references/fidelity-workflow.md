@@ -18,7 +18,7 @@ retain it. Import and later approval reads verify these files. Relative image UR
 reports portable. A damaged report is rebuilt under a new packet identity and cannot
 silently restore prior approval.
 
-Source override IDs cannot collide across decisions or with assets owned by another page.
+Source override asset and unit IDs cannot collide across decisions or with IDs owned by another page.
 Same-page boundary repairs may retain stable IDs; changed content fingerprints invalidate
 old evidence and require fresh source review. `preserve_asset_id` reuses an unchanged
 original crop on its own page.
@@ -107,3 +107,8 @@ An explicit page override `page_canvas_bbox: [0, 0, width, height]` may reveal p
 Run `source probe PROJECT --pages PAGES` before a new scope's extraction. Complete the source-bound profile using [document-structure.md](document-structure.md). Source preparation records its hash in new page ledgers; review packets include the profile and reject imports after its contents change. Batch context includes the same document-specific handling rules. The generic extractor remains a proposal generator: agents apply document-specific decisions using supported source overrides, then inspect fresh coverage evidence. A profile does not establish source fidelity or silently re-extract already reviewed pages.
 
 Container kinds are open-ended, including examples, exercises, cases, algorithms or book-specific forms. An enclosing container can include multiple author paragraphs, displays, lists and proofs. Keep those internal boundaries: `parent_id` expresses scope, not a command to concatenate every child. A paragraph around a display remains one logical scope; a following “where” clause must not become an unrelated batch. Continuation across pages requires source indentation and context, not punctuation alone.
+
+Markdown footnote calls and definitions use unique labels derived from the referenced
+source unit ID, so repeated numbers on different pages do not collide. Code/math
+literals remain literal. Definitions are indented after asset/companion expansion;
+continued table fragments with independent footnote scopes remain separate.
