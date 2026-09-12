@@ -484,9 +484,15 @@ def workflow_next(
     ]
     start = next((index for index, (_, stage) in enumerate(stages) if stage != "complete"), None)
     if start is None:
+        pending = [m.batch_id for m in manifests
+                   if not _asset_lane(root, m, snapshot.unit_map)["complete"]][:resolved_limit]
         return {
             "stage": "complete",
             "batch_ids": [],
+            "ready_tasks": [],
+            "optional_asset_tasks": _ready_tasks(root, pending, snapshot, resolved_host, optional_assets=True),
+            "audit_stale": {},
+            "schedule": "translation-first-optional-assets",
             "host": resolved_host,
             "limit": resolved_limit,
             "start_at": start_at,

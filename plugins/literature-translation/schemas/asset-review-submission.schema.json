@@ -69,6 +69,18 @@
       "title": "Image Evidence",
       "type": "object"
     },
+    "render_manifest_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Render Manifest Sha256"
+    },
     "render_artifact_sha256": {
       "title": "Render Artifact Sha256",
       "type": "string"

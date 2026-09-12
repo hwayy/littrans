@@ -94,7 +94,10 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
     assert state["complete"]
     assert not state["assets_complete"]
     assert not state["ready_tasks"]
-    assert workflow_next(project, start_at=bid, through=bid)["stage"] == "complete"
+    completed = workflow_next(project, start_at=bid, through=bid)
+    assert completed["stage"] == "complete"
+    assert completed["ready_tasks"] == []
+    assert {task["stage"] for task in completed["optional_asset_tasks"]} == {"transcribe"}
     assert create_workflow_packet(project, "transcribe", [bid])["asset_ids"]
     assert representation_status(project)["counts"]["transcribe"] > 0
     # No candidate exists anywhere in the project, so the edition is originals-only.

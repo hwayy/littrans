@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -130,22 +131,39 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         source = old / source
     if sha256_file(source) != payload["source_sha256"]:
         raise ValueError("Historical source PDF hash changed")
-    config = initialize_project(
-        source, new, payload.get("profile", "technical-book"), payload.get("title"),
-        payload.get("source_language", "en"), payload.get("target_language", "zh-CN"),
-    )
-    for directory in ("context", "glossary"):
-        if (old / directory).is_dir():
-            shutil.copytree(old / directory, new / directory, dirs_exist_ok=True)
-    if payload.get("external_review") is not None:
-        from littrans.models import ExternalReviewConfig
-        config.external_review = ExternalReviewConfig.model_validate(payload["external_review"])
-        save_project(new, config)
-    write_json(new / "derived" / "rebuild-provenance.json", {
-        "historical_project": str(old), "source_sha256": config.source_sha256,
-        "copied": ["context", "glossary"], "inherited_approvals": False,
-        "context_policy": "Historical style text is context; the v6 asset-reference contract takes precedence.",
-    })
+    new.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".littrans-rebuild-", dir=new.parent) as temporary:
+        staging = Path(temporary) / "project"
+        copied_source = staging / "source" / source.name
+        copied_source.parent.mkdir(parents=True)
+        shutil.copyfile(source, copied_source)
+        if sha256_file(copied_source) != payload["source_sha256"]:
+            raise ValueError("Copied source PDF hash changed")
+        config = initialize_project(
+            copied_source, staging, payload.get("profile", "technical-book"), payload.get("title"),
+            payload.get("source_language", "en"), payload.get("target_language", "zh-CN"),
+        )
+        config.source_path = copied_source.relative_to(staging).as_posix()
+        for directory in ("context", "glossary"):
+            if (old / directory).is_dir():
+                shutil.copytree(old / directory, staging / directory, dirs_exist_ok=True)
+        if payload.get("external_review") is not None:
+            from littrans.models import ExternalReviewConfig
+            config.external_review = ExternalReviewConfig.model_validate(payload["external_review"])
+        save_project(staging, config)
+        write_json(staging / "derived" / "provenance.json", {
+            "source_path": config.source_path, "source_sha256": config.source_sha256,
+            "rights_status": config.rights_status, "source_is_copied": True,
+        })
+        write_json(staging / "derived" / "rebuild-provenance.json", {
+            "historical_project": str(old), "source_sha256": config.source_sha256,
+            "copied": ["source", "context", "glossary"], "inherited_approvals": False,
+            "context_policy": "Historical style text is context; the v6 asset-reference contract takes precedence.",
+        })
+        if new.exists():
+            raise ValueError("Rebuild destination appeared during initialization")
+        staging.rename(new)
+
     return config
 
 

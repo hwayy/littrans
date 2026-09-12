@@ -911,9 +911,11 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                 marker = structure["markers"].get(gid)
                 style = font_style(glyph_by_id[gid]["font"])
                 if marker:
-                    if not marker["definition"]:
+                    if not marker["definition"] and marker.get("emit", True):
                         tokens.append(("[^" + marker["number"] + "]", ""))
-                        footnote_refs.append(f"p{number:04d}-" + marker["note_block"])
+                        reference = f"p{number:04d}-" + marker["note_block"]
+                        if reference not in footnote_refs:
+                            footnote_refs.append(reference)
                 elif aid:
                     if aid not in emitted:
                         before, after = edge_spaces[aid]

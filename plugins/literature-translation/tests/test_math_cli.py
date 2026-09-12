@@ -78,7 +78,7 @@ def test_asset_submission_is_separate_from_translation(tmp_path: Path, monkeypat
 
 
 def test_asset_packet_rejects_duplicate_ids_and_uses_source_context(tmp_path: Path) -> None:
-    root, units, _ = make_asset_fixture(tmp_path, [("Original context.", "figure", "Label")])
+    root, units, _ = make_asset_fixture(tmp_path, [("Original context.", "math", "x=1")])
     duplicate = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1,fixture-asset-1"])
     assert duplicate.exit_code != 0
     assert "unique" in str(duplicate.exception)

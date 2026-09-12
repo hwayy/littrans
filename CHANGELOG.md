@@ -92,6 +92,15 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Fixed
 
+- Bound asset-review artifacts to every copied original and MathJax dependency; missing or
+  modified dependencies require a fresh audit packet and review, including for earlier approvals.
+- Restricted structured candidates to math/LaTeX, table/table and code/code. Figures and
+  unclassified mixed regions retain originals until source review establishes a supported kind.
+- Preserved reviewed tables and code in Markdown with original-image references.
+- Sanitized source-checkpoint output names and made rebuilt projects own a portable source copy.
+- Exposed optional asset work after reading completion and recovered multi-digit footnote calls.
+- Required successful smoke-test readiness for managed layout runtimes and made failed installs retryable.
+
 - Reported an unresolved `{{asset:ID}}` reference by name during Markdown rendering, matching the
   existing bilingual HTML behavior, instead of aborting the render with an unlabeled lookup error.
 - Reused the page's cached layout-detector result when a source review override re-prepares a

@@ -17,7 +17,7 @@ from typing import Any
 from littrans.extractor import parse_page_spec
 from littrans.fidelity_models import asset_reference_ids, load_assets
 from littrans.models import RenderPolicy, SourceUnit, UnitKind
-from littrans.rendering import _unit_html
+from littrans.rendering import _safe_name, _unit_html
 from littrans.representations import resolve_asset_html
 from littrans.storage import atomic_write_text, load_project, read_json, read_jsonl
 from littrans.verification import verify_extraction
@@ -129,9 +129,11 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     assets = load_assets(root)
     verification = verify_extraction(root, page_spec)
     output = root / "output"
-    output.mkdir(parents=True, exist_ok=True)
-    label = name or f"source-p{min(pages):04d}-p{max(pages):04d}"
+    label = _safe_name(name) if name is not None else f"source-p{min(pages):04d}-p{max(pages):04d}"
     html_path = output / f"{label}.html"
+    if not html_path.resolve().is_relative_to(output.resolve()):
+        raise ValueError("Source render output must stay inside the output directory")
+    output.mkdir(parents=True, exist_ok=True)
 
     referenced = {aid for u in units for aid in asset_reference_ids(u.source_markdown or u.source_text)}
     export_methods = Counter(assets[aid].fragments[0].export_method for aid in referenced if aid in assets)

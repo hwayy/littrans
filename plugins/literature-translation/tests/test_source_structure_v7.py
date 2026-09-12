@@ -230,3 +230,13 @@ def test_source_render_writes_a_checkpoint(figure_project: Path, monkeypatch: py
     shared = render_source_review(figure_project, "1", "shared", standalone=True)
     page = Path(shared["html"]).read_text(encoding="utf-8")
     assert shared["standalone"] and 'src="original-assets/' not in page and "data:image/svg+xml;base64," in page
+
+
+@pytest.mark.parametrize('name', ['../escaped', '/tmp/report', r'C:\temp\report', r'..\escaped', 'safe-name'])
+def test_source_render_name_stays_in_output(figure_project: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import littrans.fidelity as fidelity
+    from littrans.source_render import render_source_review
+    monkeypatch.setattr(fidelity, 'detect_layout', lambda images, output: {'status': 'ok', 'pages': {}})
+    prepare_source(figure_project)
+    result = render_source_review(figure_project, '1', name)
+    assert Path(result['html']).resolve().parent == (figure_project / 'output').resolve()

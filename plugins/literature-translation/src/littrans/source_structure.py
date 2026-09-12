@@ -163,16 +163,34 @@ def plan_structure(
         for gid in n["glyph_ids"]
     }
     note_top = min((n["top"] for n in notes.values()), default=height + 1)
-    for g in glyphs:
-        if (
-            g["text"] in {n["number"] for n in notes.values()}
-            and g["size"] < font_size * 0.8
-            and g["bbox"][1] < note_top
-            and g["bbox"][1] > height * 0.12
-            and not re.search(r"cmmi|cmsy|cmr|cmex", g["font"], re.I)
-        ):
-            bid = next(bid for bid, n in notes.items() if n["number"] == g["text"])
-            markers[g["id"]] = {"number": g["text"], "note_block": bid, "definition": False}
+    note_numbers = {n["number"]: bid for bid, n in notes.items()}
+    for block in blocks:
+        for line in block["lines"]:
+            runs: list[list[dict[str, Any]]] = []
+            digit_run: list[dict[str, Any]] = []
+            for gid in line:
+                g = gm[gid]
+                eligible = (g["text"].isdigit() and g["size"] < font_size * 0.8
+                            and height * 0.12 < g["bbox"][1] < note_top
+                            and not re.search(r"cmmi|cmsy|cmr|cmex", g["font"], re.I))
+                adjacent = not digit_run or (
+                    abs(g["origin"][1] - digit_run[-1]["origin"][1]) <= font_size * 0.15
+                    and abs(g["size"] - digit_run[-1]["size"]) <= font_size * 0.1
+                    and -1 <= g["bbox"][0] - digit_run[-1]["bbox"][2] <= font_size * 0.25)
+                if not eligible or not adjacent:
+                    if digit_run:
+                        runs.append(digit_run)
+                        digit_run = []
+                if eligible:
+                    digit_run.append(g)
+            if digit_run:
+                runs.append(digit_run)
+            for run in runs:
+                number = "".join(g["text"] for g in run)
+                if number in note_numbers:
+                    for index, g in enumerate(run):
+                        markers[g["id"]] = {"number": number, "note_block": note_numbers[number],
+                                            "definition": False, "emit": index == 0}
     # Split a native block at a new first-line indent, but not at glyph fragments
     # on the same visual line. PDF blocks may span multiple author paragraphs.
     split, first_x, display_blocks = [], {}, set()

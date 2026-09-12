@@ -78,7 +78,7 @@ def test_image_companion_cannot_bypass_separate_math_review(project: Path) -> No
 def review_input(root: Path, verdict: str = "accept") -> dict:
     packet = build_asset_packet(root, ["a1"], "asset-audit")
     payload = {"packet_id": packet["packet_id"], "reviewer_task_id": "reviewer-2",
-               "render_artifact_sha256": packet["render_artifact"]["sha256"],
+               "render_artifact_sha256": packet["render_artifact"]["sha256"], "render_manifest_sha256": packet["render_manifest_sha256"],
                "image_evidence": packet["required_images"],
                "decisions": [{"asset_id": "a1", "candidate_sha256": packet["candidates"]["a1"]["candidate_sha256"],
                  "verdict": verdict, "visual_checked": True, "render_checked": True, "notes": "Compared all symbols."}]}

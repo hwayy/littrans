@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from collections import Counter
 from importlib.resources import files
 from pathlib import Path
@@ -31,7 +32,8 @@ from littrans.storage import (
 
 ASSET_RE = re.compile(r"\{\{asset:([A-Za-z0-9][A-Za-z0-9._-]*)\}\}")
 FORMAT_TYPES = {"latex", "table", "code", "text"}
-PROMPT_VERSION = "fidelity-contextual-representations-0.6.0-1"
+ASSET_FORMATS = {"math": "latex", "table": "table", "code": "code"}
+PROMPT_VERSION = "fidelity-contextual-representations-0.6.0-2"
 
 
 def _hash(value: Any) -> str:
@@ -73,6 +75,33 @@ def _asset_fingerprint(root: Path, asset: dict[str, Any]) -> str:
     if not evidence or not any(fragment.get("png_path") for fragment in asset["fragments"]):
         raise ValueError(f"Original image evidence is missing for asset {asset['id']}")
     return _hash({"asset": asset, "files": evidence})
+
+
+def _require_format(asset: dict[str, Any], candidate: dict[str, Any] | None = None) -> None:
+    expected = ASSET_FORMATS.get(asset["kind"])
+    if expected is None:
+        raise ValueError("Asset is not representable; classify through source review first: " + asset["id"])
+    if candidate is not None and candidate.get("format") != expected:
+        raise ValueError(f"Candidate format must be {expected} for {asset['kind']} asset {asset['id']}")
+
+
+def _verify_render_artifact(root: Path, packet: dict[str, Any]) -> None:
+    manifest = packet.get("render_manifest")
+    if not manifest or _hash(manifest) != packet.get("render_manifest_sha256"):
+        raise ValueError("Render manifest missing or modified; build a fresh asset-audit packet")
+    artifact = packet["render_artifact"]
+    expected_path = _directory(root) / "renders" / packet["packet_id"] / "comparison.html"
+    if _local(root, artifact["path"]) != expected_path.resolve():
+        raise ValueError("Render artifact path mismatch")
+    if manifest.get("comparison.html") != artifact["sha256"]:
+        raise ValueError("Render artifact manifest mismatch")
+    folder = expected_path.parent
+    for relative, digest in manifest.items():
+        path = _local(folder, relative)
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError("Render dependency missing or modified: " + relative)
+    if packet["renderer_sha256"] != _runtime_fingerprint():
+        raise ValueError("Candidate render artifact is stale")
 
 
 def _index(root: Path) -> dict[str, Any]:
@@ -160,6 +189,8 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
         missing = set(asset_ids) - assets.keys()
         if missing:
             raise ValueError(f"Unknown asset IDs: {sorted(missing)}")
+        for key in asset_ids:
+            _require_format(assets[key])
         from littrans.hosts import resolve_coordination_host
 
         host = resolve_coordination_host(None)
@@ -173,6 +204,7 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
             "model": profile.get("transcribe" if stage == "transcribe" else "asset-audit"),
             "reasoning_effort": profile.get("reasoning_effort"),
             "fresh_context": True, "prompt_version": PROMPT_VERSION,
+            "allowed_formats": {key: ASSET_FORMATS[assets[key]["kind"]] for key in asset_ids},
             "asset_ids": asset_ids, "assets": [assets[key] for key in asset_ids],
             "asset_fingerprints": {key: _asset_fingerprint(root, assets[key]) for key in asset_ids},
             "context_units": _context(root, context_units, set(asset_ids)),
@@ -182,7 +214,7 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
                 "what is present, preserving equation structure, signs, scope, indices and accents. "
                 "Do not repair presumed mathematical mistakes. Supply one record per asset. "
                 "If unclear, return status=unresolved and explain. Do not translate or use any "
-                "other task's answer. Figure internals remain an image."
+                "other task's answer. Use the asset-specific allowed_formats mapping. Figure and mixed-region internals remain images."
                 if stage == "transcribe" else
                 "Independently compare every original with the rendered candidate. Inspect all "
                 "symbols, subscripts, accents, signs, scope, multiline and matrix structure. "
@@ -219,21 +251,42 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
                 candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
                 if candidate["asset_fingerprint"] != payload["asset_fingerprints"][key]:
                     raise ValueError("Stale candidate: " + key)
+                _require_format(assets[key], candidate)
                 payload["candidates"][key] = candidate
             payload["renderer_sha256"] = _runtime_fingerprint()
-        packet_id = _hash(payload)
-        payload["packet_id"] = packet_id
         if stage == "asset-audit":
-            folder = _directory(root) / "renders" / packet_id
-            folder.mkdir(parents=True, exist_ok=True)
-            install_mathjax(folder)
-            render_path = folder / "comparison.html"
-            render_text = _review_html(root, folder, payload)
-            atomic_write_text(render_path, render_text)
-            payload["render_artifact"] = {
-                "path": render_path.relative_to(root).as_posix(),
-                "sha256": hashlib.sha256(render_text.encode()).hexdigest(),
-            }
+            renders = _directory(root) / "renders"
+            renders.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="building-", dir=renders) as temporary:
+                folder = Path(temporary)
+                install_mathjax(folder)
+                atomic_write_text(folder / "comparison.html", _review_html(root, folder, payload))
+                manifest = {path.relative_to(folder).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                            for path in sorted(folder.rglob("*")) if path.is_file()}
+                payload["render_manifest"] = manifest
+                payload["render_manifest_sha256"] = _hash(manifest)
+                while True:
+                    packet_id = _hash({k: v for k, v in payload.items()
+                                       if k not in {"packet_id", "render_artifact"}})
+                    payload["packet_id"] = packet_id
+                    final = renders / packet_id
+                    payload["render_artifact"] = {
+                        "path": (final / "comparison.html").relative_to(root).as_posix(),
+                        "sha256": manifest["comparison.html"],
+                    }
+                    if not final.exists():
+                        shutil.copytree(folder, final)
+                        break
+                    try:
+                        _verify_render_artifact(root, payload)
+                        break
+                    except (ValueError, OSError):
+                        # New identity requires a new review; never repair bytes behind old receipts.
+                        payload["previous_render_packet_id"] = packet_id
+
+        else:
+            packet_id = _hash(payload)
+            payload["packet_id"] = packet_id
         _immutable(_directory(root) / "packets" / f"{packet_id}.json", payload)
         return payload
 
@@ -310,6 +363,9 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
         records = payload.get("candidates", [])
         if not isinstance(records, list) or Counter(item["asset_id"] for item in records) != Counter(packet["asset_ids"]):
             raise ValueError("Candidate coverage must match packet assets exactly, once each")
+        assets = _assets(root)
+        for item in records:
+            _require_format(assets[item["asset_id"]], item)
         response_sha = _hash(payload)
         response_path = _directory(root) / "responses" / f"{packet['packet_id']}.json"
         if response_path.exists():
@@ -377,11 +433,10 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
         if not isinstance(reviewer, str) or not reviewer.strip():
             raise ValueError("Independent reviewer_task_id is required")
         artifact = packet["render_artifact"]
-        if (hashlib.sha256(_local(root, artifact["path"]).read_bytes()).hexdigest() != artifact["sha256"]
-                or _runtime_fingerprint() != packet["renderer_sha256"]):
-            raise ValueError("Candidate render artifact is stale")
-        if payload.get("render_artifact_sha256") != artifact["sha256"]:
-            raise ValueError("Review must identify the rendered artifact it examined")
+        _verify_render_artifact(root, packet)
+        if (payload.get("render_artifact_sha256") != artifact["sha256"]
+                or payload.get("render_manifest_sha256") != packet["render_manifest_sha256"]):
+            raise ValueError("Review must identify the rendered artifact and manifest it examined")
         decisions = payload.get("decisions", [])
         if not isinstance(decisions, list) or Counter(item["asset_id"] for item in decisions) != Counter(packet["asset_ids"]):
             raise ValueError("Review coverage must match the packet exactly")
@@ -389,6 +444,7 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
         for decision in decisions:
             key = decision["asset_id"]
             candidate = packet["candidates"][key]
+            _require_format(_assets(root)[key], candidate)
             sha = candidate["candidate_sha256"]
             if reviewer == candidate["author_task_id"]:
                 raise ValueError("Self-review cannot verify an asset candidate")
@@ -432,12 +488,15 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
             raise ValueError("Unknown asset: " + key)
         state: dict[str, Any] = {"state": "transcribe", "candidate_sha256": None,
                                  "semantic_uncertainty": ""}
-        if assets[key].get("kind") in {"figure", "diagram", "circuit"}:
+        if assets[key].get("kind") not in ASSET_FORMATS:
             state["state"] = "fallback"
+            result[key] = state
+            continue
         sha = idx["candidates"].get(key)
         if sha:
             candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
             try:
+                _require_format(assets[key], candidate)
                 current = _asset_fingerprint(root, assets[key]) == candidate["asset_fingerprint"]
             except (OSError, ValueError):
                 current = False
@@ -453,10 +512,10 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
                     state["state"] = "verified" if decision["verdict"] == "accept" else "fallback"
                     state["semantic_uncertainty"] = decision.get("semantic_uncertainty", "")
                     try:
-                        packet = read_json(_directory(root) / "packets" / f"{review_packet}.json")
-                        artifact = packet["render_artifact"]
-                        if (packet["renderer_sha256"] != _runtime_fingerprint()
-                                or hashlib.sha256(_local(root, artifact["path"]).read_bytes()).hexdigest() != artifact["sha256"]
+                        packet = _load_packet(root, review_packet, "asset-audit")
+                        _verify_render_artifact(root, packet)
+                        if (review.get("render_manifest_sha256") != packet["render_manifest_sha256"]
+                                or review.get("render_artifact_sha256") != packet["render_artifact"]["sha256"]
                                 or _hash({k: v for k, v in candidate.items() if k != "candidate_sha256"}) != sha):
                             state["state"] = "asset-audit"
                     except (OSError, KeyError, ValueError):
@@ -685,6 +744,24 @@ def resolve_asset_html(root: Path, text: str, output: Path, *, originals_only: b
     return ASSET_RE.sub(replace, text)
 
 
+def _candidate_markdown(candidate: dict[str, Any]) -> str:
+    content, kind = candidate["content"], candidate["format"]
+    if kind == "table":
+        def cell(value: str) -> str:
+            return html.escape(value).replace("|", "&#124;").replace("\r\n", "\n").replace("\n", "<br>")
+        rows = ["| " + " | ".join(cell(value) for value in row) + " |" for row in content["rows"]]
+        # Empty headers avoid inventing source header semantics.
+        width = len(content["rows"][0])
+        return "\n".join(["|" + " |" * width, "|" + " --- |" * width, *rows])
+    if kind == "code":
+        content = str(content)
+        fence = "`" * max(3, max((len(run) + 1 for run in re.findall(r"`+", content)), default=3))
+        return fence + "\n" + content + ("" if content.endswith("\n") else "\n") + fence
+    if kind == "text":
+        return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(str(content)))
+    raise ValueError("Unsupported Markdown candidate format: " + kind)
+
+
 def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_only: bool = False) -> str:
     if not ASSET_RE.search(text):
         return text
@@ -705,6 +782,7 @@ def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_onl
                 display = asset.get("display", asset.get("kind") not in {"inline_math", "inline", "variable"})
                 delimiter = "$$" if display else "$"
                 return f'{delimiter}{candidate["content"]}{delimiter} {pictures}（已核验；原式备查）'
+            return _candidate_markdown(candidate) + "\n\n" + pictures + "（已核验；原式备查）"
         if originals_only:
             return pictures
         return pictures + "（转写未完成／待核验）"

@@ -1069,7 +1069,8 @@ def _submit_one_transcription_candidate(root: Path, batch_id: str) -> None:
             "image_evidence": packet["required_images"],
             "usage": None,
             "candidates": [
-                {"asset_id": asset_id, "format": "latex", "content": "a = b + 3"}
+                {"asset_id": asset_id, "format": packet["allowed_formats"][asset_id],
+                 "content": {"rows": [["a", "b"]]} if packet["allowed_formats"][asset_id] == "table" else "a = b + 3"}
                 for asset_id in packet["asset_ids"]
             ],
         },

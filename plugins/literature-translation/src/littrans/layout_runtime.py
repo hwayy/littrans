@@ -98,6 +98,11 @@ def layout_runtime_status() -> dict[str, Any]:
     if not model or not (model / "config.json").is_file() or not (model / "model.safetensors").is_file():
         status["reason"] = f"{MODEL_NAME} weights missing"
         return status
+    cache = layout_cache_root().resolve()
+    managed = python.resolve().is_relative_to(cache) or model.resolve().is_relative_to(cache)
+    if managed and not (cache / "venv" / READY_MARKER).is_file():
+        status["reason"] = "managed layout smoke test not completed; run littrans layout install"
+        return status
     status["ok"] = True
     return status
 
@@ -175,6 +180,8 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     environment = cache / "venv"
     model = cache / MODEL_NAME
     venv_python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    marker = environment / READY_MARKER
+    marker.unlink(missing_ok=True)
     if force and environment.exists():
         shutil.rmtree(environment)
     if not venv_python.is_file():
@@ -186,9 +193,11 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     _pip(venv_python, "--upgrade", "pip")
     _pip(venv_python, "torch", "torchvision", "--index-url", TORCH_CPU_INDEX)
     _pip(venv_python, *LAYOUT_PACKAGES)
-    if force or not (model / "config.json").is_file():
+    if force or not all((model / name).is_file() for name in ("config.json", "model.safetensors")):
         _download_weights(venv_python, model, model_source)
     smoke = _smoke_test(venv_python, model)
+    if smoke.get("status") != "ok":
+        raise RuntimeError("layout smoke test did not report ok")
     (environment / READY_MARKER).write_text("ready\n", encoding="utf-8")
     return {**layout_runtime_status(), "installed": True, "smoke_test": smoke,
             "model_source": model_source}
