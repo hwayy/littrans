@@ -28,5 +28,9 @@ Severity:
 
 Type must be one of `meaning`, `omission`, `addition`, `terminology`, `technical`, `style`, `reference`, `number-unit`, or `format`.
 
+`issue_id` only needs to be unique within the reviewer's own output: a coordinated `review import-set` replaces it with a canonical `audit-<hash>` id and stores the original under `source_issue_id`; `review resolve` accepts either.
+
+Not defects (the renderer or the asset contract owns them): missing list bullets or numbers, missing heading `#`, missing admonition shell, `{{asset:ID}}` placeholders in place of formulas, and `language_present=false` with notes on a notation-only image.
+
 Do not report a stylistic preference as an accuracy problem. Do not use vague explanations such as "unnatural" without identifying the defect.
 

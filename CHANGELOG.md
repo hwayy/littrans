@@ -60,6 +60,35 @@ versioning and correspond to Git tags named `v<version>`.
 - Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
   only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
 - Added the transcription skill, asset review role and offline MathJax reading contract.
+- Added `workflow packet --stage revise`: the translate packet files plus the batch's current
+  translation records, its open review issues and revision instructions, so one fresh translator
+  can consolidate an audit round; `revise` tasks use the translate model policy.
+- Reported why audit coverage is stale: `audit_coverage`, `review status` and
+  `workflow next|status` now carry `stale`/`stale_reasons`/`audit_stale` (`context-changed`,
+  `dependency-changed`, `unit-changed`, `invalidated`, `closure-incomplete`,
+  `context-units-removed`); audit runs record the shared brief/style/term fingerprint separately.
+- `review import-set` keeps the reviewer's own id as `source_issue_id` next to the canonical
+  `audit-<hash>` id; `review resolve` accepts either id and several comma-separated ids at once,
+  and `review issues PROJECT BATCH [--all] [--jsonl]` lists a batch's issues.
+- Allowed a packet or render batch set to mix batch series when their units do not overlap and
+  source order holds; batches within one series must still be consecutive.
+- `render` switches to originals-only automatically when the project holds no transcription
+  candidate and records `originals_only_reason` in the render QA and command output.
+- The rendered edition's header, `*.quality.md` (now listing its batches and translation status)
+  and `render-qa.json` (`rendered_status`, `review_batch_ids`) describe the rendered batches, not
+  the project-wide status; QA report counts are scoped to those batches.
+- Added deterministic QA warnings `target-halfwidth-punctuation` (half-width `,.;:!?` after
+  Chinese text) and `asset-reference-spacing` (whitespace between Chinese text and
+  `{{asset:ID}}`); the QA context fingerprint is now `v6.4`, so existing batches report stage
+  `qa` until `qa run` is rerun (audit coverage is unaffected).
+- Writer, audit and revise packets carry a "Contracts" paragraph (renderer-owned list/heading/
+  note markers, placeholder spacing, full-width punctuation, `language_present=false` with notes)
+  so reviewers stop reporting the contract as defects; the `asset-language-untranslated` message
+  names the notation-only alternative.
+- The CLI reconfigures stdout and stderr to UTF-8 with LF line endings, so piped output on a GBK
+  Windows console needs no `PYTHONIOENCODING` and carries no carriage returns; generated batch, context and
+  schema files are written with LF. PyMuPDF is imported as `pymupdf`, so its `fitz` deprecation
+  notice no longer lands in the CLI's stdout.
 
 ### Fixed
 

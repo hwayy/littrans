@@ -30,6 +30,10 @@ Translation records retain their unit's `source_hash`, references and an `image_
 
 Persist successful responses before parsing or import. A cached response is reusable only for the same input, model, prompt and relevant output fingerprints. Recover serialization failures offline; do not pay for an identical successful response again. Imports are idempotent, but changed source or packet hashes require fresh evidence. Record actual host/model metadata and measured usage; token or monetary costs unavailable from the host stay unknown.
 
+Audit coverage is bound to the brief, the style guide, the relevant approved terms and the dependency-closure units of each run; `audit_coverage` (and `workflow status`, `review status`) reports why a run no longer counts: `context-changed`, `dependency-changed`, `unit-changed`, `invalidated`, `closure-incomplete` or `context-units-removed`. Finish context edits before the audit wave.
+
+A `revise` packet (`workflow packet --stage revise`) carries the translate packet files plus the batch's current translation records, its open review issues and `<batch>.revise.md`; a batch set may span batch series when units do not overlap and source order holds.
+
 After interruption, ask status for the frozen batch IDs, recover unimported successful responses, then dispatch only missing stages. Preserve unresolved original-image assets after translation rendering; this is a recoverable checkpoint, not a failed reading artifact.
 
 
@@ -49,7 +53,7 @@ Reviewed `parent_id` groups retain a theorem, lemma, proposition, definition, co
 
 Continuation dependencies skip omitted running material and footnotes and require physically adjacent PDF pages. A fragment at the boundary of a noncontiguous page selection remains a fragment; it must not be joined to the next extracted page across a gap. Parent groups also participate in source evidence and audit dependency closure, so changing one clause requires rechecking the whole statement.
 
-For an explicitly all-original reading edition, render with `--originals-only`. This forces original-image representation in both Markdown and bilingual HTML even when a verified candidate exists, without changing any candidate or review. It also omits the candidate MathJax bootstrap and records the choice in render QA.
+A project without any transcription candidate renders originals-only automatically; render QA records `originals_only_reason: no-transcription-candidates`. For an explicitly all-original reading edition of a project with candidates, render with `--originals-only` (`originals_only_reason: requested`). Either way original-image representation is forced in both Markdown and bilingual HTML without changing any candidate or review, and the candidate MathJax bootstrap is omitted. The edition header, `*.quality.md` and `render-qa.json` (`rendered_status`) reflect the lowest record status among the rendered units, not the project-wide status.
 
 ## Formula-contained language and original page overflow
 

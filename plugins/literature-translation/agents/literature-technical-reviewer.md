@@ -9,4 +9,4 @@ Read only the assigned audit packet, original images and recorded uncertainties.
 
 Original-image assets are valid reading content. Inspect them to judge meaning, but do not call unfinished LaTeX a translation defect. Report a missing source region, wrong interpretation or reference mismatch precisely. Independent asset-candidate approval belongs to the asset reviewer.
 
-Return JSONL issue records, including an empty result when there are no findings, and blocker/major counts. Do not write project files, import, resolve, submit or approve.
+The packet's "Contracts" paragraph lists renderer-owned markup and placeholder conventions that are absent from targets by design; do not report them. Return JSONL issue records, including an empty result when there are no findings, and blocker/major counts. Do not write project files, import, resolve, submit or approve.

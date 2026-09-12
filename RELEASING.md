@@ -9,6 +9,7 @@ point; `main` remains the development branch.
 1. Create a topic branch and complete the intended changes.
 2. Choose the next semantic version.
 3. Set the same version in:
+   - `plugins/literature-translation/.claude-plugin/plugin.json`
    - `plugins/literature-translation/.codex-plugin/plugin.json`
    - `plugins/literature-translation/.cursor-plugin/plugin.json`
    - `plugins/literature-translation/pyproject.toml`
@@ -89,6 +90,14 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
   processing stage.
 - Never delete an installed cache version while a running task may still call its scripts,
   templates, schemas, or skill references.
+
+## Development builds on Claude Code
+
+`claude plugin update` is a no-op while the installed version string is unchanged, so a
+development build with the same version must be reinstalled (`claude plugin uninstall` then
+`claude plugin install literature-translation@littrans`) or loaded from the checkout with
+`claude --plugin-dir plugins/literature-translation`. The installed launcher runs from the cached
+`src/` tree, so a hot copy of changed files into the cache is a valid short-lived test only.
 
 ## Development cachebusters
 

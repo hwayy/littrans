@@ -24,13 +24,15 @@ Invoke `$skill-name`; UI metadata lives in each skill's `agents/openai.yaml`. Us
 
 Invoke `/skill-name` or its natural-language name. Plugin agents provide `literature-translator`, `literature-transcriber`, `literature-asset-reviewer`, the three translation audit lenses and `literature-external-reviewer`. Launch fresh local Task subagents; do not use Cursor Cloud Agents or `/in-cloud`.
 
-Reviewers are read-only. Translation lenses return JSONL issues (an empty result still needs import). Asset reviewers return the packet's bound review JSON. The parent persists and imports those responses. Translators and transcribers write only their assigned output and submit through the CLI. Reload the window and start a new session after a plugin update.
+Reviewers are read-only. Translation lenses return JSONL issues (an empty result still needs import). Asset reviewers return the packet's bound review JSON. The parent persists and imports those responses. Translators and transcribers write only their assigned output and submit through the CLI. Reload the window and start a new session after a plugin update. On every host a plugin update is only picked up when the plugin version string changes; a development build with an unchanged version must be reinstalled (or loaded from the checkout with `--plugin-dir`).
 
 ## Claude Code
 
 Install through the repository marketplace (`.claude-plugin/marketplace.json`) or load the plugin tree with `claude --plugin-dir`. Skills are invoked as `/literature-translation:skill-name` (or by describing the task); the same `agents/*.md` files provide the plugin subagents, addressed as `literature-translation:agent-name` through the Agent tool.
 
 The coordinating session runs the CLI itself and dispatches one fresh subagent per packet. Pass the packet path, the project path and the packet's `model` (the Agent tool's `model` parameter, e.g. `sonnet`); the writer agents declare `effort: high` in their frontmatter, matching the recommended `agent_models.claude.reasoning_effort`. Reviewer agents are restricted to `Read`, `Glob` and `Grep`, so they cannot write project files: the parent saves and imports their JSONL issues or review JSON. Translators and transcribers run `translation submit`, `qa run` or `assets submit` themselves and report the outcome. Independence rules are unchanged: give a subagent only its packet, never another worker's candidate or an expected verdict.
+
+For a `revise` stage, create a `--stage revise` packet and dispatch a fresh `literature-translator` with the translate model; it resubmits the batch and reports the issue ids it addressed, which the parent closes with `review resolve` (canonical or reviewer-supplied ids, comma-separated). The CLI reconfigures stdout and stderr to UTF-8 with LF line endings, so piping its JSON into files on a GBK Windows console needs no `PYTHONIOENCODING` and produces no carriage returns.
 
 Permission prompts apply to the CLI; allowing `Bash(python <plugin-root>/scripts/littrans.py *)` avoids repeated approvals. The `claude-code` external-review driver must not be launched from inside a Claude Code session (nested `claude -p`); Claude-hosted external review is a separate, later revision.
 

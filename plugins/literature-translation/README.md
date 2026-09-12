@@ -40,8 +40,14 @@ littrans workflow packet PROJECT --stage asset-audit --batch-ids ID1
 littrans assets import-review PROJECT REVIEW.json --confirm-visual-review
 littrans assets status PROJECT
 littrans workflow packet PROJECT --stage audit --lens all --batch-ids ID1
+littrans review import-set PROJECT PACKET/manifest.json ISSUES.jsonl
+littrans review issues PROJECT ID1 [--all] [--jsonl]
+littrans workflow packet PROJECT --stage revise --batch-ids ID1
+littrans review resolve PROJECT ID1 ISSUE_ID[,ISSUE_ID...] --resolution "..."
 littrans render PROJECT --batch-id ID1
 ```
+
+`review import-set` canonicalizes reviewer issue ids to `audit-<hash>` and keeps the reviewer id as `source_issue_id`; `review resolve` accepts either. `workflow status` reports `audit_stale` reasons when brief/style-guide/glossary edits or changed units reset audit coverage. A `revise` packet carries the current translation and open issues for one fresh revision. Batch sets may mix series when their units do not overlap. A project with no transcription candidate renders originals-only automatically.
 
 Use command help and the emitted packet schemas for exact import fields. [fidelity-workflow.md](references/fidelity-workflow.md) describes bindings and recovery. Save successful responses before import; identical imports are idempotent. Report source fidelity, translation approval, reliable structured coverage and fallback proportion separately. Unknown tokens or fees stay unknown.
 
