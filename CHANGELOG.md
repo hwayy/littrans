@@ -7,6 +7,12 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Recover damaged candidate evidence through fresh transcription packets; schedule assets
+  across the same dependency closure as QA.
+- QA v6.7 counts real footnote calls with multiplicity while excluding literal syntax.
+- Retire translations of removed source units transactionally, and defer approvals made
+  stale by same-import overrides. Preserve source table structure around asset cells.
+
 - Corrupt indexed asset reviews require renewed verification and fresh packet identities.
 - Schedule uncertain fallback recovery before QA; QA v6.6 checks asset uncertainty across
   all dependency units, including non-translatable formulas, and checks table-cell references.

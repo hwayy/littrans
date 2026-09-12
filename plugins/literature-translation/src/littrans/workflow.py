@@ -342,14 +342,15 @@ def _post_audit_stage(
 def _asset_lane(root: Path, manifest: BatchManifest, units: dict[str, SourceUnit]) -> dict[str, Any]:
     from littrans.fidelity_models import asset_reference_ids
     from littrans.representations import representation_status
-    ids = list(dict.fromkeys(a for uid in manifest.unit_ids for a in asset_reference_ids(
+    scope = dependency_closure(root, [manifest.batch_id], manifest.unit_ids, all_units=list(units.values()))
+    ids = list(dict.fromkeys(a for uid in scope for a in asset_reference_ids(
         units[uid].source_markdown or units[uid].source_text
     )))
     status = representation_status(root, ids)
     states = status["assets"]
     pending = {name: [aid for aid, row in states.items() if row["state"] == name]
                for name in ("transcribe", "asset-audit")}
-    recovery = [aid for aid, row in states.items() if row["state"] == "fallback" and row["semantic_uncertainty"]]
+    recovery = [aid for aid, row in states.items() if row["state"] in {"fallback", "transcribe"} and row["semantic_uncertainty"]]
     if recovery:
         pending["transcribe"] = recovery  # Repair blocking evidence before fresh optional enhancement.
     return {"states": states, "pending": pending, "recovery": recovery, "complete": not any(pending.values())}
@@ -935,8 +936,9 @@ def create_workflow_packet(
         from littrans.fidelity_models import asset_reference_ids
         from littrans.representations import build_asset_packet, representation_status
         asset_manifests = _validate_batch_set(root, batch_ids)
-        scope = {uid for m in asset_manifests for uid in m.unit_ids}
-        context_units = [u for u in read_jsonl(root / "derived/units.jsonl", SourceUnit) if u.unit_id in scope]
+        all_units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+        scope = set(dependency_closure(root, batch_ids, [uid for m in asset_manifests for uid in m.unit_ids], all_units=all_units))
+        context_units = [u for u in all_units if u.unit_id in scope]
         ids = list(dict.fromkeys(a for u in context_units for a in asset_reference_ids(u.source_markdown or u.source_text)))
         states = representation_status(root, ids)["assets"]
         recovery = [aid for aid in ids if states[aid]["state"] == "fallback" and states[aid]["semantic_uncertainty"]]

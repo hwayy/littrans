@@ -596,7 +596,8 @@ def _unit_html(
     def inline(value: str) -> str:
         return _inline_html(value, scope, targets)
     text = target if target is not None else (unit.source_markdown or unit.source_text)
-    if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
+    if (ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}
+            and not (unit.kind is UnitKind.TABLE and (target_table or unit.table))):
         number = (
             f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
             if unit.equation_number and f"({unit.equation_number})" not in text

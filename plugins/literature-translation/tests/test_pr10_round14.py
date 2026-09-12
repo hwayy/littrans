@@ -8,7 +8,7 @@ from test_pr10_round8 import submit
 from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity
-from littrans.batching import create_batches
+from littrans.batching import create_batches, load_manifest
 from littrans.fidelity_models import load_assets
 from littrans.models import SourceUnit, TableData, UnitKind
 from littrans.quality import run_qa
@@ -19,7 +19,7 @@ from littrans.representations import (
     submit_candidates,
 )
 from littrans.storage import load_project, read_json, read_jsonl, write_json, write_jsonl
-from littrans.workflow import workflow_next
+from littrans.workflow import create_workflow_packet, workflow_next
 
 asset_root = asset_project
 project = workflow_project
@@ -49,15 +49,20 @@ def test_unreadable_indexed_review_blocks(asset_root, damage, verdict):
     assert representation_status(asset_root, ["a1"])["assets"]["a1"]["state"] == "verified"
 
 
-def test_pure_math_uncertainty_blocks_qa_and_dispatches_recovery(project):
+@pytest.mark.parametrize("dependency", [False, True])
+def test_pure_math_uncertainty_blocks_qa_and_dispatches_recovery(project, dependency):
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
-    asset = next(a for a in load_assets(project).values() if a.fragments[0].page == 1)
+    asset = next(a for a in load_assets(project).values() if a.fragments[0].page == (2 if dependency else 1))
     for unit in units:
         if asset.id in unit.asset_content_hashes:
             unit.translatable = False
+            if dependency:
+                unit.parent_id = "cross-page-group"
+        elif dependency and unit.page == 1:
+            unit.parent_id = "cross-page-group"
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
-    batch = create_batches(project, "1", prefix="pure-math")[0]
+    batch = load_manifest(project, "sample-one-b001") if dependency else create_batches(project, "1", prefix="pure-math")[0]
     submit(project, batch.batch_id)
     packet = build_asset_packet(project, [asset.id])
     write_json(project / "candidate.json", {
@@ -78,6 +83,7 @@ def test_pure_math_uncertainty_blocks_qa_and_dispatches_recovery(project):
     import_asset_review(project, project / "review.json", True)
     assert workflow_next(project, start_at=batch.batch_id, through=batch.batch_id)["stage"] == "transcribe"
     assert "asset-semantic-uncertainty" in {e.code for e in run_qa(project, batch.batch_id).errors}
+    assert asset.id in create_workflow_packet(project, "transcribe", [batch.batch_id])["asset_ids"]
 
 
 @pytest.mark.parametrize("keep_asset", [True, False])

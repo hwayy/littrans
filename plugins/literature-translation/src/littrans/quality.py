@@ -40,7 +40,7 @@ from littrans.representations import (
     validate_asset_references,
     validate_asset_translations,
 )
-from littrans.semantics import run_in_caps_label_words
+from littrans.semantics import explicit_footnote_calls, run_in_caps_label_words
 from littrans.storage import (
     append_jsonl,
     atomic_write_text,
@@ -129,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.6-all-asset-uncertainty|"
+        "deterministic-qa-v6.7-literal-footnote-calls|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -426,7 +426,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             unit,
             [label.source for label in rendered_figure_labels],
         )
-        if Counter(re.findall(r"\[\^(\d+)\]", unit.source_markdown or unit.source_text)) != Counter(re.findall(r"\[\^(\d+)\]", effective_target)):
+        if Counter(explicit_footnote_calls(unit.source_markdown or unit.source_text)) != Counter(explicit_footnote_calls(effective_target)):
             errors.append(QAItem(code="footnote-call-mismatch", severity="error", unit_id=unit_id, message="Preserve explicit footnote calls in the translated paragraph"))
         for problem in validate_asset_references(root, unit.source_markdown or unit.source_text,
                                                  effective_target):

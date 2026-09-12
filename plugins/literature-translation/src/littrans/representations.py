@@ -230,6 +230,11 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
                 image_paths.add(path)
         payload["required_images"] = {path: hashlib.sha256(_local(root, path).read_bytes()).hexdigest()
                                       for path in sorted(image_paths)}
+        if stage == "transcribe":
+            damaged = {key: row["damaged_candidate_sha256"] for key, row in
+                       representation_status(root, asset_ids)["assets"].items() if row.get("damaged_candidate_sha256")}
+            if damaged:
+                payload["candidate_recovery"] = damaged
         if revision_notes is not None:
             payload["revision_notes"] = revision_notes.strip()
             payload["revision_context"] = _revision_context(root, asset_ids, payload["asset_fingerprints"])
@@ -539,7 +544,19 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
             continue
         sha = idx["candidates"].get(key)
         if sha:
-            candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
+            try:
+                if not re.fullmatch(r"[a-f0-9]{64}", sha):
+                    raise ValueError("Invalid candidate identity")
+                candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
+                if (not isinstance(candidate, dict) or candidate.get("candidate_sha256") != sha
+                        or _hash({k: v for k, v in candidate.items() if k != "candidate_sha256"}) != sha):
+                    raise ValueError("Damaged candidate evidence")
+            except (OSError, KeyError, ValueError):
+                state.update(damaged_candidate_sha256=sha,
+                             reviewer_uncertainty="Damaged candidate evidence requires transcription and independent review",
+                             semantic_uncertainty="Damaged candidate evidence requires transcription and independent review")
+                result[key] = state
+                continue
             try:
                 _require_format(assets[key], candidate)
                 current = _asset_fingerprint(root, assets[key]) == candidate["asset_fingerprint"]

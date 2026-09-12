@@ -21,7 +21,7 @@ from littrans.fidelity_models import (
     load_assets,
 )
 from littrans.layout_detector import detect_layout
-from littrans.models import AssetRef, SemanticStatus, SourceUnit, UnitKind
+from littrans.models import AssetRef, SemanticStatus, SourceUnit, TranslationRecord, UnitKind
 from littrans.source_structure import BOLD_FONT, font_style, inked_glyph, is_bullet_line
 from littrans.storage import (
     atomic_write_text,
@@ -227,6 +227,7 @@ def _page_path(root: Path, page: int) -> Path:
 @contextmanager
 def _authority_transaction(root: Path, pages: list[int]) -> Iterator[None]:
     paths = [root / "derived/units.jsonl", root / "derived/fidelity-assets.jsonl"]
+    paths += [root / "translations/current.jsonl", root / "translations/source-retired.jsonl"]
     paths += [_page_path(root, p) for p in pages]
     paths += [root / f"evidence/pages/fidelity-p{p:04d}.review.json" for p in pages]
     paths += [root / "evidence/audits" / f"{p.parent.name}.invalidations.json" for p in (root / "batches").glob("*/manifest.yaml")]
@@ -1050,6 +1051,16 @@ def _invalidate(root: Path, old: list[SourceUnit], new: list[SourceUnit]) -> Non
     old_map = {u.unit_id: u.source_hash for u in old}
     new_map = {u.unit_id: u.source_hash for u in new}
     changed = {uid for uid in old_map.keys() | new_map.keys() if old_map.get(uid) != new_map.get(uid)}
+    removed = old_map.keys() - new_map.keys()
+    if removed:
+        current_path = root / "translations/current.jsonl"
+        current = read_jsonl(current_path, TranslationRecord)
+        retired = [record for record in current if record.unit_id in removed]
+        if retired:
+            history_path = root / "translations/source-retired.jsonl"
+            history = read_jsonl(history_path, TranslationRecord)
+            write_jsonl(history_path, [*history, *retired])
+            write_jsonl(current_path, [record for record in current if record.unit_id not in removed])
     from littrans.evidence import record_audit_invalidation
     from littrans.storage import read_yaml
 
@@ -1325,7 +1336,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         p = decision["page"]
         if p not in by_page or decision["fingerprint"] != by_page[p]["fingerprint"] or _current_page(root, p)["fingerprint"] != decision["fingerprint"]:
             raise ValueError(f"stale or out-of-packet page review: {p}")
-    changed, approved = [], []
+    changed, approved, deferred = [], [], []
     with project_write_lock(root), _authority_transaction(root, [d["page"] for d in decisions]):
         for decision in decisions:
             if _current_page(root, decision["page"])["fingerprint"] != decision["fingerprint"]:
@@ -1371,6 +1382,17 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
                 changed.append(p)
                 continue
+        _validate_footnote_relationships(units)
+        write_jsonl(root / "derived/units.jsonl", units)
+        write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
+        for decision in decisions:
+            p = decision["page"]
+            if decision.get("override"):
+                continue
+            if _current_page(root, p)["fingerprint"] != decision["fingerprint"]:
+                deferred.append(p)
+                (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
+                continue
             passed = _source_decision_passes(by_page[p], decision)
             opaque = _opaque_prose_assets(by_page[p])
             if opaque:
@@ -1391,7 +1413,8 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         units.sort(key=lambda u: u.page)
         write_jsonl(root / "derived/units.jsonl", units)
         write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
-    return {"approved_pages": approved, "changed_pages": changed, "requires_new_packet": bool(changed)}
+    return {"approved_pages": approved, "changed_pages": changed, "deferred_pages": sorted(deferred),
+            "requires_new_packet": bool(changed or deferred)}
 
 
 def _formula_condition_glyphs(asset: dict[str, Any], glyphs: list[dict[str, Any]]) -> set[str]:

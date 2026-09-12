@@ -145,6 +145,16 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+Damaged candidate records require fresh transcription and independent review; recovered
+packets use a new identity. Asset task scope includes semantic dependencies outside the
+requested batch, matching QA. QA v6.7 excludes literal code/math/escaped footnote syntax
+while preserving call multiplicity. Existing QA must rerun; project schema remains 6.
+
+Source overrides retire translations for removed unit IDs to `translations/source-retired.jsonl`
+and remove them from the current ledger in the same rollback transaction. Overrides are
+applied before approvals; decisions with changed dependency fingerprints appear in
+`deferred_pages` and require a new packet, never an immediately stale approval receipt.
+
 An indexed review that cannot be validated blocks QA until renewed independent review.
 Rebuilding its audit packet uses a new identity and preserves the damaged historical file.
 Uncertain fallback assets dispatch transcription before QA regardless of whether their
