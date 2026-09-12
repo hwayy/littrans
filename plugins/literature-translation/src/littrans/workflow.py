@@ -253,6 +253,8 @@ def _batch_stage_details(
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
         return "translate", {}
     lane = _asset_lane(root, manifest, snapshot.unit_map)
+    if lane["recovery"]:
+        return "transcribe", {}
     if any(row["state"] == "asset-audit" and row["semantic_uncertainty"] for row in lane["states"].values()):
         return "asset-audit", {}
     qa_report = snapshot.qa_reports[batch_id]

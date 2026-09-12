@@ -7,6 +7,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Corrupt indexed asset reviews require renewed verification and fresh packet identities.
+- Schedule uncertain fallback recovery before QA; QA v6.6 checks asset uncertainty across
+  all dependency units, including non-translatable formulas, and checks table-cell references.
+- Regenerate incomplete original asset caches when their evidence receipt is absent.
+
 - Keep reviewer semantic uncertainty across recovery candidates until a valid independent
   audit supersedes it; dispatch recovery audits before QA and retain the block if review
   evidence is damaged. Older recovery candidates inherit their recorded review context.

@@ -145,6 +145,12 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+An indexed review that cannot be validated blocks QA until renewed independent review.
+Rebuilding its audit packet uses a new identity and preserves the damaged historical file.
+Uncertain fallback assets dispatch transcription before QA regardless of whether their
+owning source unit is translatable. QA v6.6 checks the entire dependency scope; existing
+QA reports require rerunning. Project schema remains 6.
+
 A new transcription candidate cannot clear an independent reviewer's semantic uncertainty.
 The candidate carries that finding through further revisions, including direct asset packet
 submission. Workflow dispatches its independent asset audit before QA. Only a valid new

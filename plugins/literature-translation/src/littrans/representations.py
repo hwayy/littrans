@@ -274,6 +274,13 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
                         "path": (final / "comparison.html").relative_to(root).as_posix(),
                         "sha256": manifest["comparison.html"],
                     }
+                    review_path = _directory(root) / "reviews" / f"{packet_id}.json"
+                    if review_path.exists() or packet_id in idx["reviews"].values():
+                        try:
+                            _load_review(root, packet_id)
+                        except (OSError, KeyError, ValueError):
+                            payload["previous_review_packet_id"] = packet_id
+                            continue
                     if not final.exists():
                         shutil.copytree(folder, final)
                         break
@@ -569,6 +576,9 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
                         state["semantic_uncertainty"] = state["reviewer_uncertainty"]
                     except (OSError, KeyError, ValueError):
                         state["state"] = "asset-audit"
+                        if not state["reviewer_uncertainty"]:
+                            state["reviewer_uncertainty"] = "Indexed asset review evidence requires renewed verification"
+                        state["semantic_uncertainty"] = state["reviewer_uncertainty"]
         result[key] = state
     return {"assets": result, "counts": dict(Counter(item["state"] for item in result.values()))}
 

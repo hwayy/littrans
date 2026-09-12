@@ -739,7 +739,7 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
             candidate = base / name
             if not candidate.is_file() or sha256_file(candidate) != expected:
                 raise ValueError(f"immutable original asset cache is corrupt: {candidate}")
-    if not all(p.is_file() for p in (fragment_pdf, fragment_svg, fragment_png)):
+    if not cache_receipt.is_file():
         with fitz.open() as clipped:
             target = clipped.new_page(width=rect.width, height=rect.height)
             target.show_pdf_page(target.rect, doc, page_number - 1, clip=rect)

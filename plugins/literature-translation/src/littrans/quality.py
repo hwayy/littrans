@@ -129,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.5-prose-and-table-scope|"
+        "deterministic-qa-v6.6-all-asset-uncertainty|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -359,8 +359,19 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         ):
             return existing
 
-    for dependency_id in dependency_closure(root, [batch_id], manifest.unit_ids,
-                                             all_units=list(units.values())):
+    from littrans.fidelity_models import load_assets
+
+    dependency_ids = dependency_closure(root, [batch_id], manifest.unit_ids, all_units=list(units.values()))
+    scoped_asset_ids = {aid for uid in dependency_ids
+                        for aid in ASSET_RE.findall(units[uid].source_markdown or units[uid].source_text)}
+    asset_states = representation_status(root, sorted(scoped_asset_ids & load_assets(root).keys()))["assets"]
+    for dependency_id in dependency_ids:
+        dependency_unit = units[dependency_id]
+        for asset_id in set(ASSET_RE.findall(dependency_unit.source_markdown or dependency_unit.source_text)):
+            uncertainty = asset_states.get(asset_id, {}).get("semantic_uncertainty")
+            if uncertainty:
+                errors.append(QAItem(code="asset-semantic-uncertainty", severity="error", unit_id=dependency_id,
+                                     message=f"Resolve asset {asset_id} semantic uncertainty: {uncertainty}"))
         dependency_record = translations.get(dependency_id)
         if dependency_record and any(item.strip() for item in dependency_record.uncertainties):
             errors.append(QAItem(code="translation-understanding-unresolved", severity="error",
@@ -418,8 +429,9 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         if Counter(re.findall(r"\[\^(\d+)\]", unit.source_markdown or unit.source_text)) != Counter(re.findall(r"\[\^(\d+)\]", effective_target)):
             errors.append(QAItem(code="footnote-call-mismatch", severity="error", unit_id=unit_id, message="Preserve explicit footnote calls in the translated paragraph"))
         for problem in validate_asset_references(root, unit.source_markdown or unit.source_text,
-                                                 record.target_text):
-            errors.append(QAItem(**problem, severity="error", unit_id=unit_id))
+                                                 effective_target):
+            if problem["code"] != "asset-semantic-uncertainty":
+                errors.append(QAItem(**problem, severity="error", unit_id=unit_id))
         for problem in validate_asset_translations(root, unit.source_markdown or unit.source_text,
                                                    record.asset_translations, record.target_text,
                                                    record.target_table):
