@@ -341,6 +341,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
             # invalidate the newly adjacent units before the removed anchor is lost.
             record_audit_invalidation(root, batch_id, removed_unit_ids)
         write_yaml(batch_dir / "manifest.yaml", revised.model_dump(mode="json"))
+        write_json(batch_dir / "output-schema.json", _translation_output_schema())
         atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
         atomic_write_text(
             batch_dir / "context.md", _context_text(root, group, before, after)
@@ -367,43 +368,6 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
 
 
 def _translation_output_schema() -> dict[str, object]:
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "required": ["unit_id", "target_text", "source_hash"],
-        "additionalProperties": False,
-        "properties": {
-            "unit_id": {"type": "string"},
-            "target_text": {"type": "string"},
-            "target_table": {
-                "type": ["object", "null"],
-                "properties": {
-                    "rows": {
-                        "type": "array",
-                        "items": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "header_rows": {"type": "integer", "minimum": 0},
-                    "column_count": {"type": "integer", "minimum": 1},
-                },
-                "required": ["rows", "column_count"],
-                "additionalProperties": False,
-            },
-            "figure_labels": {"type": "array"},
-            "source_hash": {"type": "string"},
-            "reader_note": {
-                "type": ["object", "null"],
-                "properties": {
-                    "text": {"type": "string"},
-                    "sources": {
-                        "type": "array",
-                        "items": {"type": "string", "format": "uri"},
-                    },
-                    "accessed_at": {"type": ["string", "null"]},
-                },
-                "required": ["text"],
-                "additionalProperties": False,
-            },
-            "term_proposals": {"type": "array"},
-            "uncertainties": {"type": "array", "items": {"type": "string"}},
-        },
-    }
+    """Use the submission model so evidence and companion shapes cannot drift."""
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema",
+            **TranslationRecord.model_json_schema()}

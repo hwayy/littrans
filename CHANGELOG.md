@@ -7,6 +7,12 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Generate batch output schemas from TranslationRecord, including image receipts and
+  asset companions; refreshing a batch updates its emitted schema.
+- Bind workflow packet identity and manifest to the selected host, model and effort.
+- Validate source override footnote relationships against the final combined graph,
+  rolling back invalid references before publishing source units.
+
 - Keep later asset-review decisions authoritative when an older review is replayed;
   replay only restores an absent index entry or retains its existing mapping.
 

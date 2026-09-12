@@ -115,6 +115,14 @@ literals remain literal, including dollar and backslash inline/display delimiter
 continued table fragments with independent footnote scopes remain separate.
 # Review follow-up contracts
 
+- Batch output schemas come from the submission model and include image_evidence and
+  asset_translations; refresh existing batches to update their emitted schema.
+- New workflow packets record host/model/reasoning_effort in their manifest and identity.
+  Legacy manifests remain readable with absent policy fields; create fresh packets for
+  an explicitly bound dispatch policy.
+- Source overrides validate footnote references against all retained and replacement
+  units together. Unknown/non-footnote/duplicate targets reject the transaction.
+
 - Newly prepared assets use content identity version 2, binding original fragments,
   formula conditions, kind, display and grouping state. Legacy version 1 remains
   readable; preparation or semantic overrides create version 2 identities and require

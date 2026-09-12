@@ -922,6 +922,9 @@ class WorkflowPacketManifest(StrictModel):
     stage: str
     batch_ids: list[BatchId] = Field(min_length=1, max_length=WAVE_BATCH_SET_MAX)
     lens: str | None = None
+    host: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
     # v2 binds evidence to each batch's own coverage and dependency closure.

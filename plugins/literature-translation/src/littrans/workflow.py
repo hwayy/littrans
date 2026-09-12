@@ -957,10 +957,12 @@ def create_workflow_packet(
         )
     if stage in {"translate", "revise"} and lens is not None:
         raise ValueError("translation packets do not accept a lens")
+    policy = load_project(root).agent_models.get(host, {})
     if stage in {"translate", "revise"}:
-        policy = load_project(root).agent_models.get(host, {})
         if not policy.get("translate") or not policy.get("reasoning_effort"):
             raise ValueError(f"Configure agent_models.{host}.translate and reasoning_effort before creating translation tasks; no model substitution is allowed")
+    selected_model = policy.get("translate" if stage in {"translate", "revise"} else "audit")
+    selected_effort = policy.get("reasoning_effort") if stage in {"translate", "revise"} else None
     manifests = _validate_batch_set(root, batch_ids)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     unit_map = {unit.unit_id: unit for unit in all_units}
@@ -1157,9 +1159,12 @@ def create_workflow_packet(
     identity = sha256_text(
         json.dumps(
             {
-                "version": 3,
+                "version": 4,
                 "stage": stage,
                 "lens": lens,
+                "host": host,
+                "model": selected_model,
+                "reasoning_effort": selected_effort,
                 "batch_unit_ids": batch_unit_ids,
                 "batch_context_unit_ids": batch_context_unit_ids,
                 "batch_context_fingerprints": batch_context_fingerprints,
@@ -1183,6 +1188,9 @@ def create_workflow_packet(
         stage=stage,
         batch_ids=batch_ids,
         lens=lens,
+        host=host,
+        model=selected_model,
+        reasoning_effort=selected_effort,
         unit_ids=packet_unit_ids,
         unit_fingerprints=fingerprints,
         batch_unit_ids=batch_unit_ids,

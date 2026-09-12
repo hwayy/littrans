@@ -1123,17 +1123,21 @@ def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     return {**fallback, "status": "unavailable", "reason": "cached layout result missing; re-run source prepare --replace"}
 
 
+def _validate_footnote_relationships(units: list[SourceUnit]) -> None:
+    unit_map = {u.unit_id: u for u in units}
+    for unit in units:
+        if len(unit.footnote_refs) != len(set(unit.footnote_refs)) or any(
+            ref not in unit_map or unit_map[ref].kind != UnitKind.FOOTNOTE for ref in unit.footnote_refs
+        ):
+            raise ValueError(f"invalid or duplicated footnote relationship: {unit.unit_id}")
+
+
 def _current_page(root: Path, number: int) -> dict[str, Any]:
     ledger = read_json(_page_path(root, number))
     all_units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
     if len({u.unit_id for u in all_units}) != len(all_units):
         raise ValueError("duplicate source unit IDs anywhere in project")
-    unit_map = {u.unit_id: u for u in all_units}
-    for unit in all_units:
-        if len(unit.footnote_refs) != len(set(unit.footnote_refs)) or any(
-            ref not in unit_map or unit_map[ref].kind != UnitKind.FOOTNOTE for ref in unit.footnote_refs
-        ):
-            raise ValueError(f"invalid or duplicated footnote relationship: {unit.unit_id}")
+    _validate_footnote_relationships(all_units)
     units = [u for u in all_units if u.page == number]
     assets = load_assets(root)
     selected = [assets[aid] for aid in ledger["asset_ids"]]
@@ -1371,6 +1375,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json",
                        {**receipt, "receipt_sha256": _hash(receipt)})
         decision_pages = {d["page"] for d in decisions}
+        _validate_footnote_relationships(units)
         for unit in units:
             if unit.page in decision_pages:
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
