@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Render asset-bearing target tables once in Markdown and bilingual HTML, preserving
+  explicit empty target text. QA v6.8 ignores tilde-fenced literal footnote syntax.
+
 - Recover damaged candidate evidence through fresh transcription packets; schedule assets
   across the same dependency closure as QA.
 - QA v6.7 counts real footnote calls with multiplicity while excluding literal syntax.

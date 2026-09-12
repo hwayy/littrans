@@ -145,6 +145,10 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+QA v6.8 also protects tilde-fenced code when counting real footnote calls. Structured
+target tables are rendered once, including when target_text is explicitly empty; source
+table cells remain available in bilingual and source-review HTML.
+
 Damaged candidate records require fresh transcription and independent review; recovered
 packets use a new identity. Asset task scope includes semantic dependencies outside the
 requested batch, matching QA. QA v6.7 excludes literal code/math/escaped footnote syntax

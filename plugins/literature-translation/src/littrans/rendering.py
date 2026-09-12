@@ -465,8 +465,10 @@ def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, So
 
 
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
-    text = target or unit.source_text
+    text = target if target is not None else unit.source_text
     safe_text = escape_markdown_prose(text)
+    if unit.kind is UnitKind.TABLE and unit.table:
+        return table_to_markdown(unit.table)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
         return safe_text + (
             f" ({unit.equation_number})"
@@ -1114,8 +1116,6 @@ def render_project(
         companion_md, companion_html = _asset_companions(record, unit, footnote_unit_map)
         if companion_md:
             rendered += "\n\n" + companion_md
-        if ASSET_RE.search(render_unit.source_text) and target_table:
-            rendered += "\n\n" + table_to_markdown(target_table)
         rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
         rendered = _markdown_footnote_calls(rendered, unit, footnote_unit_map)
         if unit.kind is UnitKind.FOOTNOTE:
@@ -1219,9 +1219,6 @@ def render_project(
             unit_map=footnote_unit_map,
         )
         target_html += companion_html
-        if ASSET_RE.search(render_unit.source_text) and target_table:
-            target_html += table_to_html(target_table, partial(_inline_html,
-                footnote_scope=f"p{unit.page}-target", footnote_targets=_footnote_targets(unit, footnote_unit_map, False)))
         source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only)
         target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only)
         if unit.unit_id in grouped_unit_ids:

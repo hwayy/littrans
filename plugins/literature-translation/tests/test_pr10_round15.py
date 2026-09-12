@@ -19,7 +19,8 @@ asset_root = asset_project
 project = workflow_project
 
 
-@pytest.mark.parametrize("target", [r"`[^1]`", r"$[^1]$", r"\([^1]\)", r"\[^1]", "[^1]", "[^1] [^1]"])
+@pytest.mark.parametrize("target", [r"`[^1]`", r"$[^1]$", r"\([^1]\)", r"\[^1]", "[^1]", "[^1] [^1]",
+                                    "~~~\n[^1]\n~~~", "~~~~python\n[^1]\n~~~~"])
 def test_qa_counts_real_footnotes(tmp_path, target):
     root, manifests, _ = _linked_notes(tmp_path)
     _submit(root, manifests[0].batch_id, target_text="译文 " + target)

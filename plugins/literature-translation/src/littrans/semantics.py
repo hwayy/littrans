@@ -13,7 +13,7 @@ LIGATURES = str.maketrans({"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", 
 
 def explicit_footnote_calls(text: str) -> list[str]:
     """Read actual calls, leaving code, mathematical spans and escaped syntax literal."""
-    tokens = re.compile(r"(?P<code>`+)[\s\S]*?(?P=code)"
+    tokens = re.compile(r"(?P<code>`+|~{3,})[\s\S]*?(?P=code)"
                         r"|(?P<dollars>\${1,2})[\s\S]*?(?P=dollars)"
                         r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]"
                         r"|(?<!\\)\[\^(?P<number>\d+)\]")
