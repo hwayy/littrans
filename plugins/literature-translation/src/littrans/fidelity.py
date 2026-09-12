@@ -642,7 +642,26 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     return sorted(regions, key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
 
+def _asset_content_identity(asset: FidelityAsset) -> str:
+    fragments = [_hash({"source_sha256": asset.source_sha256, "page": f.page, "bbox": f.bbox, "glyph_ids": f.glyph_ids,
+                       **({"export_method": f.export_method} if f.export_method != "raw-region" else {})}) for f in asset.fragments]
+    content = fragments[0] if len(fragments) == 1 else _hash(fragments)
+    if asset.formula_conditions:
+        content = _hash({"original_content": content, "formula_conditions": [c.model_dump(mode="json") for c in asset.formula_conditions]})
+    if asset.content_identity_version == 2:
+        content = _hash({"original_content": content, "kind": asset.kind, "display": asset.display,
+                         "grouping_pending": asset.grouping_pending})
+    return content
+
+
 def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, region: dict[str, Any], glyphs: list[dict[str, Any]]) -> FidelityAsset:
+    asset = _asset_impl(root, doc, page_number, source_hash, region, glyphs)
+    asset.content_identity_version = 2
+    asset.content_sha256 = _asset_content_identity(asset)
+    return asset
+
+
+def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: str, region: dict[str, Any], glyphs: list[dict[str, Any]]) -> FidelityAsset:
     for key in ("id", "preserve_asset_id"):
         if key in region and (not isinstance(region[key], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", region[key])):
             raise ValueError("invalid region asset ID")
@@ -1009,6 +1028,16 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         refs = Counter(aid for unit in units for aid in asset_reference_ids(unit.source_text))
         if refs != Counter({aid: 1 for aid in by_id}):
             raise ValueError("unit overrides must reference each page asset exactly once")
+    # Structure assembly can change grouping or create coalesced assets after export.
+    # Bind the final semantics before publishing either assets or their source units.
+    for asset in assets:
+        asset.content_identity_version = 2
+        asset.content_sha256 = _asset_content_identity(asset)
+    for unit in units:
+        hashes = {aid: by_id[aid].content_sha256 for aid in asset_reference_ids(unit.source_markdown or unit.source_text)}
+        if hashes != unit.asset_content_hashes:
+            unit.asset_content_hashes = hashes
+            unit.source_hash = _hash({"prepared_source_hash": unit.source_hash, "asset_content_hashes": hashes})
     ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
     if overflow_evidence:
         ledger["original_page_bbox"] = original_page_bbox
@@ -1119,11 +1148,7 @@ def _current_page(root: Path, number: int) -> dict[str, Any]:
     for asset in selected:
         if asset.source_sha256 != ledger["source_sha256"]:
             raise ValueError("asset PDF fingerprint does not match page")
-        fragment_hashes = [_hash({"source_sha256": asset.source_sha256, "page": f.page, "bbox": f.bbox, "glyph_ids": f.glyph_ids,
-                                 **({"export_method": f.export_method} if f.export_method != "raw-region" else {})}) for f in asset.fragments]
-        expected_content = fragment_hashes[0] if len(fragment_hashes) == 1 else _hash(fragment_hashes)
-        if asset.formula_conditions:
-            expected_content = _hash({"original_content": expected_content, "formula_conditions": [c.model_dump(mode="json") for c in asset.formula_conditions]})
+        expected_content = _asset_content_identity(asset)
         if asset.content_sha256 != expected_content:
             raise ValueError("asset region content fingerprint does not match original provenance")
         for fragment in asset.fragments:

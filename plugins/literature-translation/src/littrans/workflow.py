@@ -350,12 +350,40 @@ def _dispatch_stage(translation_stage: str, lane: dict[str, Any]) -> str:
     return translation_stage
 
 
+def _editable_revision_batches(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot) -> list[str]:
+    """Resolve dependency-only QA failures to batches allowed to edit those units."""
+    by_id = {m.batch_id: m for m in snapshot.manifests}
+
+    def resolve(bid: str, visiting: set[str]) -> list[str]:
+        if bid in visiting:
+            raise ValueError(f"Cyclic dependency revision ownership at {bid}; refresh owning batches")
+        report = snapshot.qa_reports[bid]
+        if _batch_stage(root, bid, snapshot) != "revise" or report is None or report.passed:
+            return [bid]
+        editable = set(by_id[bid].translatable_unit_ids)
+        # Repair local errors first; unlike foreign errors, this task can change them.
+        if any(error.unit_id is None or error.unit_id in editable for error in report.errors):
+            return [bid]
+        foreign = list(dict.fromkeys(error.unit_id for error in report.errors if error.unit_id))
+        owners: list[str] = []
+        for uid in foreign:
+            owner = next((m.batch_id for m in snapshot.manifests if uid in m.translatable_unit_ids), None)
+            if owner is None:
+                raise ValueError(f"QA dependency {uid} has no editable owning batch; create or refresh its batch before continuing")
+            owners.extend(resolve(owner, visiting | {bid}))
+        return list(dict.fromkeys(owners)) or [bid]
+
+    return list(dict.fromkeys(owner for bid in batch_ids for owner in resolve(bid, set())))
+
+
 def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                  host: str, *, optional_assets: bool = False) -> list[dict[str, Any]]:
     config = load_project(root)
     model_policy = config.agent_models.get(host, {})
     tasks: list[dict[str, Any]] = []
     by_id = {m.batch_id: m for m in snapshot.manifests}
+    if not optional_assets:
+        batch_ids = _editable_revision_batches(root, batch_ids, snapshot)
     for bid in batch_ids:
         stage = _batch_stage(root, bid, snapshot)
         lane = _asset_lane(root, by_id[bid], snapshot.unit_map)
@@ -459,7 +487,7 @@ def workflow_next(
         != [
             unit_id
             for unit_id in manifest.unit_ids
-            if unit_id in unit_map and unit_map[unit_id].translatable
+            if unit_id in unit_map and unit_map[unit_id].translatable and unit_id not in manifest.read_only_unit_ids
         ]
     ]
     if stale_translatability:
@@ -516,9 +544,20 @@ def workflow_next(
             break
         batch_ids.append(batch_id)
         selected_unit_ids.update(candidate_ids)
+    requested_batch_ids = list(batch_ids)
+    dispatched = _editable_revision_batches(root, batch_ids, snapshot)
+    if dispatched != batch_ids:
+        stage = _batch_stage(root, dispatched[0], snapshot)
+        batch_ids = []
+        for bid in dispatched:
+            if _batch_stage(root, bid, snapshot) != stage or len(batch_ids) >= resolved_limit:
+                break
+            batch_ids.append(bid)
+        stage_details.update({bid: _batch_stage_details(root, bid, snapshot, context_cache) for bid in batch_ids})
     return {
         "stage": stage,
         "batch_ids": batch_ids,
+        "requested_batch_ids": requested_batch_ids,
         "host": resolved_host,
         "limit": resolved_limit,
         "start_at": start_at,
@@ -534,10 +573,11 @@ def workflow_next(
     }
 
 
-def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
+def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = None) -> dict[str, Any]:
     """Return a compact status for an already-selected wave."""
     require_current_project_schema(root, "Workflow coordination")
     requested = list(batch_ids)
+    resolved_host = resolve_coordination_host(host)
     if (
         not requested
         or len(requested) > WAVE_BATCH_SET_MAX
@@ -573,7 +613,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
         != [
             unit_id
             for unit_id in manifest.unit_ids
-            if snapshot.unit_map[unit_id].translatable
+            if snapshot.unit_map[unit_id].translatable and unit_id not in manifest.read_only_unit_ids
         ]
     ]
     if stale_translatability:
@@ -609,6 +649,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
     lanes = {m.batch_id: _asset_lane(root, m, snapshot.unit_map) for m in requested_manifests}
     return {
         "batch_ids": requested,
+        "host": resolved_host,
         "stage": next(iter(unique_stages)) if len(unique_stages) == 1 else "mixed",
         "stages": stages,
         "audit_stale": {
@@ -616,8 +657,8 @@ def workflow_status(root: Path, batch_ids: Iterable[str]) -> dict[str, Any]:
         },
         "reading_complete": all(stage == "complete" for stage in stages.values()),
         "assets": lanes,
-        "ready_tasks": _ready_tasks(root, requested, snapshot, resolve_coordination_host(None)),
-        "optional_asset_tasks": _ready_tasks(root, requested, snapshot, resolve_coordination_host(None), optional_assets=True),
+        "ready_tasks": _ready_tasks(root, requested, snapshot, resolved_host),
+        "optional_asset_tasks": _ready_tasks(root, requested, snapshot, resolved_host, optional_assets=True),
         "assets_complete": all(x["complete"] for x in lanes.values()),
         "complete": all(stage == "complete" for stage in stages.values()),
     }
@@ -700,7 +741,7 @@ def _validate_batch_set(
         != [
             unit_id
             for unit_id in manifest.unit_ids
-            if current_unit_map[unit_id].translatable
+            if current_unit_map[unit_id].translatable and unit_id not in manifest.read_only_unit_ids
         ]
     ]
     if stale_translatability:
@@ -1014,7 +1055,9 @@ def create_workflow_packet(
         if stage in {"translate", "revise"}:
             planned_files[f"{manifest.batch_id}:source"] = (
                 f"{manifest.batch_id}.source.md",
-                batch_source_markdown(root, batch_units),
+                "Submit exactly these editable unit IDs: " + ", ".join(manifest.translatable_unit_ids)
+                + "\nRead-only context unit IDs (do not submit): " + (", ".join(manifest.read_only_unit_ids) or "none")
+                + "\n\n" + batch_source_markdown(root, batch_units),
             )
             memory = translation_memory(root, manifest.unit_ids, limit=6)
             first = positions[manifest.unit_ids[0]]
@@ -1025,6 +1068,9 @@ def create_workflow_packet(
             if last + 1 < len(all_units):
                 adjacent.append(all_units[last + 1])
             context = ["# Retrieved approved translation memory", ""]
+            if manifest.read_only_unit_ids:
+                context.extend(["# Current read-only group context (not a new approval)", "",
+                    *[_audit_unit_text(unit_map[uid], translations.get(uid)) for uid in manifest.read_only_unit_ids]])
             if memory:
                 for item in memory:
                     context.extend(

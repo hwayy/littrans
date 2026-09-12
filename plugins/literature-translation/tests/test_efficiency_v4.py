@@ -1599,6 +1599,12 @@ def test_qa_and_review_use_supplementary_figure_labels_with_original_image(tmp_p
     )])
     submit_translation(root, manifest.batch_id, path)
     report = run_qa(root, manifest.batch_id)
+    assert 'approved-term-missing' in {item.code for item in report.errors}
+    records = read_jsonl(path, TranslationRecord)
+    records[0].target_text = '该图展示架构。 {{asset:fixture-asset-1}}'
+    write_jsonl(path, records)
+    submit_translation(root, manifest.batch_id, path)
+    report = run_qa(root, manifest.batch_id)
     assert report.passed, report.errors
     packet_text, _ = external_review._packet_text(root, manifest.batch_id)
     assert "Architecture" in packet_text and "架构" in packet_text
@@ -1659,6 +1665,12 @@ def test_qa_counts_original_prose_numbers_once_with_supplementary_labels(tmp_pat
         source_hash=unit.source_hash, image_evidence=original_image_evidence(root, unit),
         asset_translations=[AssetTranslation(asset_id="fixture-asset-1", figure_labels=[FigureLabel(source="Speed 10 m/s", target="速度 10 m/s")])],
     )])
+    submit_translation(root, manifest.batch_id, path)
+    report = run_qa(root, manifest.batch_id)
+    assert {'number-mismatch', 'number-unit-mismatch'} <= {item.code for item in report.errors}
+    records = read_jsonl(path, TranslationRecord)
+    records[0].target_text = '该图展示速度 10 m/s。 {{asset:fixture-asset-1}}'
+    write_jsonl(path, records)
     submit_translation(root, manifest.batch_id, path)
     report = run_qa(root, manifest.batch_id)
     assert report.passed, report.errors

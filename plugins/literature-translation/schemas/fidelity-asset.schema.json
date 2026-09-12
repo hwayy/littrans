@@ -163,6 +163,15 @@
       "title": "Content Sha256",
       "type": "string"
     },
+    "content_identity_version": {
+      "default": 1,
+      "enum": [
+        1,
+        2
+      ],
+      "title": "Content Identity Version",
+      "type": "integer"
+    },
     "fragments": {
       "items": {
         "$ref": "#/$defs/FidelityFragment"

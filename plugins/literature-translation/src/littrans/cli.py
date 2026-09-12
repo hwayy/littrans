@@ -451,11 +451,13 @@ def workflow_get_next(
 
 
 @workflow_app.command("status")
-def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...)) -> None:
+def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...),
+                        host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude.")) -> None:
     emit(
         workflow_status(
             project,
             [value.strip() for value in batch_ids.split(",") if value.strip()],
+            host=host,
         )
     )
 

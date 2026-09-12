@@ -964,8 +964,17 @@ class BatchManifest(StrictModel):
     pages: list[int]
     unit_ids: list[str]
     translatable_unit_ids: list[str]
+    read_only_unit_ids: list[str] = Field(default_factory=list)
     source_words: int
     created_at: str = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_read_only_scope(self) -> BatchManifest:
+        if (len(set(self.read_only_unit_ids)) != len(self.read_only_unit_ids)
+                or not set(self.read_only_unit_ids) <= set(self.unit_ids)
+                or set(self.read_only_unit_ids) & set(self.translatable_unit_ids)):
+            raise ValueError("Read-only batch units must be unique context units outside translation scope")
+        return self
 
 
 class QAItem(StrictModel):

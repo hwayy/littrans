@@ -58,6 +58,7 @@ class FidelityAsset(StrictModel):
     kind: Literal["math", "table", "code", "figure", "mixed-region"]
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_identity_version: Literal[1, 2] = Field(default=1, exclude_if=lambda value: value == 1)
     fragments: list[FidelityFragment] = Field(min_length=1)
     grouping_pending: bool = False
     display: bool = False

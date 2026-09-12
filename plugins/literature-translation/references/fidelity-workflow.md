@@ -113,3 +113,17 @@ Markdown footnote calls and definitions use unique labels derived from the refer
 source unit ID, so repeated numbers on different pages do not collide. Code/math
 literals remain literal, including dollar and backslash inline/display delimiters. Definitions are indented after asset/companion expansion;
 continued table fragments with independent footnote scopes remain separate.
+# Review follow-up contracts
+
+- Newly prepared assets use content identity version 2, binding original fragments,
+  formula conditions, kind, display and grouping state. Legacy version 1 remains
+  readable; preparation or semantic overrides create version 2 identities and require
+  current source/translation evidence. Project schema remains 6.
+- Untranslated-only batch manifests retain complete selected parent groups. Their
+  `read_only_unit_ids` are context, excluded from `translatable_unit_ids` and submission;
+  refresh preserves that boundary. Packet source and context identify both scopes.
+- `workflow status --host` uses the same override as next/packet. A dependency-only
+  QA failure dispatches its editable owning batch as prerequisite work, even outside
+  resume bounds; `requested_batch_ids` retains the original selected wave in next.
+- QA context version 6.5 separates original-image companions from extracted-prose
+  checks and counts table-cell footnote calls. Existing QA reports must be rerun.

@@ -186,10 +186,13 @@ def create_batches(
             if any(other not in requested for other in neighbors.get(unit.unit_id, ())):
                 raise ValueError(f"Unit selection cuts a continuation at {unit.unit_id}")
         pages = {unit.page for unit in selected}
+    remaining_ids: set[str] | None = None
     if untranslated_only:
         translated_ids = set(translation_map(root))
+        remaining_ids = {u.unit_id for u in selected if u.translatable and u.unit_id not in translated_ids}
+        remaining_parents = {u.parent_id for u in selected if u.unit_id in remaining_ids and u.parent_id}
         selected = [
-            unit for unit in selected if unit.translatable and unit.unit_id not in translated_ids
+            unit for unit in selected if unit.unit_id in remaining_ids or unit.parent_id in remaining_parents
         ]
     selected_ids = {unit.unit_id for unit in selected}
     parents = {unit.parent_id for unit in selected if unit.parent_id}
@@ -259,7 +262,10 @@ def create_batches(
             project_id=config.project_id,
             pages=sorted({unit.page for unit in group}),
             unit_ids=[unit.unit_id for unit in group],
-            translatable_unit_ids=[unit.unit_id for unit in group if unit.translatable],
+            translatable_unit_ids=[unit.unit_id for unit in group if unit.translatable
+                                   and (remaining_ids is None or unit.unit_id in remaining_ids)],
+            read_only_unit_ids=[unit.unit_id for unit in group
+                                if remaining_ids is not None and unit.unit_id not in remaining_ids],
             source_words=sum(_word_count(unit.source_text) for unit in group if unit.translatable),
         )
         start_index = all_unit_positions[group[0].unit_id]
@@ -309,12 +315,13 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
     ]
     if not group:
         raise ValueError("Batch contains no renderable units after applying structural overrides")
-    refreshed_scope = [unit.unit_id for unit in group if unit.translatable]
+    refreshed_scope = [unit.unit_id for unit in group if unit.translatable and unit.unit_id not in manifest.read_only_unit_ids]
     revised = manifest.model_copy(
         update={
             "pages": sorted({unit.page for unit in group}),
             "unit_ids": [unit.unit_id for unit in group],
             "translatable_unit_ids": refreshed_scope,
+            "read_only_unit_ids": [unit.unit_id for unit in group if unit.unit_id in manifest.read_only_unit_ids],
             "source_words": sum(
                 _word_count(unit.source_text) for unit in group if unit.unit_id in refreshed_scope
             ),

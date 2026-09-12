@@ -129,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.4-punctuation-and-asset-spacing|"
+        "deterministic-qa-v6.5-prose-and-table-scope|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -411,17 +411,11 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             effective_target += "\n" + "\n".join(
                 label.target or "" for label in rendered_figure_labels
             )
-        for companion in record.asset_translations:
-            effective_target += "\n" + companion.target_text
-            if companion.target_table is not None:
-                effective_target += "\n" + "\n".join(
-                    cell for row in companion.target_table.rows for cell in row)
-            effective_target += "\n" + "\n".join(label.target or "" for label in companion.figure_labels)
         effective_source = _comparison_source_text(
             unit,
             [label.source for label in rendered_figure_labels],
         )
-        if Counter(re.findall(r"\[\^(\d+)\]", unit.source_markdown or unit.source_text)) != Counter(re.findall(r"\[\^(\d+)\]", record.target_text)):
+        if Counter(re.findall(r"\[\^(\d+)\]", unit.source_markdown or unit.source_text)) != Counter(re.findall(r"\[\^(\d+)\]", effective_target)):
             errors.append(QAItem(code="footnote-call-mismatch", severity="error", unit_id=unit_id, message="Preserve explicit footnote calls in the translated paragraph"))
         for problem in validate_asset_references(root, unit.source_markdown or unit.source_text,
                                                  record.target_text):
@@ -494,6 +488,13 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         source_folded = _without_quoted_titles(
             source_representation_text(unit)
         ).casefold()
+        # Forbidden wording applies to all translated content, independently of
+        # whether image content can satisfy preservation checks for the prose.
+        all_target = effective_target + "\n" + "\n".join(
+            text for companion in record.asset_translations
+            for text in [companion.target_text,
+                         *[cell for row in (companion.target_table.rows if companion.target_table else []) for cell in row],
+                         *[label.target or "" for label in companion.figure_labels]])
         for term in approved_terms:
             source_term = str(term.get("source", ""))
             target_term = str(term.get("target", ""))
@@ -510,7 +511,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                             )
                         )
             for forbidden in term.get("forbidden", []) or []:
-                if str(forbidden) in effective_target:
+                if str(forbidden) in all_target:
                     errors.append(
                         QAItem(
                             code="forbidden-term",

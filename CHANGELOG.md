@@ -7,6 +7,15 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Dispatch dependency-only QA revision work to an editable owning batch, including
+  prerequisites outside a resumed wave; status uses the same dispatch and explicit host.
+- Keep table-cell footnote calls in QA and prevent image companions from satisfying
+  prose preservation checks. QA context version 6.5 requires rerunning existing QA.
+- Bind asset kind, display and grouping semantics into versioned content identities,
+  including final structure assembly, so source changes invalidate translation evidence.
+- Retain complete groups in untranslated-only batches with explicit read-only context
+  units excluded from submission, including after batch refresh.
+
 - Validate explicit asset IDs before either single- or multi-fragment region export.
 - Recognize spaced, punctuated and Unicode footnote-definition labels in detected regions.
 - Preserve historical rights status when rebuilding a project.
