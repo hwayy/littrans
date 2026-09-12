@@ -234,7 +234,7 @@ def test_completed_optional_queue_honors_scope_and_limit(tmp_path: Path, monkeyp
     monkeypatch.setattr(workflow, '_batch_stage_details', lambda *args: ('complete', []))
     monkeypatch.setattr(workflow, '_batch_stage', lambda *args: 'complete')
     def lane(root, manifest, units):
-        return {'complete': False, 'pending': {'transcribe': ['a'], 'asset-audit': ['b']}}
+        return {'complete': False, 'pending': {'transcribe': ['a'], 'asset-audit': ['b']}, 'recovery': []}
     monkeypatch.setattr(workflow, '_asset_lane', lane)
     result = workflow.workflow_next(root, start_at=manifests[1].batch_id, limit=1)
     assert result['stage'] == 'complete' and result['batch_ids'] == result['ready_tasks'] == []

@@ -115,6 +115,14 @@ literals remain literal, including dollar and backslash inline/display delimiter
 continued table fragments with independent footnote scopes remain separate.
 # Review follow-up contracts
 
+- Explicit footnote call numbers must match unique referenced definition numbers;
+  literal escaped/code/math syntax is excluded. Inconsistent historical structures need
+  source preparation/correction before approval.
+- A rejected/unresolved asset with semantic uncertainty remains pending recovery.
+  Workflow transcription prioritizes its revision packet with the prior review feedback;
+  ordinary image fallback without uncertainty remains a complete reading representation.
+- Source authority transactions restore snapshots on user interruption as well as errors.
+
 - Batch output schemas come from the submission model and include image_evidence and
   asset_translations; refresh existing batches to update their emitted schema.
 - New workflow packets record host/model/reasoning_effort in their manifest and identity.

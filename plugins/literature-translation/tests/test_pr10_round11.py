@@ -68,6 +68,7 @@ def test_override_validates_final_cross_page_graph(project, duplicate):
             for u in page["units"]
         ]
         if page["page"] == 1:
+            replacements[0]["source_markdown"] += " Call[^1]"
             replacements[0]["footnote_refs"] = ["new-note"] * (2 if duplicate else 1)
         else:
             replacements[0].update(unit_id="new-note", kind="footnote", footnote_number="1")

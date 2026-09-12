@@ -76,7 +76,11 @@ def test_qa_table_footnote_cells(project, keep_call):
     table.parent_id = None
     table.source_text = table.source_markdown = "Label[^1]"
     table.table = TableData(rows=[["Label[^1]"]], column_count=1)
+    table.footnote_refs = ["table-note"]
+    note = table.model_copy(deep=True, update={"unit_id": "table-note", "kind": UnitKind.FOOTNOTE,
+        "source_text": "Note", "source_markdown": "Note", "table": None, "footnote_refs": [], "footnote_number": "1"})
     units.insert(1, table)
+    units.insert(2, note)
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
     table_batch = create_batches(project, "1", prefix="table-test", unit_ids=[table.unit_id])[0]
@@ -212,6 +216,8 @@ def test_dependency_uncertainty_dispatches_editable_owner(project):
     note.kind = UnitKind.FOOTNOTE
     note.footnote_number = "1"
     caller.footnote_refs = [note.unit_id]
+    caller.source_text += " Call[^1]"
+    caller.source_markdown = caller.source_text
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
     submit(project, "sample-one-b001")

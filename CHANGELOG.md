@@ -7,6 +7,12 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Validate explicit footnote numbers against unique referenced definitions, preserving
+  literal code/math syntax and repeated calls to one definition.
+- Expose recovery transcription for uncertain fallback assets, carrying review feedback;
+  QA blocked only by that uncertainty dispatches asset recovery instead of prose revision.
+- Restore source authority snapshots on KeyboardInterrupt as well as ordinary errors.
+
 - Generate batch output schemas from TranslationRecord, including image receipts and
   asset companions; refreshing a batch updates its emitted schema.
 - Bind workflow packet identity and manifest to the selected host, model and effort.

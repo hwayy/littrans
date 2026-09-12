@@ -261,6 +261,9 @@ def _batch_stage_details(
     ):
         return "qa", {}
     if not qa_report.passed:
+        if qa_report.errors and all(error.code == "asset-semantic-uncertainty" for error in qa_report.errors):
+            if _asset_lane(root, manifest, snapshot.unit_map)["recovery"]:
+                return "transcribe", {}
         return "revise", {}
     coverage = audit_coverage(
         root,
@@ -341,7 +344,10 @@ def _asset_lane(root: Path, manifest: BatchManifest, units: dict[str, SourceUnit
     states = status["assets"]
     pending = {name: [aid for aid, row in states.items() if row["state"] == name]
                for name in ("transcribe", "asset-audit")}
-    return {"states": states, "pending": pending, "complete": not any(pending.values())}
+    recovery = [aid for aid, row in states.items() if row["state"] == "fallback" and row["semantic_uncertainty"]]
+    if recovery:
+        pending["transcribe"] = recovery  # Repair blocking evidence before fresh optional enhancement.
+    return {"states": states, "pending": pending, "recovery": recovery, "complete": not any(pending.values())}
 
 
 def _dispatch_stage(translation_stage: str, lane: dict[str, Any]) -> str:
@@ -394,6 +400,8 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                           "model": model_policy.get(role),
                           "reasoning_effort": model_policy.get("reasoning_effort") if role == "translate" else None,
                           "fresh_context": True})
+            if stage == "transcribe" and lane["recovery"]:
+                tasks[-1].update(asset_ids=lane["recovery"], recovery=True)
         for role, ids in lane["pending"].items():
             if ids and optional_assets:
                 tasks.append({"batch_id": bid, "stage": role, "asset_ids": ids, "optional": True,
@@ -401,6 +409,8 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                               "model": model_policy.get(role),
                               "reasoning_effort": model_policy.get("reasoning_effort") if role == "transcribe" else None,
                               "fresh_context": True})
+                if role == "transcribe" and lane["recovery"]:
+                    tasks[-1]["recovery"] = True
     return tasks
 
 
@@ -924,11 +934,19 @@ def create_workflow_packet(
         context_units = [u for u in read_jsonl(root / "derived/units.jsonl", SourceUnit) if u.unit_id in scope]
         ids = list(dict.fromkeys(a for u in context_units for a in asset_reference_ids(u.source_markdown or u.source_text)))
         states = representation_status(root, ids)["assets"]
-        ids = [aid for aid in ids if states[aid]["state"] == stage]
+        recovery = [aid for aid in ids if states[aid]["state"] == "fallback" and states[aid]["semantic_uncertainty"]]
+        revision_notes = None
+        if stage == "transcribe" and recovery:
+            ids = recovery
+            revision_notes = "Resolve the independent review's semantic uncertainty: " + "; ".join(
+                f"{aid}: {states[aid]['semantic_uncertainty']}" for aid in recovery)
+        else:
+            ids = [aid for aid in ids if states[aid]["state"] == stage]
         if not ids:
             return {"stage": stage, "batch_ids": batch_ids, "asset_ids": [], "pending": False}
         from littrans.context_packets import adjacent_source_units
-        return build_asset_packet(root, ids, stage=stage, context_units=context_units + adjacent_source_units(root, context_units), host=host)
+        return build_asset_packet(root, ids, stage=stage, context_units=context_units + adjacent_source_units(root, context_units),
+                                  revision_notes=revision_notes, host=host)
     if stage not in {"translate", "revise", "audit"}:
         raise ValueError("workflow packet stage must be translate, revise or audit")
     if stage == "audit" and len(batch_ids) > LENS_REVIEWER_BATCH_MAX:

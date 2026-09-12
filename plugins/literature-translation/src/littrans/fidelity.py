@@ -233,7 +233,7 @@ def _authority_transaction(root: Path, pages: list[int]) -> Iterator[None]:
     snapshots = snapshot_files(paths)
     try:
         yield
-    except Exception:
+    except BaseException:
         restore_files(snapshots)
         raise
 
@@ -1124,12 +1124,21 @@ def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_footnote_relationships(units: list[SourceUnit]) -> None:
+    from littrans.semantics import explicit_footnote_numbers
+
     unit_map = {u.unit_id: u for u in units}
     for unit in units:
         if len(unit.footnote_refs) != len(set(unit.footnote_refs)) or any(
             ref not in unit_map or unit_map[ref].kind != UnitKind.FOOTNOTE for ref in unit.footnote_refs
         ):
             raise ValueError(f"invalid or duplicated footnote relationship: {unit.unit_id}")
+        numbers = [unit_map[ref].footnote_number for ref in unit.footnote_refs]
+        text = unit.source_markdown or unit.source_text
+        if unit.table:
+            text = "\n".join(cell for row in unit.table.rows for cell in row)
+        if (len(set(numbers)) != len(numbers) or any(not number for number in numbers)
+                or explicit_footnote_numbers(text) != set(numbers)):
+            raise ValueError(f"footnote call numbers do not match referenced definitions: {unit.unit_id}")
 
 
 def _current_page(root: Path, number: int) -> dict[str, Any]:

@@ -15,7 +15,7 @@ from littrans.storage import read_json, read_jsonl, write_json, write_jsonl
 def _linked_notes(tmp_path: Path):
     root, manifests = _make_project(tmp_path, pages=3, max_words=100)
     units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
-    # Correct metadata through the issued source packet; original prose is unchanged.
+    # Create a complete synthetic caller/definition pair through the source packet.
     packet = build_source_review_packet(root, "1-2")
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "synthetic-footnote-fixture-oracle"
@@ -24,6 +24,7 @@ def _linked_notes(tmp_path: Path):
         corrected = {"unit_id": unit.unit_id, "kind": "paragraph" if unit.page == 1 else "footnote",
                      "bbox": list(unit.bbox), "source_markdown": unit.source_text}
         if unit.page == 1:
+            corrected["source_markdown"] += " Call[^1]"
             corrected["footnote_refs"] = [units[1].unit_id]
         else:
             corrected["footnote_number"] = "1"

@@ -9,6 +9,17 @@ from typing import Any
 from littrans.models import TableData
 
 LIGATURES = str.maketrans({"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"})
+
+
+def explicit_footnote_numbers(text: str) -> set[str]:
+    """Read actual calls, leaving code, mathematical spans and escaped syntax literal."""
+    tokens = re.compile(r"(?P<code>`+)[\s\S]*?(?P=code)"
+                        r"|(?P<dollars>\${1,2})[\s\S]*?(?P=dollars)"
+                        r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]"
+                        r"|(?<!\\)\[\^(?P<number>\d+)\]")
+    return {match['number'] for match in tokens.finditer(text) if match['number'] is not None}
+
+
 MATH_FONT_MARKERS = (
     "math",
     "symbol",
