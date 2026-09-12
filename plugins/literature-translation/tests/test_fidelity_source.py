@@ -287,6 +287,22 @@ def test_display_equation_is_separate_and_numbered(project: Path) -> None:
     assert not split[1].translatable
 
 
+def test_display_line_with_prose_stays_translatable(project: Path) -> None:
+    from littrans.fidelity import _make_unit
+    prepare_source(project, "1", allow_missing_layout=True)
+    assets = load_assets(project)
+    asset = next(a for a in assets.values() if a.kind == "math")
+    assets[asset.id] = asset.model_copy(update={"display": True})
+    marker = "{{asset:" + asset.id + "}}"
+    formula_only = _make_unit(1, "p1-b8", marker, [60, 68, 200, 86], assets, kind="equation")
+    assert not formula_only.translatable
+    # Rebuilding the unit with the prose set beside the formula carries the old flag in.
+    rebuilt = _make_unit(1, "p1-b8", marker + " for all times " + marker + ".", [60, 68, 200, 86],
+                         assets, kind="equation", translatable=formula_only.translatable)
+    assert rebuilt.translatable
+    assert rebuilt.source_hash != formula_only.source_hash
+
+
 def test_recoverable_paragraph_cannot_pass_as_image() -> None:
     from littrans.fidelity import _opaque_prose_assets
     text = "For an arbitrary polynomial the matrix function takes the form"

@@ -74,6 +74,9 @@ versioning and correspond to Git tags named `v<version>`.
   and QA accepts a localized bold label (`**例 1.**`) for already prepared units.
 - `workflow next` on a project without batches now says that batches must be created first
   instead of failing on an empty resume range.
+- Kept a displayed line that carries prose beside its formula (`... for all times t > 0.`)
+  translatable when the unit was rebuilt from a formula-only block; the quantifier phrase was
+  being dropped from the translation as a non-translatable image.
 - Labelled non-translatable equation units explicitly in audit packets so reviewers do not report
   the original-image reading content as an omission.
 - Kept inline formulas that fell back to a raw mixed region inline in the reading edition instead

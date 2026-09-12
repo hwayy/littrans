@@ -740,12 +740,18 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
     extra.setdefault("protected_tokens", protected_tokens(re.sub(r"\{\{asset:[^}]+\}\}", "", text), heading=kind == "heading"))
     extra.setdefault("translatable", True)
     payload = {"page": page, "text": text, "bbox": _box(bbox), "asset_content_hashes": hashes, "kind": kind, **extra}
-    pure_math = kind != "footnote" and bool(refs) and not re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip() and all(assets[aid].kind == "math" for aid in refs)
+    prose = re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip()
+    pure_math = kind != "footnote" and bool(refs) and not prose and all(assets[aid].kind == "math" for aid in refs)
     if pure_math:
         kind = "equation"
         payload["kind"] = kind
         extra["translatable"] = any(assets[aid].formula_conditions for aid in refs)
         payload["translatable"] = extra["translatable"]
+    elif kind == "equation" and prose and extra.get("render_policy", "include") != "omit":
+        # A displayed line that also carries prose ("... for all times t > 0.") keeps
+        # translatable text even when it was rebuilt from a formula-only unit.
+        extra["translatable"] = True
+        payload["translatable"] = True
     return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
 
 
