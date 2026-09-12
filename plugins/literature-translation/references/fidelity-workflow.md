@@ -143,3 +143,10 @@ continued table fragments with independent footnote scopes remain separate.
   resume bounds; `requested_batch_ids` retains the original selected wave in next.
 - QA context version 6.5 separates original-image companions from extracted-prose
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
+# Recovery review authority
+
+A new transcription candidate cannot clear an independent reviewer's semantic uncertainty.
+The candidate carries that finding through further revisions, including direct asset packet
+submission. Workflow dispatches its independent asset audit before QA. Only a valid new
+review decision can supersede the finding; damaged review evidence restores the pending
+block. Older recovery candidates read the finding from their immutable revision context.

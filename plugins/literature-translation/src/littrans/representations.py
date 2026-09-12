@@ -399,6 +399,7 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
         if "revision_context" in packet and packet["revision_context"] != _revision_context(
                 root, packet["asset_ids"], packet["asset_fingerprints"]):
             raise ValueError("Revision packet is stale for the current candidate or review feedback")
+        prior_states = representation_status(root, packet["asset_ids"])["assets"]
         prepared: list[dict[str, Any]] = []
         for item in records:
             key = item["asset_id"]
@@ -412,6 +413,7 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
                 "status": item.get("status", "candidate"),
                 "notes": item.get("notes", ""),
                 "semantic_uncertainty": item.get("semantic_uncertainty", ""),
+                "reviewer_uncertainty": prior_states[key].get("reviewer_uncertainty", ""),
                 "usage": payload.get("usage"),
             }
             if "revision_context" in packet:
@@ -495,6 +497,25 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
         return {"review_sha256": review_sha, "reviewed": len(decisions), "replayed": False}
 
 
+def _pending_reviewer_uncertainty(root: Path, candidate: dict[str, Any]) -> str:
+    """Read inherited review findings, including pre-field recovery candidates."""
+    seen: set[str] = set()
+    while "reviewer_uncertainty" not in candidate and candidate.get("revision_of"):
+        try:
+            packet_id = candidate["packet_id"]
+            if packet_id in seen:
+                raise ValueError("Cyclic revision history")
+            seen.add(packet_id)
+            packet = _load_packet(root, packet_id, "transcribe")
+            prior = packet["revision_context"][candidate["asset_id"]]
+            if prior["review_decision"] is not None:
+                return str(prior["review_decision"].get("semantic_uncertainty", ""))
+            candidate = prior["candidate"]
+        except (OSError, KeyError, ValueError):
+            return "Prior asset review evidence requires renewed verification"
+    return str(candidate.get("reviewer_uncertainty", ""))
+
+
 def representation_status(root: Path, asset_ids: list[str] | None = None) -> dict[str, Any]:
     assets = _assets(root)
     selected = list(assets) if asset_ids is None else asset_ids
@@ -504,7 +525,7 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
         if key not in assets:
             raise ValueError("Unknown asset: " + key)
         state: dict[str, Any] = {"state": "transcribe", "candidate_sha256": None,
-                                 "semantic_uncertainty": ""}
+                                 "semantic_uncertainty": "", "reviewer_uncertainty": ""}
         if assets[key].get("kind") not in ASSET_FORMATS:
             state["state"] = "fallback"
             result[key] = state
@@ -518,8 +539,11 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
             except (OSError, ValueError):
                 current = False
             if current:
+                inherited_uncertainty = _pending_reviewer_uncertainty(root, candidate)
                 state.update(candidate_sha256=sha, state="asset-audit",
-                             semantic_uncertainty=candidate["semantic_uncertainty"])
+                             reviewer_uncertainty=inherited_uncertainty,
+                             semantic_uncertainty="\n".join(filter(None, [
+                                 inherited_uncertainty, candidate["semantic_uncertainty"]])))
                 if candidate["status"] == "unresolved" or candidate["validation_errors"]:
                     state["state"] = "fallback"
                 review_packet = idx["reviews"].get(sha)
@@ -531,14 +555,18 @@ def representation_status(root: Path, asset_ids: list[str] | None = None) -> dic
                         if len(decisions) != 1:
                             raise ValueError("Stored review candidate coverage mismatch")
                         decision = decisions[0]
-                        state["state"] = "verified" if decision["verdict"] == "accept" else "fallback"
-                        state["semantic_uncertainty"] = decision.get("semantic_uncertainty", "")
+                        if decision.get("semantic_uncertainty"):
+                            state["reviewer_uncertainty"] = decision["semantic_uncertainty"]
+                            state["semantic_uncertainty"] = decision["semantic_uncertainty"]
                         packet = _load_packet(root, review_packet, "asset-audit")
                         _verify_render_artifact(root, packet)
                         if (review.get("render_manifest_sha256") != packet["render_manifest_sha256"]
                                 or review.get("render_artifact_sha256") != packet["render_artifact"]["sha256"]
                                 or _hash({k: v for k, v in candidate.items() if k != "candidate_sha256"}) != sha):
-                            state["state"] = "asset-audit"
+                            raise ValueError("Stored review evidence mismatch")
+                        state["state"] = "verified" if decision["verdict"] == "accept" else "fallback"
+                        state["reviewer_uncertainty"] = decision.get("semantic_uncertainty", "")
+                        state["semantic_uncertainty"] = state["reviewer_uncertainty"]
                     except (OSError, KeyError, ValueError):
                         state["state"] = "asset-audit"
         result[key] = state

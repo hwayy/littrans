@@ -7,6 +7,10 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Keep reviewer semantic uncertainty across recovery candidates until a valid independent
+  audit supersedes it; dispatch recovery audits before QA and retain the block if review
+  evidence is damaged. Older recovery candidates inherit their recorded review context.
+
 - Validate explicit footnote numbers against unique referenced definitions, preserving
   literal code/math syntax and repeated calls to one definition.
 - Expose recovery transcription for uncertain fallback assets, carrying review feedback;

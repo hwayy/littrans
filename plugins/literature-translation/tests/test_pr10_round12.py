@@ -4,10 +4,15 @@ import pytest
 from test_pr10_round8 import submit
 from test_workflow_v6 import project as workflow_project
 
-from littrans import fidelity
+from littrans import fidelity, representations
 from littrans.models import SourceUnit, UnitKind
 from littrans.quality import run_qa
-from littrans.representations import import_asset_review, representation_status, submit_candidates
+from littrans.representations import (
+    build_asset_packet,
+    import_asset_review,
+    representation_status,
+    submit_candidates,
+)
 from littrans.storage import read_json, write_json
 from littrans.workflow import create_workflow_packet, workflow_next, workflow_status
 
@@ -112,7 +117,8 @@ def test_footnote_graph_ignores_literals_and_allows_repeated_calls(literal):
 
 
 @pytest.mark.parametrize("verdict", ["reject", "unresolved"])
-def test_uncertain_asset_has_editable_recovery(project, verdict):
+@pytest.mark.parametrize("recovery_mode", ["workflow", "direct", "repeat", "legacy"])
+def test_uncertain_asset_has_editable_recovery(project, verdict, recovery_mode):
     bid = "sample-one-b001"
     submit(project, bid)
     transcribe = create_workflow_packet(project, "transcribe", [bid])
@@ -167,7 +173,39 @@ def test_uncertain_asset_has_editable_recovery(project, verdict):
         recovery["revision_context"][aid]["review_decision"]["semantic_uncertainty"]
         == "Meaning unclear"
     )
+    if recovery_mode == "direct":
+        recovery = build_asset_packet(project, [aid], host="claude")
     candidate(recovery)
+    if recovery_mode == "repeat":
+        candidate(build_asset_packet(project, [aid], revision_notes="Refine recovery again"))
+    if recovery_mode == "legacy":
+        index_path = project / "evidence/representations/index.json"
+        index = read_json(index_path)
+        folder = index_path.parent / "candidates"
+        record = read_json(folder / f"{index['candidates'][aid]}.json")
+        del record["reviewer_uncertainty"]
+        del record["candidate_sha256"]
+        sha = representations._hash(record)
+        record["candidate_sha256"] = sha
+        write_json(folder / f"{sha}.json", record)
+        index["candidates"][aid] = sha
+        write_json(index_path, index)
     assert representation_status(project, [aid])["assets"][aid]["state"] == "asset-audit"
+    assert representation_status(project, [aid])["assets"][aid]["semantic_uncertainty"] == "Meaning unclear"
+    assert not run_qa(project, bid).passed
+    assert workflow_next(project, start_at=bid, through=bid)["stage"] == "asset-audit"
+    fresh = create_workflow_packet(project, "asset-audit", [bid])
+    response = read_json(path)
+    response.update(packet_id=fresh["packet_id"], image_evidence=fresh["required_images"],
+                    render_artifact_sha256=fresh["render_artifact"]["sha256"],
+                    render_manifest_sha256=fresh["render_manifest_sha256"])
+    response["decisions"][0].update(candidate_sha256=fresh["candidates"][aid]["candidate_sha256"],
+                                   verdict="accept", semantic_uncertainty="")
+    write_json(path, response)
+    import_asset_review(project, path, True)
     assert not representation_status(project, [aid])["assets"][aid]["semantic_uncertainty"]
     assert workflow_next(project, start_at=bid, through=bid)["stage"] == "qa"
+    assert run_qa(project, bid).passed
+    (project / fresh["render_artifact"]["path"]).write_text("damaged", encoding="utf-8")
+    assert representation_status(project, [aid])["assets"][aid]["semantic_uncertainty"] == "Meaning unclear"
+    assert not run_qa(project, bid).passed
