@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Protect escaped footnote literals and backslash-delimited math in source/bilingual
+  HTML; embed original PNG fallbacks alongside SVGs in standalone source checkpoints.
+
 - Dispatch dependency-only QA revision work to an editable owning batch, including
   prerequisites outside a resumed wave; status uses the same dispatch and explicit host.
 - Keep table-cell footnote calls in QA and prevent image companions from satisfying

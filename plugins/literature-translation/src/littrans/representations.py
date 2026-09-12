@@ -702,8 +702,8 @@ def _original_html(root: Path, asset: dict[str, Any], output: Path, *, linked: b
         # Source dimensions are PDF points; em sizing retains inline proportions.
         image = f'<img src="{_href(root, svg or png, output)}" alt="原式 {html.escape(asset["id"])}" style="width:{width / 10:.3f}em;max-width:100%;height:auto;vertical-align:-{descent:.3f}em"'
         if svg:
-            fallback = "this.onerror=null;this.src=" + json.dumps(html.unescape(_href(root, png, output))) + ";"
-            image += f' onerror="{html.escape(fallback, quote=True)}"'
+            image += f' data-original-fallback="{_href(root, png, output)}"'
+            image += ' onerror="this.onerror=null;this.src=this.dataset.originalFallback;"'
         image += ">"
         if linked:
             href = _href(root, fragment.get("pdf_path") or png, output)

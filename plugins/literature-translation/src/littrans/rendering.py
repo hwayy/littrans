@@ -516,9 +516,11 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 INLINE_TOKEN_RE = re.compile(
     r"(?P<code>(?<!\\)(?P<fence>`+)(?P<code_text>.+?)(?P=fence))"
     r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+    r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
+    r"|(?P<slash_display>\\\[(?P<slash_display_text>[\s\S]*?)\\\])"
     r"|(?P<strong_em>(?<!\\)\*\*\*(?P<strong_em_text>.+?)\*\*\*)"
     r"|(?P<strong>(?<!\\)\*\*(?P<strong_text>.+?)\*\*)"
-    r"|(?P<footnote>\[\^(?P<footnote_number>\d+)\])"
+    r"|(?P<footnote>(?<!\\)\[\^(?P<footnote_number>\d+)\])"
     r"|(?P<emphasis>(?<!\\)(?<!\*)\*(?!\*)(?P<emphasis_text>[^*\n]+?)(?<!\\)\*(?!\*))"
 )
 
@@ -551,6 +553,10 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
                 + _mathml(match.group("math_text"), "inline")
                 + "</span>"
             )
+        elif match.group("slash_inline") is not None or match.group("slash_display") is not None:
+            display = "block" if match.group("slash_display") is not None else "inline"
+            latex = match.group("slash_display_text") if display == "block" else match.group("slash_inline_text")
+            parts.append(f'<span class="math {display}">' + _mathml(latex, display) + '</span>')
         elif match.group("strong_em") is not None:
             parts.append("<strong><em>" + _inline_html(match.group("strong_em_text"), footnote_scope, footnote_targets) + "</em></strong>")
         elif match.group("strong") is not None:

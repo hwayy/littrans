@@ -105,7 +105,7 @@ def _embed_assets(document: str, output: Path) -> str:
     import mimetypes
 
     def replace(match: re.Match[str]) -> str:
-        relative = match[1]
+        attribute, relative = match[1], html.unescape(match[2])
         path = output / relative
         if not path.is_file():
             return match[0]
@@ -113,9 +113,9 @@ def _embed_assets(document: str, output: Path) -> str:
         if path.suffix == ".svg":
             mime = "image/svg+xml"
         payload = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f'src="data:{mime};base64,{payload}"'
+        return f'{attribute}="data:{mime};base64,{payload}"'
 
-    return re.sub(r'src="(original-assets/[^"]+)"', replace, document)
+    return re.sub(r'(src|data-original-fallback)="(original-assets/[^"]+)"', replace, document)
 
 
 def render_source_review(root: Path, page_spec: str = "all", name: str | None = None, *, standalone: bool = False) -> dict[str, Any]:
