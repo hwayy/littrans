@@ -7,6 +7,10 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Reject unsafe override unit IDs and escape legacy IDs in Markdown anchors.
+- Preserve footnote-like literals inside backslash-delimited inline/display math.
+- Prepare numeric/symbol-only pages using usable-glyph font sizes or a default.
+
 - Carry explicit host selection into asset transcription/audit packets and the asset CLI.
 - Emit unique Markdown footnote calls/definitions, preserving code literals and expanded
   note content; keep continued table fragments with scoped notes separate.

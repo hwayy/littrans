@@ -456,6 +456,7 @@ def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, So
     labels = {note.footnote_number: _markdown_note_label(note) for note in notes if note.footnote_number}
     tokens = re.compile(r"(?P<code>(?P<fence>`+|~{3,})[\s\S]*?(?P=fence))"
                         r"|(?P<math>(?P<dollars>\${1,2})[\s\S]*?(?P=dollars))"
+                        r"|(?P<slash_math>\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])"
                         r"|(?<!\\)\[\^(?P<number>\d+)\]")
     def replace(match: re.Match[str]) -> str:
         number = match.group("number")
@@ -1113,7 +1114,7 @@ def render_project(
         if unit.kind is UnitKind.FOOTNOTE:
             rendered = _markdown_note_definition(unit, rendered)
         anchor = "".join(
-            f'<a id="{unit_id}"></a>'
+            f'<a id="{html.escape(unit_id)}"></a>'
             for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])
         )
         if (
@@ -1566,7 +1567,7 @@ def _render_quality_errors(
     if re.search(r"(?m)^>[ \t]+>[ \t]+", markdown):
         errors.append("nested-admonition-marker")
     for unit in units:
-        anchor = f'<a id="{unit.unit_id}"></a>'
+        anchor = f'<a id="{html.escape(unit.unit_id)}"></a>'
         if markdown.count(anchor) != 1:
             errors.append(f"unit-anchor-count:{unit.unit_id}:{markdown.count(anchor)}")
     html_ids = re.findall(r'(?<![A-Za-z0-9_-])id="([^"]+)"', rendered_html)

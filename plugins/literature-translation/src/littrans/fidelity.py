@@ -1297,6 +1297,8 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         for decision in decisions:
             for item in decision.get("override", {}).get("units", []):
                 uid = item["unit_id"]
+                if not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", uid):
+                    raise ValueError("invalid source unit ID; use letters, digits, dot, underscore or hyphen")
                 if uid in claimed_units or (uid in unit_owners and unit_owners[uid] != decision["page"]):
                     raise ValueError("source override unit ID collision: " + uid)
                 claimed_units.add(uid)

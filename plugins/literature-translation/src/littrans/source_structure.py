@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -97,11 +98,10 @@ def plan_structure(
     display_glyph_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     gm = {g["id"]: g for g in glyphs}
-    font_size = (
-        Counter(round(g["size"], 1) for g in glyphs if g["text"].isalpha()).most_common(1)[0][0]
-        if glyphs
-        else 10
-    )
+    usable = [g for g in glyphs if math.isfinite(g["size"]) and round(g["size"], 1) > 0]
+    sizes = (Counter(round(g["size"], 1) for g in usable if g["text"].isalpha())
+             or Counter(round(g["size"], 1) for g in usable))
+    font_size = sizes.most_common(1)[0][0] if sizes else 10
     starts = Counter(
         round(gm[line[0]]["origin"][0], 1) for b in blocks for line in b["lines"] if line
     )

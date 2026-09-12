@@ -19,6 +19,7 @@ reports portable. A damaged report is rebuilt under a new packet identity and ca
 silently restore prior approval.
 
 Source override asset and unit IDs cannot collide across decisions or with IDs owned by another page.
+Override unit IDs use `[A-Za-z0-9][A-Za-z0-9._-]*`; legacy IDs are escaped when rendered.
 Same-page boundary repairs may retain stable IDs; changed content fingerprints invalidate
 old evidence and require fresh source review. `preserve_asset_id` reuses an unchanged
 original crop on its own page.
@@ -110,5 +111,5 @@ Container kinds are open-ended, including examples, exercises, cases, algorithms
 
 Markdown footnote calls and definitions use unique labels derived from the referenced
 source unit ID, so repeated numbers on different pages do not collide. Code/math
-literals remain literal. Definitions are indented after asset/companion expansion;
+literals remain literal, including dollar and backslash inline/display delimiters. Definitions are indented after asset/companion expansion;
 continued table fragments with independent footnote scopes remain separate.
