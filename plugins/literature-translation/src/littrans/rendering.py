@@ -50,7 +50,9 @@ from littrans.representations import (
     resolve_asset_markdown,
 )
 from littrans.semantics import (
+    FENCED_CODE_PATTERN,
     FOOTNOTE_TOKEN_RE,
+    INLINE_CODE_PATTERN,
     escape_markdown_prose,
     fenced_code,
     normalize_zh_caption,
@@ -514,8 +516,8 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 
 
 INLINE_TOKEN_RE = re.compile(
-    r"(?P<code>(?<!\\)(?P<fence>`+|~{3,})(?P<code_text>[\s\S]+?)(?P=fence))"
-    r"|(?P<math>(?<!\\)\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+    FENCED_CODE_PATTERN + "|" + INLINE_CODE_PATTERN
+    + r"|(?P<math>(?<!\\)\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
     r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
     r"|(?P<slash_display>\\\[(?P<slash_display_text>[\s\S]*?)\\\])"
     r"|(?P<strong_em>(?<!\\)\*\*\*(?P<strong_em_text>.+?)\*\*\*)"
@@ -537,8 +539,9 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
     position = 0
     for match in INLINE_TOKEN_RE.finditer(text):
         parts.append(html.escape(text[position : match.start()]).replace("\n", " "))
-        if match.group("code") is not None:
-            code_text = match.group("code_text").replace("\n", " ")
+        if match.group("code") is not None or match.group("fenced_code") is not None:
+            code_text = (match.group("fenced_text") if match.group("fenced_code") is not None
+                         else match.group("code_text")).replace("\n", " ")
             if (
                 len(code_text) >= 2
                 and code_text.startswith(" ")

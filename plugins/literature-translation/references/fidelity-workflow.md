@@ -22,6 +22,12 @@ Footnote companions remain inside their Markdown definitions. Edition publicatio
 all shared MathJax files, including absent incoming paths, so later failure restores prior bytes
 and removes newly created runtime files; individual runtime copies are atomic.
 
+QA v6.12 shares code-fence recognition with Markdown and HTML: fences start on a line
+with at most three leading spaces and close only on an otherwise blank line with a matching
+or longer delimiter. Unclosed blocks extend to end of input; inline backticks match exact runs.
+Existing QA must rerun. A managed installer without a previous READY marker redownloads
+the model snapshot even when its config and main weight file already exist.
+
 Managed layout components require a successful smoke-test READY marker both for status
 checks and before detector execution or cached result reuse. Fully external interpreter
 and model configurations retain their external-runtime exemption. Cache identities bind

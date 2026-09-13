@@ -207,7 +207,7 @@ def test_layout_failed_retry_does_not_keep_ready(tmp_path: Path, monkeypatch: py
     assert not marker.exists() and downloads == [model]
     monkeypatch.setattr(runtime, '_smoke_test', lambda *args: {'status': 'ok'})
     assert runtime.install_layout_runtime()['installed']
-    assert marker.is_file() and downloads == [model]
+    assert marker.is_file() and downloads == [model, model]
 
 
 def test_external_runtime_does_not_require_managed_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

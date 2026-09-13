@@ -23,7 +23,7 @@ project = workflow_project
                                     "~~~\n[^1]\n~~~", "~~~~python\n[^1]\n~~~~"])
 def test_qa_counts_real_footnotes(tmp_path, target):
     root, manifests, _ = _linked_notes(tmp_path)
-    _submit(root, manifests[0].batch_id, target_text="译文 " + target)
+    _submit(root, manifests[0].batch_id, target_text="译文\n" + target)
     errors = {e.code for e in run_qa(root, manifests[0].batch_id).errors}
     assert ("footnote-call-mismatch" in errors) is (target != "[^1]")
 

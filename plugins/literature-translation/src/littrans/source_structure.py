@@ -30,7 +30,8 @@ def _bold_run_in(glyphs: list[dict[str, Any]], previous: list[dict[str, Any]]) -
     """A line opening with a bold label ("EXAMPLE 1.", "Proof.", "2.1.4. Stochastic
     processes.") followed by ordinary text on the same line. A bold phrase that
     merely wraps from the previous line ("modeling / problems:") is not a label."""
-    if previous and BOLD_FONT.search([g for g in previous if inked_glyph(g)][-1]["font"]):
+    previous_ink = [g for g in previous if inked_glyph(g)]
+    if previous_ink and BOLD_FONT.search(previous_ink[-1]["font"]):
         return False
     letters, closed = 0, False
     for g in glyphs:

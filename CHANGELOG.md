@@ -7,6 +7,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- QA v6.12, Markdown and HTML share line-valid code-fence boundaries, including longer
+  closing fences and unclosed blocks. Inline code uses exact backtick runs.
+- Retry incomplete managed model downloads when READY is absent; handle whitespace-only
+  PDF lines before bold run-in labels without indexing an empty glyph list.
+
 - Freeze explicit/untranslated-only batch scopes across refreshes, and reject newly cut
   logical groups. Keep footnote companions inside Markdown definitions.
 - Include shared MathJax files in edition rollback and publish each runtime file atomically.

@@ -180,6 +180,7 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     model = cache / MODEL_NAME
     venv_python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     marker = environment / READY_MARKER
+    previous_install_ready = marker.is_file()
     marker.unlink(missing_ok=True)
     if force and environment.exists():
         shutil.rmtree(environment)
@@ -192,7 +193,7 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     _pip(venv_python, "--upgrade", "pip")
     _pip(venv_python, "torch", "torchvision", "--index-url", TORCH_CPU_INDEX)
     _pip(venv_python, *LAYOUT_PACKAGES)
-    if force or not all((model / name).is_file() for name in ("config.json", "model.safetensors")):
+    if force or not previous_install_ready or not all((model / name).is_file() for name in ("config.json", "model.safetensors")):
         _download_weights(venv_python, model, model_source)
     smoke = _smoke_test(venv_python, model)
     if smoke.get("status") != "ok":

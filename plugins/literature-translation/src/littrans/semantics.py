@@ -11,8 +11,18 @@ from littrans.models import TableData
 LIGATURES = str.maketrans({"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"})
 
 
-FOOTNOTE_TOKEN_RE = re.compile(r"(?P<code>`+|~{3,})[\s\S]*?(?P=code)"
-                        r"|(?<!\\)(?P<dollars>\${1,2})[\s\S]*?(?<!\\)(?P=dollars)"
+FENCED_CODE_PATTERN = (
+    r"(?P<fenced_code>(?m:^[ ]{0,3}(?:(?P<backtick_fence>`{3,})(?!`)[^`\r\n]*"
+    r"|(?P<tilde_fence>~{3,})(?!~)[^\r\n]*)\r?\n)"
+    r"(?P<fenced_text>[\s\S]*?)(?:(?m:^[ ]{0,3}"
+    r"(?(backtick_fence)(?P=backtick_fence)`*|(?P=tilde_fence)~*)[ \t]*\r?$)|\Z))"
+)
+INLINE_CODE_PATTERN = (
+    r"(?P<code>(?<![\\`])(?P<fence>`+)(?!`)(?P<code_text>[\s\S]*?)(?<!`)(?P=fence)(?!`))"
+)
+
+FOOTNOTE_TOKEN_RE = re.compile(FENCED_CODE_PATTERN + "|" + INLINE_CODE_PATTERN
+                        + r"|(?<!\\)(?P<dollars>\${1,2})[\s\S]*?(?<!\\)(?P=dollars)"
                         r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]"
                         r"|(?<!\\)\[\^(?P<number>\d+)\]")
 
