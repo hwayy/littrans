@@ -889,6 +889,16 @@ def render_project(
                 for manifest in manifests
                 if (series := _batch_series(manifest.batch_id)) is not None
             }
+            if not allow_draft:
+                from littrans.external_review import external_review_status
+
+                current_ids = {unit.unit_id for unit in all_units}
+                dependency_manifests = [manifest for manifest in dependency_manifests
+                    if set(manifest.unit_ids) <= current_ids
+                    and qa_report_is_current(root, manifest.batch_id)
+                    and audit_coverage(root, manifest.batch_id)["complete"]
+                    and (not config.external_review or not config.external_review.enabled
+                         or external_review_status(root, manifest.batch_id)["external_approvable"])]
             same_series_manifests = [
                 manifest
                 for manifest in dependency_manifests
@@ -1066,6 +1076,7 @@ def render_project(
     ]
     rows: list[dict[str, Any]] = []
     pending_markdown_reader_notes: list[Any] = []
+    pending_markdown_companions: list[str] = []
     previous_page: int | None = None
     previous_unit: SourceUnit | None = None
     for unit_index, unit in enumerate(render_units):
@@ -1118,7 +1129,8 @@ def render_project(
         companion_md = "\n\n".join(md for md, _ in companions if md)
         companion_html = "".join(markup for _, markup in companions)
         if companion_md:
-            rendered += "\n\n" + companion_md
+            companion_md = resolve_asset_markdown(root, companion_md, output, originals_only=originals_only)
+            pending_markdown_companions.append(_markdown_footnote_calls(companion_md, unit, footnote_unit_map))
         rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
         rendered = _markdown_footnote_calls(rendered, unit, footnote_unit_map)
         if unit.kind is UnitKind.FOOTNOTE:
@@ -1199,6 +1211,10 @@ def render_project(
             and next_unit.kind is unit.kind
             and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
         )
+        if not next_continues_this_unit:
+            for companion in pending_markdown_companions:
+                markdown.extend([companion, ""])
+            pending_markdown_companions.clear()
         if not unit.continued_to_next and not next_continues_this_unit:
             for reader_note in pending_markdown_reader_notes:
                 markdown.extend([*_reader_note_markdown(reader_note), ""])
@@ -1221,7 +1237,6 @@ def render_project(
             source_view=False,
             unit_map=footnote_unit_map,
         )
-        target_html += companion_html
         source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only)
         target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only)
         if unit.unit_id in grouped_unit_ids:
@@ -1372,8 +1387,13 @@ def render_project(
                     "reader_notes": list(reader_notes),
                 }
             )
+        rows[-1].setdefault("companions", []).append(companion_html)
         previous_page = unit_last_page
         previous_unit = unit
+    for companion in pending_markdown_companions:
+        markdown.extend([companion, ""])
+    for row in rows:
+        row["target_html"] += "".join(row.pop("companions", []))
     for reader_note in pending_markdown_reader_notes:
         markdown.extend([*_reader_note_markdown(reader_note), ""])
     rows = _group_parent_rows(rows)

@@ -7,6 +7,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Revalidate source authority during workflow coordination and dispatch source-review
+  recovery when receipts fail. Route read-only review issues to editable owning batches.
+- Emit image companions after complete continuation chains; select current dependency
+  evidence before choosing a formal render cover. Require Pydantic 2.12 for identity serialization.
+
 - QA v6.11 rejects live footnote calls in image-language companions, including table cells
   and both label fields; escaped and code-literal notation remains supported.
 

@@ -467,7 +467,7 @@ def workflow_create_packet(
     project: PathArg,
     stage: str = typer.Option(
         ...,
-        help="translate, revise (current translation plus open issues), audit, transcribe or asset-audit.",
+        help="source-review, translate, revise (current translation plus open issues), audit, transcribe or asset-audit.",
     ),
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),

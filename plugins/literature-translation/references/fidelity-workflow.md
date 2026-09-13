@@ -2,6 +2,19 @@
 
 Schema 6 uses one source preparation path. Native prose and layout regions produce immutable source-owned `{{asset:ID}}` references; original vector PDF/SVG and high-resolution PNG evidence remain available throughout the workflow. A detector warning requires a source decision, not an automatic formula-recognition retry.
 
+Workflow coordination rechecks source authority across each selected batch's page-evidence
+closure before reusing QA. Failed authority returns `source-review`, suppresses optional
+asset tasks and permits `workflow packet --stage source-review` to rebuild review materials.
+Repair missing/changed source artifacts before independent review; cached translation approval
+cannot override this gate. Review issues against read-only context route to an editable owner;
+revision packets retain their originating batch IDs for coordinator issue resolution.
+Issues against non-translatable source units also dispatch source review; returned source-review
+materials include open `workflow_issues`, which must be addressed and resolved in their original batches.
+
+Reading output appends image-language companions after a complete continuation chain.
+Formal dependency cover selection considers only current QA/audit/external evidence.
+Pydantic >=2.12 is required for conditional identity-field serialization; project schema remains 6.
+
 Managed layout components require a successful smoke-test READY marker both for status
 checks and before detector execution or cached result reuse. Fully external interpreter
 and model configurations retain their external-runtime exemption. Cache identities bind

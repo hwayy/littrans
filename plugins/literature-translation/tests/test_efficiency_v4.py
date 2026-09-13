@@ -1992,7 +1992,9 @@ def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
     )
     import_review(root, batch_id, blocker_path)
 
-    assert workflow_next(root)["stage"] == "revise"
+    assert workflow_next(root)["stage"] == "source-review"
+    packet = create_workflow_packet(root, "source-review", [batch_id])
+    assert packet["workflow_issues"][0]["issue_id"] == "source-only-blocker"
 
 
 def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> None:

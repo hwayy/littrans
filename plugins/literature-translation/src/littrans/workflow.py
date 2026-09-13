@@ -5,7 +5,7 @@ import re
 import shutil
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +80,7 @@ class WorkflowSnapshot:
     external_status: dict[str, dict[str, Any] | None]
     external_enabled: bool
     qa_context_fingerprints: dict[str, str]
+    source_checks: dict[tuple[int, ...], bool] = field(default_factory=dict)
 
 
 def _translation_fingerprint_from_snapshot(
@@ -249,6 +250,13 @@ def _batch_stage_details(
     )
     if manifest is None:
         raise ValueError(f"Unknown batch ID: {batch_id}")
+    from littrans.fidelity import verify_fidelity
+
+    pages = tuple(sorted(manifest.pages))
+    if pages not in snapshot.source_checks:
+        snapshot.source_checks[pages] = bool(verify_fidelity(root, ",".join(map(str, pages)))["passed"])
+    if not snapshot.source_checks[pages]:
+        return "source-review", {}
     translations = snapshot.translations
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
         return "translate", {}
@@ -289,12 +297,18 @@ def _batch_stage_details(
     return stage, {}
 
 
+def _scope_issues(snapshot: WorkflowSnapshot, manifest: BatchManifest) -> list[ReviewIssue]:
+    editable = set(manifest.translatable_unit_ids)
+    return [issue for bid, issues in snapshot.issues.items() for issue in issues
+            if bid == manifest.batch_id or issue.unit_id in editable]
+
+
 def _post_audit_stage(
     snapshot: WorkflowSnapshot, manifest: BatchManifest, batch_id: str
 ) -> str:
     translations = snapshot.translations
     open_issues = [
-        issue for issue in snapshot.issues[batch_id] if issue.status is IssueStatus.OPEN
+        issue for issue in _scope_issues(snapshot, manifest) if issue.status is IssueStatus.OPEN
     ]
     external_enabled = snapshot.external_enabled
     open_substantive = [
@@ -308,6 +322,10 @@ def _post_audit_stage(
         if issue.severity in {Severity.BLOCKER, Severity.MAJOR}
     ]
     if open_blocking or (external_enabled and open_substantive):
+        actionable = open_substantive if external_enabled else open_blocking
+        if any(issue.unit_id in snapshot.unit_map and not snapshot.unit_map[issue.unit_id].translatable
+               for issue in actionable):
+            return "source-review"
         return "revise"
     allowed_machine = {
         ProjectStatus.MACHINE_REVIEWED,
@@ -363,25 +381,30 @@ def _dispatch_stage(translation_stage: str, lane: dict[str, Any]) -> str:
 
 
 def _editable_revision_batches(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot) -> list[str]:
-    """Resolve dependency-only QA failures to batches allowed to edit those units."""
+    """Resolve foreign QA/review failures to batches allowed to edit their units."""
     by_id = {m.batch_id: m for m in snapshot.manifests}
 
     def resolve(bid: str, visiting: set[str]) -> list[str]:
         if bid in visiting:
             raise ValueError(f"Cyclic dependency revision ownership at {bid}; refresh owning batches")
         report = snapshot.qa_reports[bid]
-        if _batch_stage(root, bid, snapshot) != "revise" or report is None or report.passed:
+        if _batch_stage(root, bid, snapshot) != "revise":
             return [bid]
         editable = set(by_id[bid].translatable_unit_ids)
+        problems = ([error.unit_id for error in report.errors] if report and not report.passed else
+                    [issue.unit_id for issue in _scope_issues(snapshot, by_id[bid])
+                     if issue.status is IssueStatus.OPEN and
+                     (issue.severity in {Severity.BLOCKER, Severity.MAJOR}
+                      or snapshot.external_enabled and issue.severity is not Severity.SUGGESTION)])
         # Repair local errors first; unlike foreign errors, this task can change them.
-        if any(error.unit_id is None or error.unit_id in editable for error in report.errors):
+        if any(uid is None or uid in editable for uid in problems):
             return [bid]
-        foreign = list(dict.fromkeys(error.unit_id for error in report.errors if error.unit_id))
+        foreign = list(dict.fromkeys(uid for uid in problems if uid))
         owners: list[str] = []
         for uid in foreign:
             owner = next((m.batch_id for m in snapshot.manifests if uid in m.translatable_unit_ids), None)
             if owner is None:
-                raise ValueError(f"QA dependency {uid} has no editable owning batch; create or refresh its batch before continuing")
+                raise ValueError(f"QA/review dependency {uid} has no editable owning batch; create or refresh its batch before continuing")
             owners.extend(resolve(owner, visiting | {bid}))
         return list(dict.fromkeys(owners)) or [bid]
 
@@ -398,6 +421,11 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         batch_ids = _editable_revision_batches(root, batch_ids, snapshot)
     for bid in batch_ids:
         stage = _batch_stage(root, bid, snapshot)
+        if stage == "source-review":
+            if not optional_assets:
+                tasks.append({"batch_id": bid, "stage": stage, "depends_on": [], "fresh_context": True,
+                              "instruction": "Repair source evidence and create a source-review packet; independently review before resuming."})
+            continue
         lane = _asset_lane(root, by_id[bid], snapshot.unit_map)
         if stage != "complete" and not optional_assets:
             # Revision is translator work: it reuses the translate model policy.
@@ -899,7 +927,7 @@ def _revise_packet_text(
     for issue in open_issues:
         lines.extend(
             [
-                f"### {issue.issue_id} ({issue.severity}; {issue.type}; unit {issue.unit_id})",
+                f"### {issue.issue_id} ({issue.severity}; {issue.type}; unit {issue.unit_id}; originating batch {issue.batch_id})",
                 "",
                 issue.explanation,
             ]
@@ -930,6 +958,21 @@ def create_workflow_packet(
 ) -> WorkflowPacketManifest | list[WorkflowPacketManifest] | dict[str, Any]:
     require_current_project_schema(root, "Workflow packet creation")
     host = resolve_coordination_host(host)
+    if stage == "source-review":
+        if lens is not None:
+            raise ValueError("Source review does not accept a translation audit lens")
+        from littrans.fidelity import build_source_review_packet
+
+        manifests = _validate_batch_set(root, batch_ids)
+        pages = sorted({page for manifest in manifests for page in manifest.pages})
+        result = build_source_review_packet(root, ",".join(map(str, pages)))
+        units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+        scope = {unit.unit_id for unit in units if unit.page in result["pages"]}
+        result["workflow_issues"] = [issue.model_dump(mode="json")
+            for path in sorted((root / "reviews").glob("*.issues.jsonl"))
+            for issue in read_jsonl(path, ReviewIssue)
+            if issue.status is IssueStatus.OPEN and issue.unit_id in scope]
+        return result
     if stage in {"transcribe", "asset-audit"}:
         if lens is not None:
             raise ValueError("Asset tasks do not accept a translation audit lens")
@@ -1121,13 +1164,9 @@ def create_workflow_packet(
                 "\n".join(context).rstrip() + "\n",
             )
             if stage == "revise":
-                open_issues = [
-                    issue
-                    for issue in read_jsonl(
-                        root / "reviews" / f"{manifest.batch_id}.issues.jsonl", ReviewIssue
-                    )
-                    if issue.status is IssueStatus.OPEN
-                ]
+                open_issues = [issue for path in sorted((root / "reviews").glob("*.issues.jsonl"))
+                               for issue in read_jsonl(path, ReviewIssue)
+                               if issue.status is IssueStatus.OPEN and issue.unit_id in manifest.translatable_unit_ids]
                 qa_path = root / "qa" / f"{manifest.batch_id}.json"
                 qa_report = (
                     QAReport.model_validate(read_json(qa_path)) if qa_path.is_file() else None
