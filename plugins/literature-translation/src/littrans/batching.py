@@ -268,6 +268,7 @@ def create_batches(
                                    and (remaining_ids is None or unit.unit_id in remaining_ids)],
             read_only_unit_ids=[unit.unit_id for unit in group
                                 if remaining_ids is not None and unit.unit_id not in remaining_ids],
+            frozen_scope=unit_ids is not None or untranslated_only,
             source_words=sum(_word_count(unit.source_text) for unit in group if unit.translatable),
         )
         start_index = all_unit_positions[group[0].unit_id]
@@ -314,9 +315,18 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
         unit
         for unit in all_units[start_index : end_index + 1]
         if unit.render_policy is RenderPolicy.INCLUDE
+        and (not manifest.frozen_scope or unit.unit_id in manifest.unit_ids)
     ]
     if not group:
         raise ValueError("Batch contains no renderable units after applying structural overrides")
+    if manifest.frozen_scope:
+        ids = {unit.unit_id for unit in group}
+        parents = {unit.parent_id for unit in group if unit.parent_id}
+        neighbors = continuation_neighbors(all_units)
+        if (any(unit.render_policy is RenderPolicy.INCLUDE and unit.parent_id in parents
+                and unit.unit_id not in ids for unit in all_units)
+                or any(other not in ids for unit in group for other in neighbors.get(unit.unit_id, ()))):
+            raise ValueError("Frozen batch scope cuts a logical paragraph or continuation; create a new complete selection")
     translations = translation_map(root)
     read_only = {unit.unit_id for unit in group if unit.unit_id in manifest.read_only_unit_ids
                  and (not unit.translatable or (unit.unit_id in translations

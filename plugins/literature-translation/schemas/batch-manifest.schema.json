@@ -43,6 +43,11 @@
       "title": "Read Only Unit Ids",
       "type": "array"
     },
+    "frozen_scope": {
+      "default": false,
+      "title": "Frozen Scope",
+      "type": "boolean"
+    },
     "source_words": {
       "title": "Source Words",
       "type": "integer"

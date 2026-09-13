@@ -45,6 +45,7 @@ from littrans.representations import (
     _index,
     install_mathjax,
     mathjax_bootstrap,
+    mathjax_publication_paths,
     resolve_asset_html,
     resolve_asset_markdown,
 )
@@ -1130,7 +1131,10 @@ def render_project(
         companion_html = "".join(markup for _, markup in companions)
         if companion_md:
             companion_md = resolve_asset_markdown(root, companion_md, output, originals_only=originals_only)
-            pending_markdown_companions.append(_markdown_footnote_calls(companion_md, unit, footnote_unit_map))
+            if unit.kind is UnitKind.FOOTNOTE:
+                rendered += "\n\n" + companion_md
+            else:
+                pending_markdown_companions.append(_markdown_footnote_calls(companion_md, unit, footnote_unit_map))
         rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
         rendered = _markdown_footnote_calls(rendered, unit, footnote_unit_map)
         if unit.kind is UnitKind.FOOTNOTE:
@@ -1454,9 +1458,12 @@ def render_project(
         ]
         if external_path is not None:
             publication_paths.append(external_path)
+        install_runtime = not originals_only and any(ASSET_RE.search(unit.source_markdown or unit.source_text) for unit in units)
+        if install_runtime:
+            publication_paths.extend(mathjax_publication_paths(output))
         publication_snapshot = snapshot_files(publication_paths)
         try:
-            if not originals_only and any(ASSET_RE.search(unit.source_markdown or unit.source_text) for unit in units):
+            if install_runtime:
                 install_mathjax(output)
             atomic_write_text(markdown_path, markdown_text)
             atomic_write_text(html_path, html_text)

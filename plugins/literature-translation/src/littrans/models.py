@@ -968,6 +968,7 @@ class BatchManifest(StrictModel):
     unit_ids: list[str]
     translatable_unit_ids: list[str]
     read_only_unit_ids: list[str] = Field(default_factory=list)
+    frozen_scope: bool = False
     source_words: int
     created_at: str = Field(default_factory=utc_now)
 

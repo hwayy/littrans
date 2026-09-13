@@ -15,6 +15,13 @@ Reading output appends image-language companions after a complete continuation c
 Formal dependency cover selection considers only current QA/audit/external evidence.
 Pydantic >=2.12 is required for conditional identity-field serialization; project schema remains 6.
 
+New explicit-unit and untranslated-only batches record `frozen_scope: true`. Refresh keeps
+their selected IDs rather than filling interior gaps; removed IDs or newly cut logical groups
+require an explicit new selection. Legacy/range manifests retain interval refresh behavior.
+Footnote companions remain inside their Markdown definitions. Edition publication snapshots
+all shared MathJax files, including absent incoming paths, so later failure restores prior bytes
+and removes newly created runtime files; individual runtime copies are atomic.
+
 Managed layout components require a successful smoke-test READY marker both for status
 checks and before detector execution or cached result reuse. Fully external interpreter
 and model configurations retain their external-runtime exemption. Cache identities bind

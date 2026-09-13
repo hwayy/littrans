@@ -7,6 +7,10 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Freeze explicit/untranslated-only batch scopes across refreshes, and reject newly cut
+  logical groups. Keep footnote companions inside Markdown definitions.
+- Include shared MathJax files in edition rollback and publish each runtime file atomically.
+
 - Revalidate source authority during workflow coordination and dispatch source-review
   recovery when receipts fail. Route read-only review issues to editable owning batches.
 - Emit image companions after complete continuation chains; select current dependency

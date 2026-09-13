@@ -23,6 +23,7 @@ from littrans.models import SourceUnit
 from littrans.representation_models import AssetReviewSubmission, AssetSubmission
 from littrans.semantics import explicit_footnote_calls
 from littrans.storage import (
+    atomic_write_bytes,
     atomic_write_text,
     load_project,
     project_write_lock,
@@ -715,6 +716,15 @@ def _runtime_fingerprint() -> str:
                           )).encode()).hexdigest()
 
 
+def mathjax_publication_paths(output: Path) -> list[Path]:
+    """Include existing files and absent incoming paths in publication rollback."""
+    source = Path(str(files("littrans").joinpath("vendor", "mathjax")))
+    manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+    target = output / "mathjax"
+    return list(dict.fromkeys([*(target / relative for relative in manifest["files"]),
+                              *(path for path in target.rglob("*") if path.is_file())]))
+
+
 def install_mathjax(output: Path) -> Path:
     """Copy only vendored, pinned runtime files. Never fetch from the reader."""
     source = Path(str(files("littrans").joinpath("vendor", "mathjax")))
@@ -727,7 +737,7 @@ def install_mathjax(output: Path) -> Path:
         dest = target / relative
         if not dest.exists() or hashlib.sha256(dest.read_bytes()).hexdigest() != expected:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(incoming, dest)
+            atomic_write_bytes(dest, incoming.read_bytes())
     return target
 
 
