@@ -13,6 +13,35 @@ from littrans.storage import read_json, sha256_file, sha256_text, write_json
 READY_MARKER = ".littrans-layout-ready"
 
 
+def model_weight_hashes(model: Path) -> dict[str, str]:
+    """Content-address every file in a detector snapshot."""
+    return {str(path.relative_to(model)): sha256_file(path)
+            for path in sorted(model.rglob("*")) if path.is_file()}
+
+
+def ready_weight_hashes(marker: Path) -> dict[str, str] | None:
+    """Read the smoke-test receipt's weight hashes, or None for a legacy marker."""
+    if not marker.is_file():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    weights = payload.get("weights") if isinstance(payload, dict) else None
+    if not isinstance(weights, dict) or not weights:
+        return None
+    if any(not isinstance(name, str) or not isinstance(digest, str) or len(digest) != 64
+           for name, digest in weights.items()):
+        return None
+    return weights
+
+
+def write_ready_marker(marker: Path, model: Path) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"weights": model_weight_hashes(model)}, sort_keys=True) + "\n",
+                      encoding="utf-8")
+
+
 def layout_cache_root() -> Path:
     """Managed location of the isolated layout environment and its weights."""
     return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "littrans/layout"
@@ -35,8 +64,20 @@ def runtime_readiness_error(python: Path, model: Path, cache: Path | None = None
     cache = layout_cache_root() if cache is None else cache
     managed = any(path.absolute().is_relative_to(cache.absolute())
                   or path.resolve().is_relative_to(cache.resolve()) for path in (python, model))
-    if managed and not (cache / "venv" / READY_MARKER).is_file():
+    if not managed:
+        return None
+    marker = cache / "venv" / READY_MARKER
+    if not marker.is_file():
         return "managed layout smoke test not completed; run littrans layout install"
+    recorded = ready_weight_hashes(marker)
+    if recorded is None:
+        return "managed layout ready receipt lacks weight hashes; run littrans layout install"
+    try:
+        current = model_weight_hashes(model)
+    except OSError:
+        return "managed layout weights are unreadable; run littrans layout install"
+    if recorded != current:
+        return "managed layout weights do not match the ready receipt; run littrans layout install"
     return None
 
 
@@ -72,7 +113,7 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         worker_sha = sha256_file(worker)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"status": "unavailable", "reason": str(exc), "pages": {}}
-    weights = {str(p.relative_to(model)): sha256_file(p) for p in sorted(model.rglob("*")) if p.is_file()}
+    weights = model_weight_hashes(model)
     request = {"images": [str(p.resolve()) for p in images], "image_sha256": {str(p.resolve()): sha256_file(p) for p in images}, "model": str(model.resolve()), "weights": weights}
     request.update(runtime=runtime, worker_sha256=worker_sha)
     request["fingerprint"] = sha256_text(str(request))

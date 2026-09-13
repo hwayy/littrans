@@ -113,8 +113,7 @@ def test_detector_readiness_and_cache_lifecycle(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(layout_detector.subprocess, 'run', run)
     monkeypatch.setattr(layout_detector, '_runtime_identity', lambda python: {'python': 'test'})
     marker = cache / 'venv' / layout_detector.READY_MARKER
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
+    layout_detector.write_ready_marker(marker, model)
     assert layout_detector.detect_layout([], output)['status'] == 'ok'
     assert layout_detector.detect_layout([], output)['status'] == 'ok'
     assert len(calls) == 1

@@ -540,9 +540,10 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
     position = 0
     for match in INLINE_TOKEN_RE.finditer(text):
         parts.append(html.escape(text[position : match.start()]).replace("\n", " "))
-        if match.group("code") is not None or match.group("fenced_code") is not None:
-            code_text = (match.group("fenced_text") if match.group("fenced_code") is not None
-                         else match.group("code_text")).replace("\n", " ")
+        if match.group("fenced_code") is not None:
+            parts.append("<pre><code>" + html.escape(match.group("fenced_text") or "") + "</code></pre>")
+        elif match.group("code") is not None:
+            code_text = match.group("code_text").replace("\n", " ")
             if (
                 len(code_text) >= 2
                 and code_text.startswith(" ")

@@ -45,11 +45,10 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
         normalized: list[TranslationRecord] = []
         changed: list[TranslationRecord] = []
         rebound: list[TranslationRecord] = []
+        from littrans.context_packets import validate_translation_images
         for record in submitted:
             unit = units[record.unit_id]
-            if "{{asset:" in (unit.source_markdown or unit.source_text):
-                from littrans.context_packets import validate_translation_images
-                validate_translation_images(root, unit, record.image_evidence)
+            validate_translation_images(root, unit, record.image_evidence)
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")
             effective_figure_labels(unit, record)

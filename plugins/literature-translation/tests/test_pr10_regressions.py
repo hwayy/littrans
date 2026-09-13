@@ -89,6 +89,9 @@ def test_managed_layout_requires_ready_marker(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(runtime, '_run', lambda *args: subprocess.CompletedProcess([], 0, runtime.MINERU_VERSION, ''))
     assert not runtime.layout_runtime_status()['ok']
     (tmp_path / 'venv' / runtime.READY_MARKER).write_text('ready\n')
+    assert not runtime.layout_runtime_status()['ok']
+    from littrans.layout_detector import write_ready_marker
+    write_ready_marker(tmp_path / 'venv' / runtime.READY_MARKER, model)
     assert runtime.layout_runtime_status()['ok']
 
 

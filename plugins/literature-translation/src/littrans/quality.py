@@ -388,7 +388,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                 errors.append(QAItem(code="asset-semantic-uncertainty", severity="error", unit_id=dependency_id,
                                      message=f"Resolve asset {asset_id} semantic uncertainty: {uncertainty}"))
         dependency_record = translations.get(dependency_id)
-        if dependency_record and dependency_unit.translatable and ASSET_RE.search(dependency_unit.source_markdown or dependency_unit.source_text):
+        if dependency_record and dependency_unit.translatable:
             from littrans.context_packets import validate_translation_images
 
             try:

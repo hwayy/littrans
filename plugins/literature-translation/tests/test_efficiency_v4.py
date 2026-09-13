@@ -1644,6 +1644,7 @@ def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
                     FigureLabel(source="Speed 10 m/s", target="速度 100 m/s")
                 ],
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -1703,6 +1704,7 @@ def test_figure_label_overrides_require_complete_source_mapping(
         target_text="控件状态图。",
         figure_labels=[FigureLabel(source="Open", target="打开")],
         source_hash=unit.source_hash,
+        image_evidence=original_image_evidence(root, unit),
     )
     input_path = root / "batches" / manifest.batch_id / "partial-labels.jsonl"
     write_jsonl(input_path, [partial])
@@ -2370,6 +2372,7 @@ def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> No
                 unit_id=unit.unit_id,
                 target_text="图 1-1。标题",
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -2402,6 +2405,7 @@ def test_caption_like_paragraph_separator_change_is_semantic_revision(
                 unit_id=unit.unit_id,
                 target_text="图 1。说明了普通段落中的引用。",
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -2937,6 +2941,7 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
                     accessed_at="2026-08-09",
                 ),
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )

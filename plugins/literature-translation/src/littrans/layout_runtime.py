@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from littrans.layout_detector import READY_MARKER as READY_MARKER
-from littrans.layout_detector import layout_cache_root, runtime_paths, runtime_readiness_error
+from littrans.layout_detector import (
+    layout_cache_root,
+    model_weight_hashes,
+    ready_weight_hashes,
+    runtime_paths,
+    runtime_readiness_error,
+    write_ready_marker,
+)
 
 MINERU_VERSION = "3.4.5"
 MODEL_NAME = "PP-DocLayoutV2"
@@ -180,7 +187,11 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     model = cache / MODEL_NAME
     venv_python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     marker = environment / READY_MARKER
-    previous_install_ready = marker.is_file()
+    recorded = ready_weight_hashes(marker)
+    files_exist = all((model / name).is_file() for name in ("config.json", "model.safetensors"))
+    current_hashes = model_weight_hashes(model) if model.is_dir() else {}
+    hashes_mismatch = recorded is not None and recorded != current_hashes
+    need_download = force or not files_exist or hashes_mismatch or not marker.is_file()
     marker.unlink(missing_ok=True)
     if force and environment.exists():
         shutil.rmtree(environment)
@@ -193,11 +204,11 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     _pip(venv_python, "--upgrade", "pip")
     _pip(venv_python, "torch", "torchvision", "--index-url", TORCH_CPU_INDEX)
     _pip(venv_python, *LAYOUT_PACKAGES)
-    if force or not previous_install_ready or not all((model / name).is_file() for name in ("config.json", "model.safetensors")):
+    if need_download:
         _download_weights(venv_python, model, model_source)
     smoke = _smoke_test(venv_python, model)
     if smoke.get("status") != "ok":
         raise RuntimeError("layout smoke test did not report ok")
-    (environment / READY_MARKER).write_text("ready\n", encoding="utf-8")
+    write_ready_marker(marker, model)
     return {**layout_runtime_status(), "installed": True, "smoke_test": smoke,
             "model_source": model_source}
