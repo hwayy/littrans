@@ -129,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.8-fenced-footnote-calls|"
+        "deterministic-qa-v6.9-current-dependency-translations|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -373,6 +373,13 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                 errors.append(QAItem(code="asset-semantic-uncertainty", severity="error", unit_id=dependency_id,
                                      message=f"Resolve asset {asset_id} semantic uncertainty: {uncertainty}"))
         dependency_record = translations.get(dependency_id)
+        if dependency_unit.translatable and dependency_id not in manifest.translatable_unit_ids:
+            if dependency_record is None:
+                errors.append(QAItem(code="missing-translation", severity="error", unit_id=dependency_id,
+                                     message="Translatable dependency has no current translation."))
+            elif dependency_record.source_hash != dependency_unit.source_hash:
+                errors.append(QAItem(code="source-hash-mismatch", severity="error", unit_id=dependency_id,
+                                     message="Dependency translation targets a different source revision."))
         if dependency_record and any(item.strip() for item in dependency_record.uncertainties):
             errors.append(QAItem(code="translation-understanding-unresolved", severity="error",
                                  message="Resolve the recorded source-understanding uncertainty before approval: "

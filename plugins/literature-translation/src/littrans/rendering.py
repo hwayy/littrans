@@ -49,6 +49,7 @@ from littrans.representations import (
     resolve_asset_markdown,
 )
 from littrans.semantics import (
+    FOOTNOTE_TOKEN_RE,
     escape_markdown_prose,
     fenced_code,
     normalize_zh_caption,
@@ -454,14 +455,10 @@ def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, So
     if not unit.footnote_refs:
         notes = [note for note in unit_map.values() if note.page == unit.page and note.kind is UnitKind.FOOTNOTE]
     labels = {note.footnote_number: _markdown_note_label(note) for note in notes if note.footnote_number}
-    tokens = re.compile(r"(?P<code>(?P<fence>`+|~{3,})[\s\S]*?(?P=fence))"
-                        r"|(?P<math>(?P<dollars>\${1,2})[\s\S]*?(?P=dollars))"
-                        r"|(?P<slash_math>\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])"
-                        r"|(?<!\\)\[\^(?P<number>\d+)\]")
     def replace(match: re.Match[str]) -> str:
         number = match.group("number")
         return f"[^{labels[number]}]" if number in labels else match[0]
-    return tokens.sub(replace, text)
+    return FOOTNOTE_TOKEN_RE.sub(replace, text)
 
 
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
@@ -517,7 +514,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 
 INLINE_TOKEN_RE = re.compile(
     r"(?P<code>(?<!\\)(?P<fence>`+|~{3,})(?P<code_text>[\s\S]+?)(?P=fence))"
-    r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+    r"|(?P<math>(?<!\\)\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
     r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
     r"|(?P<slash_display>\\\[(?P<slash_display_text>[\s\S]*?)\\\])"
     r"|(?P<strong_em>(?<!\\)\*\*\*(?P<strong_em_text>.+?)\*\*\*)"

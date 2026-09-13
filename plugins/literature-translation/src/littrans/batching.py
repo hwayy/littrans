@@ -315,13 +315,17 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
     ]
     if not group:
         raise ValueError("Batch contains no renderable units after applying structural overrides")
-    refreshed_scope = [unit.unit_id for unit in group if unit.translatable and unit.unit_id not in manifest.read_only_unit_ids]
+    translations = translation_map(root)
+    read_only = {unit.unit_id for unit in group if unit.unit_id in manifest.read_only_unit_ids
+                 and (not unit.translatable or (unit.unit_id in translations
+                      and translations[unit.unit_id].source_hash == unit.source_hash))}
+    refreshed_scope = [unit.unit_id for unit in group if unit.translatable and unit.unit_id not in read_only]
     revised = manifest.model_copy(
         update={
             "pages": sorted({unit.page for unit in group}),
             "unit_ids": [unit.unit_id for unit in group],
             "translatable_unit_ids": refreshed_scope,
-            "read_only_unit_ids": [unit.unit_id for unit in group if unit.unit_id in manifest.read_only_unit_ids],
+            "read_only_unit_ids": [unit.unit_id for unit in group if unit.unit_id in read_only],
             "source_words": sum(
                 _word_count(unit.source_text) for unit in group if unit.unit_id in refreshed_scope
             ),

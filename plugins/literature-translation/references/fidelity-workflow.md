@@ -145,6 +145,11 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+QA v6.9 requires current translations for all translatable dependency units, including
+read-only context. Batch refresh reopens read-only units with missing/stale translations.
+Source validation, QA and Markdown share the literal-aware footnote tokenizer, including
+escaped dollar delimiters. Layout cache reuse requires the recorded page's list of results.
+
 Source-review cache lookup skips unreadable entries and explicitly degrades when no valid
 matching layout remains. Continued-table rendering includes companions from every fragment,
 using each fragment's original source context for labels and footnote scope.

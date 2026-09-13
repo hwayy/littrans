@@ -1125,6 +1125,8 @@ def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     fingerprint = ledger.get("layout_fingerprint")
     if ledger["layout_status"] != "ok" or not fingerprint:
         return fallback
+    page_image = ledger.get("page_image")
+    image_key = str(_path(root, page_image)) if page_image else None
     for path in sorted((root / "derived/fidelity-layout").glob("*.json")):
         if path.name.endswith(".request.json"):
             continue
@@ -1133,7 +1135,8 @@ def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError):
             continue
         if (payload.get("fingerprint") == fingerprint and payload.get("status") == "ok"
-                and isinstance(payload.get("pages"), dict)):
+                and isinstance(payload.get("pages"), dict) and image_key is not None
+                and isinstance(payload["pages"].get(image_key), list)):
             return payload
     return {**fallback, "status": "unavailable", "reason": "cached layout result missing; re-run source prepare --replace"}
 

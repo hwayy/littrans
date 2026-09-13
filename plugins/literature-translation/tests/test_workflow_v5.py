@@ -471,6 +471,7 @@ def test_cross_batch_seam_enters_only_the_local_dependency_context(tmp_path: Pat
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
+    for batch in manifests:
         assert run_qa(root, batch.batch_id).passed
     packet = create_workflow_packet(
         root, "audit", [manifests[0].batch_id], "fidelity"

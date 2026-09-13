@@ -7,6 +7,10 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- QA v6.9 rejects missing or stale dependency translations; refreshing a batch reopens
+  stale translated read-only units. Currency escapes no longer swallow footnote calls.
+- Source-review layout cache reuse requires a list-valued result for the current page.
+
 - Skip unreadable unrelated layout caches during source-review overrides, and retain
   every fragment's image-language companions when rendering continued tables.
 

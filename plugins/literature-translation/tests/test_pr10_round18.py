@@ -20,10 +20,11 @@ def test_layout_scan_skips_unreadable(tmp_path, damage, matching):
     folder = tmp_path / "derived/fidelity-layout"
     folder.mkdir(parents=True)
     (folder / "000-bad.json").write_text(damage, encoding="utf-8")
-    valid = {"status": "ok", "fingerprint": "wanted", "pages": {}}
+    image = "evidence/pages/fidelity-p0001.png"
+    valid = {"status": "ok", "fingerprint": "wanted", "pages": {str((tmp_path / image).resolve()): []}}
     if matching:
         write_json(folder / "zzz-valid.json", valid)
-    result = _cached_layout(tmp_path, {"layout_status": "ok", "layout_fingerprint": "wanted"})
+    result = _cached_layout(tmp_path, {"layout_status": "ok", "layout_fingerprint": "wanted", "page_image": image})
     assert result == valid if matching else result["status"] == "unavailable"
 
 
