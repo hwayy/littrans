@@ -619,6 +619,9 @@ def test_workflow_status_rechecks_audit_packet_dependency_closure(
     assert verify_extraction(root, "all", force=True)["passed"]
 
     assert not audit_coverage(root, first.batch_id)["complete"]
+    assert workflow_status(root, [first.batch_id])["stage"] == "qa"
+    _submit(root, manifests[1].batch_id)
+    assert run_qa(root, first.batch_id).passed
     assert workflow_status(root, [first.batch_id])["stage"] == "audit"
 
 

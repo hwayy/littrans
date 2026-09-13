@@ -188,7 +188,9 @@ def create_batches(
         pages = {unit.page for unit in selected}
     remaining_ids: set[str] | None = None
     if untranslated_only:
-        translated_ids = set(translation_map(root))
+        translations = translation_map(root)
+        translated_ids = {u.unit_id for u in selected if u.unit_id in translations
+                          and translations[u.unit_id].source_hash == u.source_hash}
         remaining_ids = {u.unit_id for u in selected if u.translatable and u.unit_id not in translated_ids}
         remaining_parents = {u.parent_id for u in selected if u.unit_id in remaining_ids and u.parent_id}
         selected = [

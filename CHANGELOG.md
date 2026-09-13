@@ -7,6 +7,13 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- QA v6.10 binds dependency presence and source identities into cached results; new
+  untranslated-only batches retain stale records as editable work.
+- Repair interrupted candidate/review index publication without replacing newer valid
+  evidence. Recovery packets isolate damaged candidates and preserve valid revision context.
+- Publish and roll back source page canvases atomically; reject malformed layout predictions
+  and asset placeholders in image-language companions.
+
 - QA v6.9 rejects missing or stale dependency translations; refreshing a batch reopens
   stale translated read-only units. Currency escapes no longer swallow footnote calls.
 - Source-review layout cache reuse requires a list-valued result for the current page.

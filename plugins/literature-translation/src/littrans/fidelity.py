@@ -24,6 +24,7 @@ from littrans.layout_detector import detect_layout
 from littrans.models import AssetRef, SemanticStatus, SourceUnit, TranslationRecord, UnitKind
 from littrans.source_structure import BOLD_FONT, font_style, inked_glyph, is_bullet_line
 from littrans.storage import (
+    atomic_write_bytes,
     atomic_write_text,
     load_project,
     project_write_lock,
@@ -228,6 +229,8 @@ def _page_path(root: Path, page: int) -> Path:
 def _authority_transaction(root: Path, pages: list[int]) -> Iterator[None]:
     paths = [root / "derived/units.jsonl", root / "derived/fidelity-assets.jsonl"]
     paths += [root / "translations/current.jsonl", root / "translations/source-retired.jsonl"]
+    paths += [root / f"evidence/pages/fidelity-p{p:04d}.png" for p in pages]
+    paths += [path for p in pages for path in (root / "evidence/pages").glob(f"fidelity-p{p:04d}-overflow-*.png")]
     paths += [_page_path(root, p) for p in pages]
     paths += [root / f"evidence/pages/fidelity-p{p:04d}.review.json" for p in pages]
     paths += [root / "evidence/audits" / f"{p.parent.name}.invalidations.json" for p in (root / "batches").glob("*/manifest.yaml")]
@@ -886,7 +889,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         if not any(g["bbox"][2] > original_page_bbox[2] or g["bbox"][3] > original_page_bbox[3] for g in glyphs):
             raise ValueError("expanded canvas must recover existing off-page native glyphs")
         overflow_path = root / f"evidence/pages/fidelity-p{number:04d}-overflow-{_hash(canvas)[:12]}.png"
-        page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(overflow_path)
+        atomic_write_bytes(overflow_path, page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes("png"))
         overflow_evidence = {"path": overflow_path.relative_to(root).as_posix(), "sha256": sha256_file(overflow_path)}
     from littrans.source_structure import (
         assemble_structure,
@@ -1092,7 +1095,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         for number in needed:
             image = root / f"evidence/pages/fidelity-p{number:04d}.png"
             image.parent.mkdir(parents=True, exist_ok=True)
-            doc[number - 1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(image)
+            atomic_write_bytes(image, doc[number - 1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes("png"))
             images.append(image)
         layout = detect_layout(images, root / f"derived/fidelity-layout/{_hash([digest, needed])}.json")
         if layout["status"] != "ok" and not allow_missing_layout:

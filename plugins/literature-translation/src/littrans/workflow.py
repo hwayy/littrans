@@ -941,7 +941,7 @@ def create_workflow_packet(
         context_units = [u for u in all_units if u.unit_id in scope]
         ids = list(dict.fromkeys(a for u in context_units for a in asset_reference_ids(u.source_markdown or u.source_text)))
         states = representation_status(root, ids)["assets"]
-        recovery = [aid for aid in ids if states[aid]["state"] == "fallback" and states[aid]["semantic_uncertainty"]]
+        recovery = [aid for aid in ids if states[aid]["state"] in {"fallback", "transcribe"} and states[aid]["semantic_uncertainty"]]
         revision_notes = None
         if stage == "transcribe" and recovery:
             ids = recovery

@@ -237,7 +237,8 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
                 payload["candidate_recovery"] = damaged
         if revision_notes is not None:
             payload["revision_notes"] = revision_notes.strip()
-            payload["revision_context"] = _revision_context(root, asset_ids, payload["asset_fingerprints"])
+            revision_ids = [key for key in asset_ids if key not in payload.get("candidate_recovery", {})]
+            payload["revision_context"] = _revision_context(root, revision_ids, payload["asset_fingerprints"])
             payload["instructions"] = (
                 "Revise the supplied earlier candidate against the ORIGINAL images and source context. "
                 "Address revision_notes and the independent review feedback. The prior candidate and "
@@ -246,6 +247,8 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
                 "candidate or unresolved result per requested asset. Do not translate. Every revised "
                 "candidate needs a fresh independent visual review; prior acceptance does not carry over."
             )
+            if payload.get("candidate_recovery"):
+                payload["instructions"] += " Assets listed in candidate_recovery have damaged prior evidence: transcribe them afresh from originals without loading the damaged records."
         if stage == "asset-audit":
             idx = _index(root)
             payload["candidates"] = {}
@@ -404,12 +407,13 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
             # revision back when somebody replays a historical cached response.
             for key, sha in previous["result"]["candidate_sha256"].items():
                 prior = packet.get("revision_context", {}).get(key, {}).get("candidate_sha256")
-                if key not in idx["candidates"] or (prior is not None and idx["candidates"][key] == prior):
+                current = representation_status(root, [key])["assets"][key]
+                if current["candidate_sha256"] is None or (prior is not None and idx["candidates"].get(key) == prior):
                     idx["candidates"][key] = sha
             write_json(_directory(root) / "index.json", idx)
             return {**previous["result"], "replayed": True}
         if "revision_context" in packet and packet["revision_context"] != _revision_context(
-                root, packet["asset_ids"], packet["asset_fingerprints"]):
+                root, list(packet["revision_context"]), packet["asset_fingerprints"]):
             raise ValueError("Revision packet is stale for the current candidate or review feedback")
         prior_states = representation_status(root, packet["asset_ids"])["assets"]
         prepared: list[dict[str, Any]] = []
@@ -428,7 +432,7 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
                 "reviewer_uncertainty": prior_states[key].get("reviewer_uncertainty", ""),
                 "usage": payload.get("usage"),
             }
-            if "revision_context" in packet:
+            if key in packet.get("revision_context", {}):
                 prior = packet["revision_context"][key]
                 record["revision_of"] = {"candidate_sha256": prior["candidate_sha256"],
                                          "review_sha256": prior["review_sha256"],
@@ -498,7 +502,10 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
             for decision in decisions:
                 # Replay repairs a missing index, but cannot supersede another
                 # already-imported decision about the same candidate.
-                idx["reviews"].setdefault(decision["candidate_sha256"], packet["packet_id"])
+                sha = decision["candidate_sha256"]
+                mapped = idx["reviews"].get(sha)
+                if mapped is None or not _indexed_review_valid(root, mapped, decision["asset_id"], sha):
+                    idx["reviews"][sha] = packet["packet_id"]
             write_json(_directory(root) / "index.json", idx)
             return {"review_sha256": review_sha, "reviewed": len(decisions), "replayed": True}
         record = {"review_sha256": review_sha, **payload}
@@ -507,6 +514,19 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
             idx["reviews"][decision["candidate_sha256"]] = packet["packet_id"]
         write_json(_directory(root) / "index.json", idx)
         return {"review_sha256": review_sha, "reviewed": len(decisions), "replayed": False}
+
+
+def _indexed_review_valid(root: Path, packet_id: str, asset_id: str, candidate_sha: str) -> bool:
+    try:
+        review = _load_review(root, packet_id)
+        packet = _load_packet(root, packet_id, "asset-audit")
+        _verify_render_artifact(root, packet)
+        return bool(review["render_manifest_sha256"] == packet["render_manifest_sha256"]
+                and review["render_artifact_sha256"] == packet["render_artifact"]["sha256"]
+                and sum(item["asset_id"] == asset_id and item["candidate_sha256"] == candidate_sha
+                        for item in review["decisions"]) == 1)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def _pending_reviewer_uncertainty(root: Path, candidate: dict[str, Any]) -> str:
@@ -662,6 +682,9 @@ def validate_asset_translations(root: Path, source: str, supplements: list[Any],
         if len({label["source"] for label in labels}) != len(labels) or any(not label.get("target") for label in labels):
             errors.append({"code": "asset-label-translation", "message": "Missing or duplicate label mappings: " + key})
         texts += [label.get("target", "") for label in labels]
+        if any("{{asset:" in text for text in [*texts, *(label["source"] for label in labels)]):
+            errors.append({"code": "asset-reference-in-companion", "message":
+                           "Companions cannot contain asset placeholders; retain originals only in the main source/target: " + key})
         if re.search(r"(?<!\\)\$|\\\(|\\\[|\\(?:begin|frac|sqrt)\b", "\n".join(texts)):
             errors.append({"code": "candidate-in-asset-translation", "message":
                            "Translated image companions must not bypass independent structured-expression review: " + key})

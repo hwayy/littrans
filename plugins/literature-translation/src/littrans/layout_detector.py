@@ -82,7 +82,8 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         except (OSError, ValueError):
             existing = {}
         if (existing.get("fingerprint") == request["fingerprint"] and existing.get("status") == "ok"
-                and isinstance(existing.get("pages"), dict) and set(existing["pages"]) == set(request["images"])):
+                and isinstance(existing.get("pages"), dict) and set(existing["pages"]) == set(request["images"])
+                and all(isinstance(value, list) for value in existing["pages"].values())):
             return existing
     request_path = output.with_suffix(".request.json")
     write_json(request_path, request)
@@ -96,7 +97,8 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
             raise RuntimeError(f"layout worker exit {result.returncode}; see {output.with_suffix('.log')}")
         payload = read_json(output)
         if (payload.get("status") != "ok" or payload.get("fingerprint") != request["fingerprint"]
-                or not isinstance(payload.get("pages"), dict) or set(payload["pages"]) != set(request["images"])):
+                or not isinstance(payload.get("pages"), dict) or set(payload["pages"]) != set(request["images"])
+                or any(not isinstance(value, list) for value in payload["pages"].values())):
             raise ValueError("layout worker returned incomplete or stale output")
         payload["elapsed_seconds"] = time.monotonic() - started
         write_json(output, payload)

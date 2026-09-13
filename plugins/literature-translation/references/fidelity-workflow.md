@@ -145,7 +145,8 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
-QA v6.9 requires current translations for all translatable dependency units, including
+QA v6.10 binds dependency presence, source content and translation source hashes into its
+cache identity. It requires current translations for all translatable dependency units, including
 read-only context. Batch refresh reopens read-only units with missing/stale translations.
 Source validation, QA and Markdown share the literal-aware footnote tokenizer, including
 escaped dollar delimiters. Layout cache reuse requires the recorded page's list of results.
@@ -183,3 +184,10 @@ The candidate carries that finding through further revisions, including direct a
 submission. Workflow dispatches its independent asset audit before QA. Only a valid new
 review decision can supersede the finding; damaged review evidence restores the pending
 block. Older recovery candidates read the finding from their immutable revision context.
+
+Interrupted candidate/review publication can repair an invalid index mapping on replay,
+but cannot displace newer valid evidence. Recovery packets include only blocking assets;
+damaged candidates receive fresh transcription while valid rejected candidates retain their
+revision context. Companion text, table cells and label mappings cannot contain asset placeholders.
+Source page canvases are atomically published and included in source-authority rollback.
+Both exact layout caches and worker responses require list-valued predictions for every page.

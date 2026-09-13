@@ -129,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.9-current-dependency-translations|"
+        "deterministic-qa-v6.10-dependency-bindings-and-companion-references|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -137,10 +137,10 @@ def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
 def current_qa_context_fingerprint(root: Path, batch_id: str | None = None) -> str:
     asset_ids = None
     scoped_units = None
+    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     if batch_id is not None:
         from littrans.fidelity_models import load_assets
 
-        units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
         manifest = load_manifest(root, batch_id)
         scoped_units = set(dependency_closure(root, [batch_id], manifest.unit_ids, all_units=units))
         asset_ids = sorted({key for unit in units if unit.unit_id in scoped_units
@@ -149,11 +149,17 @@ def current_qa_context_fingerprint(root: Path, batch_id: str | None = None) -> s
     uncertainty = {key: state["semantic_uncertainty"]
                    for key, state in representation_status(root, asset_ids)["assets"].items()
                    if state["semantic_uncertainty"]}
-    translation_uncertainty = {key: record.uncertainties for key, record in translation_map(root).items()
+    translations = translation_map(root)
+    dependency_bindings = {unit.unit_id: {
+        "content": translation_unit_fingerprint(unit, translations.get(unit.unit_id)),
+        "translation_source_hash": translations[unit.unit_id].source_hash if unit.unit_id in translations else None,
+        "missing": unit.unit_id not in translations,
+    } for unit in units if scoped_units is None or unit.unit_id in scoped_units}
+    translation_uncertainty = {key: record.uncertainties for key, record in translations.items()
                                if (scoped_units is None or key in scoped_units)
                                and any(item.strip() for item in record.uncertainties)}
     return sha256_text(_qa_context_fingerprint(load_terms(root)) + json.dumps(
-        {"assets": uncertainty, "translations": translation_uncertainty}, sort_keys=True))
+        {"assets": uncertainty, "translations": translation_uncertainty, "dependencies": dependency_bindings}, sort_keys=True))
 
 
 def qa_report_is_current(root: Path, batch_id: str) -> bool:
