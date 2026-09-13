@@ -20,10 +20,14 @@ FENCED_CODE_PATTERN = (
 INLINE_CODE_PATTERN = (
     r"(?P<code>(?<![\\`])(?P<fence>`+)(?!`)(?P<code_text>[\s\S]*?)(?<!`)(?P=fence)(?!`))"
 )
+DOLLAR_MATH_PATTERN = (
+    r"(?P<display_math>(?<![\\$])\$\$(?!\$)(?P<display_math_text>[\s\S]*?)(?<!\\)\$\$(?!\$))"
+    r"|(?P<math>(?<![\\$])\$(?![\s$])(?P<math_text>(?:\\[\s\S]|[^\\$])*?)(?<!\s)\$(?![\d$]))"
+)
 
 FOOTNOTE_TOKEN_RE = re.compile(FENCED_CODE_PATTERN + "|" + INLINE_CODE_PATTERN
-                        + r"|(?<!\\)(?P<dollars>\${1,2})[\s\S]*?(?<!\\)(?P=dollars)"
-                        r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]"
+                        + "|" + DOLLAR_MATH_PATTERN
+                        + r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]"
                         r"|(?<!\\)\[\^(?P<number>\d+)\]")
 
 

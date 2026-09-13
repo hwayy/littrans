@@ -28,6 +28,13 @@ or longer delimiter. Unclosed blocks extend to end of input; inline backticks ma
 Existing QA must rerun. A managed installer without a previous READY marker redownloads
 the model snapshot even when its config and main weight file already exist.
 
+QA v6.13 binds current required image hashes and each scoped translation's viewing receipt.
+Asset-bearing dependency translations must also carry current receipts. Damaged images
+remain routable to source repair. Dollar inline math requires non-whitespace inner boundaries
+and a closing dollar not followed by a digit; it cannot span intervening unescaped dollars.
+Ordinary currency amounts therefore retain their real footnote calls. Explicit double-dollar
+display math remains protected. Existing QA must rerun; project schema remains 6.
+
 Managed layout components require a successful smoke-test READY marker both for status
 checks and before detector execution or cached result reuse. Fully external interpreter
 and model configurations retain their external-runtime exemption. Cache identities bind

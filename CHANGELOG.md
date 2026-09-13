@@ -7,6 +7,11 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- QA v6.13 binds current required images and translation viewing receipts, including
+  dependent units; changed image bytes invalidate cached passes without semantic changes.
+- Share dollar-math boundaries across source, QA and HTML so ordinary currency amounts
+  do not hide real footnote calls; preserve explicit display math.
+
 - QA v6.12, Markdown and HTML share line-valid code-fence boundaries, including longer
   closing fences and unclosed blocks. Inline code uses exact backtick runs.
 - Retry incomplete managed model downloads when READY is absent; handle whitespace-only

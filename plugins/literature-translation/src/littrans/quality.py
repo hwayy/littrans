@@ -129,7 +129,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.12-line-valid-code-fences|"
+        "deterministic-qa-v6.13-current-images-and-currency|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -153,13 +153,22 @@ def current_qa_context_fingerprint(root: Path, batch_id: str | None = None) -> s
     dependency_bindings = {unit.unit_id: {
         "content": translation_unit_fingerprint(unit, translations.get(unit.unit_id)),
         "translation_source_hash": translations[unit.unit_id].source_hash if unit.unit_id in translations else None,
+        "image_evidence": translations[unit.unit_id].image_evidence if unit.unit_id in translations else None,
         "missing": unit.unit_id not in translations,
     } for unit in units if scoped_units is None or unit.unit_id in scoped_units}
+    from littrans.context_packets import original_context
+
+    try:
+        required_images = original_context(root, [u for u in units if scoped_units is None or u.unit_id in scoped_units])["required_images"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # Coordination must still be able to route damaged source evidence to repair.
+        required_images = {"unavailable": str(exc)}
     translation_uncertainty = {key: record.uncertainties for key, record in translations.items()
                                if (scoped_units is None or key in scoped_units)
                                and any(item.strip() for item in record.uncertainties)}
     return sha256_text(_qa_context_fingerprint(load_terms(root)) + json.dumps(
-        {"assets": uncertainty, "translations": translation_uncertainty, "dependencies": dependency_bindings}, sort_keys=True))
+        {"assets": uncertainty, "translations": translation_uncertainty, "dependencies": dependency_bindings,
+         "required_images": required_images}, sort_keys=True))
 
 
 def qa_report_is_current(root: Path, batch_id: str) -> bool:
@@ -379,6 +388,13 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                 errors.append(QAItem(code="asset-semantic-uncertainty", severity="error", unit_id=dependency_id,
                                      message=f"Resolve asset {asset_id} semantic uncertainty: {uncertainty}"))
         dependency_record = translations.get(dependency_id)
+        if dependency_record and dependency_unit.translatable and ASSET_RE.search(dependency_unit.source_markdown or dependency_unit.source_text):
+            from littrans.context_packets import validate_translation_images
+
+            try:
+                validate_translation_images(root, dependency_unit, dependency_record.image_evidence)
+            except ValueError as exc:
+                errors.append(QAItem(code="asset-image-receipt-missing", severity="error", message=str(exc), unit_id=dependency_id))
         if dependency_unit.translatable and dependency_id not in manifest.translatable_unit_ids:
             if dependency_record is None:
                 errors.append(QAItem(code="missing-translation", severity="error", unit_id=dependency_id,
@@ -450,13 +466,6 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                                                    record.target_table):
             errors.append(QAItem(**problem, severity="error", unit_id=unit_id))
         if ASSET_RE.search(unit.source_markdown or unit.source_text):
-            from littrans.context_packets import validate_translation_images
-
-            try:
-                validate_translation_images(root, unit, record.image_evidence)
-            except ValueError as exc:
-                errors.append(QAItem(code="asset-image-receipt-missing", severity="error",
-                                     message=str(exc), unit_id=unit_id))
             warnings.append(QAItem(code="image-content-visual-audit-required", severity="warning",
                                    message="Automatic number/token checks cover extracted prose only. "
                                    "Numbers, symbols, and text inside original images require independent visual review.",

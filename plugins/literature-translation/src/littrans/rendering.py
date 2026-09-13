@@ -50,6 +50,7 @@ from littrans.representations import (
     resolve_asset_markdown,
 )
 from littrans.semantics import (
+    DOLLAR_MATH_PATTERN,
     FENCED_CODE_PATTERN,
     FOOTNOTE_TOKEN_RE,
     INLINE_CODE_PATTERN,
@@ -517,8 +518,8 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
 
 INLINE_TOKEN_RE = re.compile(
     FENCED_CODE_PATTERN + "|" + INLINE_CODE_PATTERN
-    + r"|(?P<math>(?<!\\)\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
-    r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
+    + "|" + DOLLAR_MATH_PATTERN
+    + r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
     r"|(?P<slash_display>\\\[(?P<slash_display_text>[\s\S]*?)\\\])"
     r"|(?P<strong_em>(?<!\\)\*\*\*(?P<strong_em_text>.+?)\*\*\*)"
     r"|(?P<strong>(?<!\\)\*\*(?P<strong_text>.+?)\*\*)"
@@ -550,6 +551,8 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
             ):
                 code_text = code_text[1:-1]
             parts.append("<code>" + html.escape(code_text) + "</code>")
+        elif match.group("display_math") is not None:
+            parts.append('<span class="math display">' + _mathml(match.group("display_math_text"), "block") + "</span>")
         elif match.group("math") is not None:
             parts.append(
                 '<span class="math inline">'
