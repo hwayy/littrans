@@ -21,6 +21,7 @@ from typing import Any
 
 from littrans.models import SourceUnit
 from littrans.representation_models import AssetReviewSubmission, AssetSubmission
+from littrans.semantics import explicit_footnote_calls
 from littrans.storage import (
     atomic_write_text,
     load_project,
@@ -682,9 +683,13 @@ def validate_asset_translations(root: Path, source: str, supplements: list[Any],
         if len({label["source"] for label in labels}) != len(labels) or any(not label.get("target") for label in labels):
             errors.append({"code": "asset-label-translation", "message": "Missing or duplicate label mappings: " + key})
         texts += [label.get("target", "") for label in labels]
-        if any("{{asset:" in text for text in [*texts, *(label["source"] for label in labels)]):
+        rendered_texts = [*texts, *(label["source"] for label in labels)]
+        if any("{{asset:" in text for text in rendered_texts):
             errors.append({"code": "asset-reference-in-companion", "message":
                            "Companions cannot contain asset placeholders; retain originals only in the main source/target: " + key})
+        if any(explicit_footnote_calls(text) for text in rendered_texts):
+            errors.append({"code": "footnote-call-in-companion", "message":
+                           "Keep footnote calls in the main translation, not image companions; escape literal notation: " + key})
         if re.search(r"(?<!\\)\$|\\\(|\\\[|\\(?:begin|frac|sqrt)\b", "\n".join(texts)):
             errors.append({"code": "candidate-in-asset-translation", "message":
                            "Translated image companions must not bypass independent structured-expression review: " + key})

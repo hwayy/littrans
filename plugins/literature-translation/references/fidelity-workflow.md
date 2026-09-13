@@ -145,6 +145,10 @@ continued table fragments with independent footnote scopes remain separate.
   checks and counts table-cell footnote calls. Existing QA reports must be rerun.
 # Recovery review authority
 
+QA v6.11 also rejects live footnote calls in image-language companion text, table cells
+and label source/target fields. Keep calls in the main translation; escape literal notation
+or use code literals. Existing QA must rerun; project schema remains 6.
+
 QA v6.10 binds dependency presence, source content and translation source hashes into its
 cache identity. It requires current translations for all translatable dependency units, including
 read-only context. Batch refresh reopens read-only units with missing/stale translations.

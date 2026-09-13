@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- QA v6.11 rejects live footnote calls in image-language companions, including table cells
+  and both label fields; escaped and code-literal notation remains supported.
+
 - QA v6.10 binds dependency presence and source identities into cached results; new
   untranslated-only batches retain stale records as editable work.
 - Repair interrupted candidate/review index publication without replacing newer valid
