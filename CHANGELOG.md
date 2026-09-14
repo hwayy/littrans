@@ -7,6 +7,20 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Preparation keeps footnote links on the prose chunk that still carries the call when a
+  native block is split around a display formula, and rejects an inconsistent footnote graph
+  inside the source transaction instead of publishing units that no packet can review.
+- QA v6.14 reports `empty-translation` when source prose beside `{{asset:ID}}` placeholders
+  has no target text; only asset-only source blocks may translate to placeholders alone.
+- A resubmission that changes only `image_evidence` updates the receipt in place; the record
+  keeps its revision/status and audit coverage, while the receipt-bound QA context goes stale.
+- `fidelity-workflow.md` is a structured reference (states, preparation, review decisions and
+  the full source `override` contract, batches, records, assets, QA, audits, coordination,
+  rendering, recovery) instead of an appended change log; the packet stage list includes
+  `source-review` and `revise`. The plugin README lists `batch create`/`batch refresh`, and
+  the translation-record example uses real evidence image paths.
+- `batch create --unit-ids` and `assets packet --asset-ids` trim whitespace and empty entries.
+
 - Removed the orphaned math-review, math-vision, math-packet, math-pilot-packet and
   schema-migration modules together with their tests; their CLI commands and JSON schemas
   were already retired. Existing `math_review_decision_id` layout overrides still apply.

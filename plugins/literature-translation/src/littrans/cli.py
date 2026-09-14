@@ -227,7 +227,7 @@ def assets_packet(
     from littrans.models import SourceUnit
     from littrans.representations import build_asset_packet
     from littrans.storage import read_jsonl
-    ids = [aid.strip() for aid in asset_ids.split(",")]
+    ids = [aid.strip() for aid in asset_ids.split(",") if aid.strip()]
     units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit)
              if set(ids) & set(asset_reference_ids(u.source_markdown or u.source_text))]
     emit(build_asset_packet(project, ids, stage, units + adjacent_source_units(project, units), revision_notes, host=host))
@@ -258,7 +258,8 @@ def batch_create(
         [
             manifest.model_dump(mode="json")
             for manifest in create_batches(project, pages, max_words, prefix, untranslated_only,
-                                           unit_ids.split(",") if unit_ids is not None else None)
+                                           [value.strip() for value in unit_ids.split(",") if value.strip()]
+                                           if unit_ids is not None else None)
         ]
     )
 

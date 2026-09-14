@@ -782,11 +782,26 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
     return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
 
 
-def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
-    """Keep display formulas selectable and bind their printed equation labels."""
+def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset],
+                            note_numbers: dict[str, str] | None = None) -> list[SourceUnit]:
+    """Keep display formulas selectable and bind their printed equation labels.
+
+    ``note_numbers`` maps footnote unit IDs to their printed numbers so that the
+    footnote links of a split block follow the chunk that still carries the call.
+    """
+    from littrans.semantics import explicit_footnote_numbers
+
     result = []
     # Printed labels: (1), (2.3a), (A.4); named tags such as (ODE), (SDE); starred (*).
     number_pattern = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?|[A-Z]{2,6}\d?|\*{1,3})\)"
+    note_numbers = {**{u.unit_id: u.footnote_number for u in units if u.footnote_number},
+                    **(note_numbers or {})}
+
+    def chunk_refs(unit: SourceUnit, text: str) -> list[str]:
+        """The block's footnote links that the rebuilt chunk still calls."""
+        calls = explicit_footnote_numbers(text)
+        return [ref for ref in unit.footnote_refs if note_numbers.get(ref) in calls]
+
     for unit in units:
         text = unit.source_markdown or unit.source_text
         refs = asset_reference_ids(text)
@@ -802,7 +817,8 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
             # a trailing printed label still binds as its equation number.
             tail = re.fullmatch(r"(.*?)\s*" + number_pattern, text, re.S)
             if tail and tail[1].strip():
-                result.append(_make_unit(unit.page, unit.unit_id, tail[1].strip(), unit.bbox, assets, kind="equation", equation_number=tail[2]))
+                body = tail[1].strip()
+                result.append(_make_unit(unit.page, unit.unit_id, body, unit.bbox, assets, kind="equation", equation_number=tail[2], footnote_refs=chunk_refs(unit, body)))
             else:
                 result.append(unit)
         elif displays:
@@ -818,7 +834,8 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
                     pending += part
             if pending.strip():
                 chunks.append((pending.strip(), unit.bbox, unit.kind.value))
-            result.extend(_make_unit(unit.page, unit.unit_id if i == 0 else f"{unit.unit_id}-displaypart{i + 1}", body, box, assets, kind=kind) for i, (body, box, kind) in enumerate(chunks))
+            # Footnote links follow the chunk that still carries their call.
+            result.extend(_make_unit(unit.page, unit.unit_id if i == 0 else f"{unit.unit_id}-displaypart{i + 1}", body, box, assets, kind=kind, footnote_refs=chunk_refs(unit, body)) for i, (body, box, kind) in enumerate(chunks))
         else:
             result.append(unit)
     removed = set()
@@ -830,7 +847,7 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         candidates = [(i, other) for i, other in enumerate(result) if other.kind == UnitKind.EQUATION and not other.equation_number and any(assets[aid].display and assets[aid].fragments[0].bbox[1] - 3 <= y <= assets[aid].fragments[0].bbox[3] + 3 for aid in asset_reference_ids(other.source_text))]
         if len(candidates) == 1:
             i, other = candidates[0]
-            result[i] = _make_unit(other.page, other.unit_id, other.source_text, _union([unit.bbox, other.bbox]), assets, kind=other.kind.value, equation_number=label[1])
+            result[i] = _make_unit(other.page, other.unit_id, other.source_text, _union([unit.bbox, other.bbox]), assets, kind=other.kind.value, equation_number=label[1], footnote_refs=other.footnote_refs)
             removed.add(index)
     return [unit for i, unit in enumerate(result) if i not in removed]
 
@@ -1016,7 +1033,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         previous = [index for index, block in enumerate(blocks) if block["bbox"][3] <= unit.bbox[1]]
         return max(previous, default=-1) + 0.5
     units.sort(key=order)
-    units = _separate_display_units(units, by_id)
+    units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()})
     units = assemble_structure(units, by_id, structure, _make_unit)
     if not (override and "units" in override):
         units = coalesce_inline_assets(units, by_id, _make_unit, _hash)
@@ -1111,6 +1128,9 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
             units.extend(page_units)
             registry.update({a.id: a for a in page_assets})
             ledgers.append(ledger)
+        # Reject an inconsistent footnote graph before publishing; a failure here
+        # rolls the whole page set back instead of leaving unverifiable units.
+        _validate_footnote_relationships(units)
         _invalidate(root, old, units)
         units.sort(key=lambda u: u.page)
         write_jsonl(root / "derived/units.jsonl", units)

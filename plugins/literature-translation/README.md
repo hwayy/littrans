@@ -31,6 +31,8 @@ littrans source prepare PROJECT --pages 1-3
 littrans source review-packets PROJECT --pages 1-3
 littrans source verify PROJECT --pages 1-3
 littrans source render PROJECT --pages 1-3 [--standalone]
+littrans batch create PROJECT --pages 1-3 [--prefix NAME] [--unit-ids ID1,ID2] [--untranslated-only]
+littrans batch refresh PROJECT BATCH_ID
 littrans workflow next PROJECT
 littrans workflow status PROJECT --batch-ids ID1,ID2
 littrans workflow packet PROJECT --stage transcribe --batch-ids ID1
@@ -47,7 +49,7 @@ littrans review resolve PROJECT ID1 ISSUE_ID[,ISSUE_ID...] --resolution "..."
 littrans render PROJECT --batch-id ID1
 ```
 
-`review import-set` canonicalizes reviewer issue ids to `audit-<hash>` and keeps the reviewer id as `source_issue_id`; `review resolve` accepts either. `workflow status` reports `audit_stale` reasons when brief/style-guide/glossary edits or changed units reset audit coverage. A `revise` packet carries the current translation and open issues for one fresh revision. Batch sets may mix series when their units do not overlap. A project with no transcription candidate renders originals-only automatically.
+`batch create` cuts verified pages into batches at logical boundaries (about 900 source words, a soft limit of 60 assets, complete `parent_id` groups); `workflow next` requires at least one batch. `review import-set` canonicalizes reviewer issue ids to `audit-<hash>` and keeps the reviewer id as `source_issue_id`; `review resolve` accepts either. `workflow status` reports `audit_stale` reasons when brief/style-guide/glossary edits or changed units reset audit coverage. A `revise` packet carries the current translation and open issues for one fresh revision. Batch sets may mix series when their units do not overlap. A project with no transcription candidate renders originals-only automatically.
 
 Use command help and the emitted packet schemas for exact import fields. [fidelity-workflow.md](references/fidelity-workflow.md) describes bindings and recovery. Save successful responses before import; identical imports are idempotent. Report source fidelity, translation approval, reliable structured coverage and fallback proportion separately. Unknown tokens or fees stay unknown.
 

@@ -130,7 +130,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.13-current-images-and-currency|"
+        "deterministic-qa-v6.14-prose-omission-with-assets|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -492,7 +492,11 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         effective_target = ASSET_RE.sub("", effective_target)
         semantic_source = _semantic_comparison_text(effective_source)
         semantic_target = _semantic_comparison_text(effective_target)
-        if not effective_target.strip() and not ASSET_RE.search(record.target_text):
+        # A source that is only asset references (a whole figure/table block) has
+        # nothing to translate; any source prose outside the placeholders must
+        # still produce target text, or the sentence has been dropped.
+        source_prose = ASSET_RE.sub("", unit.source_markdown or unit.source_text).strip()
+        if not effective_target.strip() and (source_prose or not ASSET_RE.search(record.target_text)):
             errors.append(
                 QAItem(
                     code="empty-translation",
