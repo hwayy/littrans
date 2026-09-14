@@ -7,6 +7,9 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- Removed the orphaned math-review, math-vision, math-packet, math-pilot-packet and
+  schema-migration modules together with their tests; their CLI commands and JSON schemas
+  were already retired. Existing `math_review_decision_id` layout overrides still apply.
 - QA v6.13 binds current required images and translation viewing receipts, including
   dependent units; changed image bytes invalidate cached passes without semantic changes.
 - Share dollar-math boundaries across source, QA and HTML so ordinary currency amounts

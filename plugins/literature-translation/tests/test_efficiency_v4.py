@@ -36,9 +36,6 @@ from littrans.evidence import (
     translation_unit_fingerprint,
 )
 from littrans.external_review import _primary_review_scope, external_review_status
-from littrans.migration import (
-    _migratable_v3_external_chain,
-)
 from littrans.models import (
     AssetTranslation,
     AuditRun,
@@ -4312,6 +4309,8 @@ def test_rebuild_keeps_historical_latex_out_of_faithful_source(tmp_path: Path) -
 
 
 def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
     fingerprint = "legacy-fingerprint"
     accepted = ExternalReviewRun(
         schema_version=1,
@@ -4339,7 +4338,7 @@ def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> Non
         }
     )
 
-    chain, pending_recheck = _migratable_v3_external_chain(
+    chain, pending_recheck = namespace["_migratable_v3_external_chain"](
         [accepted, failed], fingerprint
     )
 

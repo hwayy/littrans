@@ -812,33 +812,6 @@ def canonical_math_structural_override_sha256(
     return hashlib.sha256(encoded).hexdigest()
 
 
-class MathStructuralReviewSidecar(StrictModel):
-    """Strict packet-level envelope for structural math review proposals."""
-
-    schema_version: Literal[5]
-    kind: Literal["math-structural-review-sidecar"] = "math-structural-review-sidecar"
-    packet_id: BatchId
-    packet_payload_sha256: Sha256Digest
-    overrides: list[MathStructuralOverrideDecision]
-
-    @model_validator(mode="after")
-    def require_bound_unique_overrides(self) -> MathStructuralReviewSidecar:
-        if not self.overrides:
-            raise ValueError("structural sidecar must contain at least one override")
-        decision_ids = [item.decision_id for item in self.overrides]
-        if len(decision_ids) != len(set(decision_ids)):
-            raise ValueError("structural sidecar contains duplicate decision_id values")
-        unit_ids = [item.unit_id for item in self.overrides]
-        if len(unit_ids) != len(set(unit_ids)):
-            raise ValueError("structural sidecar contains duplicate unit_id values")
-        for override in self.overrides:
-            if override.packet_id != self.packet_id:
-                raise ValueError("structural override belongs to a different packet")
-            if override.packet_payload_sha256 != self.packet_payload_sha256:
-                raise ValueError("structural override packet payload hash does not match sidecar")
-        return self
-
-
 class ExternalReviewAttempt(StrictModel):
     """One provider invocation attempt, including targeted format-repair attempts."""
 
