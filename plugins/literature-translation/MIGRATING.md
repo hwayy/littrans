@@ -15,3 +15,14 @@ Older project schemas receive a rebuild instruction on write operations. Resume 
 For QASC, keep the existing project as history and prepare an independent v6 project from its source/context. Experimental gold answers and historical model candidates are evaluation material, not input for new production workers.
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
+
+## Projects prepared with 0.6.0
+
+No rebuild is needed. Re-preparing pages with `source prepare --replace` (recommended after
+this update: negated relations such as `∉` now export precisely and change those units' source
+hashes) also stops writing per-region `original.pdf` files, removes them from the directories
+it re-exports and reclaims crop directories the new registry no longer references. Run
+`source gc --dry-run` to list directories orphaned by earlier `--replace` runs, then
+`source gc --apply` to remove them. Fragment records that still name a PDF stay valid until
+their page is re-prepared.
+

@@ -124,7 +124,7 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
     if definitions is None:
         return {}
     cache: dict[tuple[Any, ...], fitz.Rect] = {}
-    result = {}
+    result: dict[str, list[float]] = {}
     for node in _page_content(source, page.rect):
         if node.tag.split("}")[-1] != "use":
             continue
@@ -152,8 +152,10 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
                 box |= drawing["rect"]
             cache[key] = box + (-100, -100, -100, -100)
         box = cache[key] + (matrix[4], matrix[5], matrix[4], matrix[5])
+        # A composite (relation + combining slash) is several <use> nodes at one origin.
         for glyph in matches:
-            result[glyph["id"]] = list(box)
+            prior = result.get(glyph["id"])
+            result[glyph["id"]] = list(box if prior is None else fitz.Rect(prior) | box)
     return result
 
 

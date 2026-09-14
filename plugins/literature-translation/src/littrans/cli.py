@@ -184,6 +184,19 @@ def source_prepare(
     emit(prepare_source(project, pages, replace, allow_missing_layout))
 
 
+@source_app.command("gc")
+def source_gc(
+    project: PathArg,
+    apply: bool = typer.Option(False),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    """List or remove original-asset directories no current fragment refers to."""
+    if apply == dry_run:
+        raise typer.BadParameter("choose exactly one of --apply or --dry-run")
+    from littrans.fidelity import gc_asset_directories
+    emit(gc_asset_directories(project, apply=apply))
+
+
 @source_app.command("render")
 def source_render(
     project: PathArg,

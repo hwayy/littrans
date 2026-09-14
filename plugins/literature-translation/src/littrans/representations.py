@@ -802,7 +802,7 @@ def _original_html(root: Path, asset: dict[str, Any], output: Path, *, linked: b
             image += ' onerror="this.onerror=null;this.src=this.dataset.originalFallback;"'
         image += ">"
         if linked:
-            href = _href(root, fragment.get("pdf_path") or png, output)
+            href = _href(root, svg or png, output)
             image = f'<a class="original-image-link" href="{href}" title="查看高清原式" aria-label="查看高清原式 {html.escape(asset["id"], quote=True)}">{image}</a>'
         rendered.append(image)
     return '<span class="asset-original">' + "".join(rendered) + "</span>"
@@ -836,7 +836,7 @@ def _asset_html(root: Path, asset: dict[str, Any], output: Path,
             content += '<span class="asset-candidate" hidden></span>'
         else:
             content += '<span class="asset-candidate">' + _candidate_html(candidate) + "</span>"
-    originals = "".join(f'<a href="{_href(root, fragment.get("pdf_path") or fragment["png_path"], output)}">查看原式 {index + 1}</a> ' for index, fragment in enumerate(asset["fragments"]))
+    originals = "".join(f'<a href="{_href(root, fragment.get("svg_path") or fragment["png_path"], output)}">查看原式 {index + 1}</a> ' for index, fragment in enumerate(asset["fragments"]))
     return "<span" + attributes + ">" + content + f'<small class="asset-state">{label}</small><span class="asset-original-links">{originals}</span></span>'
 
 

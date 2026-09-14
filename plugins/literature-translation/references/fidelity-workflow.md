@@ -1,7 +1,7 @@
 # Fidelity workflow and recovery
 
 Schema 6 uses one source preparation path. Native prose and layout regions produce immutable
-source-owned `{{asset:ID}}` references; original vector PDF/SVG and high-resolution PNG evidence
+source-owned `{{asset:ID}}` references; original vector SVG and high-resolution PNG evidence
 remain available throughout the workflow. A detector warning requires a source decision, not an
 automatic formula-recognition retry. Project schema is 6 throughout this document.
 
@@ -126,6 +126,13 @@ wraps in a page-sized clip group (CropBox differs from MediaBox). Glyphs that st
 measured keep their font metric box and the owning region records `ink-bounds-unmeasured` in
 its provenance, so a crop that truncates a stretched delimiter is traceable rather than silent.
 
+A zero-width combining mark that the text layer attaches to the *previous* glyph (TeX's
+negation slash U+0338, which MuPDF never advances the pen for) is folded into the relation it
+negates: `∈` + U+0338 becomes one `∉` glyph at the relation's origin, where the page draws both
+paths; `=`/`→` give `≠`/`↛`, and a pair without a precomposed form keeps the combining
+sequence. The composite owns the ink of every path drawn at that origin, so the region exports
+precisely instead of falling back to a raw `mixed-region` crop.
+
 Words hyphenated across a line end are rejoined only when the rest of the document does not
 print that compound more often than the joined word: `well-` / `known` stays `well-known` in
 a book that prints `well-known` mid-line, while `proba-` / `bility` becomes `probability`.
@@ -134,7 +141,23 @@ A suspended hyphen inside a line (`pre- and post-processing`) is never altered.
 Source authority transactions snapshot the unit and asset registries, translations, page
 canvases, ledgers and receipts, and restore them on any error or user interruption. Source page
 canvases are atomically published and included in that rollback. Incomplete original asset
-caches are regenerated when their evidence receipt is absent.
+caches are regenerated when their evidence receipt is absent, and a receipt whose file set is
+not the current one (`original.svg` + `original.png`) is stale: the crop is re-exported and the
+extra files are removed.
+
+Crop directories under `derived/assets/fidelity/<hash>/` are addressed by export identity, so a
+changed geometry writes a new directory. Once `source prepare --replace` or an override import
+has committed the new registry it removes every directory no current fragment refers to
+(`pruned_asset_directories` in the result); `source gc --dry-run` lists such orphans in an
+existing project and `source gc --apply` removes them. Live directories are those named by
+fragment `png_path`/`svg_path`, never by `content_sha256`. Copies under `output/original-assets/`
+are not reclaimed.
+
+`derived/provenance.json`, every page ledger and every source review packet carry a `generator`
+block (`plugin_version`, `build_digest` of the package sources, `generated_at`), so an artifact
+names the build that wrote it. The block is excluded from the packet identity: identical
+content keeps its packet ID and an existing valid packet is returned untouched rather than
+rewritten, which keeps reviews bound to its bytes valid.
 
 ## Source review packets, decisions and overrides
 
@@ -261,7 +284,7 @@ introduced.
 When a region includes neighboring prose, a source reviewer may explicitly name its existing PDF
 `glyph_ids`. The narrow glyph exporter copies the selected original PDF vector paths and supported
 nearby horizontal rules into the reading SVG and model PNG; it performs no OCR, character
-substitution or LaTeX inference. The separate original PDF fragment remains raw-region evidence.
+substitution or LaTeX inference. A region the exporter cannot isolate keeps its raw-region SVG/PNG crop.
 This correction requires inspected ownership and a new packet-bound source review; it is not an
 automatic formula recognizer.
 
@@ -340,7 +363,9 @@ dependencies outside the requested batch, matching QA.
 
 Asset-audit packets bind `render_manifest` (relative render-directory paths to SHA-256) and
 `render_manifest_sha256` into the packet identity. The manifest covers the comparison HTML,
-copied MathJax runtime and original SVG/PNG/PDF files. Review submissions must echo both
+copied MathJax runtime and original SVG/PNG files (fragments prepared before 0.6.1 may also carry a
+per-region `original.pdf`; it is no longer written, linked or copied, and `source prepare --replace`
+removes it from the directories it re-exports). Review submissions must echo both
 `render_artifact_sha256` and `render_manifest_sha256` from the packet after inspecting the actual
 artifact. Imports and subsequent status queries verify all dependencies. Old packets without this
 manifest require a new audit and cannot retain verified status; their candidates and history

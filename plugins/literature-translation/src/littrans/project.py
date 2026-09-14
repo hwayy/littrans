@@ -12,6 +12,7 @@ import pymupdf as fitz
 import yaml
 from pydantic import BaseModel
 
+from littrans.build_info import build_identity
 from littrans.models import (
     AuditRun,
     BatchManifest,
@@ -113,6 +114,7 @@ def initialize_project(
             "source_sha256": config.source_sha256,
             "rights_status": config.rights_status,
             "source_is_copied": False,
+            "generator": build_identity(),
         },
     )
     return config
@@ -155,6 +157,7 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         write_json(staging / "derived" / "provenance.json", {
             "source_path": config.source_path, "source_sha256": config.source_sha256,
             "rights_status": config.rights_status, "source_is_copied": True,
+            "generator": build_identity(),
         })
         write_json(staging / "derived" / "rebuild-provenance.json", {
             "historical_project": str(old), "source_sha256": config.source_sha256,

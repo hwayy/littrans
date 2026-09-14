@@ -4,8 +4,9 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -13,6 +14,7 @@ from urllib.parse import quote
 
 import pymupdf as fitz
 
+from littrans.build_info import build_identity
 from littrans.extractor import parse_page_spec, protected_tokens
 from littrans.fidelity_models import (
     FidelityAsset,
@@ -107,10 +109,57 @@ def _compose_accents(glyphs: list[dict[str, Any]], blocks: list[dict[str, Any]])
                             dropped.add(line[other])
                     break
     if dropped:
-        glyphs[:] = [g for g in glyphs if g["id"] not in dropped]
-        for block in blocks:
-            block["lines"] = [[gid for gid in line if gid not in dropped] for line in block["lines"]]
-            block["lines"] = [line for line in block["lines"] if line]
+        _drop_glyphs(glyphs, blocks, dropped)
+
+
+def _drop_glyphs(glyphs: list[dict[str, Any]], blocks: list[dict[str, Any]], dropped: set[str]) -> None:
+    glyphs[:] = [g for g in glyphs if g["id"] not in dropped]
+    for block in blocks:
+        block["lines"] = [[gid for gid in line if gid not in dropped] for line in block["lines"]]
+        block["lines"] = [line for line in block["lines"] if line]
+
+
+def _compose_combining_marks(glyphs: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> None:
+    """Fold a zero-width combining mark into the glyph it negates (TeX's negation slash: U+0338 + U+2208 -> U+2209).
+
+    MuPDF's text extraction never advances the pen for a nonspacing mark: the mark is
+    appended at the end of the *previous* glyph with an empty box, although the page
+    draws it (and the SVG places its <use>) at the origin of the relation it modifies.
+    TeX sets the slash before the relation, after the thick space, so the base glyph follows
+    the mark on the line; Unicode-ordered producers set it right after the base. The
+    base keeps its own origin and box, which is where every path of the composite lives.
+    Marks without a precomposed form keep the combining sequence as one glyph text.
+    """
+    import unicodedata
+
+    by_id = {g["id"]: g for g in glyphs}
+    dropped: set[str] = set()
+    for block in blocks:
+        for line in block["lines"]:
+            for index, gid in enumerate(line):
+                mark = by_id[gid]
+                text = str(mark["text"])
+                if len(text) != 1 or unicodedata.category(text) != "Mn" or mark["bbox"][2] - mark["bbox"][0] > 1e-3 or gid in dropped:
+                    continue
+                reach = mark["size"] * 1.5
+                base = None
+                for step in (1, -1):
+                    position = index + step
+                    while 0 <= position < len(line) and by_id[line[position]]["text"].isspace():
+                        position += step
+                    if not 0 <= position < len(line) or line[position] in dropped:
+                        continue
+                    candidate = by_id[line[position]]
+                    if abs(candidate["origin"][0] - mark["origin"][0]) <= reach and str(candidate["text"]).strip():
+                        base = candidate
+                        break
+                if base is None:
+                    continue
+                composed = unicodedata.normalize("NFC", base["text"] + text)
+                base["text"] = composed if len(composed) == 1 else base["text"] + text
+                dropped.add(gid)
+    if dropped:
+        _drop_glyphs(glyphs, blocks, dropped)
 # Bare vector rules: thin relative to their width, no glyphs, no other drawing.
 DECORATIVE_RULE_MAX_HEIGHT = 10.0
 DECORATIVE_RULE_MIN_ASPECT = 3.0
@@ -275,6 +324,7 @@ def _native(page: fitz.Page) -> tuple[list[dict[str, Any]], list[dict[str, Any]]
             lines.append(ids)
         blocks.append({"id": f"b{bi}", "bbox": _box(block["bbox"]), "lines": lines})
     _compose_accents(glyphs, blocks)
+    _compose_combining_marks(glyphs, blocks)
     return glyphs, blocks
 
 
@@ -869,33 +919,40 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
         raise ValueError("invalid region asset ID")
     base = root / f"derived/assets/fidelity/{content}"
     base.mkdir(parents=True, exist_ok=True)
-    fragment_pdf = base / "original.pdf"
     fragment_svg = base / "original.svg"
     fragment_png = base / "original.png"
+    fragments = (fragment_svg, fragment_png)
     cache_receipt = base / "evidence.json"
     dpi = 450 if any(g["size"] < 8 for g in owned) else 300
     if cache_receipt.is_file():
         recorded = read_json(cache_receipt)
-        for name, expected in recorded["files"].items():
-            candidate = base / name
-            if not candidate.is_file() or sha256_file(candidate) != expected:
-                raise ValueError(f"immutable original asset cache is corrupt: {candidate}")
+        if set(recorded["files"]) != {p.name for p in fragments}:
+            # A receipt from a build with another representation set (per-region PDFs
+            # before 0.6.1) is stale: re-export instead of silently keeping its files.
+            for name in recorded["files"]:
+                if name not in {p.name for p in fragments}:
+                    (base / name).unlink(missing_ok=True)
+            cache_receipt.unlink()
+        else:
+            for name, expected in recorded["files"].items():
+                candidate = base / name
+                if not candidate.is_file() or sha256_file(candidate) != expected:
+                    raise ValueError(f"immutable original asset cache is corrupt: {candidate}")
     if not cache_receipt.is_file():
-        with fitz.open() as clipped:
-            target = clipped.new_page(width=rect.width, height=rect.height)
-            target.show_pdf_page(target.rect, doc, page_number - 1, clip=rect)
-            clipped.save(fragment_pdf)
-            atomic_write_text(fragment_svg, target.get_svg_image(text_as_path=True))
-            target.get_pixmap(dpi=dpi, alpha=False).save(fragment_png)
-    if owned_svg is not None and not cache_receipt.is_file():
-        atomic_write_text(fragment_svg, owned_svg)
-        with fitz.open("svg", owned_svg.encode()) as rendered:
-            rendered[0].get_pixmap(dpi=dpi, alpha=False).save(fragment_png)
-    if not cache_receipt.is_file():
-        write_json(cache_receipt, {"identity": identity, "files": {p.name: sha256_file(p) for p in (fragment_pdf, fragment_svg, fragment_png)}})
-    paths = {name: str(p.relative_to(root)).replace("\\", "/") for name, p in {"png": fragment_png, "svg": fragment_svg, "pdf": fragment_pdf}.items()}
+        if owned_svg is None:
+            with fitz.open() as clipped:
+                target = clipped.new_page(width=rect.width, height=rect.height)
+                target.show_pdf_page(target.rect, doc, page_number - 1, clip=rect)
+                atomic_write_text(fragment_svg, target.get_svg_image(text_as_path=True))
+                target.get_pixmap(dpi=dpi, alpha=False).save(fragment_png)
+        else:
+            atomic_write_text(fragment_svg, owned_svg)
+            with fitz.open("svg", owned_svg.encode()) as rendered:
+                rendered[0].get_pixmap(dpi=dpi, alpha=False).save(fragment_png)
+        write_json(cache_receipt, {"identity": identity, "files": {p.name: sha256_file(p) for p in fragments}})
+    paths = {name: str(p.relative_to(root)).replace("\\", "/") for name, p in {"png": fragment_png, "svg": fragment_svg}.items()}
     box = _box(rect)
-    fragment = FidelityFragment(page=page_number, bbox=box, png_path=paths["png"], svg_path=paths["svg"], pdf_path=paths["pdf"], glyph_ids=[g["id"] for g in owned], width=round(box[2] - box[0], 4), height=round(box[3] - box[1], 4), baseline=round(max(g["baseline"] for g in owned) - box[1], 4) if owned else None, dpi=dpi, export_method=export_method, file_sha256={paths[k]: sha256_file(root / paths[k]) for k in paths})
+    fragment = FidelityFragment(page=page_number, bbox=box, png_path=paths["png"], svg_path=paths["svg"], glyph_ids=[g["id"] for g in owned], width=round(box[2] - box[0], 4), height=round(box[3] - box[1], 4), baseline=round(max(g["baseline"] for g in owned) - box[1], 4) if owned else None, dpi=dpi, export_method=export_method, file_sha256={paths[k]: sha256_file(root / paths[k]) for k in paths})
     return FidelityAsset(id=aid, kind=region["kind"], source_sha256=source_hash, content_sha256=content, fragments=[fragment], grouping_pending=region.get("grouping_pending", False), display=region.get("display", False), provenance=region.get("provenance", ["visual-region-correction"]), formula_conditions=region.get("formula_conditions", []))
 
 
@@ -1238,7 +1295,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         if hashes != unit.asset_content_hashes:
             unit.asset_content_hashes = hashes
             unit.source_hash = _hash({"prepared_source_hash": unit.source_hash, "asset_content_hashes": hashes})
-    ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
+    ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}, "generator": build_identity()}
     if overflow_evidence:
         ledger["original_page_bbox"] = original_page_bbox
         ledger["overflow_evidence"] = overflow_evidence
@@ -1268,6 +1325,51 @@ def _invalidate(root: Path, old: list[SourceUnit], new: list[SourceUnit]) -> Non
         affected = set(manifest["unit_ids"]) & changed
         if affected:
             record_audit_invalidation(root, manifest["batch_id"], affected)
+
+
+ASSET_DIRECTORY = "derived/assets/fidelity"
+
+
+def _live_asset_directories(assets: Iterable[FidelityAsset]) -> set[str]:
+    """Directory names the current fragment records point at.
+
+    The directory name is the export identity of the crop; it is not the asset's
+    ``content_sha256`` (which also covers kind, display and grouping state).
+    """
+    return {Path(relative).parent.name for asset in assets for fragment in asset.fragments
+            for relative in (fragment.png_path, fragment.svg_path, fragment.pdf_path) if relative}
+
+
+def prune_asset_directories(root: Path, assets: Iterable[FidelityAsset], *, apply: bool) -> dict[str, Any]:
+    """List or remove crop directories that no current fragment record refers to.
+
+    Every re-export under a changed geometry creates a new content-addressed directory
+    and leaves the old one behind; orphans are indistinguishable by shape or name.
+    """
+    base = root / ASSET_DIRECTORY
+    live = _live_asset_directories(assets)
+    candidates: list[str] = []
+    candidate_bytes = 0
+    if base.is_dir():
+        for directory in sorted(base.iterdir()):
+            if not directory.is_dir() or directory.name in live:
+                continue
+            directory.resolve().relative_to(base.resolve())
+            candidates.append(directory.name)
+            candidate_bytes += sum(item.stat().st_size for item in directory.rglob("*") if item.is_file())
+    removed: list[str] = []
+    if apply:
+        for name in candidates:
+            shutil.rmtree(base / name)
+            removed.append(name)
+    return {"mode": "apply" if apply else "dry-run", "candidates": candidates, "candidate_bytes": candidate_bytes, "removed": removed}
+
+
+def gc_asset_directories(root: Path, apply: bool = False) -> dict[str, Any]:
+    """Reclaim crop directories orphaned by earlier `source prepare --replace` runs."""
+    root = Path(root).resolve()
+    with project_write_lock(root):
+        return prune_asset_directories(root, load_assets(root).values(), apply=apply)
 
 
 def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
@@ -1317,8 +1419,11 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         for ledger in ledgers:
             write_json(_page_path(root, ledger["page"]), ledger)
             (root / f"evidence/pages/fidelity-p{ledger['page']:04d}.review.json").unlink(missing_ok=True)
+    # Crops the replaced pages no longer refer to are reclaimed only once the new
+    # authority is committed; the transaction snapshots files, not directories.
+    pruned = prune_asset_directories(root, registry.values(), apply=True)
     packet = build_source_review_packet(root, ",".join(map(str, pages)))
-    return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry), "layout_status": layout["status"], "requires_visual_review": True, "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context}
+    return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry), "pruned_asset_directories": pruned["removed"], "layout_status": layout["status"], "requires_visual_review": True, "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context, "generator": build_identity()}
 
 
 def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
@@ -1418,6 +1523,9 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     assets = load_assets(root)
     pages = sorted(set(pages) | {u.page for page in pages for u in page_evidence_units(page, all_units)})
     payload: dict[str, Any] = {"schema_version": 6, "kind": "source-fidelity-review", "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
+    # The writing build is recorded but is not part of the packet identity: identical
+    # content keeps its packet ID (and its reviews) across builds and reruns.
+    payload["generator"] = build_identity()
     from littrans.structure_profile import structure_context
     profile_context = structure_context(root)
     if profile_context:
@@ -1447,25 +1555,31 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
             relative = ledger["overflow_evidence"]["path"]
             report_files[relative] = sha256_file(_path(root, relative))
     payload["visual_report"] = {"path": "coverage.html", "sha256": sha256_text(report_text), "files": report_files}
-    packet_id = "source-" + _hash(payload)[:20]
-    # Do not repair a previously reviewed artifact under the same identity.
-    while (root / "packets" / packet_id).exists():
+    packet_id = "source-" + _source_packet_identity(payload)
+    # Do not repair a previously reviewed artifact under the same identity, and do not
+    # rewrite it either: its bytes are what existing reviews are bound to.
+    directory = root / "packets" / packet_id
+    packet = directory / "packet.json"
+    while directory.exists():
         try:
-            existing_path = root / "packets" / packet_id / "packet.json"
-            _load_source_packet(root, packet_id, sha256_file(existing_path))
-            break
+            _load_source_packet(root, packet_id, sha256_file(packet))
+            return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(directory / "coverage.html"), "pages": pages}
         except (OSError, ValueError, KeyError):
             payload["previous_visual_packet_id"] = packet_id
-            packet_id = "source-" + _hash(payload)[:20]
-    directory = root / "packets" / packet_id
+            packet_id = "source-" + _source_packet_identity(payload)
+            directory = root / "packets" / packet_id
+            packet = directory / "packet.json"
     directory.mkdir(parents=True, exist_ok=True)
-    packet = directory / "packet.json"
     write_json(packet, payload)
     review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "visual_report_sha256": payload["visual_report"]["sha256"], "reviewer": "", "pages": [{"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False, "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False, "issues": [], "notes": ""} for p in payload["pages"]]}
     write_json(directory / "review-template.json", review_template)
     report = directory / "coverage.html"
     atomic_write_text(report, report_text)
     return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(report), "pages": pages}
+
+
+def _source_packet_identity(payload: dict[str, Any]) -> str:
+    return _hash({k: v for k, v in payload.items() if k != "generator"})[:20]
 
 
 def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[str, Any]:
@@ -1475,7 +1589,7 @@ def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[
     if sha256_file(packet_path) != packet_sha256:
         raise ValueError("source packet hash mismatch")
     packet = read_json(packet_path)
-    if not isinstance(packet, dict) or "source-" + _hash(packet)[:20] != packet_id:
+    if not isinstance(packet, dict) or "source-" + _source_packet_identity(packet) != packet_id:
         raise ValueError("source packet identity mismatch")
     if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") != 6:
         raise ValueError("invalid source packet contract")
@@ -1630,8 +1744,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
         units.sort(key=lambda u: u.page)
         write_jsonl(root / "derived/units.jsonl", units)
+    pruned = prune_asset_directories(root, assets.values(), apply=True) if changed else {"removed": []}
     return {"approved_pages": approved, "changed_pages": changed, "deferred_pages": sorted(deferred),
-            "requires_new_packet": bool(changed or deferred)}
+            "requires_new_packet": bool(changed or deferred), "pruned_asset_directories": pruned["removed"]}
 
 
 def _formula_condition_glyphs(asset: dict[str, Any], glyphs: list[dict[str, Any]]) -> set[str]:
