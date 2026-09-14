@@ -10,11 +10,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from littrans.hosts import WAVE_BATCH_SET_MAX
+from littrans.hosts import WAVE_BATCH_SET_MAX, host_model_defaults
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
-PROJECT_SCHEMA_VERSION = 5
+PROJECT_SCHEMA_VERSION = 6
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -285,6 +285,7 @@ class ProjectConfig(StrictModel):
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
     external_review: ExternalReviewConfig | None = None
+    agent_models: dict[str, dict[str, str]] = Field(default_factory=host_model_defaults)
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)
@@ -336,13 +337,14 @@ class FigureLabel(StrictModel):
 
 
 class SourceUnit(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     unit_id: str
     kind: UnitKind
     page: int
     bbox: tuple[float, float, float, float]
     source_text: str
     source_hash: str
+    asset_content_hashes: dict[str, str] = Field(default_factory=dict)
     source_markdown: str | None = None
     parent_id: str | None = None
     sidebar_id: str | None = None
@@ -355,6 +357,8 @@ class SourceUnit(StrictModel):
     fragments: list[SourceFragment] = Field(default_factory=list)
     latex: str | None = None
     equation_number: str | None = None
+    footnote_number: str | None = None
+    footnote_refs: list[str] = Field(default_factory=list)
     math_status: SemanticStatus | None = None
     code_language: str | None = None
     table: TableData | None = None
@@ -442,6 +446,21 @@ class TermProposal(StrictModel):
     reason: str | None = None
 
 
+class AssetTranslation(StrictModel):
+    asset_id: str
+    language_present: bool = True
+    target_text: str = ""
+    target_table: TableData | None = None
+    figure_labels: list[FigureLabel] = Field(default_factory=list)
+    notes: str = ""
+
+    @model_validator(mode="after")
+    def require_explained_language_omission(self) -> AssetTranslation:
+        if not self.language_present and not self.notes.strip():
+            raise ValueError("Explain why the original asset contains no translatable natural language")
+        return self
+
+
 class TranslationRecord(StrictModel):
     schema_version: int = 2
     unit_id: str
@@ -449,6 +468,8 @@ class TranslationRecord(StrictModel):
     target_table: TableData | None = None
     figure_labels: list[FigureLabel] = Field(default_factory=list)
     source_hash: str
+    image_evidence: dict[str, str] = Field(default_factory=dict)
+    asset_translations: list[AssetTranslation] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
     reader_note: ReaderNote | None = None
     term_proposals: list[TermProposal] = Field(default_factory=list)
@@ -469,6 +490,8 @@ class GlossaryTerm(StrictModel):
 class ReviewIssue(StrictModel):
     schema_version: int = 1
     issue_id: str
+    # Reviewer-supplied id retained when a packet import canonicalizes issue_id.
+    source_issue_id: str | None = None
     batch_id: BatchId
     unit_id: str
     severity: Severity
@@ -789,33 +812,6 @@ def canonical_math_structural_override_sha256(
     return hashlib.sha256(encoded).hexdigest()
 
 
-class MathStructuralReviewSidecar(StrictModel):
-    """Strict packet-level envelope for structural math review proposals."""
-
-    schema_version: Literal[5]
-    kind: Literal["math-structural-review-sidecar"] = "math-structural-review-sidecar"
-    packet_id: BatchId
-    packet_payload_sha256: Sha256Digest
-    overrides: list[MathStructuralOverrideDecision]
-
-    @model_validator(mode="after")
-    def require_bound_unique_overrides(self) -> MathStructuralReviewSidecar:
-        if not self.overrides:
-            raise ValueError("structural sidecar must contain at least one override")
-        decision_ids = [item.decision_id for item in self.overrides]
-        if len(decision_ids) != len(set(decision_ids)):
-            raise ValueError("structural sidecar contains duplicate decision_id values")
-        unit_ids = [item.unit_id for item in self.overrides]
-        if len(unit_ids) != len(set(unit_ids)):
-            raise ValueError("structural sidecar contains duplicate unit_id values")
-        for override in self.overrides:
-            if override.packet_id != self.packet_id:
-                raise ValueError("structural override belongs to a different packet")
-            if override.packet_payload_sha256 != self.packet_payload_sha256:
-                raise ValueError("structural override packet payload hash does not match sidecar")
-        return self
-
-
 class ExternalReviewAttempt(StrictModel):
     """One provider invocation attempt, including targeted format-repair attempts."""
 
@@ -878,6 +874,9 @@ class AuditRun(StrictModel):
     packet_id: str | None = None
     unit_fingerprints: dict[str, str]
     context_fingerprint: str | None = None
+    # Brief, style guide and relevant-term hash alone, so staleness can tell a
+    # context edit apart from a changed dependency unit.
+    shared_context_fingerprint: str | None = None
     context_unit_ids: list[str] = Field(default_factory=list)
     issue_ids: list[str] = Field(default_factory=list)
     reviewed_at: str = Field(default_factory=utc_now)
@@ -896,6 +895,9 @@ class WorkflowPacketManifest(StrictModel):
     stage: str
     batch_ids: list[BatchId] = Field(min_length=1, max_length=WAVE_BATCH_SET_MAX)
     lens: str | None = None
+    host: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
     # v2 binds evidence to each batch's own coverage and dependency closure.
@@ -912,8 +914,10 @@ class WorkflowPacketManifest(StrictModel):
     @field_validator("stage")
     @classmethod
     def require_supported_packet_stage(cls, value: str) -> str:
-        if value not in {"translate", "audit"}:
-            raise ValueError("workflow packet stage must be translate or audit")
+        if value not in {"translate", "revise", "audit", "transcribe", "asset-audit"}:
+            raise ValueError(
+                "workflow packet stage must be translate, revise, transcribe, asset-audit or audit"
+            )
         return value
 
     @model_validator(mode="after")
@@ -924,7 +928,7 @@ class WorkflowPacketManifest(StrictModel):
             "chinese-style",
         }:
             raise ValueError("audit packets require one supported lens")
-        if self.stage == "translate" and self.lens is not None:
+        if self.stage in {"translate", "revise"} and self.lens is not None:
             raise ValueError("translation packets must not set a lens")
         return self
 
@@ -936,8 +940,18 @@ class BatchManifest(StrictModel):
     pages: list[int]
     unit_ids: list[str]
     translatable_unit_ids: list[str]
+    read_only_unit_ids: list[str] = Field(default_factory=list)
+    frozen_scope: bool = False
     source_words: int
     created_at: str = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_read_only_scope(self) -> BatchManifest:
+        if (len(set(self.read_only_unit_ids)) != len(self.read_only_unit_ids)
+                or not set(self.read_only_unit_ids) <= set(self.unit_ids)
+                or set(self.read_only_unit_ids) & set(self.translatable_unit_ids)):
+            raise ValueError("Read-only batch units must be unique context units outside translation scope")
+        return self
 
 
 class QAItem(StrictModel):

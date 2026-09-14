@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from littrans.evidence import (
+    continuation_neighbors,
     record_audit_invalidation,
     relevant_terms,
     translation_memory,
@@ -22,6 +23,7 @@ from littrans.models import (
 from littrans.project import load_profile, promote_status, translation_map
 from littrans.semantics import fenced_code, table_to_markdown
 from littrans.storage import (
+    atomic_write_text,
     load_project,
     project_write_lock,
     read_jsonl,
@@ -62,7 +64,9 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
         f"verified: {unit.verification_status} | continues: {str(unit.continues_from_previous).lower()}"
         f"{sidebar}{callout} -->"
     )
-    if unit.kind == "code":
+    if "{{asset:" in (unit.source_markdown or unit.source_text):
+        body = unit.source_markdown or unit.source_text
+    elif unit.kind == "code":
         body = fenced_code(unit.source_text, unit.code_language)
     elif unit.kind == "equation":
         number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
@@ -113,6 +117,10 @@ def _context_text(
     root: Path, units: list[SourceUnit], before: SourceUnit | None, after: SourceUnit | None
 ) -> str:
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
+    from littrans.structure_profile import structure_context
+    structure = structure_context(root)
+    if structure:
+        brief += "\n\n# Document structure rules\n\n" + yaml.safe_dump({"profile_sha256": structure["sha256"], "pages": structure["profile"]["pages"], "handling_rules": structure["profile"]["handling_rules"]}, allow_unicode=True, sort_keys=False)
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
     terms = relevant_terms(root, units)
     adjacent = []
@@ -144,11 +152,12 @@ def create_batches(
     max_words: int | None = None,
     prefix: str | None = None,
     untranslated_only: bool = False,
+    unit_ids: list[str] | None = None,
 ) -> list[BatchManifest]:
     config = load_project(root)
+    batch_settings = load_profile(config.profile).get("batch", {})
+    soft_max_assets = int(batch_settings.get("soft_max_assets", 60))
     if max_words is None:
-        profile = load_profile(config.profile)
-        batch_settings = profile.get("batch", {})
         max_words = int(batch_settings.get("max_source_words", 900))
     if max_words < 100:
         raise ValueError("max_words must be at least 100")
@@ -159,11 +168,37 @@ def create_batches(
         for unit in all_units
         if unit.page in pages and unit.render_policy is RenderPolicy.INCLUDE
     ]
+    if unit_ids is not None:
+        requested = set(unit_ids)
+        if not requested or len(requested) != len(unit_ids):
+            raise ValueError("unit_ids must be nonempty and unique")
+        missing = requested - {unit.unit_id for unit in selected}
+        if missing:
+            raise ValueError(f"Unknown, excluded or out-of-page source unit IDs: {sorted(missing)}")
+        parents = {unit.parent_id for unit in selected if unit.unit_id in requested and unit.parent_id}
+        if any(unit.parent_id in parents and unit.unit_id not in requested for unit in selected):
+            raise ValueError("Unit selection cuts a logical paragraph; include its prose and display equations")
+        selected = [unit for unit in selected if unit.unit_id in requested]
+        neighbors = continuation_neighbors(all_units)
+        for unit in selected:
+            if any(other not in requested for other in neighbors.get(unit.unit_id, ())):
+                raise ValueError(f"Unit selection cuts a continuation at {unit.unit_id}")
+        pages = {unit.page for unit in selected}
+    remaining_ids: set[str] | None = None
     if untranslated_only:
-        translated_ids = set(translation_map(root))
+        translations = translation_map(root)
+        translated_ids = {u.unit_id for u in selected if u.unit_id in translations
+                          and translations[u.unit_id].source_hash == u.source_hash}
+        remaining_ids = {u.unit_id for u in selected if u.translatable and u.unit_id not in translated_ids}
+        remaining_parents = {u.parent_id for u in selected if u.unit_id in remaining_ids and u.parent_id}
         selected = [
-            unit for unit in selected if unit.translatable and unit.unit_id not in translated_ids
+            unit for unit in selected if unit.unit_id in remaining_ids or unit.parent_id in remaining_parents
         ]
+    selected_ids = {unit.unit_id for unit in selected}
+    parents = {unit.parent_id for unit in selected if unit.parent_id}
+    if any(unit.render_policy is RenderPolicy.INCLUDE and unit.parent_id in parents
+           and unit.unit_id not in selected_ids for unit in all_units):
+        raise ValueError("Selection cuts a logical paragraph or statement; include its complete parent group")
     if not selected:
         raise ValueError(
             "No matching untranslated units remain"
@@ -173,10 +208,22 @@ def create_batches(
 
     require_verified_extraction(root, pages)
 
+    # A footnote/running interruption must not split a reviewed parent. Mark
+    # every cut spanned by a parent or caller/note dependency, not only adjacency.
+    positions = {unit.unit_id: i for i, unit in enumerate(selected)}
+    spans: dict[str, list[int]] = {}
+    for i, unit in enumerate(selected):
+        if unit.parent_id:
+            spans.setdefault(unit.parent_id, []).append(i)
+        for ref in unit.footnote_refs:
+            if ref in positions:
+                spans.setdefault("footnote:" + ref, []).extend([i, positions[ref]])
+    protected_cuts = {cut for indices in spans.values()
+                      for cut in range(min(indices) + 1, max(indices) + 1)}
     groups: list[list[SourceUnit]] = []
     current: list[SourceUnit] = []
     words = 0
-    for unit in selected:
+    for selected_index, unit in enumerate(selected):
         unit_words = _word_count(unit.source_text) if unit.translatable else 0
         heading_boundary = unit.kind == "heading" and current and words >= max_words * 0.55
         page_gap = bool(current and unit.page - current[-1].page > 1)
@@ -186,7 +233,12 @@ def create_batches(
             and unit.page != current[-1].page
         )
         hard_boundary = bool(current and words + unit_words > max_words * 1.5)
-        if current and (word_boundary or hard_boundary or heading_boundary or page_gap):
+        asset_boundary = sum(len(u.asset_content_hashes) for u in current) >= soft_max_assets
+        connected = bool(current and 0 <= unit.page - current[-1].page <= 1 and (
+            current[-1].continued_to_next or unit.continues_from_previous
+            or (unit.parent_id and unit.parent_id == current[-1].parent_id)
+        ))
+        if current and selected_index not in protected_cuts and not connected and (word_boundary or hard_boundary or heading_boundary or page_gap or asset_boundary):
             groups.append(current)
             current, words = [], 0
         current.append(unit)
@@ -197,6 +249,7 @@ def create_batches(
     base_prefix = validate_batch_identifier(
         prefix or f"p{min(pages):04}-p{max(pages):04}"
     )
+    all_unit_positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     manifests: list[BatchManifest] = []
     for index, group in enumerate(groups, 1):
         batch_id = f"{base_prefix}-b{index:03}"
@@ -209,19 +262,21 @@ def create_batches(
             project_id=config.project_id,
             pages=sorted({unit.page for unit in group}),
             unit_ids=[unit.unit_id for unit in group],
-            translatable_unit_ids=[unit.unit_id for unit in group if unit.translatable],
+            translatable_unit_ids=[unit.unit_id for unit in group if unit.translatable
+                                   and (remaining_ids is None or unit.unit_id in remaining_ids)],
+            read_only_unit_ids=[unit.unit_id for unit in group
+                                if remaining_ids is not None and unit.unit_id not in remaining_ids],
+            frozen_scope=unit_ids is not None or untranslated_only,
             source_words=sum(_word_count(unit.source_text) for unit in group if unit.translatable),
         )
-        start_index = all_units.index(group[0])
-        end_index = all_units.index(group[-1])
+        start_index = all_unit_positions[group[0].unit_id]
+        end_index = all_unit_positions[group[-1].unit_id]
         before = all_units[start_index - 1] if start_index > 0 else None
         after = all_units[end_index + 1] if end_index + 1 < len(all_units) else None
         write_yaml(batch_dir / "manifest.yaml", manifest.model_dump(mode="json"))
-        (batch_dir / "source.md").write_text(
-            batch_source_markdown(root, group), encoding="utf-8"
-        )
-        (batch_dir / "context.md").write_text(
-            _context_text(root, group, before, after), encoding="utf-8"
+        atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
+        atomic_write_text(
+            batch_dir / "context.md", _context_text(root, group, before, after)
         )
         write_json(batch_dir / "output-schema.json", _translation_output_schema())
         manifests.append(manifest)
@@ -258,15 +313,29 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
         unit
         for unit in all_units[start_index : end_index + 1]
         if unit.render_policy is RenderPolicy.INCLUDE
+        and (not manifest.frozen_scope or unit.unit_id in manifest.unit_ids)
     ]
     if not group:
         raise ValueError("Batch contains no renderable units after applying structural overrides")
-    refreshed_scope = [unit.unit_id for unit in group if unit.translatable]
+    if manifest.frozen_scope:
+        ids = {unit.unit_id for unit in group}
+        parents = {unit.parent_id for unit in group if unit.parent_id}
+        neighbors = continuation_neighbors(all_units)
+        if (any(unit.render_policy is RenderPolicy.INCLUDE and unit.parent_id in parents
+                and unit.unit_id not in ids for unit in all_units)
+                or any(other not in ids for unit in group for other in neighbors.get(unit.unit_id, ()))):
+            raise ValueError("Frozen batch scope cuts a logical paragraph or continuation; create a new complete selection")
+    translations = translation_map(root)
+    read_only = {unit.unit_id for unit in group if unit.unit_id in manifest.read_only_unit_ids
+                 and (not unit.translatable or (unit.unit_id in translations
+                      and translations[unit.unit_id].source_hash == unit.source_hash))}
+    refreshed_scope = [unit.unit_id for unit in group if unit.translatable and unit.unit_id not in read_only]
     revised = manifest.model_copy(
         update={
             "pages": sorted({unit.page for unit in group}),
             "unit_ids": [unit.unit_id for unit in group],
             "translatable_unit_ids": refreshed_scope,
+            "read_only_unit_ids": [unit.unit_id for unit in group if unit.unit_id in read_only],
             "source_words": sum(
                 _word_count(unit.source_text) for unit in group if unit.unit_id in refreshed_scope
             ),
@@ -286,11 +355,10 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
             # invalidate the newly adjacent units before the removed anchor is lost.
             record_audit_invalidation(root, batch_id, removed_unit_ids)
         write_yaml(batch_dir / "manifest.yaml", revised.model_dump(mode="json"))
-        (batch_dir / "source.md").write_text(
-            batch_source_markdown(root, group), encoding="utf-8"
-        )
-        (batch_dir / "context.md").write_text(
-            _context_text(root, group, before, after), encoding="utf-8"
+        write_json(batch_dir / "output-schema.json", _translation_output_schema())
+        atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
+        atomic_write_text(
+            batch_dir / "context.md", _context_text(root, group, before, after)
         )
         allowed = set(revised.translatable_unit_ids)
         current = translation_map(root)
@@ -314,43 +382,6 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
 
 
 def _translation_output_schema() -> dict[str, object]:
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "required": ["unit_id", "target_text", "source_hash"],
-        "additionalProperties": False,
-        "properties": {
-            "unit_id": {"type": "string"},
-            "target_text": {"type": "string"},
-            "target_table": {
-                "type": ["object", "null"],
-                "properties": {
-                    "rows": {
-                        "type": "array",
-                        "items": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "header_rows": {"type": "integer", "minimum": 0},
-                    "column_count": {"type": "integer", "minimum": 1},
-                },
-                "required": ["rows", "column_count"],
-                "additionalProperties": False,
-            },
-            "figure_labels": {"type": "array"},
-            "source_hash": {"type": "string"},
-            "reader_note": {
-                "type": ["object", "null"],
-                "properties": {
-                    "text": {"type": "string"},
-                    "sources": {
-                        "type": "array",
-                        "items": {"type": "string", "format": "uri"},
-                    },
-                    "accessed_at": {"type": ["string", "null"]},
-                },
-                "required": ["text"],
-                "additionalProperties": False,
-            },
-            "term_proposals": {"type": "array"},
-            "uncertainties": {"type": "array", "items": {"type": "string"}},
-        },
-    }
+    """Use the submission model so evidence and companion shapes cannot drift."""
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema",
+            **TranslationRecord.model_json_schema()}

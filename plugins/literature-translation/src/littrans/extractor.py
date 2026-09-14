@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 import yaml
 from rapidfuzz.fuzz import ratio
 
@@ -38,6 +38,7 @@ from littrans.models import (
     canonical_math_review_unit_guard_sha256,
 )
 from littrans.semantics import (
+    RUN_IN_LABEL_RE,
     code_from_block,
     detect_code_language,
     inline_math_markdown,
@@ -45,6 +46,7 @@ from littrans.semantics import (
     looks_like_program_code,
     normalize_prose,
     prose_from_block,
+    run_in_caps_label_words,
     split_mixed_pdf_block,
     table_from_rows,
     unicode_math_to_latex,
@@ -174,10 +176,29 @@ def _is_caption(text: str) -> bool:
     return bool(CAPTION_RE.match(text) and not PROSE_FIGURE_TABLE_RE.match(text))
 
 
-def protected_tokens(text: str) -> list[str]:
+ACRONYM_PATTERN = PROTECTED_PATTERNS[3]
+
+
+def _is_all_caps_text(text: str, minimum_words: int = 2) -> bool:
+    """Small-caps or uppercase display headings style every word, not acronyms."""
+    words = re.findall(r"[A-Za-z][A-Za-z'’]*", re.sub(r"\{\{asset:[^}]+\}\}", " ", text))
+    return len(words) >= minimum_words and all(word.upper() == word for word in words)
+
+
+def protected_tokens(text: str, *, heading: bool = False) -> list[str]:
     found: list[str] = []
+    all_caps = _is_all_caps_text(text, minimum_words=1 if heading else 2)
+    # A bold, all-caps run-in label ("**EXAMPLE 1.**") is styled prose, not acronyms.
+    label_match = RUN_IN_LABEL_RE.match(text) if run_in_caps_label_words(text) else None
+    label_end = label_match.end() if label_match else 0
     for pattern in PROTECTED_PATTERNS:
-        found.extend(match.group(0) for match in pattern.finditer(text))
+        if all_caps and pattern is ACRONYM_PATTERN:
+            continue
+        found.extend(
+            match.group(0)
+            for match in pattern.finditer(text)
+            if not (pattern is ACRONYM_PATTERN and match.start() < label_end)
+        )
     found = [
         token.rstrip(".,;:!?") if token.lower().startswith(("http://", "https://")) else token
         for token in found

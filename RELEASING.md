@@ -9,6 +9,7 @@ point; `main` remains the development branch.
 1. Create a topic branch and complete the intended changes.
 2. Choose the next semantic version.
 3. Set the same version in:
+   - `plugins/literature-translation/.claude-plugin/plugin.json`
    - `plugins/literature-translation/.codex-plugin/plugin.json`
    - `plugins/literature-translation/.cursor-plugin/plugin.json`
    - `plugins/literature-translation/pyproject.toml`
@@ -34,15 +35,69 @@ point; `main` remains the development branch.
     and agents in Customize.
 15. Start a new agent session for the updated plugin on each host.
 
+## 0.6 acceptance evidence
+
+Before releasing 0.6, retain the source-coverage sample report, independent production/review
+results, original-image fallback checks, offline renderer checks and installable build validation.
+Source PDFs and private results stay outside the tracked plugin. Report known omissions, cuts,
+translation defects, reliable structured coverage, fallback proportion and unavailable usage
+honestly. A sample with zero known omissions is not a whole-book guarantee.
+
+Validate all seven skills, local role prompts, schema contracts, packaging and both host manifests.
+Test rebuilding into a fresh directory without inheriting old approvals. Stable installation changes
+follow the release checklist, separately from implementing or testing the development branch.
+
+## Local installable builds and recovery
+
+Use a validated Python 3.12+ environment with Hatchling and the plugin dependencies. From the
+repository root, build outside the plugin source directory:
+
+```powershell
+python scripts/build_distribution.py ..\littrans-build
+```
+
+The command first validates the release, then writes the versioned wheel, plugin ZIP and
+`build-manifest.json`. The manifest records artifact SHA-256 values and the packaged plugin file
+hashes. This creates reviewable local artifacts without switching the stable installation.
+
+Test the wheel in a fresh isolated environment or `pip --target` directory. When the selected
+interpreter already has the validated dependencies, an offline target installation can use:
+
+```powershell
+python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke ..\littrans-build\littrans-0.6.0-py3-none-any.whl
+Expand-Archive -LiteralPath ..\littrans-build\literature-translation-0.6.0.zip -DestinationPath ..\littrans-zip-smoke
+python ..\littrans-zip-smoke\literature-translation\scripts\littrans.py doctor
+```
+
+Use the release's actual version in those filenames. For the wheel check, set `PYTHONPATH` to its
+isolated target and verify the imported module path, version and all three bundled profiles. Create
+a synthetic PDF project, confirm source preparation produces a review packet while unavailable
+layout detection leaves approval pending, and verify every copied offline MathJax file against its
+vendored manifest. Run the plugin-creator `validate_plugin.py` against the extracted plugin too.
+
+Keep smoke results beside the build, including exact artifact hashes, Python/dependency versions,
+commands and exit codes. A failed installation or extraction should be retried in a fresh target;
+preserve the earlier report and successful responses. If packaged files change, rebuild and repeat
+the affected distribution checks against the new hashes. Never repair an artifact by copying files
+into a stable plugin cache or inherit approval from a synthetic smoke project.
+
 ## Compatibility policy
 
 - Patch releases contain compatible fixes and workflow refinements.
-- Minor releases add compatible capabilities or project-schema migrations.
+- During 0.x development, minor releases may change the project contract. LitTrans 0.6 requires a new schema-6 project via `project rebuild OLD NEW`; old approvals are not migrated.
 - Major releases may require an explicit project migration.
 - Long-running translation projects should record the LitTrans version used for each formal
   processing stage.
 - Never delete an installed cache version while a running task may still call its scripts,
   templates, schemas, or skill references.
+
+## Development builds on Claude Code
+
+`claude plugin update` is a no-op while the installed version string is unchanged, so a
+development build with the same version must be reinstalled (`claude plugin uninstall` then
+`claude plugin install literature-translation@littrans`) or loaded from the checkout with
+`claude --plugin-dir plugins/literature-translation`. The installed launcher runs from the cached
+`src/` tree, so a hot copy of changed files into the cache is a valid short-lived test only.
 
 ## Development cachebusters
 

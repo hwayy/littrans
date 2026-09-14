@@ -1,0 +1,18 @@
+{
+  "name": "littrans",
+  "owner": {
+    "name": "Hwa"
+  },
+  "metadata": {
+    "description": "Public marketplace for the literature-translation plugin."
+  },
+  "plugins": [
+    {
+      "name": "literature-translation",
+      "source": "./plugins/literature-translation",
+      "description": "A controlled, resumable workflow for high-quality literature translation.",
+      "category": "productivity",
+      "keywords": ["translation", "literature", "pdf", "chinese"]
+    }
+  ]
+}

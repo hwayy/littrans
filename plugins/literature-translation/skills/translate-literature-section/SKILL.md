@@ -1,28 +1,19 @@
 ---
 name: translate-literature-section
-description: Translate or revise one prepared littrans batch from English into Simplified Chinese with stable unit IDs, protected code and notation, scoped terminology, reader notes, and deterministic QA. Use for technical books, scientific papers, articles, or chapters after prepare-literature-translation has created a batch, including revisions requested by an audit issue list.
+description: Translate or revise one faithful LitTrans source batch into Simplified Chinese while preserving original asset references. Use after source coverage verification; translation proceeds independently of LaTeX transcription.
 ---
 
 # Translate Literature Section
 
-Act as the only writer of target text for the batch.
+Act as the only writer of target text for the assigned batch. Use [runtime.md](../../references/runtime.md), [host-runtimes.md](../../references/host-runtimes.md) and [translation-quality.md](references/translation-quality.md).
 
-Use the bundled Python launcher described in `../../references/runtime.md` for every `littrans` command.
+1. Read the translate packet's source, context, output schema, glossary and `original-images.json`. Inspect the original page and asset PNGs needed to understand every source unit. Writers run in a fresh task using the model and effort recorded in the packet (the project's `agent_models.<host>` configuration). Do not wait for or default to reading transcription candidates.
+2. Translate only assigned translatable units. Preserve `unit_id`, `source_hash` and every `{{asset:ID}}` occurrence within its source-owned target block. Chinese may reorder references inside a block; never move a clause or reference to another unit. Keep display assets in their original structural location.
+3. Submit target prose separately from formula, table or code candidates. Use `asset_translations` entries keyed by `asset_id` for table cells (`target_table`), corresponding region prose (`target_text`) or figure labels (`figure_labels`). Set `language_present: false` only with an explanation in `notes` when the original contains no translatable natural language. Do not replace assets with guessed LaTeX or unreviewed reconstructions.
+4. Write `image_evidence` as a map from the packet's actually inspected image paths to their supplied SHA-256 values. Copying a manifest without viewing the images is not evidence. Record unresolved mathematical understanding in `uncertainties`; it blocks the affected translation. An understood original formula with unfinished LaTeX does not.
+5. Preserve approved terminology. Put term proposals, uncertainties and reader notes in their separate fields. Verify any allowed current-technology reader note against a current primary source and include its HTTPS URL/access date; otherwise omit it.
+6. Run `translation submit` and `qa run`. Fix deterministic errors without weakening reference or ownership checks; treat the `target-halfwidth-punctuation` and `asset-reference-spacing` warnings as defects to fix. For an audit revision, the `revise` packet adds `<batch>.translation.jsonl` (current records), `<batch>.issues.jsonl` (open issues) and `<batch>.revise.md`: address every open issue, sweep the whole batch for the same defect class, resubmit the full batch, rerun QA and report the addressed issue ids (and any deliberately unchanged, with reasons) for the coordinator to resolve. Do not resolve issues yourself.
 
-## Procedure
+Do not change source units, assets, approved terminology or reviewer evidence. Report QA and unresolved issues; passing QA does not grant approval.
 
-1. Read `manifest.yaml`, `source.md`, `context.md`, and `output-schema.json` completely, or the equivalent files in a `workflow packet`. On revision, also read the current `translation.jsonl` and all review issues for the batch.
-2. Translate only units listed in `translatable_unit_ids`. Preserve every `unit_id` and `source_hash`. Keep each target semantically owned by the source of that same unit: use adjacent context to phrase a seam naturally, but never move, merge, or duplicate source content across stable unit IDs. Do not create translations for display formulas, code, or figures. Preserve verified inline `$...$` LaTeX byte-for-byte inside the translated sentence.
-3. Apply [translation-quality.md](references/translation-quality.md). Obey approved glossary entries; treat candidate terms as proposals, not rules.
-4. Write one JSON object per line to the batch `translation.jsonl`. For a table unit, translate every cell into `target_table` without changing row or column count; keep `target_text` concise and free of a second ad hoc table. Put uncertainty in `uncertainties`, terminology proposals in `term_proposals`, and current-technology explanations in `reader_note`, never in `target_text`.
-5. For a reader note, verify the claim against a current primary official source. Include HTTPS source URLs and access date. Omit the note when verification is unavailable.
-6. Run `translation submit`, then `qa run`. A semantic no-op retains its revision and evidence. Fix every deterministic error and rerun both commands. Do not weaken protected-token or numeric checks to make a batch pass.
-7. On audit revision, resolve each accepted issue through a new translation revision. Record rejected or waived issues with `review resolve`; do not silently ignore them.
-8. Finish only with passing deterministic QA. Report remaining uncertainties and open review issues separately.
-
-## Hard constraints
-
-- Preserve meaning, logical relationships, modality, scope, citations, numbers, units, API names, code, filenames, URLs, exact LaTeX, and table shape.
-- Keep literal markup such as `<Button>` as text; do not emit raw HTML or let it alter document structure.
-- Restructure sentences for natural Chinese, but do not summarize, embellish, modernize, or explain inside the translation.
-- Never edit source units, approved glossary entries, audit files, or another writer's revision concurrently.
+Recorded `uncertainties` mean unresolved understanding and block QA for the affected translation and its dependencies. Resolve the question using the original context and resubmit; do not clear the field solely to pass QA. Pending LaTeX alone is asset progress, so a faithful translation may keep the original reference without declaring a meaning uncertainty.

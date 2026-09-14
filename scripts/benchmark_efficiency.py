@@ -10,20 +10,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "plugins" / "literature-translation" / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from littrans.batching import batch_source_markdown
+from littrans.batching import batch_source_markdown, load_manifest
 from littrans.evidence import (
     dependency_closure,
     effective_figure_labels,
     translation_memory,
     translations_semantically_equal,
 )
-from littrans.migration import (
-    _legacy_v3_batch_fingerprint,
-    _migratable_v3_external_chain,
-)
 from littrans.models import (
     PROJECT_SCHEMA_VERSION,
     ExternalReviewRun,
+    ExternalReviewVerdict,
     IssueStatus,
     ProjectConfig,
     ProjectStatus,
@@ -33,7 +30,7 @@ from littrans.models import (
     TranslationRecord,
 )
 from littrans.project import translation_map
-from littrans.storage import load_project, read_json, read_jsonl
+from littrans.storage import load_project, read_json, read_jsonl, sha256_text
 from littrans.workflow import (
     _all_manifests,
     _audit_packet_text,
@@ -41,6 +38,131 @@ from littrans.workflow import (
     _batch_stage,
     _shared_context,
 )
+
+
+# Legacy schema-v3 history replay. These fingerprints and external-review chain
+# rules predate the current evidence model and exist only so the benchmark can
+# score completed batches from archived v3 projects.
+def _legacy_v3_batch_fingerprint(
+    root: Path,
+    batch_id: str,
+    *,
+    units: dict[str, SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
+) -> str:
+    manifest = load_manifest(root, batch_id)
+    translations = translations if translations is not None else translation_map(root)
+    units = (
+        units
+        if units is not None
+        else {
+            unit.unit_id: unit
+            for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        }
+    )
+    source_fields = {
+        "kind",
+        "source_hash",
+        "source_markdown",
+        "sidebar_id",
+        "sidebar_role",
+        "callout_kind",
+        "translatable",
+        "render_policy",
+        "protected_tokens",
+        "latex",
+        "equation_number",
+        "math_status",
+        "table",
+        "code_language",
+        "continues_from_previous",
+        "continued_to_next",
+        "figure_labels",
+        "verification_status",
+    }
+    material: list[str] = []
+    for unit_id in manifest.unit_ids:
+        unit = units[unit_id]
+        semantic = unit.model_dump_json(
+            include=source_fields, exclude_none=True
+        )
+        source_fingerprint = sha256_text(semantic)
+        if not unit.translatable:
+            material.append(f"{unit_id}|source-only|{source_fingerprint}")
+            continue
+        record = translations.get(unit_id)
+        if record is None:
+            material.append(f"{unit_id}|{source_fingerprint}|missing")
+        else:
+            translation_json = record.model_dump_json(
+                include={
+                    "target_text",
+                    "target_table",
+                    "figure_labels",
+                    "reader_note",
+                    "term_proposals",
+                    "uncertainties",
+                },
+                exclude_none=True,
+            )
+            material.append(
+                f"{unit_id}|{record.source_hash}|{source_fingerprint}|{record.revision}|"
+                f"{sha256_text(translation_json)}"
+            )
+    return sha256_text("\n".join(material))
+
+
+def _migratable_v3_external_chain(
+    runs: list[ExternalReviewRun],
+    legacy_fingerprint: str,
+    packet_sha256: str | None = None,
+) -> tuple[list[ExternalReviewRun], bool]:
+    matching = [
+        run
+        for run in runs
+        if run.translation_fingerprint == legacy_fingerprint
+        and (packet_sha256 is None or run.packet_sha256 == packet_sha256)
+    ]
+    primary_index = next(
+        (
+            index
+            for index in range(len(matching) - 1, -1, -1)
+            if matching[index].role == "primary"
+        ),
+        None,
+    )
+    if primary_index is None:
+        return [], bool(runs)
+
+    primary = matching[primary_index]
+
+    def accepted(run: ExternalReviewRun) -> bool:
+        return bool(
+            run.success
+            and run.model_verified
+            and run.verdict is ExternalReviewVerdict.ACCEPTED
+        )
+
+    if not accepted(primary):
+        return [], True
+
+    chain = [primary]
+    second_candidates = [
+        run
+        for index, run in enumerate(matching)
+        if run.role == "second-opinion"
+        and (
+            run.base_run_id == primary.run_id
+            or (run.base_run_id is None and index > primary_index)
+        )
+    ]
+    if second_candidates:
+        second = second_candidates[-1]
+        if accepted(second):
+            chain.append(second)
+            return chain, False
+        return chain, True
+    return chain, False
 
 
 def _lean_translation_context(

@@ -3,3 +3,7 @@
 # Keep Windows launcher files native when they are introduced.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Archived unified diff: blank context lines require a single space prefix.
+# Preserve that syntax without disabling other whitespace checks or other files.
+validation/qa-localization-20260908/changes.patch whitespace=-blank-at-eol

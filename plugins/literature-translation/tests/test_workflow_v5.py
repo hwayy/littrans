@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fidelity_fixtures import review_fixture_metadata
 from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 import littrans.external_review as external_review_module
@@ -13,7 +14,9 @@ from littrans.models import (
     AuditRun,
     ExternalReviewConfig,
     ExternalReviewerConfig,
+    IssueStatus,
     IssueType,
+    ProjectStatus,
     ReviewIssue,
     Severity,
     SidebarRole,
@@ -73,7 +76,7 @@ def test_wave_status_is_compact_and_packet_is_content_addressed(tmp_path: Path) 
     assert not isinstance(first, list) and not isinstance(second, list)
     assert first.packet_id == second.packet_id
     assert first.storage_root == ".littrans/work"
-    assert not any((root / "packets").iterdir())
+    assert all(path.name.startswith("source-") for path in (root / "packets").iterdir())
     assert (root / ".gitignore").read_text(encoding="utf-8").splitlines().count(
         "/.littrans/"
     ) == 1
@@ -392,6 +395,47 @@ def test_packet_issue_ids_are_stable_on_idempotent_import(tmp_path: Path) -> Non
         root / "reviews" / f"{batch.batch_id}.issues.jsonl", ReviewIssue
     )
     assert [issue.issue_id for issue in stored] == [canonical]
+    assert stored[0].source_issue_id == "issue-1"
+
+    # A second packet reusing the reviewer id makes the alias ambiguous while
+    # the canonical ids stay resolvable.
+    from typer.testing import CliRunner
+
+    from littrans import cli
+    from littrans.quality import list_issues, resolve_issue
+
+    technical = create_workflow_packet(root, "audit", [batch.batch_id], "technical")
+    assert not isinstance(technical, list)
+    duplicate = import_review_set(
+        root, root / technical.storage_root / technical.packet_id / "manifest.json", issues
+    )
+    other = duplicate["id_map"][f"{batch.batch_id}:issue-1"]
+    assert other != canonical
+    with pytest.raises(ValueError, match="Ambiguous review issue id issue-1"):
+        resolve_issue(root, batch.batch_id, "issue-1", IssueStatus.RESOLVED, "fixed")
+    runner = CliRunner()
+    listed = runner.invoke(cli.app, ["review", "issues", str(root), batch.batch_id, "--jsonl"])
+    assert listed.exit_code == 0, listed.output
+    lines = [json.loads(line) for line in listed.output.splitlines() if line.strip()]
+    assert {line["issue_id"] for line in lines} == {canonical, other}
+    resolved = runner.invoke(
+        cli.app,
+        [
+            "review", "resolve", str(root), batch.batch_id, f"{canonical},{other}",
+            "--resolution", "both addressed in revision 2",
+        ],
+    )
+    assert resolved.exit_code == 0, resolved.output
+    assert {item["issue_id"] for item in json.loads(resolved.output)} == {canonical, other}
+    assert list_issues(root, batch.batch_id) == []
+    assert len(list_issues(root, batch.batch_id, open_only=False)) == 2
+    empty = runner.invoke(cli.app, ["review", "issues", str(root), batch.batch_id])
+    assert empty.exit_code == 0 and json.loads(empty.output) == []
+    single = runner.invoke(
+        cli.app,
+        ["review", "issues", str(root), batch.batch_id, "--all"],
+    )
+    assert len(json.loads(single.output)) == 2
 
 
 def test_non_seam_change_invalidates_only_its_batch(tmp_path: Path) -> None:
@@ -423,9 +467,11 @@ def test_cross_batch_seam_enters_only_the_local_dependency_context(tmp_path: Pat
     units[0] = units[0].model_copy(update={"continued_to_next": True})
     units[1] = units[1].model_copy(update={"continues_from_previous": True})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
+    for batch in manifests:
         assert run_qa(root, batch.batch_id).passed
     packet = create_workflow_packet(
         root, "audit", [manifests[0].batch_id], "fidelity"
@@ -512,9 +558,37 @@ def test_resume_boundary_skips_interleaved_overlapping_history(tmp_path: Path) -
             start_at=active_ids[0],
             through=overlapping.batch_id,
         )
-    with pytest.raises(ValueError, match="belong to different batch series"):
+    # Batch sets may mix series when their units are disjoint and in source order.
+    mixed = create_workflow_packet(
+        root, "translate", [active_ids[0], overlapping.batch_id]
+    )
+    assert not isinstance(mixed, list)
+    assert mixed.batch_ids == [active_ids[0], overlapping.batch_id]
+    mixed_outputs = render_project(
+        root,
+        None,
+        name="mixed-series-wave",
+        allow_draft=True,
+        batch_ids=[active_ids[0], overlapping.batch_id],
+    )
+    assert Path(mixed_outputs["markdown"]).is_file()
+    with pytest.raises(ValueError, match="overlapping source units"):
         create_workflow_packet(
-            root, "translate", [active_ids[0], overlapping.batch_id]
+            root, "translate", [active_ids[1], overlapping.batch_id]
+        )
+    with pytest.raises(ValueError, match="consecutive and ordered within series"):
+        create_workflow_packet(root, "translate", [active_ids[0], active_ids[2]])
+    with pytest.raises(ValueError, match="must follow source order"):
+        create_workflow_packet(
+            root, "translate", [overlapping.batch_id, active_ids[0]]
+        )
+    with pytest.raises(ValueError, match="Render batch IDs must follow source order"):
+        render_project(
+            root,
+            None,
+            name="reversed",
+            allow_draft=True,
+            batch_ids=[overlapping.batch_id, active_ids[0]],
         )
 
 
@@ -541,9 +615,13 @@ def test_workflow_status_rechecks_audit_packet_dependency_closure(
     units = read_jsonl(units_path, SourceUnit)
     units[1] = units[1].model_copy(update={"continues_from_previous": True})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
 
     assert not audit_coverage(root, first.batch_id)["complete"]
+    assert workflow_status(root, [first.batch_id])["stage"] == "qa"
+    _submit(root, manifests[1].batch_id)
+    assert run_qa(root, first.batch_id).passed
     assert workflow_status(root, [first.batch_id])["stage"] == "audit"
 
 
@@ -557,6 +635,7 @@ def test_single_batch_render_includes_cross_batch_continuation_chain(
     units[0] = units[0].model_copy(update={"continued_to_next": True})
     units[1] = units[1].model_copy(update={"continues_from_previous": True})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
@@ -592,6 +671,7 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
         update={"sidebar_id": "cross-batch-sidebar", "sidebar_role": SidebarRole.BODY}
     )
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
@@ -664,6 +744,7 @@ def test_full_external_packet_includes_cross_batch_sidebar_context(
         update={"sidebar_id": "external-sidebar", "sidebar_role": SidebarRole.BODY}
     )
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     for batch in manifests:
         refresh_batch(root, batch.batch_id)
         _submit(root, batch.batch_id)
@@ -693,3 +774,205 @@ def test_full_external_packet_includes_cross_batch_sidebar_context(
         root, first.batch_id, list(first.unit_ids), external_review_module.ReviewScope.FULL
     )
     assert after != before
+
+
+def _import_empty_audits(root: Path, batch_id: str) -> None:
+    for lens in ("fidelity", "technical", "chinese-style"):
+        packet = create_workflow_packet(root, "audit", [batch_id], lens)
+        assert not isinstance(packet, list)
+        issues = root / packet.storage_root / packet.packet_id / "issues.jsonl"
+        write_jsonl(issues, [])
+        import_review_set(
+            root,
+            root / packet.storage_root / packet.packet_id / "manifest.json",
+            issues,
+        )
+
+
+def test_audit_coverage_reports_stale_reasons(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first = manifests[0]
+    _submit(root, first.batch_id)
+    assert run_qa(root, first.batch_id).passed
+    _import_empty_audits(root, first.batch_id)
+    runs = read_jsonl(root / "evidence" / "audits" / f"{first.batch_id}.jsonl", AuditRun)
+    assert runs and all(run.shared_context_fingerprint for run in runs)
+    complete = audit_coverage(root, first.batch_id)
+    assert complete["complete"]
+    assert complete["stale_reasons"] == {
+        "fidelity": [], "technical": [], "chinese-style": [],
+    }
+    assert "audit_stale" not in workflow_module.workflow_next(root, host="cursor") or (
+        workflow_module.workflow_next(root, host="cursor")["audit_stale"] == {}
+    )
+
+    style_guide = root / "context" / "style-guide.md"
+    original_style = style_guide.read_text(encoding="utf-8")
+    style_guide.write_text(original_style + "\n- 列表项译文不含项目符号。\n", encoding="utf-8")
+    coverage = audit_coverage(root, first.batch_id)
+    assert not coverage["complete"]
+    assert coverage["stale_reasons"] == {
+        "fidelity": ["context-changed"],
+        "technical": ["context-changed"],
+        "chinese-style": ["context-changed"],
+    }
+    status = workflow_status(root, [first.batch_id])
+    assert status["stage"] == "audit"
+    assert status["audit_stale"] == {first.batch_id: coverage["stale_reasons"]}
+    from littrans.quality import review_status
+
+    assert review_status(root, first.batch_id)["audit_stale_reasons"] == coverage["stale_reasons"]
+    style_guide.write_text(original_style, encoding="utf-8")
+    assert audit_coverage(root, first.batch_id)["complete"]
+
+    _submit(root, first.batch_id, suffix="改")
+    changed = audit_coverage(root, first.batch_id)
+    assert changed["stale_reasons"]["fidelity"] == ["unit-changed"]
+    assert set(changed["stale"]["fidelity"][0]["unit_reasons"].values()) == {"unit-changed"}
+    assert run_qa(root, first.batch_id).passed
+    _import_empty_audits(root, first.batch_id)
+    assert audit_coverage(root, first.batch_id)["complete"]
+
+    from littrans.evidence import record_audit_invalidation
+
+    record_audit_invalidation(root, first.batch_id, first.unit_ids[:1])
+    invalidated = audit_coverage(root, first.batch_id)
+    assert invalidated["stale_reasons"]["technical"] == ["invalidated"]
+    assert workflow_status(root, [first.batch_id])["audit_stale"][first.batch_id][
+        "technical"
+    ] == ["invalidated"]
+
+
+def test_revise_packet_carries_current_translation_and_open_issues(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch = manifests[0]
+    with pytest.raises(ValueError, match="require submitted translations"):
+        create_workflow_packet(root, "revise", [batch.batch_id])
+    _submit(root, batch.batch_id)
+    assert run_qa(root, batch.batch_id).passed
+    unit_id = batch.translatable_unit_ids[0]
+    issues_path = root / "reviews" / "revise-input.jsonl"
+    write_jsonl(
+        issues_path,
+        [
+            ReviewIssue(
+                issue_id="r-001",
+                batch_id=batch.batch_id,
+                unit_id=unit_id,
+                severity=Severity.MAJOR,
+                type=IssueType.OMISSION,
+                explanation="漏译了条件从句。",
+                suggested_revision="补上“对所有 t > 0”。",
+                reviewer="fidelity-reviewer",
+            ),
+            ReviewIssue(
+                issue_id="r-002",
+                batch_id=batch.batch_id,
+                unit_id=unit_id,
+                severity=Severity.MINOR,
+                type=IssueType.STYLE,
+                explanation="已处理。",
+                reviewer="fidelity-reviewer",
+                status="resolved",
+                resolution="done",
+                resolved_at="2026-01-01T00:00:00+00:00",
+            ),
+        ],
+    )
+    import_review(root, batch.batch_id, issues_path)
+    status = workflow_status(root, [batch.batch_id])
+    assert status["stage"] == "revise"
+    task = status["ready_tasks"][0]
+    from littrans.hosts import resolve_coordination_host
+
+    policy = load_project(root).agent_models[resolve_coordination_host(None)]
+    assert task["stage"] == "revise"
+    assert task["model"] == policy["translate"]
+    assert task["reasoning_effort"] == policy["reasoning_effort"]
+
+    with pytest.raises(ValueError, match="do not accept a lens"):
+        create_workflow_packet(root, "revise", [batch.batch_id], "fidelity")
+    packet = create_workflow_packet(root, "revise", [batch.batch_id])
+    assert not isinstance(packet, list)
+    assert packet.stage == "revise"
+    assert packet.packet_id.startswith("revise-")
+    again = create_workflow_packet(root, "revise", [batch.batch_id])
+    assert not isinstance(again, list) and again.packet_id == packet.packet_id
+    for key in ("source", "context", "translation", "issues", "revise"):
+        assert f"{batch.batch_id}:{key}" in packet.files
+    translation_lines = (
+        (root / packet.files[f"{batch.batch_id}:translation"]).read_text(encoding="utf-8").splitlines()
+    )
+    assert len(translation_lines) == len(batch.translatable_unit_ids)
+    assert all(json.loads(line)["target_text"].startswith("这是经过技术审校") for line in translation_lines)
+    issue_lines = (root / packet.files[f"{batch.batch_id}:issues"]).read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["issue_id"] for line in issue_lines] == ["r-001"]
+    revise_text = (root / packet.files[f"{batch.batch_id}:revise"]).read_text(encoding="utf-8")
+    assert "### r-001 (major; omission; unit " in revise_text
+    assert "r-002" not in revise_text
+    assert "Contracts" in revise_text
+    assert "review resolve" in revise_text
+    original = json.loads((root / packet.files["original-images"]).read_text(encoding="utf-8"))
+    assert original["role"] == "revise"
+    assert "Contracts" in original["instructions"]
+    with pytest.raises(ValueError):
+        WorkflowPacketManifest.model_validate(
+            {**packet.model_dump(mode="json"), "lens": "fidelity"}
+        )
+
+
+def test_single_batch_render_reports_batch_status_and_scoped_qa(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    first, second = manifests
+    _submit(root, first.batch_id, suffix="甲")
+    _submit(root, second.batch_id, suffix="乙")
+    _audit_and_approve(root, first.batch_id)
+    assert run_qa(root, second.batch_id).passed
+    assert load_project(root).status is ProjectStatus.MACHINE_REVIEWED
+
+    approved = render_project(root, None, batch_id=first.batch_id)
+    approved_markdown = Path(approved["markdown"]).read_text(encoding="utf-8")
+    assert "> 翻译状态：machine-reviewed；" in approved_markdown
+    approved_quality = Path(approved["quality"]).read_text(encoding="utf-8")
+    assert f"- Batches: {first.batch_id}" in approved_quality
+    assert "- QA reports: 1 (1 passing)" in approved_quality
+    assert "- Translation status: machine-reviewed" in approved_quality
+
+    # The second batch is only QA-passed: its own edition must say so even
+    # though the project high-water mark is already machine-reviewed.
+    draft = render_project(root, None, name="second-draft", allow_draft=True, batch_id=second.batch_id)
+    draft_markdown = Path(draft["markdown"]).read_text(encoding="utf-8")
+    assert "> 翻译状态：qa-passed；" in draft_markdown
+    draft_html = Path(draft["html"]).read_text(encoding="utf-8")
+    assert "· qa-passed<span" in draft_html
+    assert "machine-reviewed" not in draft_html
+    draft_qa = json.loads(Path(draft["render_qa"]).read_text(encoding="utf-8"))
+    assert draft_qa["rendered_status"] == "qa-passed"
+    assert draft_qa["review_batch_ids"] == [second.batch_id]
+    assert "- QA reports: 1 (1 passing)" in Path(draft["quality"]).read_text(encoding="utf-8")
+
+
+def test_qa_warns_on_halfwidth_punctuation_and_packets_state_contracts(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+    batch = manifests[0]
+    _submit(root, batch.batch_id, target_text="这是经过技术审校的中文译文,附注")
+    report = run_qa(root, batch.batch_id)
+    assert report.passed
+    codes = {item.code for item in report.warnings}
+    assert "target-halfwidth-punctuation" in codes
+    assert "asset-reference-spacing" not in codes
+    _submit(root, batch.batch_id, target_text="这是经过技术审校的中文译文。")
+    clean = run_qa(root, batch.batch_id)
+    assert clean.passed
+    assert "target-halfwidth-punctuation" not in {item.code for item in clean.warnings}
+
+    translate = create_workflow_packet(root, "translate", [batch.batch_id])
+    assert not isinstance(translate, list)
+    original = json.loads((root / translate.files["original-images"]).read_text(encoding="utf-8"))
+    assert "Contracts" in original["instructions"]
+    assert "no space between Chinese text and the placeholder" in original["instructions"]
+    audit = create_workflow_packet(root, "audit", [batch.batch_id], "chinese-style")
+    assert not isinstance(audit, list)
+    audit_text = (root / audit.files[f"{batch.batch_id}:audit"]).read_text(encoding="utf-8")
+    assert "Contracts" in audit_text
+    assert "list_item targets carry no leading bullet" in audit_text

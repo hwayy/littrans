@@ -33,16 +33,26 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
         extra = sorted(set(supplied) - expected)
         raise ValueError(f"Translation coverage mismatch; missing={missing}, extra={extra}")
 
-    units = {
-        unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    }
     with project_write_lock(root):
+        # Re-read bindings under the same lock used for source correction/import.
+        current_manifest = load_manifest(root, batch_id)
+        if current_manifest != manifest:
+            raise ValueError("Batch changed while translation submission was being prepared")
+        units = {
+            unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+        }
         current = translation_map(root)
         normalized: list[TranslationRecord] = []
         changed: list[TranslationRecord] = []
         rebound: list[TranslationRecord] = []
+        # Records whose only change is the original-image viewing receipt: the
+        # translated content is untouched, so audits stay valid while the QA
+        # context (which binds the receipt) becomes stale on its own.
+        receipt_updates: list[TranslationRecord] = []
+        from littrans.context_packets import validate_translation_images
         for record in submitted:
             unit = units[record.unit_id]
+            validate_translation_images(root, unit, record.image_evidence)
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")
             effective_figure_labels(unit, record)
@@ -54,12 +64,19 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
                     binding_update = prior.model_copy(
                         update={
                             "source_hash": record.source_hash,
+                            "image_evidence": record.image_evidence,
                             "status": ProjectStatus.REVISED,
                             "updated_at": utc_now(),
                         }
                     )
                     normalized.append(binding_update)
                     rebound.append(binding_update)
+                elif prior.image_evidence != record.image_evidence:
+                    receipt_update = prior.model_copy(
+                        update={"image_evidence": record.image_evidence, "updated_at": utc_now()}
+                    )
+                    normalized.append(receipt_update)
+                    receipt_updates.append(receipt_update)
                 else:
                     normalized.append(prior)
                 continue
@@ -71,7 +88,7 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             normalized.append(revised)
             changed.append(revised)
 
-        if not changed and not rebound:
+        if not changed and not rebound and not receipt_updates:
             batch_path = batch_directory(root, batch_id) / "translation.jsonl"
             if input_path.resolve() == batch_path.resolve():
                 batch_records = [
@@ -81,7 +98,7 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             return normalized
 
         current.update(
-            {record.unit_id: record for record in [*changed, *rebound]}
+            {record.unit_id: record for record in [*changed, *rebound, *receipt_updates]}
         )
         write_jsonl(root / "translations" / "current.jsonl", current.values())
         if changed:

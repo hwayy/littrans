@@ -1,0 +1,21 @@
+# Recommended role models per coordination host.
+#
+# `project init` copies this mapping into the project's `project.yaml` under
+# `agent_models`. Review and adjust it per project: packets carry the configured
+# model/effort, submissions must match, and a missing or unavailable model is a
+# configuration problem to report, never a reason to substitute silently.
+#
+# Roles: `translate` (target-prose writer), `transcribe` (structured asset
+# candidate author) and a shared `reasoning_effort`. Reviewer lenses use the
+# host's own subagent defaults unless a project adds explicit role entries.
+codex:
+  translate: gpt-5.6-luna
+  transcribe: gpt-5.6-luna
+  reasoning_effort: max
+claude:
+  # Claude Code model alias passed to the Agent tool's `model` parameter. Effort
+  # is applied through the `effort` frontmatter of the writer agents.
+  translate: sonnet
+  transcribe: sonnet
+  reasoning_effort: high
+cursor: {}  # Configure the host-available role models explicitly per project.

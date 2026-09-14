@@ -1,29 +1,9 @@
-# Translation quality contract
+# Translation quality
 
-## Fidelity
+Preserve claims, qualifications, negation, causality, comparison, scope, uncertainty and author stance. Translate meaningful prose exactly once under the same source unit. Check “A if B” direction explicitly; do not move modifiers between the original matrix and its dilation because the resulting sentence sounds fluent.
 
-- Preserve claims, qualifications, negation, causality, comparison, uncertainty, and author stance.
-- Translate all meaningful prose exactly once. Do not absorb a caption, note, or footnote into another unit.
-- Keep technical notation and cited identifiers unchanged unless the approved glossary explicitly governs prose around them.
+Write natural contemporary Simplified Chinese with explicit logical relationships. Approved glossary entries govern prose terminology; proposed terms remain proposals. Preserve citation anchors, numbers, identifiers and every original asset occurrence. Reorder references only within their owning target block, never across units.
 
-## Chinese writing
+Read original formulas in their full paragraph context. Preserve them through `{{asset:ID}}` rather than reproducing LaTeX in target text. Separate display assets remain in the source structure. Translate natural-language figure labels alongside the intact diagram and table language as cells or clearly corresponding region explanations. Preserve code bodies unless the project expressly requests translated comments or strings.
 
-- Prefer clear contemporary Simplified Chinese and natural clause order.
-- Break an overloaded English sentence only when references and logical relationships remain explicit.
-- Avoid translationese, vague pronouns, needless nominalization, and unsupported connective words.
-
-## Technical material
-
-- Preserve verified inline LaTeX exactly. Display formulas are rendered from verified LaTeX and are not translated.
-- Translate each table cell into `target_table` while preserving dimensions, numbers, units, references, and row meaning.
-- Preserve code bodies and indentation. Let the renderer fence and highlight code according to `code_language`.
-- Write semantic body text only in `target_text`: omit Markdown heading markers, list bullets or numbers, admonition blockquotes and labels, caption emphasis, and footnote labels. The renderer owns those wrappers.
-- Treat literal markup names such as `<Button>` as text, never as executable Markdown or HTML structure.
-- Translate UI strings or code comments only when the project profile marks them translatable.
-- Retain citation anchors and reference numbers. Translate bibliographic titles only when the project policy explicitly requires it.
-
-## Uncertainty
-
-- Keep an uncertain but faithful rendering in `target_text` when possible.
-- Record the exact ambiguity and alternatives in `uncertainties`.
-- Propose a recurring term in `term_proposals`; do not self-approve it.
+Keep target text semantic: the renderer owns heading/list/footnote wrappers, so a `list_item` target carries no leading bullet or number, a heading no `#`, a note no admonition shell (QA `target-structural-markup` rejects them). Literal markup such as `<Button>` remains inert text. Use full-width punctuation (，。；：！？) in Chinese prose and keep half-width marks only inside code, identifiers and formulas; leave no space between Chinese text and a `{{asset:ID}}` placeholder (QA warns with `target-halfwidth-punctuation` and `asset-reference-spacing`). Keep reader notes, terminology proposals and uncertainties outside the translation. An uncertain mathematical interpretation must be recorded and resolved before approval; an unfinished structured transcription alone is not such an uncertainty.

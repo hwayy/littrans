@@ -3,7 +3,260 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
-## [Unreleased]
+## [0.6.0] - Unreleased
+
+### Changed
+
+- Preparation keeps footnote links on the prose chunk that still carries the call when a
+  native block is split around a display formula, and rejects an inconsistent footnote graph
+  inside the source transaction instead of publishing units that no packet can review.
+- QA v6.14 reports `empty-translation` when source prose beside `{{asset:ID}}` placeholders
+  has no target text; only asset-only source blocks may translate to placeholders alone.
+- A resubmission that changes only `image_evidence` updates the receipt in place; the record
+  keeps its revision/status and audit coverage, while the receipt-bound QA context goes stale.
+- `fidelity-workflow.md` is a structured reference (states, preparation, review decisions and
+  the full source `override` contract, batches, records, assets, QA, audits, coordination,
+  rendering, recovery) instead of an appended change log; the packet stage list includes
+  `source-review` and `revise`. The plugin README lists `batch create`/`batch refresh`, and
+  the translation-record example uses real evidence image paths.
+- `batch create --unit-ids` and `assets packet --asset-ids` trim whitespace and empty entries.
+
+- Removed the orphaned math-review, math-vision, math-packet, math-pilot-packet and
+  schema-migration modules together with their tests; their CLI commands and JSON schemas
+  were already retired. Existing `math_review_decision_id` layout overrides still apply.
+- QA v6.13 binds current required images and translation viewing receipts, including
+  dependent units; changed image bytes invalidate cached passes without semantic changes.
+- Share dollar-math boundaries across source, QA and HTML so ordinary currency amounts
+  do not hide real footnote calls; preserve explicit display math.
+
+- QA v6.12, Markdown and HTML share line-valid code-fence boundaries, including longer
+  closing fences and unclosed blocks. Inline code uses exact backtick runs.
+- Retry incomplete managed model downloads when READY is absent; handle whitespace-only
+  PDF lines before bold run-in labels without indexing an empty glyph list.
+
+- Freeze explicit/untranslated-only batch scopes across refreshes, and reject newly cut
+  logical groups. Keep footnote companions inside Markdown definitions.
+- Include shared MathJax files in edition rollback and publish each runtime file atomically.
+
+- Revalidate source authority during workflow coordination and dispatch source-review
+  recovery when receipts fail. Route read-only review issues to editable owning batches.
+- Emit image companions after complete continuation chains; select current dependency
+  evidence before choosing a formal render cover. Require Pydantic 2.12 for identity serialization.
+
+- QA v6.11 rejects live footnote calls in image-language companions, including table cells
+  and both label fields; escaped and code-literal notation remains supported.
+
+- QA v6.10 binds dependency presence and source identities into cached results; new
+  untranslated-only batches retain stale records as editable work.
+- Repair interrupted candidate/review index publication without replacing newer valid
+  evidence. Recovery packets isolate damaged candidates and preserve valid revision context.
+- Publish and roll back source page canvases atomically; reject malformed layout predictions
+  and asset placeholders in image-language companions.
+
+- QA v6.9 rejects missing or stale dependency translations; refreshing a batch reopens
+  stale translated read-only units. Currency escapes no longer swallow footnote calls.
+- Source-review layout cache reuse requires a list-valued result for the current page.
+
+- Skip unreadable unrelated layout caches during source-review overrides, and retain
+  every fragment's image-language companions when rendering continued tables.
+
+- Publish isolated layout-worker results atomically and recompute unreadable caches;
+  reject incomplete worker results. HTML protects multiline backtick and tilde fences.
+
+- Render asset-bearing target tables once in Markdown and bilingual HTML, preserving
+  explicit empty target text. QA v6.8 ignores tilde-fenced literal footnote syntax.
+
+- Recover damaged candidate evidence through fresh transcription packets; schedule assets
+  across the same dependency closure as QA.
+- QA v6.7 counts real footnote calls with multiplicity while excluding literal syntax.
+- Retire translations of removed source units transactionally, and defer approvals made
+  stale by same-import overrides. Preserve source table structure around asset cells.
+
+- Corrupt indexed asset reviews require renewed verification and fresh packet identities.
+- Schedule uncertain fallback recovery before QA; QA v6.6 checks asset uncertainty across
+  all dependency units, including non-translatable formulas, and checks table-cell references.
+- Regenerate incomplete original asset caches when their evidence receipt is absent.
+
+- Keep reviewer semantic uncertainty across recovery candidates until a valid independent
+  audit supersedes it; dispatch recovery audits before QA and retain the block if review
+  evidence is damaged. Older recovery candidates inherit their recorded review context.
+
+- Validate explicit footnote numbers against unique referenced definitions, preserving
+  literal code/math syntax and repeated calls to one definition.
+- Expose recovery transcription for uncertain fallback assets, carrying review feedback;
+  QA blocked only by that uncertainty dispatches asset recovery instead of prose revision.
+- Restore source authority snapshots on KeyboardInterrupt as well as ordinary errors.
+
+- Generate batch output schemas from TranslationRecord, including image receipts and
+  asset companions; refreshing a batch updates its emitted schema.
+- Bind workflow packet identity and manifest to the selected host, model and effort.
+- Validate source override footnote relationships against the final combined graph,
+  rolling back invalid references before publishing source units.
+
+- Keep later asset-review decisions authoritative when an older review is replayed;
+  replay only restores an absent index entry or retains its existing mapping.
+
+- Protect escaped footnote literals and backslash-delimited math in source/bilingual
+  HTML; embed original PNG fallbacks alongside SVGs in standalone source checkpoints.
+
+- Dispatch dependency-only QA revision work to an editable owning batch, including
+  prerequisites outside a resumed wave; status uses the same dispatch and explicit host.
+- Keep table-cell footnote calls in QA and prevent image companions from satisfying
+  prose preservation checks. QA context version 6.5 requires rerunning existing QA.
+- Bind asset kind, display and grouping semantics into versioned content identities,
+  including final structure assembly, so source changes invalidate translation evidence.
+- Retain complete groups in untranslated-only batches with explicit read-only context
+  units excluded from submission, including after batch refresh.
+
+- Validate explicit asset IDs before either single- or multi-fragment region export.
+- Recognize spaced, punctuated and Unicode footnote-definition labels in detected regions.
+- Preserve historical rights status when rebuilding a project.
+- Serialize structure-profile extensions with the project write lock.
+- Route current failed deterministic QA to revision; missing/stale QA still runs first.
+
+- Reject unsafe override unit IDs and escape legacy IDs in Markdown anchors.
+- Preserve footnote-like literals inside backslash-delimited inline/display math.
+- Prepare numeric/symbol-only pages using usable-glyph font sizes or a default.
+
+- Carry explicit host selection into asset transcription/audit packets and the asset CLI.
+- Emit unique Markdown footnote calls/definitions, preserving code literals and expanded
+  note content; keep continued table fragments with scoped notes separate.
+- Reject source-unit ID collisions across pages and within a source-review import.
+
+- Bind source coverage HTML and its original-page images to review packets and receipts;
+  damaged reports require new packet identities and fresh visual review.
+- Resolve cross-page footnotes through source unit references, including page-scoped output;
+  recognize Computer Modern Roman note calls while excluding mathematical bases.
+- Support explicit coordination hosts in workflow packet creation and reject source override
+  asset ID collisions before replacing reviewed page data.
+
+- Bind layout caches to worker code, interpreter identity and installed package versions.
+- Validate source-review receipt digests, packet provenance and visual approval conditions
+  whenever source approval is consumed; legacy receipts require fresh review.
+- Preserve page and language footnote scopes inside table cells.
+
+- Enforce managed layout readiness before detector execution or cached evidence reuse.
+- Verify stored asset-review digests before consuming decisions or replaying imports; require
+  the manifest SHA-256 receipt in the public submission schema.
+
+- Keep bilingual HTML anchor targets visible below the fixed header on desktop and mobile.
+- Recognize explicit English/Chinese decade equivalents and numbered CHAPTER headings in deterministic QA while retaining number, unit and acronym protection.
+- Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.
+- Preserved complete parent groups and caller/footnote spans when batch budgets are exceeded, including intervening footnotes.
+- Unified source preparation around faithful native prose and original PDF/SVG/PNG assets,
+  with source-bound coverage review before parallel transcription and translation.
+- Separated structured-asset candidates and independent visual/render review from translation
+  approval; unfinished representations retain an explicit original-image reading fallback.
+- Moved per-host role model defaults out of code into `profiles/host-models.yaml`; `project init`
+  copies them into `agent_models` for per-project confirmation (recommended: Codex `gpt-5.6-luna`
+  at `max`, Claude Code `sonnet` at `high`), preserving the three translation audit lenses and
+  configured external review.
+- Added Claude Code as a supported coordinator host: `.claude-plugin` manifests and marketplace,
+  `CLAUDECODE` host detection with 3/6 waves, `--host claude`, tool-restricted read-only reviewer
+  agents and host documentation. Claude-hosted external review remains a later revision.
+- Made the isolated layout detector (MinerU 3.4.5, PP-DocLayoutV2) a required preparation
+  component: `doctor` reports `layout_runtime`, `layout install` provisions it, and
+  `source prepare` refuses to run without it unless `--allow-missing-layout` is given.
+- Improved source structure recovery: wrapped headings stay one unit and never own the
+  following prose; figures/tables group with their captions and render as `<figure>`; bullet
+  lists become list items; displayed lines that mix notation and prose keep their own position;
+  page numbers merged into a text block are detached as omitted running material; bare vector
+  rules are omitted from reading; equation tags such as `(ODE)` bind like numbers.
+- Improved formula region ownership: bold single letters in prose are notation, quotation
+  marks, joining hyphens and sentence punctuation are trimmed from formula edges, detector
+  boxes shrink to the owned glyph ink, a trailing prose phrase is split off a displayed formula,
+  and the precise glyph exporter accepts empty clip groups and filled-rectangle rules.
+- Added `source render`, a readable HTML checkpoint of the verified source with the original
+  assets inline, as the last check before batching; `--standalone` embeds the images so the
+  single file can be shared with a reviewer.
+- Preserved typography in the extracted source: italic and slanted text faces (CMTI/CMSL as well
+  as style names) become emphasis, bold and italic runs continue across line breaks, whole-heading
+  markers are dropped, ligature glyphs expand to their letters, TeX spacing accents compose with
+  the letter they sit on (`ITÔ`, `Itô`), and kerns reported as narrow spaces are not word spaces.
+- Grouped list items with the paragraph that introduces them and with each other; a bold run-in
+  label (`EXAMPLE 1.`, `Proof.`, `2.1.4. Stochastic processes.`) or vertical white space opens a
+  new paragraph even inside one PDF text block, and statement labels in bold or capitals start a
+  statement group.
+- Kept a displayed formula and the prose set beside it on its line (`... for all times t > 0.`) as
+  one displayed unit with the formula asset and translatable text; words inside the notation
+  (`sup` conditions, braces annotations) stay in the formula image, while a prose line the
+  detector rectangle overshoots into returns to its paragraph.
+- Treated large TeX operators encoded as control characters as ink, end-of-proof tombstones and
+  plain numbers in the text face as text rather than notation, and gave displayed units the
+  formula's geometry.
+- `source probe` extends an existing structure profile with observations for pages not yet probed
+  instead of refusing, returning it to draft until the rules cover the new pages.
+- Cut the test suite from over twenty minutes on a machine with the layout detector to under two:
+  tests stub the detector unless marked `layout_runtime`, and the synthetic reviewed projects
+  are built once per session and copied.
+- Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
+  only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
+- Added the transcription skill, asset review role and offline MathJax reading contract.
+- Added `workflow packet --stage revise`: the translate packet files plus the batch's current
+  translation records, its open review issues and revision instructions, so one fresh translator
+  can consolidate an audit round; `revise` tasks use the translate model policy.
+- Reported why audit coverage is stale: `audit_coverage`, `review status` and
+  `workflow next|status` now carry `stale`/`stale_reasons`/`audit_stale` (`context-changed`,
+  `dependency-changed`, `unit-changed`, `invalidated`, `closure-incomplete`,
+  `context-units-removed`); audit runs record the shared brief/style/term fingerprint separately.
+- `review import-set` keeps the reviewer's own id as `source_issue_id` next to the canonical
+  `audit-<hash>` id; `review resolve` accepts either id and several comma-separated ids at once,
+  and `review issues PROJECT BATCH [--all] [--jsonl]` lists a batch's issues.
+- Allowed a packet or render batch set to mix batch series when their units do not overlap and
+  source order holds; batches within one series must still be consecutive.
+- `render` switches to originals-only automatically when the project holds no transcription
+  candidate and records `originals_only_reason` in the render QA and command output.
+- The rendered edition's header, `*.quality.md` (now listing its batches and translation status)
+  and `render-qa.json` (`rendered_status`, `review_batch_ids`) describe the rendered batches, not
+  the project-wide status; QA report counts are scoped to those batches.
+- Added deterministic QA warnings `target-halfwidth-punctuation` (half-width `,.;:!?` after
+  Chinese text) and `asset-reference-spacing` (whitespace between Chinese text and
+  `{{asset:ID}}`); the QA context fingerprint is now `v6.4`, so existing batches report stage
+  `qa` until `qa run` is rerun (audit coverage is unaffected).
+- Writer, audit and revise packets carry a "Contracts" paragraph (renderer-owned list/heading/
+  note markers, placeholder spacing, full-width punctuation, `language_present=false` with notes)
+  so reviewers stop reporting the contract as defects; the `asset-language-untranslated` message
+  names the notation-only alternative.
+- The CLI reconfigures stdout and stderr to UTF-8 with LF line endings, so piped output on a GBK
+  Windows console needs no `PYTHONIOENCODING` and carries no carriage returns; generated batch, context and
+  schema files are written with LF. PyMuPDF is imported as `pymupdf`, so its `fitz` deprecation
+  notice no longer lands in the CLI's stdout.
+
+### Fixed
+
+- Bound asset-review artifacts to every copied original and MathJax dependency; missing or
+  modified dependencies require a fresh audit packet and review, including for earlier approvals.
+- Restricted structured candidates to math/LaTeX, table/table and code/code. Figures and
+  unclassified mixed regions retain originals until source review establishes a supported kind.
+- Preserved reviewed tables and code in Markdown with original-image references.
+- Sanitized source-checkpoint output names and made rebuilt projects own a portable source copy.
+- Exposed optional asset work after reading completion and recovered multi-digit footnote calls.
+- Required successful smoke-test readiness for managed layout runtimes and made failed installs retryable.
+
+- Reported an unresolved `{{asset:ID}}` reference by name during Markdown rendering, matching the
+  existing bilingual HTML behavior, instead of aborting the render with an unlabeled lookup error.
+- Reused the page's cached layout-detector result when a source review override re-prepares a
+  page, so corrections no longer lose heading and block structure.
+- Stopped treating every word of an all-caps heading as a protected acronym in deterministic QA;
+  headings can be translated without appending the English words.
+- Stopped treating the words of a bold all-caps run-in statement label (`**EXAMPLE 1.**`,
+  `**WARNING ABOUT NOTATION.**`) as protected acronyms: new extractions no longer record them,
+  and QA accepts a localized bold label (`**例 1.**`) for already prepared units.
+- `workflow next` on a project without batches now says that batches must be created first
+  instead of failing on an empty resume range.
+- Kept a displayed line that carries prose beside its formula (`... for all times t > 0.`)
+  translatable when the unit was rebuilt from a formula-only block; the quantifier phrase was
+  being dropped from the translation as a non-translatable image.
+- Labelled non-translatable equation units explicitly in audit packets so reviewers do not report
+  the original-image reading content as an omission.
+- Kept inline formulas that fell back to a raw mixed region inline in the reading edition instead
+  of forcing block display and breaking the sentence.
+
+## Historical changes before 0.6
+
+The workflow descriptions below document released history, not current operating instructions.
+
+## [Unreleased before 0.6]
 
 ### Changed
 

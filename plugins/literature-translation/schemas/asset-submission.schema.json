@@ -1,0 +1,128 @@
+{
+  "$defs": {
+    "AssetCandidateInput": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "format": {
+          "default": "latex",
+          "enum": [
+            "latex",
+            "table",
+            "code",
+            "text"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          ],
+          "default": "",
+          "title": "Content"
+        },
+        "status": {
+          "default": "candidate",
+          "enum": [
+            "candidate",
+            "unresolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "semantic_uncertainty": {
+          "default": "",
+          "title": "Semantic Uncertainty",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id"
+      ],
+      "title": "AssetCandidateInput",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "packet_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Packet Id",
+      "type": "string"
+    },
+    "author_task_id": {
+      "minLength": 1,
+      "title": "Author Task Id",
+      "type": "string"
+    },
+    "model": {
+      "minLength": 1,
+      "title": "Model",
+      "type": "string"
+    },
+    "reasoning_effort": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reasoning Effort"
+    },
+    "image_evidence": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Image Evidence",
+      "type": "object"
+    },
+    "candidates": {
+      "items": {
+        "$ref": "#/$defs/AssetCandidateInput"
+      },
+      "minItems": 1,
+      "title": "Candidates",
+      "type": "array"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Usage"
+    }
+  },
+  "required": [
+    "packet_id",
+    "author_task_id",
+    "model",
+    "image_evidence",
+    "candidates"
+  ],
+  "title": "AssetSubmission",
+  "type": "object"
+}

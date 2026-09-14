@@ -1,119 +1,60 @@
-# Literature Translation
+# Literature Translation 0.6
 
-`literature-translation` is an agent plugin for controlled, resumable translation of
-English technical books and research papers into Simplified Chinese. It installs on Codex and
-Cursor. Python manages stable source units, exact LaTeX, structured tables, code, state, QA,
-reviews, and rendering. The agent performs the language work. The package does not call a model
-API during translation or review. During source verification, the explicitly authorized
-`source math-candidates` command may send local formula crops to a configured vision provider;
-its output is non-authoritative evidence and can never approve a source unit.
+LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex, Cursor and Claude Code:
+
+**Probe document structure → preserve the source faithfully → translate with original images → audit translation → optionally enhance assets independently → render a reading edition.**
+
+Formula recognition is deferred until faithful text and original-image assets are available. Translation reads the original images with full paragraph context; it does not wait for LaTeX. Original images remain available even after a structured candidate is verified.
 
 ## First use
 
-Requires Python 3.12 or later. From the plugin directory:
+Requires Python 3.12 or later. Run `python <plugin-root>/scripts/littrans.py doctor`; the launcher manages a private environment outside the plugin and project. Source preparation also requires the isolated layout detector; `doctor` reports it under `layout_runtime`, and `layout install` sets it up. See [runtime.md](references/runtime.md) and [host-runtimes.md](references/host-runtimes.md).
 
-```powershell
-python scripts/bootstrap.py
-python scripts/littrans.py doctor
-```
+Initialize a new private project with `project init`, or rebuild an older project with `project rebuild OLD NEW`. Schema 6 does not write into older project schemas. Rebuild copies the PDF, project context and glossary, leaving historical outputs and reviews in the old project. See [MIGRATING.md](MIGRATING.md).
 
-The launcher creates a private environment outside the plugin installation when necessary.
-See `references/runtime.md` for launcher resolution from an installed skill, and
-`references/host-runtimes.md` for Codex and Cursor invocation.
+## The workflow
 
-## Controlled workflow
+1. **Probe and prepare.** Run `source probe PROJECT --pages PAGES`, inspect representative originals and complete the document-specific [structure profile](references/document-structure.md). Use it to guide extraction and supported corrections. `source prepare` combines native glyph geometry and the required isolated layout detector. It saves prose plus stable `{{asset:ID}}` references and PDF/SVG/PNG originals. Whole circuit diagrams remain intact. A missing detector or text layer is visible in source review, not an invitation to silently omit content.
+2. **Verify fidelity.** `source review-packets`, `source import-review` and `source verify` check original-page coverage, reading order, crop completeness, numbering and source ownership. A full-page fallback alone does not prove completeness. Formula LaTeX is not part of this gate. `source render` then writes a readable HTML checkpoint of the verified source with the original assets inline for a final human look before translation.
+3. **Translate; optionally enhance assets.** Formula transcription is optional and can be scheduled after the reading edition is complete. `workflow packet --stage transcribe` and `--stage translate` provide the same source context and original images to fresh tasks. Both use the role models configured per host in the project's `agent_models` (seeded from `profiles/host-models.yaml`). Translators preserve asset references and record the original images actually inspected; transcribers submit separate structured candidates.
+4. **Review independently.** `--stage asset-audit` compares candidates and their renders with original images. Translation retains fidelity, technical/terminology and Chinese-expression lenses via `--stage audit --lens all`, followed by configured external review. Neither confidence nor compilation substitutes for visual review.
+5. **Read.** A reviewed translation can render while LaTeX remains unfinished. The shared asset resolver uses a verified, renderable candidate or the complete original image with an unfinished status. Offline MathJax and original-image fallback protect reading when typesetting is unavailable.
 
-1. Run `prepare-literature-translation` to initialize and extract a private project.
-2. Run `verify-literature-extraction` and compare the visual overlay with every selected PDF
-   page. Translation is blocked until formulas, tables, code, figures, notes, and paragraph
-   boundaries are verified.
-   For math-dense PDFs, use `source math-candidates --unit-ids ...` only as an explicitly
-   authorized DeepSeek pilot with 1–60 exact current unit IDs. Each unit is limited to two
-   independent current-source/current-crop passes; `--force` cannot create a third. If those two
-   attempts do not produce usable candidates, stop remote calls and build fully local packets with
-   `source math-review-packets --manual-only`.
-   To repair a current structural blocker involving verified or non-math units, add exact stable IDs
-   with `--include-unit-ids id1,id2`; IDs must exist on `--pages`, and remain fully hash-bound.
-   `source math-review-report` renders a local comparison report, and `source import-math-review`
-   imports only explicitly attested PDF visual-review decisions. A proposed
-   `structural-overrides.yaml` is untrusted until supplied through `--structural-overrides` and
-   accepted by the packet/hash/decision binding checks; never copy it directly into
-   `overrides/layout.yaml`.
-3. Run `translate-literature-section` on prepared batches. Every source unit is immutable;
-   translations are separate revisioned records.
-4. Run `audit-literature-translation` in an independent context. Reviewers write issue records,
-   never the translation.
-5. Optionally run configured external reviewers after machine review. Their evidence can grant
-   `external-reviewed`, but never `human-approved`.
-6. Run `finalize-literature-translation` to enforce the configured release gate and render
-   Markdown plus responsive bilingual HTML. Human approval is never inferred.
+Use `continue-literature-translation` to coordinate this workflow. Codex and Claude Code waves default to three batches (Claude Code maximum six); Cursor defaults to six, maximum nine. Actual simultaneous tasks obey host capacity. Batches target about 900 source words and a soft limit of 60 assets without splitting a logical derivation.
 
-For ongoing projects, `continue-literature-translation` freezes one consecutive same-stage wave.
-Codex stays at three batches. Cursor defaults to six and may select up to nine. It uses compact
-batch-local packets, fresh local writers and independent audit lenses, consolidated revisions,
-and closure rechecks while retaining every quality gate. A second consolidated revision after
-closure is expected when remaining fluency defects are accepted; do not skip that pass to stay
-inside a typical-wave count. Do not use cloud or remote subagents for translation or review.
-
-Claude stdin delivery remains disabled by the earlier shadow quality gate. The v0.5 minimal file
-protocol is independently gated until it passes the six-batch quality-and-efficiency A/B;
-production review otherwise retains the proven file packet protocol.
-
-Useful v0.5 commands:
+## Commands and evidence
 
 ```text
-littrans project migrate PROJECT --to 5 --dry-run
-littrans project migrate PROJECT --to 5
+littrans project rebuild OLD NEW
+littrans source probe PROJECT --pages 1-3
+littrans source prepare PROJECT --pages 1-3
+littrans source review-packets PROJECT --pages 1-3
+littrans source verify PROJECT --pages 1-3
+littrans source render PROJECT --pages 1-3 [--standalone]
+littrans batch create PROJECT --pages 1-3 [--prefix NAME] [--unit-ids ID1,ID2] [--untranslated-only]
+littrans batch refresh PROJECT BATCH_ID
 littrans workflow next PROJECT
-littrans workflow next PROJECT --host cursor
-littrans workflow next PROJECT --host codex --limit 3
-littrans workflow status PROJECT --batch-ids ID1,ID2,ID3
-littrans workflow packet PROJECT --stage translate --batch-ids ID1,ID2,ID3
-littrans workflow packet PROJECT --stage audit --lens all --batch-ids ID1,ID2,ID3
-littrans review import-set PROJECT PACKET-MANIFEST ISSUES.jsonl
-littrans workflow metrics PROJECT --batch-ids ID1,ID2,ID3
-littrans workflow prune-packets PROJECT --dry-run
-littrans render PROJECT --batch-id ID
+littrans workflow status PROJECT --batch-ids ID1,ID2
+littrans workflow packet PROJECT --stage transcribe --batch-ids ID1
+littrans workflow packet PROJECT --stage translate --batch-ids ID1
+littrans assets submit PROJECT CANDIDATES.json
+littrans workflow packet PROJECT --stage asset-audit --batch-ids ID1
+littrans assets import-review PROJECT REVIEW.json --confirm-visual-review
+littrans assets status PROJECT
+littrans workflow packet PROJECT --stage audit --lens all --batch-ids ID1
+littrans review import-set PROJECT PACKET/manifest.json ISSUES.jsonl
+littrans review issues PROJECT ID1 [--all] [--jsonl]
+littrans workflow packet PROJECT --stage revise --batch-ids ID1
+littrans review resolve PROJECT ID1 ISSUE_ID[,ISSUE_ID...] --resolution "..."
+littrans render PROJECT --batch-id ID1
 ```
 
-Schema-v5 packets live under the ignored `.littrans/work` directory and are content-addressed for
-reuse. Imported evidence remains authoritative; use `workflow prune-packets --apply` to remove only
-work packets the CLI reports as safe. See `MIGRATING.md` before opening an older project with v0.5.
+`batch create` cuts verified pages into batches at logical boundaries (about 900 source words, a soft limit of 60 assets, complete `parent_id` groups); `workflow next` requires at least one batch. `review import-set` canonicalizes reviewer issue ids to `audit-<hash>` and keeps the reviewer id as `source_issue_id`; `review resolve` accepts either. `workflow status` reports `audit_stale` reasons when brief/style-guide/glossary edits or changed units reset audit coverage. A `revise` packet carries the current translation and open issues for one fresh revision. Batch sets may mix series when their units do not overlap. A project with no transcription candidate renders originals-only automatically.
 
-Project state follows:
+Use command help and the emitted packet schemas for exact import fields. [fidelity-workflow.md](references/fidelity-workflow.md) describes bindings and recovery. Save successful responses before import; identical imports are idempotent. Report source fidelity, translation approval, reliable structured coverage and fallback proportion separately. Unknown tokens or fees stay unknown.
 
-```text
-extracted -> prepared -> draft -> qa-passed -> reviewed -> revised
-          -> machine-reviewed -> external-reviewed -> human-approved
-```
+## Boundaries
 
-Legacy projects may use `machine-reviewed` text in translation memory and formal renders.
-Projects with external review enabled require `external-reviewed` or `human-approved`.
-Open blocker or major issues stop formal output; external approval additionally requires no
-open minor issues.
+Source meaning or asset ownership changes invalidate affected translations and their review dependencies. Display-only candidate improvements preserve stable asset IDs and require current rendering evidence. A reviewer cannot approve their own transcription. Explicit human approval remains distinct from machine or external review.
 
-## Formats and boundaries
-
-- Display and inline mathematics are stored as reviewed LaTeX; crops are evidence only.
-- Vision-model math candidates remain separate evidence. They never set `math_status`,
-  `verification_status`, or `verified` without a fresh PDF-bound review decision.
-- Running heads, decorative separators, and other non-reading matter remain traceable source
-  units but may use `render_policy: omit`; omitted units are neither batched nor rendered.
-- `target_text` contains semantic body text only. The renderer owns heading, list, note,
-  caption, and footnote wrappers, and deterministic QA rejects duplicated structural markup.
-- The regular translation wave renders one canonical single-batch artifact:
-  `render --batch-id <id>`. `--name` defaults to the short batch key (`bNNN`) and
-  overwrites `output/bNNN.*` only when the existing render-QA record belongs to the same batch.
-  If another batch already owns that short name, pass an explicit unique `--name`.
-- Keep `render --batch-ids` (one to nine consecutive batches) and `--pages` for later
-  large-set or intentionally page-scoped collections. Combined rendering is not a required
-  wave step.
-- Tables are rectangular local structures and are translated cell by cell.
-- Code retains exact whitespace and gains a language fence/highlighter when known.
-- Figure images remain local; meaningful internal labels are translated alongside them.
-- Reader notes are separate from the translation and require HTTPS sources plus an access date.
-- The first release supports PDFs with a usable text layer. OCR, DOCX, MCP, and repaginated PDF
-  output are intentionally out of scope.
-
-Keep source PDFs, extracted assets, and translation workspaces outside version control. The
-tool is intended for private research reading and does not determine publication rights.
+Source PDFs, images, model responses, translations and private workspaces stay outside the public plugin repository. The plugin is for private research reading; a rendering command does not publish it. The CLI orchestrates evidence and host tasks; it does not require a separate commercial model account for transcription.

@@ -1,0 +1,121 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e9f41be..f6e19a3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,8 @@ versioning and correspond to Git tags named `v<version>`.
+ 
+ ### Changed
+ 
++- Recognize explicit English/Chinese decade equivalents and numbered CHAPTER headings in deterministic QA while retaining number, unit and acronym protection.
++
+ - Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.
+ - Preserved complete parent groups and caller/footnote spans when batch budgets are exceeded, including intervening footnotes.
+ 
+diff --git a/plugins/literature-translation/src/littrans/quality.py b/plugins/literature-translation/src/littrans/quality.py
+index 6ff6993..4497577 100644
+--- a/plugins/literature-translation/src/littrans/quality.py
++++ b/plugins/literature-translation/src/littrans/quality.py
+@@ -110,7 +110,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
+ 
+ def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
+     return sha256_text(
+-        "deterministic-qa-v6.2-original-assets-and-unresolved-understanding|"
++        "deterministic-qa-v6.3-localized-chapters-and-decades|"
+         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+     )
+ 
+@@ -158,6 +158,13 @@ def _token_counts(pattern: re.Pattern[str], text: str) -> Counter[str]:
+ def _semantic_comparison_text(text: str) -> str:
+     """Flatten verified LaTeX without weakening exact-LaTeX preservation checks."""
+     value = text.replace("−", "-")
++    # Normalize explicit decades before the unit scanner mistakes the plural s
++    # for seconds. Spaced quantities (1940 s) and non-decadal years stay exact.
++    value = re.sub(r"(?<![\w.])([1-9]\d{2}0)s\b",
++                   lambda match: f"{match.group(1)} decade", value)
++    value = re.sub(r"(?<![\d.])([1-9]\d{0,2})\s*世纪\s*([0-9]0)\s*年代",
++                   lambda match: f"{(int(match.group(1)) - 1) * 100 + int(match.group(2))} decade",
++                   value)
+     value = re.sub(
+         r"\b([23])\s*[-‐‑‒–—]?\s*[Dd]\b",
+         lambda match: f"dimension-{match.group(1)}",
+@@ -215,6 +222,15 @@ def _semantic_token_present(token: str, raw_target: str, semantic_target: str) -
+     return bool(normalized and normalized in semantic_target)
+ 
+ 
++def _localized_heading_token_present(unit: SourceUnit, token: str, target: str) -> bool:
++    """Allow CHAPTER only for a numbered heading with the same explicit number."""
++    if unit.kind is not UnitKind.HEADING or token != "CHAPTER":
++        return False
++    source = re.match(r"^\s*CHAPTER\s+([1-9]\d*)\b", unit.source_text)
++    translated = re.match(r"^\s*第\s*([1-9]\d*)\s*章(?:\s|$|[：:、])", target)
++    return bool(source and translated and source.group(1) == translated.group(1))
++
++
+ def _comparison_source_text(
+     unit: SourceUnit,
+     supplemental_fragments: list[str] | None = None,
+@@ -401,7 +417,8 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
+         for token in unit.protected_tokens:
+             if ASSET_RE.fullmatch(token):
+                 continue
+-            if not _semantic_token_present(token, effective_target, semantic_target):
++            if not (_semantic_token_present(token, effective_target, semantic_target)
++                    or _localized_heading_token_present(unit, token, effective_target)):
+                 errors.append(
+                     QAItem(
+                         code="protected-token-missing",
+diff --git a/plugins/literature-translation/tests/test_qa_localization.py b/plugins/literature-translation/tests/test_qa_localization.py
+new file mode 100644
+--- /dev/null
++++ b/plugins/literature-translation/tests/test_qa_localization.py
+@@ -0,0 +1,50 @@
++import pytest
++
++from littrans.models import SourceUnit, UnitKind
++from littrans.quality import (
++    NUMBER_RE,
++    UNIT_RE,
++    _localized_heading_token_present,
++    _semantic_comparison_text,
++    _semantic_token_present,
++    _token_counts,
++)
++
++
++@pytest.mark.parametrize(("source", "target"), [
++    ("1940s", "20世纪40年代"), ("2000s", "21 世纪 00 年代"),
++    ("1990s and 1940s", "20世纪90年代和20世纪40年代"),
++])
++def test_explicit_decades_preserve_numeric_identity(source: str, target: str) -> None:
++    for pattern in (NUMBER_RE, UNIT_RE):
++        assert _token_counts(pattern, _semantic_comparison_text(source)) == _token_counts(
++            pattern, _semantic_comparison_text(target))
++
++
++@pytest.mark.parametrize("target", ["19世纪40年代", "20世纪50年代", "20世纪41年代"])
++def test_wrong_decades_still_fail(target: str) -> None:
++    assert _token_counts(NUMBER_RE, _semantic_comparison_text("1940s")) != _token_counts(
++        NUMBER_RE, _semantic_comparison_text(target))
++
++
++@pytest.mark.parametrize("source", ["1940 s", "10s", "1941s", "10 ms", "1940 kg"])
++def test_actual_quantities_keep_their_units(source: str) -> None:
++    assert _token_counts(UNIT_RE, _semantic_comparison_text(source)) == _token_counts(UNIT_RE, source)
++    assert _token_counts(UNIT_RE, _semantic_comparison_text(source))
++
++
++@pytest.mark.parametrize(("kind", "source", "token", "target", "expected"), [
++    (UnitKind.HEADING, "CHAPTER 1", "CHAPTER", "第 1 章", True),
++    (UnitKind.HEADING, "CHAPTER 1 Introduction", "CHAPTER", "第1章 导言", True),
++    (UnitKind.HEADING, "CHAPTER 1", "CHAPTER", "第 2 章", False),
++    (UnitKind.PARAGRAPH, "CHAPTER 1", "CHAPTER", "第 1 章", False),
++    (UnitKind.HEADING, "CHAPTER API", "CHAPTER", "第 1 章", False),
++    (UnitKind.HEADING, "CHAPTER 1 API", "API", "第 1 章", False),
++    (UnitKind.HEADING, "CHAPTER 1", "CHAPTER", "本章", False),
++])
++def test_heading_equivalence_is_scoped(kind: UnitKind, source: str, token: str,
++                                      target: str, expected: bool) -> None:
++    unit = SourceUnit(unit_id="test", kind=kind, page=1, bbox=(0, 0, 1, 1),
++                      source_text=source, source_hash="test", confidence=1)
++    assert _localized_heading_token_present(unit, token, target) is expected
++    assert not _semantic_token_present(token, target, _semantic_comparison_text(target))

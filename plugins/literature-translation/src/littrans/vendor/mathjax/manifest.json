@@ -1,0 +1,61 @@
+{
+  "version": "4.1.3",
+  "license": "Apache-2.0",
+  "packages": [
+    {
+      "file": "mathjax-4.1.3.tgz",
+      "sha256": "b7109f516f3d842de62b95d653e35fa0976dc223706a2a77440e7f7723f0c54d"
+    },
+    {
+      "file": "mathjax-mathjax-newcm-font-4.1.3.tgz",
+      "sha256": "87d7b869c6a2a6169d9a53acc4eab6c846a9cbe11752738226461bb5070c8b88"
+    }
+  ],
+  "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "tex-svg.js": "23c036deccc0f2374834a47e4032e452419f3ac027bf17e17c104e2746b19f4c",
+    "package.json": "440cfcbfb317456a774bc7186e857a1f135954105e32a4312d6cdd555f3a4257",
+    "mathjax-newcm/svg/dynamic/accents-b-i.js": "edcf0435504f4facfd7d195538dbe5e018b0758d96ba97f05c830b2d24eaabdf",
+    "mathjax-newcm/svg/dynamic/accents.js": "bdc6e60916bdcd396fb99410f3f594d069bd85d19c1a6d9cbb27d898851e1c32",
+    "mathjax-newcm/svg/dynamic/arabic.js": "18d6da0cbf09e113cc584362eeeb4bf7dd9394d41fed775281e173a180ccb6e6",
+    "mathjax-newcm/svg/dynamic/arrows.js": "fc9b7ab69c0eefafc4cff2a3a1607e512f0387d6b4edeb8b94fdb463286f9415",
+    "mathjax-newcm/svg/dynamic/braille-d.js": "df2019018cb7c60973a513beeb5c122e50125bfa73a9607baf36a453414eb6d2",
+    "mathjax-newcm/svg/dynamic/braille.js": "5b921f5a247101cdfa6138edcbc360ba32695300fe28fa9a2a66bbf07638344b",
+    "mathjax-newcm/svg/dynamic/calligraphic.js": "dda4bbba7fb159e31cef5a819e9a96d839ab0fc3bc358d303fbd7897e4a96497",
+    "mathjax-newcm/svg/dynamic/cherokee.js": "b23972979159d90934484870116ee91c0890a2dfcefe16e3cb394c4aa3813373",
+    "mathjax-newcm/svg/dynamic/cyrillic-ss.js": "c7ba0a9b414f759a05216ea7e237c9011cb6f25290abfe05fcbc594309ad047e",
+    "mathjax-newcm/svg/dynamic/cyrillic.js": "64d94eb15c4cb90986839d401ea00ba41d126710d7c72d81f5f3107ec3b3c946",
+    "mathjax-newcm/svg/dynamic/devanagari.js": "e41eb2e15b7303f6e1837a24e3bf9dacf63de3c71a7c7f9e75d94ab37023811d",
+    "mathjax-newcm/svg/dynamic/double-struck.js": "f102fa970da97f3cfa5adb8cd38ec6db24e3fe8571877bb1a89f512c1a3d788b",
+    "mathjax-newcm/svg/dynamic/fraktur.js": "76e39aa8ca3f362c400c4fea40ed417660043dd0b83b72c7d802450058a759d0",
+    "mathjax-newcm/svg/dynamic/greek-ss.js": "9b034754209b87d077591d65b4855573dc098046c34514ea7e7c478133b1a7f4",
+    "mathjax-newcm/svg/dynamic/greek.js": "9b5ebeb1e8f5aa25f296d39b012a3f4922f465d446756dee9a516637a42c04a1",
+    "mathjax-newcm/svg/dynamic/hebrew.js": "52f0df947909f8caabd1e4b1b72cdd9f3e37de27360b10ae4d98884e7cf1c80d",
+    "mathjax-newcm/svg/dynamic/latin-b.js": "22c9de18c2fee74ac6ff0adbad0ecf7c780822dcd2603c6bb218bd5f486e32b9",
+    "mathjax-newcm/svg/dynamic/latin-bi.js": "4399c3dd787317a667d61fa4c40fe0ee1f702209e4e45ac864c74bbf1d34357b",
+    "mathjax-newcm/svg/dynamic/latin-i.js": "0dcc81b3e1cd9548ae8bb028d5ba8073eb980b5d8681712c8812a060d5cc17c2",
+    "mathjax-newcm/svg/dynamic/latin.js": "3fe0a23251c9ca0ad0d49e1de473bca3219d34d6a74e1af99f8dde33ce542d2f",
+    "mathjax-newcm/svg/dynamic/marrows.js": "e92a11db595202c2bce8f1cd5efc300a5de94c79bf9f7b4e496be9328c686b1b",
+    "mathjax-newcm/svg/dynamic/math.js": "1168f21b95848ea80db254eb32fbc63481c351f9df238915643506d80a6dd8d9",
+    "mathjax-newcm/svg/dynamic/monospace-ex.js": "92ec26c77be08704c465a957217687ff2736cf4d8d18a58b2bd010ce649333b7",
+    "mathjax-newcm/svg/dynamic/monospace-l.js": "3aad85193119ba4d71da7c95df66554e45ead174ed7b25a4b523a854d6359067",
+    "mathjax-newcm/svg/dynamic/monospace.js": "fc22ed39fafbd7d30f8d3e8b7d350ddeb06434c4db1cb29f0bbe50c46fa9dfa4",
+    "mathjax-newcm/svg/dynamic/mshapes.js": "f8a11c192f301fbecf92d0c5e3b080ef8cb50b15b15cda2d6eeac96f6a4a69b0",
+    "mathjax-newcm/svg/dynamic/phonetics-ss.js": "85b1b5288b673d699d07f2e9f846eaa2301fb276523c4ed0aae02b4a32a23872",
+    "mathjax-newcm/svg/dynamic/phonetics.js": "e7dd538320c346b5d552a8a5a68d5ffc623c0c29114776ef785d4eca9ecca8e4",
+    "mathjax-newcm/svg/dynamic/PUA.js": "3a068af32503b9f9e0338a011cef129d581d8f6d6546ed46e91dd3f01a579875",
+    "mathjax-newcm/svg/dynamic/sans-serif-b.js": "1bce54cbabef44ca6b1e1bc1dabd11f621fe425a0d975867fd8bf00bd10ba21f",
+    "mathjax-newcm/svg/dynamic/sans-serif-bi.js": "d6ac40a6caf7f61592d0a45ff03eb375de30062e2b70f95db598185769030ae4",
+    "mathjax-newcm/svg/dynamic/sans-serif-ex.js": "852ba996c20a36b984018b5641ed5c5895112b77aaa7e0173bb06362077b628f",
+    "mathjax-newcm/svg/dynamic/sans-serif-i.js": "77c481750a0b273d641f7a642c3d89c74a5b625f0aec36584eddf19cb75f6bf8",
+    "mathjax-newcm/svg/dynamic/sans-serif-r.js": "fb99cd06b5990b883036e3203f39723c2e50da9762dd4f801169df97d76672e8",
+    "mathjax-newcm/svg/dynamic/sans-serif.js": "4c325362331ce14feff7332631a2db37df8dd545e7eb62ef337e3a4be691d5be",
+    "mathjax-newcm/svg/dynamic/script.js": "02c2e421a5309b5200c968d56e8a22053f57a660c0879b54de466ab99316e061",
+    "mathjax-newcm/svg/dynamic/shapes.js": "be4a606ac2b8321a87411d6c88e78ac2c46cbe06b42a68cc1d43c2d977e0e493",
+    "mathjax-newcm/svg.js": "74bd530bfc8944f8acecc14519e4623127b0014060a8544f075f3be31bfc6b0d",
+    "mathjax-newcm/svg/dynamic/symbols-b-i.js": "2656e50ad4b2094edce8f1364b75c7a0b7f8c50e49f354ba5f5e04b3769c62c9",
+    "mathjax-newcm/svg/dynamic/symbols.js": "5021d75911173a5bf60b5709598ab89206baca5e1e7d608b7f5325070dfefc1e",
+    "mathjax-newcm/svg/dynamic/variants.js": "6947cf8203f41afea9bf9ceff25189dd0575b34c94110636763570842a713a9c",
+    "mathjax-newcm/package.json": "b6fd3b04fb134b062950f1af6eb9f0fffc08e48c044f109f25775afa8ffc87ed"
+  }
+}

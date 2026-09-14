@@ -1,25 +1,18 @@
 ---
 name: prepare-literature-translation
-description: Prepare a PDF technical book, research paper, article, or chapter for controlled translation. Use when initializing or resuming a littrans project, inspecting a text-bearing PDF, extracting stable source units and assets, correcting layout classifications, writing the document brief and style guide, or proposing terminology before body translation.
+description: Prepare a PDF as faithful text and original-image assets for LitTrans schema 6. Use to initialize or rebuild a project, preserve source content, establish reading order, and prepare context before translation.
 ---
 
 # Prepare Literature Translation
 
-Prepare the source and stop before translating body text.
+Use the launcher in [runtime.md](../../references/runtime.md). The single preparation workflow preserves source content before any formula transcription.
 
-## Procedure
+1. Run `doctor`. The layout detector (`layout_runtime`) is a required component of source preparation: if it is not `ok`, run `layout install` before continuing; skip it only when the user explicitly asks, using `source prepare --allow-missing-layout`. Initialize a new project with `project init`, or use `project rebuild OLD NEW` for a pre-v6 project. Rebuild copies the PDF, document context and glossary into a new directory; it does not inherit extracted units, translations or approval evidence. Review `agent_models` in `project.yaml` for the coordinating host; the defaults come from the plugin's `profiles/host-models.yaml` and should be confirmed per project.
+2. Before extraction, run `source probe PROJECT --pages PAGES` for the requested scope and inspect representative original pages. Use [document-structure.md](../../references/document-structure.md) to complete `context/source-structure.json`: record document-specific structure, typography, block endings, lists, paragraphs around displays and cross-page rules. For pages added to an existing project, rerun `source probe` with the new pages: it appends their observations, keeps the reviewed rules and returns the profile to `draft`; inspect the new originals, extend the rules for any form not yet covered, list the pages in `inspected_pages` and set `reviewed` again. The profile is guidance, never source approval.
+3. Run `source prepare` for the requested PDF pages. It combines native glyph geometry with the isolated layout detector; a missing detector stops preparation unless explicitly allowed. Preparation already merges wrapped headings, binds equation tags such as `(1)` or `(ODE)`, keeps figures with their captions, splits bullet lists and displayed lines, detaches page numbers and drops bare rules; review what remains rather than re-deriving these by hand. Formulas, complex tables, code and figures become original-image assets; it does not decode formulas. Do not offer extraction-mode choices.
+4. Read the coverage report and source units. Preserve ordinary prose with stable `{{asset:ID}}` references. Keep circuit diagrams whole and captions separate. If a clean boundary is uncertain, preserve the complete line or region and record the grouping problem.
+5. Use `verify-literature-extraction` to inspect original pages and coverage overlays, resolve missing or duplicated content and boundary errors, then run `source verify`. No-text pages and missing layout-model results require explicit coverage review; neither a page-sized image nor an empty warning list establishes complete source ownership.
+6. Write the document brief and project-specific style guide. Record proposed terminology separately from approved terms. After fidelity verification passes, run `source render` and read the checkpoint HTML once as a person would; create batches only when it reads correctly, preserving paragraph, theorem and derivation boundaries.
+7. Hand verified source context to a fresh translation task. Formula transcription is optional enhancement and may be scheduled independently at any later time, including after delivery. If selected, give its independent task the same original source and images. Formula LaTeX and reconstructed table/code structure are not prerequisites for translation.
 
-1. Resolve this skill directory, then resolve the plugin root as `../..`. Run `python <plugin-root>/scripts/littrans.py doctor` as described in `../../references/runtime.md`. On first use, disclose that the launcher bootstraps an isolated per-user environment and may need package-index access.
-2. If `project.yaml` is absent, run `project init` with the source PDF, a private project directory, and either `technical-book` or `research-paper`.
-3. Run `source inspect`. Treat every page with no usable text layer as a blocker; do not attempt OCR in this version.
-4. Run `source extract` for the requested PDF pages. Read `derived/extraction-issues.jsonl` and `derived/document.json` completely.
-5. Invoke the `verify-literature-extraction` skill for all selected pages. It must compare the visual overlay with the PDF and verify paragraph boundaries, exact inline/display LaTeX, structured tables, code indentation/language, notes, images, labels, captions, footnotes, and references. Follow [extraction-review.md](references/extraction-review.md).
-6. Correct durable decisions through `overrides/layout.yaml`, run `source apply-overrides`, and rerun `source verify`. Before translation, re-extraction with `--replace` is allowed; after translation begins, preserve IDs, refresh affected batches, and expect semantic changes to invalidate prior QA/review status. Never edit `derived/units.jsonl` directly.
-7. Replace the placeholder in `context/document-brief.md` with the subject, argument, audience, document structure, source style, symbol conventions, and genuine uncertainties. Update `context/style-guide.md` only with project-specific rules.
-8. Add uncertain terms to `glossary/candidates.yaml`. Promote a term to `approved.yaml` only when the user or authoritative project evidence supports it.
-9. Run `batch create` only after `source verify` passes. Report the visual report, created batches, corrections, and candidate terminology.
-
-## Stop conditions
-
-- Stop on scanned pages, ambiguous formulas, unresolved reading order or paragraph continuity, image-only tables, untranslated figure labels, missing captions, or a source-hash change.
-- Do not translate body units, invent definitions, approve terminology by fluency alone, or mix reader notes into the source.
+Read [extraction-review.md](references/extraction-review.md) for coverage checks. Do not edit generated units or asset registries directly. Report missing evidence without claiming source verification.

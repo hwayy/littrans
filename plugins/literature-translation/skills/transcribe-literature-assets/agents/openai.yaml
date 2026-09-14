@@ -1,0 +1,4 @@
+interface:
+  display_name: "Transcribe Literature Assets"
+  short_description: "Generate structured candidates from original LitTrans image asse"
+  default_prompt: "Use $transcribe-literature-assets to transcribe these original assets with their paragraph context."

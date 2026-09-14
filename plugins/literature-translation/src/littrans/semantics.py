@@ -9,6 +9,37 @@ from typing import Any
 from littrans.models import TableData
 
 LIGATURES = str.maketrans({"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"})
+
+
+FENCED_CODE_PATTERN = (
+    r"(?P<fenced_code>(?m:^[ ]{0,3}(?:(?P<backtick_fence>`{3,})(?!`)[^`\r\n]*"
+    r"|(?P<tilde_fence>~{3,})(?!~)[^\r\n]*)\r?\n)"
+    r"(?P<fenced_text>[\s\S]*?)(?:(?m:^[ ]{0,3}"
+    r"(?(backtick_fence)(?P=backtick_fence)`*|(?P=tilde_fence)~*)[ \t]*\r?$)|\Z))"
+)
+INLINE_CODE_PATTERN = (
+    r"(?P<code>(?<![\\`])(?P<fence>`+)(?!`)(?P<code_text>[\s\S]*?)(?<!`)(?P=fence)(?!`))"
+)
+DOLLAR_MATH_PATTERN = (
+    r"(?P<display_math>(?<![\\$])\$\$(?!\$)(?P<display_math_text>[\s\S]*?)(?<!\\)\$\$(?!\$))"
+    r"|(?P<math>(?<![\\$])\$(?![\s$])(?P<math_text>(?:\\[\s\S]|[^\\$])*?)(?<!\s)\$(?![\d$]))"
+)
+
+FOOTNOTE_TOKEN_RE = re.compile(FENCED_CODE_PATTERN + "|" + INLINE_CODE_PATTERN
+                        + "|" + DOLLAR_MATH_PATTERN
+                        + r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]"
+                        r"|(?<!\\)\[\^(?P<number>\d+)\]")
+
+
+def explicit_footnote_calls(text: str) -> list[str]:
+    """Read actual calls, leaving code, mathematical spans and escaped syntax literal."""
+    return [match['number'] for match in FOOTNOTE_TOKEN_RE.finditer(text) if match['number'] is not None]
+
+
+def explicit_footnote_numbers(text: str) -> set[str]:
+    return set(explicit_footnote_calls(text))
+
+
 MATH_FONT_MARKERS = (
     "math",
     "symbol",
@@ -20,15 +51,33 @@ MATH_FONT_MARKERS = (
     "cmex",
     "stix",
 )
+RUN_IN_LABEL_RE = re.compile(r"^\s*\*{2,3}([^*\n]+?)\*{2,3}")
+
+
+def run_in_caps_label_words(text: str) -> list[str]:
+    """Uppercase words of a bold run-in label opening the text.
+
+    "**EXAMPLE 1.**", "**LEMMA.**" or "**WARNING ABOUT NOTATION.**" are styled
+    statement labels that a translation localizes, not acronyms to preserve.
+    """
+    match = RUN_IN_LABEL_RE.match(text)
+    if not match:
+        return []
+    words = re.findall(r"[A-Za-z][A-Za-z'’]*", match.group(1))
+    if not words or any(word.upper() != word for word in words):
+        return []
+    return words
+
+
 MATH_SIGNAL_RE = re.compile(r"[=∑∏∫√∂∇±≤≥∞≠≈∝⟨⟩ρτλσνεημχ′·×]")
 TERMINAL_RE = re.compile(r"[.!?。！？:：;；][\"'”’）)\]]*$")
 ZH_FIGURE_CAPTION_RE = re.compile(
-    r"^\s*图\s*(?P<number>\d+(?:\s*[-–—]\s*\d+)*)\s*"
+    r"^\s*图\s*(?P<number>\d+(?:\s*[-–—.．]\s*\d+)*)\s*"
     r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
     re.DOTALL,
 )
 ZH_TABLE_CAPTION_RE = re.compile(
-    r"^\s*表\s*(?P<number>\d+(?:\s*[-–—]\s*\d+)*)\s*"
+    r"^\s*表\s*(?P<number>\d+(?:\s*[-–—.．]\s*\d+)*)\s*"
     r"(?:[。.．:：]+\s*)?(?P<title>\S(?:.*\S)?)\s*$",
     re.DOTALL,
 )

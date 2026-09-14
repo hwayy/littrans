@@ -36,6 +36,18 @@
       "title": "Translatable Unit Ids",
       "type": "array"
     },
+    "read_only_unit_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Read Only Unit Ids",
+      "type": "array"
+    },
+    "frozen_scope": {
+      "default": false,
+      "title": "Frozen Scope",
+      "type": "boolean"
+    },
     "source_words": {
       "title": "Source Words",
       "type": "integer"

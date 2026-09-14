@@ -1,4 +1,4 @@
 interface:
   display_name: "Continue Literature Translation"
-  short_description: "Coordinate fixed translation waves efficiently"
-  default_prompt: "Use $continue-literature-translation to continue the next Codex three-batch wave with compact status and local quality gates."
+  short_description: "Coordinate the LitTrans fidelity-first workflow with independent"
+  default_prompt: "Use $continue-literature-translation to continue the independent transcription and translation workflow."

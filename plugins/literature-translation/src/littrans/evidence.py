@@ -32,6 +32,7 @@ from littrans.storage import (
 )
 
 TRANSLATION_PAYLOAD_FIELDS = {
+    "asset_translations",
     "target_text",
     "target_table",
     "figure_labels",
@@ -46,6 +47,7 @@ SOURCE_SEMANTIC_FIELDS = {
     "bbox",
     "source_text",
     "source_hash",
+    "asset_content_hashes",
     "source_markdown",
     "parent_id",
     "sidebar_id",
@@ -58,6 +60,8 @@ SOURCE_SEMANTIC_FIELDS = {
     "fragments",
     "latex",
     "equation_number",
+    "footnote_number",
+    "footnote_refs",
     "math_status",
     "code_language",
     "table",
@@ -69,6 +73,8 @@ SOURCE_SEMANTIC_FIELDS = {
 }
 
 STRUCTURE_FIELDS = {
+    "footnote_number",
+    "footnote_refs",
     "kind",
     "page",
     "bbox",
@@ -225,6 +231,21 @@ def changed_units(
     }
 
 
+def continuation_neighbors(units: list[SourceUnit]) -> dict[str, set[str]]:
+    """Connect real adjacent reading units, skipping omitted running material.
+
+    A page-edge flag alone never bridges missing PDF pages.
+    """
+    body = [unit for unit in units if unit.render_policy.value == "include" and unit.kind.value != "footnote"]
+    neighbors: dict[str, set[str]] = {}
+    for left, right in zip(body, body[1:], strict=False):
+        if (0 <= right.page - left.page <= 1
+                and (left.continued_to_next or right.continues_from_previous)):
+            neighbors.setdefault(left.unit_id, set()).add(right.unit_id)
+            neighbors.setdefault(right.unit_id, set()).add(left.unit_id)
+    return neighbors
+
+
 def dependency_closure(
     root: Path,
     batch_ids: Iterable[str],
@@ -257,22 +278,11 @@ def dependency_closure(
     # Continued structures and sidebars may pull one another into the closure.
     while True:
         previous_size = len(selected)
+        neighbors = continuation_neighbors(units)
         for unit_id in list(selected):
-            index = positions[unit_id]
-            left = index
-            while left > 0 and (
-                units[left].continues_from_previous
-                or units[left - 1].continued_to_next
-            ):
-                left -= 1
-                selected.add(units[left].unit_id)
-            right = index
-            while right + 1 < len(units) and (
-                units[right].continued_to_next
-                or units[right + 1].continues_from_previous
-            ):
-                right += 1
-                selected.add(units[right].unit_id)
+            selected.update(neighbors.get(unit_id, ()))
+        parent_ids = {units[positions[uid]].parent_id for uid in selected if units[positions[uid]].parent_id}
+        selected.update(unit.unit_id for unit in units if unit.parent_id in parent_ids)
         sidebar_ids = {
             units[positions[unit_id]].sidebar_id
             for unit_id in selected
@@ -281,6 +291,10 @@ def dependency_closure(
         selected.update(
             unit.unit_id for unit in units if unit.sidebar_id in sidebar_ids
         )
+        for unit in units:
+            if unit.unit_id in selected or selected.intersection(unit.footnote_refs):
+                selected.add(unit.unit_id)
+                selected.update(ref for ref in unit.footnote_refs if ref in positions)
         if len(selected) == previous_size:
             break
 
@@ -328,6 +342,8 @@ def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
     selected_indices = {index for index, unit in enumerate(units) if unit.page == page}
     while True:
         previous_size = len(selected_indices)
+        parent_ids = {units[index].parent_id for index in selected_indices if units[index].parent_id}
+        selected_indices.update(index for index, unit in enumerate(units) if unit.parent_id in parent_ids)
         sidebar_ids = {
             units[index].sidebar_id
             for index in selected_indices
@@ -336,21 +352,14 @@ def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
         selected_indices.update(
             index for index, unit in enumerate(units) if unit.sidebar_id in sidebar_ids
         )
+        selected_ids = {units[index].unit_id for index in selected_indices}
+        referenced = {ref for index in selected_indices for ref in units[index].footnote_refs}
+        selected_indices.update(index for index, unit in enumerate(units)
+                                if unit.unit_id in referenced or selected_ids.intersection(unit.footnote_refs))
+        neighbors = continuation_neighbors(units)
+        positions = {unit.unit_id: index for index, unit in enumerate(units)}
         for index in list(selected_indices):
-            left = index
-            while left > 0 and (
-                units[left].continues_from_previous
-                or units[left - 1].continued_to_next
-            ):
-                left -= 1
-                selected_indices.add(left)
-            right = index
-            while right + 1 < len(units) and (
-                units[right].continued_to_next
-                or units[right + 1].continues_from_previous
-            ):
-                right += 1
-                selected_indices.add(right)
+            selected_indices.update(positions[uid] for uid in neighbors.get(units[index].unit_id, ()))
         if len(selected_indices) == previous_size:
             break
     return [units[index] for index in sorted(selected_indices)]
@@ -485,6 +494,8 @@ def translation_memory(
         union = current_tokens | candidate_tokens
         similarity = len(current_tokens & candidate_tokens) / len(union) if union else 0.0
         ranked.append((similarity + adjacent * 2.0, adjacent, unit_id, source, target))
+    if not ranked:
+        return []
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     manifest_paths = sorted((root / "batches").glob("*/manifest.yaml"))
     manifest_state = _memory_state_token(manifest_paths)
@@ -505,19 +516,19 @@ def translation_memory(
             ]
         )
     )
-    batch_complete: dict[str, bool] = {}
+    evidence_state = _memory_state_token(
+        path
+        for batch_id in sorted({bid for ids in manifest_index.values() for bid in ids})
+        for path in _memory_batch_evidence_paths(root, batch_id)
+    )
+    complete_batch_ids = _memory_complete_batch_ids(
+        str(root.resolve()), shared_state, evidence_state
+    )
     memories: list[dict[str, str]] = []
     for _, _, unit_id, source, target in ranked:
         batch_ids = manifest_index.get(unit_id, ())
         for batch_id in batch_ids:
-            if batch_id not in batch_complete:
-                batch_complete[batch_id] = _memory_batch_is_complete(
-                    str(root.resolve()),
-                    batch_id,
-                    shared_state,
-                    _memory_state_token(_memory_batch_evidence_paths(root, batch_id)),
-                )
-            if batch_complete[batch_id]:
+            if batch_id in complete_batch_ids:
                 memories.append(
                     {"unit_id": unit_id, "source": source, "target": target}
                 )
@@ -567,20 +578,28 @@ def _memory_manifest_index(
     )
 
 
-@lru_cache(maxsize=4096)
-def _memory_batch_is_complete(
-    root_text: str,
-    batch_id: str,
-    shared_state: str,
-    batch_state: str,
-) -> bool:
-    del shared_state, batch_state
-    from littrans.workflow import _batch_stage
+@lru_cache(maxsize=8)
+def _memory_complete_batch_ids(
+    root_text: str, shared_state: str, evidence_state: str
+) -> frozenset[str]:
+    """Resolve complete batch IDs from one current, evidence-keyed snapshot."""
+    del shared_state, evidence_state
+    from littrans.workflow import _batch_stage, _load_workflow_snapshot
 
+    root = Path(root_text)
     try:
-        return _batch_stage(Path(root_text), batch_id) == "complete"
+        snapshot = _load_workflow_snapshot(root)
     except (KeyError, OSError, ValueError):
-        return False
+        return frozenset()
+    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None] = {}
+    complete: set[str] = set()
+    for manifest in snapshot.manifests:
+        try:
+            if _batch_stage(root, manifest.batch_id, snapshot, context_cache) == "complete":
+                complete.add(manifest.batch_id)
+        except (KeyError, OSError, ValueError):
+            continue
+    return frozenset(complete)
 
 
 def _memory_tokens(text: str) -> set[str]:

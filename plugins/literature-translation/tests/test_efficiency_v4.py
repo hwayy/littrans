@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+import atexit
 import json
 import runpy
+import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-import fitz
+import pymupdf as fitz
 import pytest
+from fidelity_fixtures import (
+    correct_plain_fixture_units,
+    make_asset_fixture,
+    original_image_evidence,
+    prepare_plain_text_fixture,
+    record_fixture_source_issue,
+    review_fixture_metadata,
+)
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from littrans import external_review, migration
+from littrans import external_review
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
     audit_context_text,
@@ -25,23 +36,17 @@ from littrans.evidence import (
     translation_unit_fingerprint,
 )
 from littrans.external_review import _primary_review_scope, external_review_status
-from littrans.migration import (
-    _legacy_v3_batch_fingerprint,
-    _migratable_v3_external_chain,
-    migrate_project_schema,
-)
 from littrans.models import (
+    AssetTranslation,
     AuditRun,
     ExternalReviewConfig,
     ExternalReviewDriver,
     ExternalReviewerConfig,
     ExternalReviewRun,
     ExternalReviewVerdict,
-    ExtractionIssue,
     FigureLabel,
     IssueStatus,
     IssueType,
-    PageVerificationReceipt,
     ProjectStatus,
     PromptDelivery,
     ReaderNote,
@@ -57,14 +62,12 @@ from littrans.models import (
     TranslationRecord,
     UnitKind,
     WorkflowPacketManifest,
-    utc_now,
 )
-from littrans.project import initialize_project, translation_map
+from littrans.project import initialize_project, rebuild_project, translation_map
 from littrans.quality import (
     approve_batch,
     audit_coverage,
     import_review,
-    qa_report_is_current,
     resolve_issue,
     run_qa,
 )
@@ -513,90 +516,68 @@ def test_completed_benchmark_rejects_an_empty_population(tmp_path: Path) -> None
         benchmark(root, completed_only=True)
 
 
-def test_completed_benchmark_replays_schema_v3_approved_statuses(
+def test_historical_benchmark_rejects_v3_and_rebuild_preserves_history(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[3]
-    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
-    benchmark = namespace["benchmark"]
+    benchmark = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))["benchmark"]
     root, manifests = _make_project(tmp_path, pages=2, max_words=100)
     approved, draft = manifests
     _submit(root, approved.batch_id)
     _audit_and_approve(root, approved.batch_id)
     _submit(root, draft.batch_id)
-    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, approved.batch_id)
-    qa_path = root / "qa" / f"{approved.batch_id}.json"
-    qa = read_json(qa_path)
-    qa["translation_fingerprint"] = legacy_fingerprint
-    write_json(qa_path, qa)
-    audit_path = root / "reviews" / f"{approved.batch_id}.audit.json"
-    audit = read_json(audit_path)
-    audit["translation_fingerprint"] = legacy_fingerprint
-    write_json(audit_path, audit)
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
+    before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
-    result = benchmark(root, completed_only=True)
+    with pytest.raises(ValueError, match="project rebuild OLD NEW"):
+        benchmark(root, completed_only=True)
+    rebuilt = tmp_path / "rebuilt"
+    result = rebuild_project(root, rebuilt)
 
-    assert result["batches"] == 1
-    assert result["history_records"] == 1
+    assert result.schema_version == 6
+    assert result.source_sha256 == config.source_sha256
+    assert not read_jsonl(rebuilt / "translations" / "current.jsonl", TranslationRecord)
+    assert not list((rebuilt / "batches").glob("*/manifest.yaml"))
+    assert not list((rebuilt / "evidence").rglob("*.json"))
+    assert before == {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert translation_map(root)[approved.unit_ids[0]].status is ProjectStatus.MACHINE_REVIEWED
 
 
-def test_completed_benchmark_rejects_open_legacy_source_only_issue(
+def test_historical_open_issue_survives_rebuild_without_inherited_approval(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[3]
-    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
-    benchmark = namespace["benchmark"]
+    benchmark = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))["benchmark"]
     root, manifests = _make_project(tmp_path, pages=1)
     manifest = manifests[0]
-    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0].model_copy(
-        update={"translatable": False}
-    )
-    write_jsonl(root / "derived" / "units.jsonl", [unit])
-    manifest = manifest.model_copy(update={"translatable_unit_ids": []})
-    write_yaml(
-        root / "batches" / manifest.batch_id / "manifest.yaml",
-        manifest.model_dump(mode="json"),
-    )
-    fingerprint = _legacy_v3_batch_fingerprint(root, manifest.batch_id)
-    write_json(
-        root / "qa" / f"{manifest.batch_id}.json",
-        {"passed": True, "translation_fingerprint": fingerprint},
-    )
-    write_json(
-        root / "reviews" / f"{manifest.batch_id}.audit.json",
-        {
-            "translation_fingerprint": fingerprint,
-            "lenses": ["fidelity", "technical", "chinese-style"],
-        },
-    )
     issue_path = root / "reviews" / f"{manifest.batch_id}.issues.jsonl"
-    write_jsonl(
-        issue_path,
-        [
-            ReviewIssue(
-                issue_id="legacy-source-only-major",
-                batch_id=manifest.batch_id,
-                unit_id=unit.unit_id,
-                severity=Severity.MAJOR,
-                type=IssueType.TECHNICAL,
-                explanation="The source-only unit still has an unresolved defect.",
-                reviewer="legacy-auditor",
-            )
-        ],
-    )
+    write_jsonl(issue_path, [ReviewIssue(
+        issue_id="historical-source-only-major",
+        batch_id=manifest.batch_id,
+        unit_id=manifest.unit_ids[0],
+        severity=Severity.MAJOR,
+        type=IssueType.TECHNICAL,
+        explanation="Historical source defect must not be silently closed by rebuild.",
+        reviewer="historical-auditor",
+    )])
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
+    before = issue_path.read_bytes()
 
-    with pytest.raises(ValueError, match="at least one selected batch"):
+    with pytest.raises(ValueError, match="project rebuild OLD NEW"):
         benchmark(root, completed_only=True)
+    rebuilt = tmp_path / "rebuilt"
+    rebuild_project(root, rebuilt)
 
-    write_jsonl(issue_path, [])
-    result = benchmark(root, completed_only=True)
-    assert result["batches"] == 1
+    assert issue_path.read_bytes() == before
+    assert read_jsonl(issue_path, ReviewIssue)[0].status is IssueStatus.OPEN
+    assert not list((rebuilt / "reviews").glob("*.json*"))
+    assert not verify_extraction(rebuilt, "all")["passed"]
+    with pytest.raises(ValueError, match="new, non-existing directory"):
+        rebuild_project(root, rebuilt)
 
 
 def test_benchmark_ignores_history_for_removed_source_units(tmp_path: Path) -> None:
@@ -889,7 +870,34 @@ def test_workflow_metrics_ignores_history_for_removed_source_units(
     assert metrics["semantic_noop_records"] == 0
 
 
+_PROJECT_TEMPLATES: dict[tuple[int, int], tuple[Path, list[object]]] = {}
+
+
 def _make_project(
+    tmp_path: Path, pages: int = 3, max_words: int = 100
+) -> tuple[Path, list[object]]:
+    """Return a private copy of the reviewed synthetic project for these parameters.
+
+    Building the fixture (PDF, preparation, two review rounds, verification, batching)
+    costs seconds; the same shape is requested by dozens of tests, so it is built once per
+    parameter set and copied.
+    """
+    key = (pages, max_words)
+    if key not in _PROJECT_TEMPLATES:
+        base = Path(tempfile.mkdtemp(prefix="littrans-efficiency-fixture-"))
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
+        _PROJECT_TEMPLATES[key] = (base, _build_project(base, pages, max_words)[1])
+    base, manifests = _PROJECT_TEMPLATES[key]
+    shutil.copy2(base / "source.pdf", tmp_path / "source.pdf")
+    shutil.copytree(base / "project", tmp_path / "project")
+    root = tmp_path / "project"
+    config = load_project(root)
+    config.source_path = str(tmp_path / "source.pdf")
+    save_project(root, config)
+    return root, [m.model_copy(deep=True) for m in manifests]  # type: ignore[attr-defined]
+
+
+def _build_project(
     tmp_path: Path, pages: int = 3, max_words: int = 100
 ) -> tuple[Path, list[object]]:
     pdf = tmp_path / "source.pdf"
@@ -918,13 +926,15 @@ def _make_project(
     drawing.save()
     root = tmp_path / "project"
     initialize_project(pdf, root, "technical-book", "Efficiency Fixture")
-    write_jsonl(root / "derived" / "units.jsonl", units)
+    prepare_plain_text_fixture(root, units)
     assert verify_extraction(root, "all", force=True)["passed"]
     manifests = create_batches(root, "all", max_words=max_words, prefix="v4")
     return root, manifests
 
 
-def _submit(root: Path, batch_id: str, suffix: str = "") -> list[TranslationRecord]:
+def _submit(
+    root: Path, batch_id: str, suffix: str = "", *, target_text: str | None = None
+) -> list[TranslationRecord]:
     manifest = load_manifest(root, batch_id)
     units = {
         unit.unit_id: unit
@@ -933,8 +943,9 @@ def _submit(root: Path, batch_id: str, suffix: str = "") -> list[TranslationReco
     records = [
         TranslationRecord(
             unit_id=unit_id,
-            target_text="这是经过技术审校的中文译文" + suffix,
+            target_text=(target_text if target_text is not None else "这是经过技术审校的中文译文") + suffix,
             source_hash=units[unit_id].source_hash,
+            image_evidence=original_image_evidence(root, units[unit_id]),
         )
         for unit_id in manifest.translatable_unit_ids
     ]
@@ -1371,6 +1382,7 @@ def test_explicit_fallback_figure_labels_are_semantic_noop(tmp_path: Path) -> No
         }
     )
     write_jsonl(units_path, [unit])
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     refresh_batch(root, manifest.batch_id)
     _submit(root, manifest.batch_id)
@@ -1423,6 +1435,14 @@ def test_explicit_fallback_figure_labels_are_semantic_noop(tmp_path: Path) -> No
             root / "evidence" / "audits" / f"{manifest.batch_id}.jsonl"
         ).read_bytes(),
     }
+
+
+def test_workflow_next_explains_missing_batches(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, 1)
+    for manifest_dir in (root / "batches").iterdir():
+        shutil.rmtree(manifest_dir)
+    with pytest.raises(ValueError, match="No batch manifests exist yet"):
+        workflow_next(root)
 
 
 def test_new_blocking_audit_reopens_approved_batch(tmp_path: Path) -> None:
@@ -1536,159 +1556,58 @@ def test_audit_context_changes_invalidate_lens_coverage(
         render_project(root, None, "stale-audit-context", batch_id=batch_id)
 
 
-def test_structured_source_representations_select_and_enforce_terms(
-    tmp_path: Path,
-) -> None:
-    root, manifests = _make_project(tmp_path, pages=3, max_words=700)
-    assert len(manifests) == 1
-    manifest = manifests[0]
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
-    for index, unit in enumerate(units):
-        plain_source = unit.source_text.replace("architecture", "system")
-        units[index] = unit.model_copy(
-            update={
-                "source_text": plain_source,
-                "source_hash": sha256_text(plain_source),
-            }
-        )
-    units[0] = units[0].model_copy(update={"source_markdown": "Architecture"})
-    units[1] = units[1].model_copy(
-        update={
-            "kind": UnitKind.TABLE,
-            "table": TableData(
-                rows=[["Architecture", "Value"]],
-                header_rows=1,
-                column_count=2,
-            ),
-        }
-    )
-    units[2] = units[2].model_copy(
-        update={
-            "kind": UnitKind.FIGURE,
-            "figure_labels": [
-                FigureLabel(source="Architecture", target="旧标签")
-            ],
-            "visual_text_status": SemanticStatus.VERIFIED,
-        }
-    )
-    write_jsonl(units_path, units)
-    assert all("architecture" not in unit.source_text.casefold() for unit in units)
-    assert verify_extraction(root, "all", force=True)["passed"]
-    write_yaml(
-        root / "glossary" / "approved.yaml",
-        {
-            "terms": [
-                {
-                    "source": "architecture",
-                    "target": "架构",
-                    "forbidden": ["体系结构"],
-                }
-            ]
-        },
-    )
-    selected_terms = relevant_terms(root, units)
-    assert [term["source"] for term in selected_terms] == ["architecture"]
-    records = [
-        TranslationRecord(
-            unit_id=units[0].unit_id,
-            target_text="结构说明",
-            source_hash=units[0].source_hash,
-        ),
-        TranslationRecord(
-            unit_id=units[1].unit_id,
-            target_text="结构化表格",
-            target_table=TableData(
-                rows=[["结构", "值"]],
-                header_rows=1,
-                column_count=2,
-            ),
-            source_hash=units[1].source_hash,
-        ),
-        TranslationRecord(
-            unit_id=units[2].unit_id,
-            target_text="结构图",
-            figure_labels=[
-                FigureLabel(source="Architecture", target="体系结构")
-            ],
-            source_hash=units[2].source_hash,
-        ),
+def test_canonical_source_and_asset_supplements_select_and_enforce_terms(tmp_path: Path) -> None:
+    root, units, manifest = make_asset_fixture(tmp_path, [
+        ("Architecture is shown below.", "mixed-region", "Architecture"),
+        ("Architecture is shown below.", "table", "Architecture Value"),
+        ("Architecture is shown below.", "figure", "Architecture"),
+    ])
+    write_yaml(root / "glossary" / "approved.yaml", {"terms": [{
+        "source": "architecture", "target": "架构", "forbidden": ["体系结构"],
+    }]})
+    assert [term["source"] for term in relevant_terms(root, units)] == ["architecture"]
+    supplements = [
+        AssetTranslation(asset_id="fixture-asset-1", target_text="结构说明"),
+        AssetTranslation(asset_id="fixture-asset-2", target_table=TableData(rows=[["结构", "值"]], column_count=2)),
+        AssetTranslation(asset_id="fixture-asset-3", figure_labels=[FigureLabel(source="Architecture", target="体系结构")]),
     ]
-    input_path = root / "batches" / manifest.batch_id / "structured-terms.jsonl"
-    write_jsonl(input_path, records)
-    submit_translation(root, manifest.batch_id, input_path)
-
+    records = [TranslationRecord(
+        unit_id=unit.unit_id, target_text="图示内容 {{asset:" + supplement.asset_id + "}}",
+        source_hash=unit.source_hash, image_evidence=original_image_evidence(root, unit),
+        asset_translations=[supplement],
+    ) for unit, supplement in zip(units, supplements, strict=True)]
+    path = root / "tmp" / "structured-terms.jsonl"
+    write_jsonl(path, records)
+    submit_translation(root, manifest.batch_id, path)
     report = run_qa(root, manifest.batch_id)
-    missing_units = {
-        item.unit_id for item in report.errors if item.code == "approved-term-missing"
-    }
-    forbidden_units = {
-        item.unit_id for item in report.errors if item.code == "forbidden-term"
-    }
-    assert missing_units == set(manifest.unit_ids)
-    assert forbidden_units == {units[2].unit_id}
+    assert {item.unit_id for item in report.errors if item.code == "approved-term-missing"} == set(manifest.unit_ids)
+    assert {item.unit_id for item in report.errors if item.code == "forbidden-term"} == {units[2].unit_id}
 
 
-def test_qa_uses_rendered_source_figure_label_fallback(tmp_path: Path) -> None:
-    root, manifests = _make_project(tmp_path, 1)
-    manifest = manifests[0]
-    units_path = root / "derived" / "units.jsonl"
-    original = read_jsonl(units_path, SourceUnit)[0]
-    source = original.source_text.replace("architecture", "system")
-    unit = original.model_copy(
-        update={
-            "kind": UnitKind.FIGURE,
-            "source_text": source,
-            "source_hash": sha256_text(source),
-            "figure_labels": [
-                FigureLabel(source="Architecture", target="架构")
-            ],
-            "visual_text_status": SemanticStatus.VERIFIED,
-        }
-    )
-    write_jsonl(units_path, [unit])
-    assert verify_extraction(root, "all", force=True)["passed"]
-    refresh_batch(root, manifest.batch_id)
-    write_yaml(
-        root / "glossary" / "approved.yaml",
-        {
-            "terms": [
-                {
-                    "source": "architecture",
-                    "target": "架构",
-                    "scope": "document",
-                }
-            ]
-        },
-    )
-    input_path = root / "batches" / manifest.batch_id / "figure-fallback.jsonl"
-    write_jsonl(
-        input_path,
-        [
-            TranslationRecord(
-                unit_id=unit.unit_id,
-                target_text="该图展示控件。",
-                source_hash=unit.source_hash,
-            )
-        ],
-    )
-    submit_translation(root, manifest.batch_id, input_path)
-
+def test_qa_and_review_use_supplementary_figure_labels_with_original_image(tmp_path: Path) -> None:
+    root, units, manifest = make_asset_fixture(tmp_path, [("Architecture is shown below.", "figure", "Architecture")])
+    unit = units[0]
+    write_yaml(root / "glossary" / "approved.yaml", {"terms": [{"source": "architecture", "target": "架构", "scope": "document"}]})
+    path = root / "tmp" / "figure-labels.jsonl"
+    write_jsonl(path, [TranslationRecord(
+        unit_id=unit.unit_id, target_text="该图展示控件。 {{asset:fixture-asset-1}}",
+        source_hash=unit.source_hash, image_evidence=original_image_evidence(root, unit),
+        asset_translations=[AssetTranslation(asset_id="fixture-asset-1", figure_labels=[FigureLabel(source="Architecture", target="架构")])],
+    )])
+    submit_translation(root, manifest.batch_id, path)
+    report = run_qa(root, manifest.batch_id)
+    assert 'approved-term-missing' in {item.code for item in report.errors}
+    records = read_jsonl(path, TranslationRecord)
+    records[0].target_text = '该图展示架构。 {{asset:fixture-asset-1}}'
+    write_jsonl(path, records)
+    submit_translation(root, manifest.batch_id, path)
     report = run_qa(root, manifest.batch_id)
     assert report.passed, report.errors
-    assert not {
-        item.code
-        for item in report.errors
-        if item.code in {"approved-term-missing", "forbidden-term"}
-    }
     packet_text, _ = external_review._packet_text(root, manifest.batch_id)
-    assert "Figure label sources:\n- Architecture" in packet_text
-    assert "Figure label translations:\n- 架构" in packet_text
-    evidence_source, evidence_target = external_review._evidence_map(
-        root, manifest.batch_id
-    )[unit.unit_id]
-    assert "Figure label sources:\n- Architecture" in evidence_source
-    assert "Figure label translations:\n- 架构" in evidence_target
+    assert "Architecture" in packet_text and "架构" in packet_text
+    evidence_source, evidence_target = external_review._evidence_map(root, manifest.batch_id)[unit.unit_id]
+    assert "Architecture" in evidence_source
+    assert "架构" in evidence_target
 
 
 def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
@@ -1708,6 +1627,7 @@ def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
         }
     )
     write_jsonl(units_path, [unit])
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     refresh_batch(root, manifest.batch_id)
     input_path = root / "batches" / manifest.batch_id / "numeric-label.jsonl"
@@ -1721,6 +1641,7 @@ def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
                     FigureLabel(source="Speed 10 m/s", target="速度 100 m/s")
                 ],
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -1733,54 +1654,25 @@ def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
     assert "number-unit-mismatch" in codes
 
 
-def test_qa_deduplicates_figure_labels_already_in_source_text(
-    tmp_path: Path,
-) -> None:
-    root, manifests = _make_project(tmp_path, 1)
-    manifest = manifests[0]
-    units_path = root / "derived" / "units.jsonl"
-    original = read_jsonl(units_path, SourceUnit)[0]
-    label_source = "Speed 10 m/s"
-    source = f"{original.source_text}\n{label_source}"
-    unit = original.model_copy(
-        update={
-            "kind": UnitKind.FIGURE,
-            "source_text": source,
-            "source_hash": sha256_text(source),
-            "figure_labels": [
-                FigureLabel(source=label_source, target="速度 10 m/s")
-            ],
-            "visual_text_status": SemanticStatus.VERIFIED,
-        }
-    )
-    write_jsonl(units_path, [unit])
-    verification = verify_extraction(root, "all", force=True)
-    assert verification["passed"], verification["errors"]
-    refresh_batch(root, manifest.batch_id)
-    input_path = root / "batches" / manifest.batch_id / "numeric-label.jsonl"
-    write_jsonl(
-        input_path,
-        [
-            TranslationRecord(
-                unit_id=unit.unit_id,
-                target_text="该图展示速度。",
-                figure_labels=[
-                    FigureLabel(source=label_source, target="速度 10 m/s")
-                ],
-                source_hash=unit.source_hash,
-            )
-        ],
-    )
-    submit_translation(root, manifest.batch_id, input_path)
-
+def test_qa_counts_original_prose_numbers_once_with_supplementary_labels(tmp_path: Path) -> None:
+    root, units, manifest = make_asset_fixture(tmp_path, [("Speed 10 m/s is shown below.", "figure", "Speed 10 m/s")])
+    unit = units[0]
+    path = root / "tmp" / "numeric-label.jsonl"
+    write_jsonl(path, [TranslationRecord(
+        unit_id=unit.unit_id, target_text="该图展示速度。 {{asset:fixture-asset-1}}",
+        source_hash=unit.source_hash, image_evidence=original_image_evidence(root, unit),
+        asset_translations=[AssetTranslation(asset_id="fixture-asset-1", figure_labels=[FigureLabel(source="Speed 10 m/s", target="速度 10 m/s")])],
+    )])
+    submit_translation(root, manifest.batch_id, path)
     report = run_qa(root, manifest.batch_id)
-
+    assert {'number-mismatch', 'number-unit-mismatch'} <= {item.code for item in report.errors}
+    records = read_jsonl(path, TranslationRecord)
+    records[0].target_text = '该图展示速度 10 m/s。 {{asset:fixture-asset-1}}'
+    write_jsonl(path, records)
+    submit_translation(root, manifest.batch_id, path)
+    report = run_qa(root, manifest.batch_id)
     assert report.passed, report.errors
-    assert not {
-        item.code
-        for item in report.errors
-        if item.code in {"number-mismatch", "number-unit-mismatch"}
-    }
+    assert not {item.code for item in report.errors if item.code in {"number-mismatch", "number-unit-mismatch"}}
 
 
 def test_figure_label_overrides_require_complete_source_mapping(
@@ -1801,6 +1693,7 @@ def test_figure_label_overrides_require_complete_source_mapping(
         }
     )
     write_jsonl(units_path, [unit])
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     refresh_batch(root, manifest.batch_id)
     partial = TranslationRecord(
@@ -1808,6 +1701,7 @@ def test_figure_label_overrides_require_complete_source_mapping(
         target_text="控件状态图。",
         figure_labels=[FigureLabel(source="Open", target="打开")],
         source_hash=unit.source_hash,
+        image_evidence=original_image_evidence(root, unit),
     )
     input_path = root / "batches" / manifest.batch_id / "partial-labels.jsonl"
     write_jsonl(input_path, [partial])
@@ -1843,6 +1737,7 @@ def test_source_only_change_requires_current_audit_before_formal_render(
     write_jsonl(units_path, units)
     refreshed = refresh_batch(root, batch_id)
     assert units[1].unit_id not in refreshed.translatable_unit_ids
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     _submit(root, batch_id)
     _audit_and_approve(root, batch_id)
@@ -1850,6 +1745,7 @@ def test_source_only_change_requires_current_audit_before_formal_render(
 
     units[1] = units[1].model_copy(update={"code_language": "javascript"})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     assert verify_extraction(root, "2")["passed"]
     assert run_qa(root, batch_id).passed
     assert not audit_coverage(root, batch_id)["complete"]
@@ -1884,6 +1780,7 @@ def test_batch_refresh_invalidates_neighbors_of_removed_unit(
         }
     )
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
 
     refreshed = refresh_batch(root, batch_id)
@@ -2074,6 +1971,7 @@ def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
     write_jsonl(units_path, units)
     manifest = refresh_batch(root, batch_id)
     assert manifest.translatable_unit_ids == []
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     _audit_and_approve(root, batch_id)
     blocker_path = root / "reviews" / "source-only-blocker.jsonl"
@@ -2093,7 +1991,9 @@ def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
     )
     import_review(root, batch_id, blocker_path)
 
-    assert workflow_next(root)["stage"] == "revise"
+    assert workflow_next(root)["stage"] == "source-review"
+    packet = create_workflow_packet(root, "source-review", [batch_id])
+    assert packet["workflow_issues"][0]["issue_id"] == "source-only-blocker"
 
 
 def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> None:
@@ -2101,29 +2001,16 @@ def test_formal_page_render_rejects_unbatched_source_unit(tmp_path: Path) -> Non
     batch_id = manifests[0].batch_id
     _submit(root, batch_id)
     _audit_and_approve(root, batch_id)
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
-    source = "print('new source-only unit')"
-    unbatched = SourceUnit(
-        unit_id="unbatched-code",
-        kind=UnitKind.CODE,
-        page=1,
-        bbox=(570, 40, 610, 100),
-        source_text=source,
-        source_hash=sha256_text(source),
-        translatable=False,
-        code_language="python",
-        verification_status=SemanticStatus.VERIFIED,
-        confidence=1.0,
-    )
-    write_jsonl(units_path, [*units, unbatched])
-    assert verify_extraction(root, "1", force=True)["passed"]
-
-    with pytest.raises(ValueError, match="unbatched_units=.*unbatched-code"):
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0]
+    words = unit.source_text.split()
+    correct_plain_fixture_units(root, {1: [
+        {"unit_id": unit.unit_id, "kind": "paragraph", "bbox": [45, 40, 560, 200], "source_markdown": " ".join(words[:96])},
+        {"unit_id": "unbatched-paragraph", "kind": "paragraph", "bbox": [45, 200, 560, 260], "source_markdown": " ".join(words[96:])},
+    ]})
+    assert verify_extraction(root, "1")["passed"]
+    with pytest.raises(ValueError, match="unbatched_units=.*unbatched-paragraph"):
         render_project(root, "1", "unbatched-formal")
-    assert render_project(
-        root, "1", "unbatched-draft", allow_draft=True
-    )
+    assert render_project(root, "1", "unbatched-draft", allow_draft=True)
 
 
 def test_formal_page_render_ignores_redundant_incomplete_manifest(
@@ -2167,41 +2054,24 @@ def test_formal_page_render_rejects_manifest_with_removed_source_unit(
         render_project(root, "1", "removed-page-unit")
 
 
-def test_workflow_rejects_completion_with_an_unbatched_interior_unit(
-    tmp_path: Path,
-) -> None:
+def test_workflow_rejects_completion_with_an_unbatched_interior_unit(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=2, max_words=700)
-    assert len(manifests) == 1
     batch_id = manifests[0].batch_id
     _submit(root, batch_id)
     _audit_and_approve(root, batch_id)
     assert workflow_next(root)["stage"] == "complete"
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
-    source = "print('inserted source-only unit')"
-    inserted = SourceUnit(
-        unit_id="interior-unbatched-code",
-        kind=UnitKind.CODE,
-        page=1,
-        bbox=(570, 40, 610, 100),
-        source_text=source,
-        source_hash=sha256_text(source),
-        translatable=False,
-        code_language="python",
-        verification_status=SemanticStatus.VERIFIED,
-        confidence=1.0,
-    )
-    write_jsonl(units_path, [units[0], inserted, *units[1:]])
-    assert verify_extraction(root, "all", force=True)["passed"]
-
-    with pytest.raises(
-        ValueError, match="unbatched_units=.*interior-unbatched-code"
-    ):
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0]
+    words = unit.source_text.split()
+    correct_plain_fixture_units(root, {1: [
+        {"unit_id": unit.unit_id, "kind": "paragraph", "bbox": [45, 40, 560, 200], "source_markdown": " ".join(words[:96])},
+        {"unit_id": "interior-unbatched-paragraph", "kind": "paragraph", "bbox": [45, 200, 560, 260], "source_markdown": " ".join(words[96:])},
+    ]})
+    assert verify_extraction(root, "all")["passed"]
+    with pytest.raises(ValueError, match="unbatched_units=.*interior-unbatched-paragraph"):
         workflow_next(root)
-
     refreshed = refresh_batch(root, batch_id)
-    assert inserted.unit_id in refreshed.unit_ids
-    assert workflow_next(root)["stage"] == "qa"
+    assert "interior-unbatched-paragraph" in refreshed.unit_ids
+    assert workflow_next(root)["stage"] == "translate"
 
 
 def test_workflow_requires_refresh_when_unit_becomes_translatable(
@@ -2214,6 +2084,7 @@ def test_workflow_requires_refresh_when_unit_becomes_translatable(
         update={"translatable": False}
     )
     write_jsonl(units_path, [unit])
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
     refreshed = refresh_batch(root, batch_id)
     assert refreshed.translatable_unit_ids == []
@@ -2221,6 +2092,7 @@ def test_workflow_requires_refresh_when_unit_becomes_translatable(
     assert workflow_next(root)["stage"] == "complete"
 
     write_jsonl(units_path, [unit.model_copy(update={"translatable": True})])
+    review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
 
     with pytest.raises(ValueError, match="stale translatable-unit scope"):
@@ -2233,32 +2105,21 @@ def test_workflow_requires_refresh_when_unit_becomes_translatable(
     assert workflow_next(root)["stage"] == "translate"
 
 
-def test_translation_packet_rebuilds_source_from_current_structured_units(
-    tmp_path: Path,
-) -> None:
+def test_translation_packet_rebuilds_source_from_current_canonical_units(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
     source_path = root / "batches" / batch_id / "source.md"
     stale_source = source_path.read_text(encoding="utf-8")
-    units_path = root / "derived" / "units.jsonl"
-    unit = read_jsonl(units_path, SourceUnit)[0]
-    current_markdown = "**Current structured source**"
-    write_jsonl(
-        units_path,
-        [unit.model_copy(update={"source_markdown": current_markdown})],
-    )
-    assert verify_extraction(root, "all", force=True)["passed"]
+    unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0]
+    # The PDF content is identical; the reviewer establishes a paragraph break.
+    current_source = "\n".join([" ".join(unit.source_text.split()[:63]), " ".join(unit.source_text.split()[63:])])
+    correct_plain_fixture_units(root, {1: [{"unit_id": unit.unit_id, "kind": "paragraph", "bbox": list(unit.bbox), "source_markdown": current_source}]})
     assert source_path.read_text(encoding="utf-8") == stale_source
-    assert current_markdown not in stale_source
+    assert current_source not in stale_source
     assert workflow_next(root)["stage"] == "translate"
-
     packet = create_workflow_packet(root, "translate", [batch_id])
-    packet_source = (root / packet.files[f"{batch_id}:source"]).read_text(
-        encoding="utf-8"
-    )
-
-    assert current_markdown in packet_source
-    assert unit.source_text not in packet_source
+    packet_source = (root / packet.files[f"{batch_id}:source"]).read_text(encoding="utf-8")
+    assert current_source in packet_source
 
 
 def test_workflow_rejects_manifests_with_removed_source_only_units(
@@ -2508,6 +2369,7 @@ def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> No
                 unit_id=unit.unit_id,
                 target_text="图 1-1。标题",
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -2540,6 +2402,7 @@ def test_caption_like_paragraph_separator_change_is_semantic_revision(
                 unit_id=unit.unit_id,
                 target_text="图 1。说明了普通段落中的引用。",
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -2606,7 +2469,7 @@ def test_source_rebinding_does_not_create_translation_revision(
         False,
         True,
     ]
-    with pytest.raises(ValueError, match="not_publishable"):
+    with pytest.raises(ValueError, match="fidelity-source-unverified"):
         render_project(root, None, "stale-rebound", batch_id=batch_id)
 
 
@@ -2771,7 +2634,7 @@ def test_page_receipts_skip_unchanged_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _ = _make_project(tmp_path, 1)
-    receipt_path = root / "evidence" / "pages" / "page-0001.json"
+    receipt_path = root / "evidence" / "pages" / "fidelity-p0001.review.json"
     before = receipt_path.read_bytes()
 
     def fail_pixmap(*args: object, **kwargs: object) -> object:
@@ -2782,175 +2645,106 @@ def test_page_receipts_skip_unchanged_verification(
     assert receipt_path.read_bytes() == before
 
 
-def test_partial_verification_report_keeps_cached_pages(tmp_path: Path) -> None:
+def test_partial_verification_keeps_reviewed_pages_and_requires_missing_receipt(tmp_path: Path) -> None:
+    from littrans.fidelity import build_source_review_packet
+
     root, _ = _make_project(tmp_path, 2)
-    (root / "evidence" / "pages" / "page-0002.json").unlink()
+    first = root / "evidence" / "pages" / "fidelity-p0001.review.json"
+    before = first.read_bytes()
+    (root / "evidence" / "pages" / "fidelity-p0002.review.json").unlink()
 
     result = verify_extraction(root, "all")
-    report = Path(result["visual_report"]).read_text(encoding="utf-8")
+    packet = build_source_review_packet(root)
+    report = Path(packet["visual_report"]).read_text(encoding="utf-8")
 
-    assert result["cached_pages"] == [1]
-    assert result["verified_pages"] == [2]
-    assert "PDF p.1" in report
-    assert "PDF p.2" in report
+    assert not result["passed"]
+    assert result["verified_pages"] == [1]
+    assert [item["page"] for item in result["errors"]] == [2]
+    assert first.read_bytes() == before
+    assert "PDF page 1" in report and "PDF page 2" in report
 
 
-def test_cache_hit_verification_persists_current_result(tmp_path: Path) -> None:
+def test_scoped_verification_reads_current_receipts_without_mutating_other_pages(tmp_path: Path) -> None:
     root, _ = _make_project(tmp_path, 2)
-    issue = ExtractionIssue(
-        issue_id="page-two-blocker",
-        page=2,
-        severity=Severity.BLOCKER,
-        code="page-two-defect",
-        message="Only the second page is defective.",
-    )
-    write_jsonl(root / "derived" / "extraction-issues.jsonl", [issue])
+    path = root / "evidence" / "pages" / "fidelity-p0002.review.json"
+    receipt = read_json(path)
+    receipt["passed"] = False
+    receipt["decision"]["issues"] = ["Test fixture: second-page coverage defect"]
+    write_json(path, receipt)
+    before = {str(p): p.read_bytes() for p in (root / "evidence" / "pages").glob("*.json")}
 
     failed = verify_extraction(root, "2")
+    first = verify_extraction(root, "1")
+    combined = verify_extraction(root, "all")
+
     assert not failed["passed"]
-    assert read_json(root / "derived" / "verification.json")["passed"] is False
-
-    cached = verify_extraction(root, "1")
-    persisted = read_json(root / "derived" / "verification.json")
-
-    assert cached["passed"]
-    assert cached["cached_pages"] == [1]
-    assert cached["verified_pages"] == []
-    assert persisted == cached
-    assert persisted["pages"] == [
-        {
-            "page": 1,
-            "unit_count": 1,
-            "token_coverage": persisted["pages"][0]["token_coverage"],
-            "cached": True,
-        }
-    ]
+    assert first["passed"] and first["verified_pages"] == [1]
+    assert not combined["passed"] and combined["verified_pages"] == [1]
+    assert before == {str(p): p.read_bytes() for p in (root / "evidence" / "pages").glob("*.json")}
 
 
-def test_schema_v3_rejects_new_v4_evidence(tmp_path: Path) -> None:
+def test_historical_schema_rejects_v6_operations_without_rewriting_evidence(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
     batch_id = manifests[0].batch_id
     _submit(root, batch_id)
     assert run_qa(root, batch_id).passed
-    qa_path = root / "qa" / f"{batch_id}.json"
-    verification_path = root / "derived" / "verification.json"
-    verification_before = verification_path.read_bytes()
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-    write_json(
-        qa_path,
-        {
-            "schema_version": 1,
-            "batch_id": batch_id,
-            "passed": True,
-            "translation_fingerprint": "legacy-v3-fingerprint",
-            "errors": [],
-            "warnings": [],
-        },
-    )
-    qa_before = qa_path.read_bytes()
+    before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
-    assert not qa_report_is_current(root, batch_id)
-    with pytest.raises(ValueError, match="Workflow coordination.*project migrate"):
-        workflow_next(root)
-    with pytest.raises(ValueError, match="project migrate"):
-        run_qa(root, batch_id)
-    with pytest.raises(ValueError, match="project migrate"):
-        verify_extraction(root, "1", force=True)
+    for operation in (lambda: workflow_next(root), lambda: run_qa(root, batch_id),
+                      lambda: verify_extraction(root, "1", force=True)):
+        with pytest.raises(ValueError, match="project rebuild OLD NEW"):
+            operation()
 
-    assert qa_path.read_bytes() == qa_before
-    assert verification_path.read_bytes() == verification_before
-    assert load_project(root).schema_version == 3
+    assert before == {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert read_jsonl(root / "translations" / "current.jsonl", TranslationRecord)
 
 
-def test_cached_pages_remain_in_requested_global_semantic_checks(
-    tmp_path: Path,
-) -> None:
+def test_reviewed_pages_remain_subject_to_global_unit_identity_checks(tmp_path: Path) -> None:
     root, _ = _make_project(tmp_path, 2)
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
+    path = root / "derived" / "units.jsonl"
+    units = read_jsonl(path, SourceUnit)
+    receipts = {str(p): p.read_bytes() for p in (root / "evidence" / "pages").glob("*.review.json")}
     units[1] = units[1].model_copy(update={"unit_id": units[0].unit_id})
-    write_jsonl(units_path, units)
-
+    write_jsonl(path, units)
     result = verify_extraction(root, "all")
-
     assert not result["passed"]
-    assert result["cached_pages"] == [1]
-    assert result["verified_pages"] == [2]
-    assert {error["code"] for error in result["errors"]} == {
-        "duplicate-unit-id"
-    }
-    failed_receipt = PageVerificationReceipt.model_validate(
-        read_json(root / "evidence" / "pages" / "page-0002.json")
-    )
-    assert not failed_receipt.passed
-    assert {error["code"] for error in failed_receipt.errors} == {
-        "duplicate-unit-id"
-    }
+    assert any("duplicate source unit IDs" in error["message"] for error in result["errors"])
+    assert receipts == {str(p): p.read_bytes() for p in (root / "evidence" / "pages").glob("*.review.json")}
 
 
-def test_fully_cached_page_still_runs_project_global_semantic_checks(
-    tmp_path: Path,
-) -> None:
+def test_reviewed_page_still_runs_project_global_identity_checks(tmp_path: Path) -> None:
     root, _ = _make_project(tmp_path, 2)
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
+    path = root / "derived" / "units.jsonl"
+    units = read_jsonl(path, SourceUnit)
     original_second_id = units[1].unit_id
+    receipt = root / "evidence" / "pages" / "fidelity-p0001.review.json"
+    before = receipt.read_bytes()
     units[1] = units[1].model_copy(update={"unit_id": units[0].unit_id})
-    write_jsonl(units_path, units)
-
+    write_jsonl(path, units)
     result = verify_extraction(root, "1")
-
     assert not result["passed"]
-    assert result["cached_pages"] == [1]
-    assert result["verified_pages"] == []
-    assert {error["code"] for error in result["errors"]} == {
-        "duplicate-unit-id"
-    }
-    with pytest.raises(ValueError, match="duplicate-unit-id"):
+    assert any("duplicate source unit IDs" in error["message"] for error in result["errors"])
+    with pytest.raises(ValueError, match="fidelity-source-unverified"):
         require_verified_extraction(root, {1})
-    receipt = PageVerificationReceipt.model_validate(
-        read_json(root / "evidence" / "pages" / "page-0001.json")
-    )
-    assert receipt.passed
-
+    assert receipt.read_bytes() == before
     units[1] = units[1].model_copy(update={"unit_id": original_second_id})
-    write_jsonl(units_path, units)
-    recovered = verify_extraction(root, "1")
-    assert recovered["passed"]
-    assert recovered["cached_pages"] == [1]
+    write_jsonl(path, units)
+    assert verify_extraction(root, "1")["passed"]
 
 
 def test_page_receipt_does_not_hide_new_blocking_issue(tmp_path: Path) -> None:
     root, _ = _make_project(tmp_path, 1)
-    issues_path = root / "derived" / "extraction-issues.jsonl"
-    issue = ExtractionIssue(
-        issue_id="manual-blocker",
-        page=1,
-        severity=Severity.BLOCKER,
-        code="manual-review-blocker",
-        message="A later manual review found a blocking extraction defect.",
-    )
-    write_jsonl(issues_path, [issue])
-
+    record_fixture_source_issue(root, 1, "A new review found missing source content.")
     blocked = verify_extraction(root, "1")
     assert not blocked["passed"]
-    assert blocked["cached_pages"] == []
-    assert {item["code"] for item in blocked["errors"]} == {
-        "open-extraction-issue"
-    }
-    with pytest.raises(ValueError, match="open-extraction-issue"):
+    assert "fidelity-source-unverified" in {item["code"] for item in blocked["errors"]}
+    with pytest.raises(ValueError, match="fidelity-source-unverified"):
         require_verified_extraction(root, {1})
-
-    write_jsonl(
-        issues_path,
-        [issue.model_copy(update={"status": IssueStatus.RESOLVED})],
-    )
-    refreshed = verify_extraction(root, "1")
-    assert refreshed["passed"]
-    assert refreshed["verified_pages"] == [1]
-    assert verify_extraction(root, "1")["cached_pages"] == [1]
+    review_fixture_metadata(root)
+    assert verify_extraction(root, "1")["passed"]
 
 
 def test_partial_page_verification_inherits_cross_page_blocker(
@@ -2970,29 +2764,12 @@ def test_partial_page_verification_inherits_cross_page_blocker(
         update={"sidebar_id": "cross-page", "sidebar_role": SidebarRole.BODY}
     )
     write_jsonl(units_path, units)
-    assert verify_extraction(root, "all", force=True)["passed"]
-    issue = ExtractionIssue(
-        issue_id="cross-page-blocker",
-        page=1,
-        unit_id=units[0].unit_id,
-        severity=Severity.BLOCKER,
-        code="cross-page-defect",
-        message="The first sidebar fragment invalidates every dependent page.",
-    )
-    write_jsonl(root / "derived" / "extraction-issues.jsonl", [issue])
-
+    review_fixture_metadata(root)
+    assert verify_extraction(root, "all")["passed"]
+    record_fixture_source_issue(root, 1, "The first sidebar fragment invalidates its dependent page.")
     result = verify_extraction(root, "2")
-
     assert not result["passed"]
-    assert result["cached_pages"] == []
-    assert result["verified_pages"] == [2]
-    assert {error["code"] for error in result["errors"]} == {
-        "open-extraction-issue"
-    }
-    receipt = PageVerificationReceipt.model_validate(
-        read_json(root / "evidence" / "pages" / "page-0002.json")
-    )
-    assert not receipt.passed
+    assert "fidelity-source-unverified" in {error["code"] for error in result["errors"]}
 
 
 def test_page_evidence_closes_continuation_and_sidebar_dependencies(
@@ -3023,7 +2800,8 @@ def test_page_evidence_closes_continuation_and_sidebar_dependencies(
     assert [unit.unit_id for unit in page_evidence_units(2, units)] == [
         unit.unit_id for unit in units
     ]
-    assert verify_extraction(root, "all", force=True)["passed"]
+    review_fixture_metadata(root)
+    assert verify_extraction(root, "all")["passed"]
     replacement = "A changed final sidebar fragment."
     units[2] = units[2].model_copy(
         update={"source_text": replacement, "source_hash": sha256_text(replacement)}
@@ -3032,39 +2810,20 @@ def test_page_evidence_closes_continuation_and_sidebar_dependencies(
 
     refreshed = verify_extraction(root, "1")
 
-    assert refreshed["passed"]
-    assert refreshed["cached_pages"] == []
-    assert refreshed["verified_pages"] == [1]
+    assert not refreshed["passed"]
+    assert "fidelity-source-unverified" in {error["code"] for error in refreshed["errors"]}
 
 
-def test_partial_verification_failure_preserves_clean_page_receipt(
-    tmp_path: Path,
-) -> None:
+def test_partial_verification_failure_preserves_clean_page_receipt(tmp_path: Path) -> None:
     root, _ = _make_project(tmp_path, 2)
-    issue = ExtractionIssue(
-        issue_id="page-one-blocker",
-        page=1,
-        severity=Severity.BLOCKER,
-        code="page-one-defect",
-        message="Only the first page is defective.",
-    )
-    write_jsonl(root / "derived" / "extraction-issues.jsonl", [issue])
-
-    result = verify_extraction(root, "all", force=True)
-    failed_receipt = PageVerificationReceipt.model_validate(
-        read_json(root / "evidence" / "pages" / "page-0001.json")
-    )
-    clean_receipt = PageVerificationReceipt.model_validate(
-        read_json(root / "evidence" / "pages" / "page-0002.json")
-    )
+    clean = root / "evidence" / "pages" / "fidelity-p0002.review.json"
+    before = clean.read_bytes()
+    record_fixture_source_issue(root, 1, "Only the first page is defective.")
+    result = verify_extraction(root, "all")
     assert not result["passed"]
-    assert not failed_receipt.passed
-    assert {error["code"] for error in failed_receipt.errors} == {
-        "open-extraction-issue"
-    }
-    assert clean_receipt.passed
-    assert clean_receipt.errors == []
-    assert verify_extraction(root, "2")["cached_pages"] == [2]
+    assert result["verified_pages"] == [2]
+    assert clean.read_bytes() == before
+    assert verify_extraction(root, "2")["passed"]
 
 
 def test_sidebar_error_is_scoped_to_dependent_page_receipts(tmp_path: Path) -> None:
@@ -3077,22 +2836,14 @@ def test_sidebar_error_is_scoped_to_dependent_page_receipts(tmp_path: Path) -> N
         )
     write_jsonl(units_path, units)
 
-    result = verify_extraction(root, "all", force=True)
-    receipts = [
-        PageVerificationReceipt.model_validate(
-            read_json(root / "evidence" / "pages" / f"page-{page:04}.json")
-        )
-        for page in (1, 2, 3)
-    ]
+    clean = root / "evidence" / "pages" / "fidelity-p0003.review.json"
+    before = clean.read_bytes()
+    result = verify_extraction(root, "all")
     assert not result["passed"]
-    assert all(not receipt.passed for receipt in receipts[:2])
-    assert all(
-        {error["code"] for error in receipt.errors} == {"invalid-sidebar-title"}
-        for receipt in receipts[:2]
-    )
-    assert receipts[2].passed
-    assert receipts[2].errors == []
-    assert verify_extraction(root, "3")["cached_pages"] == [3]
+    assert {item["page"] for item in result["errors"]} == {1, 2}
+    assert result["verified_pages"] == [3]
+    assert clean.read_bytes() == before
+    assert verify_extraction(root, "3")["passed"]
 
 
 def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None:
@@ -3101,14 +2852,15 @@ def test_three_batch_audit_packets_compose_unit_coverage(tmp_path: Path) -> None
         _submit(root, manifest.batch_id)
         assert run_qa(root, manifest.batch_id).passed
     batch_ids = [manifest.batch_id for manifest in manifests]
-    legacy_bytes = sum(
-        (root / "batches" / batch_id / filename).stat().st_size
-        for batch_id in batch_ids
-        for filename in ("source.md", "context.md")
-    )
     for lens in ("fidelity", "technical", "chinese-style"):
+        # Compare equal-evidence schema-6 packets. Raw legacy Markdown excludes
+        # image/ownership metadata and is not a valid tiny-fixture size baseline.
+        separate_bytes = sum(
+            create_workflow_packet(root, "audit", [batch_id], lens).total_bytes
+            for batch_id in batch_ids
+        )
         packet = create_workflow_packet(root, "audit", batch_ids, lens)
-        assert packet.total_bytes < legacy_bytes
+        assert packet.total_bytes < separate_bytes
         issues = _packet_dir(root, packet) / "issues.jsonl"
         write_jsonl(issues, [])
         result = import_review_set(
@@ -3166,6 +2918,7 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
         }
     )
     write_jsonl(units_path, [unit])
+    review_fixture_metadata(root)
     verification = verify_extraction(root, "all", force=True)
     assert verification["passed"], verification["errors"]
     refresh_batch(root, manifest.batch_id)
@@ -3185,6 +2938,7 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
                     accessed_at="2026-08-09",
                 ),
                 source_hash=unit.source_hash,
+                image_evidence=original_image_evidence(root, unit),
             )
         ],
     )
@@ -3241,6 +2995,7 @@ def test_audit_packet_includes_source_only_figure_label_targets(
         }
     )
     write_jsonl(units_path, [unit])
+    review_fixture_metadata(root)
     verification = verify_extraction(root, "all", force=True)
     assert verification["passed"], verification["errors"]
     refresh_batch(root, manifest.batch_id)
@@ -3834,6 +3589,50 @@ def test_memory_is_current_approved_relevant_and_bounded(tmp_path: Path) -> None
     assert memories[0]["unit_id"] in {"u001", "u003"}
 
 
+def test_memory_rechecks_changed_qa_evidence(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+    for manifest in manifests:
+        _audit_and_approve(root, manifest.batch_id)
+    candidate_id = manifests[0].unit_ids[0]
+    assert candidate_id in {
+        item["unit_id"] for item in translation_memory(root, manifests[1].unit_ids)
+    }
+    qa_path = root / "qa" / f"{manifests[0].batch_id}.json"
+    report = json.loads(qa_path.read_text(encoding="utf-8"))
+    report["passed"] = False
+    qa_path.write_text(json.dumps(report), encoding="utf-8")
+    assert candidate_id not in {
+        item["unit_id"] for item in translation_memory(root, manifests[1].unit_ids)
+    }
+
+
+def test_memory_without_candidates_skips_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, manifests = _make_project(tmp_path, pages=1)
+
+    def unexpected_snapshot(*args: object, **kwargs: object) -> None:
+        pytest.fail("empty translation memory must not load a workflow snapshot")
+
+    monkeypatch.setattr("littrans.workflow._load_workflow_snapshot", unexpected_snapshot)
+    assert translation_memory(root, manifests[0].unit_ids) == []
+
+
+@pytest.mark.parametrize("error", [KeyError, OSError, ValueError])
+def test_memory_snapshot_errors_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    from littrans.evidence import _memory_complete_batch_ids
+
+    def broken_snapshot(*args: object, **kwargs: object) -> None:
+        raise error("unreadable evidence")
+
+    monkeypatch.setattr("littrans.workflow._load_workflow_snapshot", broken_snapshot)
+    assert _memory_complete_batch_ids(str(tmp_path), "shared", "evidence") == frozenset()
+
+
 def test_memory_excludes_stored_approval_with_stale_qa(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=2)
     for manifest in manifests:
@@ -4397,28 +4196,21 @@ def test_external_status_does_not_reuse_an_old_second_opinion(
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])
-def test_v4_migration_rejects_pre_v3_source_schemas(
-    tmp_path: Path, schema_version: int
-) -> None:
+def test_early_schemas_require_rebuild_and_preserve_original_configuration(tmp_path: Path, schema_version: int) -> None:
     root, _ = _make_project(tmp_path, 1)
     config = load_project(root)
     config.schema_version = schema_version
     save_project(root, config)
-    project_before = (root / "project.yaml").read_bytes()
-
-    with pytest.raises(
-        ValueError,
-        match=f"requires a schema-v3 source project.*schema {schema_version}",
-    ):
-        migrate_project_schema(root, 4)
-
-    assert (root / "project.yaml").read_bytes() == project_before
-    assert not (root / "evidence" / "migration-v3-v4.json").exists()
+    before = (root / "project.yaml").read_bytes()
+    with pytest.raises(ValueError, match="project rebuild OLD NEW"):
+        workflow_next(root)
+    rebuilt = tmp_path / "rebuilt"
+    assert rebuild_project(root, rebuilt).schema_version == 6
+    assert (root / "project.yaml").read_bytes() == before
+    assert not list((rebuilt / "batches").iterdir())
 
 
-def test_v3_migration_snapshots_project_data_and_skips_unevidenced_batches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rebuild_does_not_inherit_evidenced_or_unevidenced_batches(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, pages=2)
     evidenced = manifests[0].batch_id
     _submit(root, evidenced)
@@ -4426,228 +4218,34 @@ def test_v3_migration_snapshots_project_data_and_skips_unevidenced_batches(
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-
-    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
-    translations = translation_map(root)
-    baseline_packet = external_review._legacy_v3_packet_text(root, evidenced)
-    snapshot_packet = external_review._legacy_v3_packet_text(
-        root,
-        evidenced,
-        _all_units=units,
-        _translations=translations,
-        _legacy_context=external_review._legacy_v3_packet_context(root),
-    )
-    assert snapshot_packet == baseline_packet
-
-    calls: list[str] = []
-    original = migration._legacy_v3_batch_fingerprint
-
-    def recording_fingerprint(
-        project: Path,
-        batch_id: str,
-        *,
-        units: dict[str, SourceUnit] | None = None,
-        translations: dict[str, TranslationRecord] | None = None,
-    ) -> str:
-        assert units is not None
-        assert translations is not None
-        calls.append(batch_id)
-        return original(
-            project,
-            batch_id,
-            units=units,
-            translations=translations,
-        )
-
-    monkeypatch.setattr(
-        migration, "_legacy_v3_batch_fingerprint", recording_fingerprint
-    )
-    report = migrate_project_schema(root, 4, dry_run=True)
-
-    assert report["batches"] == len(manifests)
-    assert calls == [evidenced]
+    before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    rebuilt = tmp_path / "rebuilt"
+    rebuild_project(root, rebuilt)
+    assert not list((rebuilt / "batches").iterdir())
+    assert not read_jsonl(rebuilt / "translations" / "current.jsonl", TranslationRecord)
+    assert not list((rebuilt / "qa").iterdir())
+    assert before == {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
-    tmp_path: Path,
-) -> None:
-    root, manifests = _make_project(tmp_path, 1)
-    batch_id = manifests[0].batch_id
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
-    units[0] = units[0].model_copy(update={"kind": UnitKind.CAPTION})
-    write_jsonl(units_path, units)
-    translation_input = root / "batches" / batch_id / "caption.jsonl"
-    write_jsonl(
-        translation_input,
-        [
-            TranslationRecord(
-                unit_id=units[0].unit_id,
-                target_text="图 1-1。标题",
-                source_hash=units[0].source_hash,
-            )
-        ],
-    )
-    submit_translation(root, batch_id, translation_input)
-    empty = root / "reviews" / "legacy-audit.jsonl"
-    write_jsonl(empty, [])
-    import_review(root, batch_id, empty)
-
-    record = translation_map(root)[units[0].unit_id]
-    source_fields = {
-        "kind",
-        "source_hash",
-        "source_markdown",
-        "sidebar_id",
-        "sidebar_role",
-        "callout_kind",
-        "translatable",
-        "render_policy",
-        "protected_tokens",
-        "latex",
-        "equation_number",
-        "math_status",
-        "table",
-        "code_language",
-        "continues_from_previous",
-        "continued_to_next",
-        "figure_labels",
-        "verification_status",
-    }
-    source_fingerprint = sha256_text(
-        units[0].model_dump_json(include=source_fields, exclude_none=True)
-    )
-    translation_json = record.model_dump_json(
-        include={
-            "target_text",
-            "target_table",
-            "figure_labels",
-            "reader_note",
-            "term_proposals",
-            "uncertainties",
-        },
-        exclude_none=True,
-    )
-    legacy_fingerprint = sha256_text(
-        f"{record.unit_id}|{record.source_hash}|{source_fingerprint}|"
-        f"{record.revision}|{sha256_text(translation_json)}"
-    )
-    assert _legacy_v3_batch_fingerprint(root, batch_id) == legacy_fingerprint
-
+def test_rebuild_preserves_approved_history_without_certifying_old_evidence(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    for batch in manifests:
+        _submit(root, batch.batch_id)
+        _audit_and_approve(root, batch.batch_id)
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-    qa_path = root / "qa" / f"{batch_id}.json"
-    write_json(
-        qa_path,
-        {
-            "schema_version": 1,
-            "batch_id": batch_id,
-            "passed": True,
-            "translation_fingerprint": legacy_fingerprint,
-            "errors": [],
-            "warnings": [],
-        },
-    )
-    write_yaml(
-        root / "glossary" / "approved.yaml",
-        {
-            "terms": [
-                {"source": "architecture", "target": "架构"},
-                {
-                    "source": "quantum chromodynamics",
-                    "target": "量子色动力学",
-                },
-            ]
-        },
-    )
-    audit_path = root / "reviews" / f"{batch_id}.audit.json"
-    audit = read_json(audit_path)
-    audit["translation_fingerprint"] = legacy_fingerprint
-    audit.pop("unit_coverage", None)
-    audit.pop("missing_coverage", None)
-    write_json(audit_path, audit)
-    (root / "evidence" / "audits" / f"{batch_id}.jsonl").unlink()
-    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
-    legacy_packet = external_review._legacy_v3_packet_text(root, batch_id)[0]
-    compact_packet = external_review._packet_text(root, batch_id)[0]
-    assert "quantum chromodynamics" in legacy_packet
-    assert "quantum chromodynamics" not in compact_packet
-    legacy_packet_sha256 = sha256_text(legacy_packet)
-    append_jsonl(
-        runs_path,
-        [
-            ExternalReviewRun(
-                schema_version=1,
-                run_id="legacy-run",
-                batch_id=batch_id,
-                reviewer_id="legacy-reviewer",
-                driver="claude-code",
-                role="primary",
-                requested_model="legacy-model",
-                actual_model="legacy-model",
-                model_verified=True,
-                translation_fingerprint=legacy_fingerprint,
-                packet_sha256=legacy_packet_sha256,
-                prompt_version="v3",
-                verdict=ExternalReviewVerdict.ACCEPTED,
-                summary="Accepted under the v3 evidence contract.",
-            ),
-            ExternalReviewRun(
-                schema_version=1,
-                run_id="legacy-second-opinion",
-                batch_id=batch_id,
-                reviewer_id="legacy-second-reviewer",
-                driver="antigravity",
-                role="second-opinion",
-                requested_model="legacy-second-model",
-                actual_model="legacy-second-model",
-                model_verified=True,
-                translation_fingerprint=legacy_fingerprint,
-                packet_sha256=legacy_packet_sha256,
-                prompt_version="v3",
-                verdict=ExternalReviewVerdict.ACCEPTED,
-                summary="Second opinion accepted under the v3 evidence contract.",
-            ),
-        ],
-    )
-    current_before = (root / "translations" / "current.jsonl").read_bytes()
-    history_before = (root / "translations" / "history.jsonl").read_bytes()
-    preview = migrate_project_schema(root, 4, dry_run=True)
-    assert preview["changed"] is False
-    assert preview["importable"] == {
-        "qa": 0,
-        "audit_lenses": 0,
-        "external_runs": 2,
-    }
-    assert preview["pending_recheck"] == {
-        "qa": [batch_id],
-        "audit": [batch_id],
-        "external": [],
-    }
-    report = migrate_project_schema(root, 4)
-    assert report["source_verification"]["passed"]
-    assert load_project(root).schema_version == 4
-    assert (root / "translations" / "current.jsonl").read_bytes() == current_before
-    assert (root / "translations" / "history.jsonl").read_bytes() == history_before
-    migrated_qa = read_json(qa_path)
-    assert "qa_context_fingerprint" not in migrated_qa
-    migrate_project_schema(root, 5)
-    assert workflow_next(root)["stage"] == "qa"
-    rerun = run_qa(root, batch_id)
-    assert not rerun.passed
-    assert {item.code for item in rerun.errors} == {"approved-term-missing"}
-    assert not audit_coverage(root, batch_id)["complete"]
-    migrated_runs = read_jsonl(runs_path, ExternalReviewRun)
-    migrated = next(run for run in migrated_runs if run.run_id == "legacy-run-v4")
-    assert migrated.schema_version == 2
-    assert migrated.base_run_id == "legacy-run"
-    migrated_second = next(
-        run
-        for run in migrated_runs
-        if run.run_id == "legacy-second-opinion-v4"
-    )
-    assert migrated_second.base_run_id == migrated.run_id
+    approved = (root / "translations" / "current.jsonl").read_bytes()
+    history = (root / "translations" / "history.jsonl").read_bytes()
+    old_reviews = {str(p): p.read_bytes() for p in (root / "reviews").glob("*") if p.is_file()}
+    rebuilt = tmp_path / "rebuilt"
+    rebuild_project(root, rebuilt)
+    assert (root / "translations" / "current.jsonl").read_bytes() == approved
+    assert (root / "translations" / "history.jsonl").read_bytes() == history
+    assert old_reviews == {str(p): p.read_bytes() for p in (root / "reviews").glob("*") if p.is_file()}
+    assert not read_jsonl(rebuilt / "translations" / "current.jsonl", TranslationRecord)
+    assert not list((rebuilt / "evidence" / "audits").iterdir())
+    assert not verify_extraction(rebuilt, "all")["passed"]
 
 
 @pytest.mark.parametrize(
@@ -4658,280 +4256,61 @@ def test_v3_migration_preserves_bytes_and_only_certifies_bound_evidence(
     ],
     ids=["empty-record-labels", "partial-record-labels"],
 )
-def test_v3_migration_reconstructs_legacy_figure_label_packets(
-    tmp_path: Path,
-    record_labels: list[FigureLabel],
-) -> None:
+def test_rebuild_keeps_historical_figure_label_records_out_of_new_source(tmp_path: Path, record_labels: list[FigureLabel]) -> None:
     root, manifests = _make_project(tmp_path, 1)
-    batch_id = manifests[0].batch_id
-    units_path = root / "derived" / "units.jsonl"
-    original = read_jsonl(units_path, SourceUnit)[0]
-    unit = original.model_copy(
-        update={
-            "kind": UnitKind.FIGURE,
-            "figure_labels": [
-                FigureLabel(source="Open", target="打开"),
-                FigureLabel(source="Close", target="关闭"),
-            ],
-            "visual_text_status": SemanticStatus.VERIFIED,
-        }
-    )
-    write_jsonl(units_path, [unit])
-    assert verify_extraction(root, "all", force=True)["passed"]
-    refresh_batch(root, batch_id)
-    record = TranslationRecord(
-        unit_id=unit.unit_id,
-        target_text="控件状态图。",
-        figure_labels=record_labels,
-        source_hash=unit.source_hash,
-    )
-    write_jsonl(root / "translations" / "current.jsonl", [record])
-    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
-    legacy_packet = external_review._legacy_v3_packet_text(root, batch_id)[0]
-    assert "Figure label sources:" in legacy_packet
-    assert ("Figure label sources:\n- Open" in legacy_packet) is bool(
-        record_labels
-    )
-    assert "- Close" not in legacy_packet
-    if record_labels:
-        with pytest.raises(ValueError, match="Figure label mapping mismatch"):
-            external_review._packet_text(root, batch_id, compact=False)
-    else:
-        current_packet = external_review._packet_text(
-            root, batch_id, compact=False
-        )[0]
-        assert "Figure label sources:\n- Open\n- Close" in current_packet
-
+    records = _submit(root, manifests[0].batch_id)
+    path = root / "translations" / "current.jsonl"
+    write_jsonl(path, [records[0].model_copy(update={"figure_labels": record_labels})])
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
-    append_jsonl(
-        runs_path,
-        [
-            ExternalReviewRun(
-                schema_version=1,
-                run_id="legacy-figure-run",
-                batch_id=batch_id,
-                reviewer_id="legacy-reviewer",
-                driver="claude-code",
-                role="primary",
-                requested_model="legacy-model",
-                actual_model="legacy-model",
-                model_verified=True,
-                translation_fingerprint=legacy_fingerprint,
-                packet_sha256=sha256_text(legacy_packet),
-                prompt_version="v3",
-                verdict=ExternalReviewVerdict.ACCEPTED,
-                summary="Accepted under the v3 figure-label contract.",
-            )
-        ],
-    )
-
-    report = migrate_project_schema(root, 4)
-
-    assert report["importable"]["external_runs"] == 1
-    assert report["pending_recheck"]["external"] == []
-    migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
-    assert migrated.run_id == "legacy-figure-run-v4"
-    assert migrated.context_fingerprint
+    before = path.read_bytes()
+    rebuilt = tmp_path / "rebuilt"
+    rebuild_project(root, rebuilt)
+    assert path.read_bytes() == before
+    assert read_jsonl(path, TranslationRecord)[0].figure_labels == record_labels
+    assert not read_jsonl(rebuilt / "derived" / "units.jsonl", SourceUnit)
+    assert not read_jsonl(rebuilt / "translations" / "current.jsonl", TranslationRecord)
 
 
-def test_v4_to_v5_preserves_legacy_full_review_context_without_seams(
-    tmp_path: Path,
-) -> None:
-    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
-    first, second = manifests
-    units_path = root / "derived" / "units.jsonl"
-    units = read_jsonl(units_path, SourceUnit)
-    units[0] = units[0].model_copy(
-        update={
-            "kind": UnitKind.HEADING,
-            "sidebar_id": "legacy-cross-batch-sidebar",
-            "sidebar_role": SidebarRole.TITLE,
-        }
-    )
-    units[1] = units[1].model_copy(
-        update={
-            "sidebar_id": "legacy-cross-batch-sidebar",
-            "sidebar_role": SidebarRole.BODY,
-        }
-    )
-    write_jsonl(units_path, units)
-    assert verify_extraction(root, "all", force=True)["passed"]
+def test_rebuild_copies_context_but_requires_new_seam_review(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
     for manifest in manifests:
-        refresh_batch(root, manifest.batch_id)
         _submit(root, manifest.batch_id)
-    for manifest in manifests:
         _audit_and_approve(root, manifest.batch_id)
-
+    style = root / "context" / "style-guide.md"
+    style.write_text("Keep source-owned clauses and cross-page context intact.\n", encoding="utf-8")
     config = load_project(root)
     config.schema_version = 4
-    config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
-                id="claude",
-                driver="claude-code",
-                command="claude",
-                model="claude-sonnet-5",
-                effort="high",
-                fast=False,
-            )
-        ]
-    )
     save_project(root, config)
-
-    legacy_runs: list[ExternalReviewRun] = []
-    for manifest in manifests:
-        current_manifest = load_manifest(root, manifest.batch_id)
-        covered = list(current_manifest.unit_ids)
-        run = ExternalReviewRun(
-            run_id=f"legacy-v4-{manifest.batch_id}",
-            batch_id=manifest.batch_id,
-            reviewer_id="claude",
-            driver="claude-code",
-            role="primary",
-            requested_model="claude-sonnet-5",
-            actual_model="claude-sonnet-5",
-            model_verified=True,
-            translation_fingerprint=external_review.batch_translation_fingerprint(
-                root, manifest.batch_id
-            ),
-            packet_sha256="0" * 64,
-            prompt_version=external_review.PROMPT_VERSION,
-            verdict=ExternalReviewVerdict.ACCEPTED,
-            summary="No substantive defects found in the legacy full review.",
-            scope=ReviewScope.FULL,
-            covered_unit_ids=covered,
-            unit_fingerprints=batch_unit_fingerprints(root, manifest.batch_id),
-            source_fingerprint=batch_source_fingerprint(root, manifest.batch_id),
-            structure_fingerprint=batch_structure_fingerprint(root, manifest.batch_id),
-            context_fingerprint=(
-                external_review._external_review_context_fingerprint(
-                    root,
-                    manifest.batch_id,
-                    covered,
-                    ReviewScope.FULL,
-                    _legacy_v4_full_scope=True,
-                )
-            ),
-        )
-        append_jsonl(
-            root / "reviews" / f"{manifest.batch_id}.external-runs.jsonl",
-            [run],
-        )
-        legacy_runs.append(run)
-
-    migrate_project_schema(root, 5)
-
-    assert all(
-        external_review._external_review_context_is_current(root, run)
-        for run in legacy_runs
-    )
-    assert all(
-        external_review_status(root, manifest.batch_id)["external_approvable"]
-        for manifest in manifests
-    )
-    for manifest in manifests:
-        approve_batch(root, manifest.batch_id, "external")
-    formal = render_project(root, None, batch_id=first.batch_id)
-    assert Path(formal["markdown"]).is_file()
-
-    current_v5_run = legacy_runs[0].model_copy(
-        update={
-            "run_id": "current-v5-full-review",
-            "reviewed_at": utc_now(),
-            "context_fingerprint": (
-                external_review._external_review_context_fingerprint(
-                    root,
-                    first.batch_id,
-                    list(load_manifest(root, first.batch_id).unit_ids),
-                    ReviewScope.FULL,
-                )
-            ),
-        }
-    )
-    translations = translation_map(root)
-    seam_unit_id = load_manifest(root, second.batch_id).unit_ids[0]
-    translations[seam_unit_id] = translations[seam_unit_id].model_copy(
-        update={"target_text": "迁移后的跨批侧栏译文", "revision": 2}
-    )
-    assert external_review._external_review_context_is_current(
-        root, legacy_runs[0], translations=translations
-    )
-    assert not external_review._external_review_context_is_current(
-        root, current_v5_run, translations=translations
-    )
-
-    style_path = root / "context" / "style-guide.md"
-    style_path.write_text(
-        style_path.read_text(encoding="utf-8") + "\nUse a newly revised style rule.\n",
-        encoding="utf-8",
-    )
-    assert not external_review._external_review_context_is_current(
-        root, legacy_runs[0]
-    )
+    reviews = {str(p): p.read_bytes() for p in (root / "reviews").rglob("*") if p.is_file()}
+    rebuilt = tmp_path / "rebuilt"
+    rebuild_project(root, rebuilt)
+    assert (rebuilt / "context" / "style-guide.md").read_bytes() == style.read_bytes()
+    assert reviews == {str(p): p.read_bytes() for p in (root / "reviews").rglob("*") if p.is_file()}
+    assert not list((rebuilt / "reviews").glob("*.json*"))
+    assert not list((rebuilt / "evidence" / "audits").glob("*.json*"))
 
 
-def test_v3_migration_reconstructs_legacy_equation_packets(tmp_path: Path) -> None:
+def test_rebuild_keeps_historical_latex_out_of_faithful_source(tmp_path: Path) -> None:
     root, manifests = _make_project(tmp_path, 1)
-    batch_id = manifests[0].batch_id
-    units_path = root / "derived" / "units.jsonl"
-    original = read_jsonl(units_path, SourceUnit)[0]
-    unit = original.model_copy(
-        update={
-            "kind": UnitKind.EQUATION,
-            "translatable": False,
-            "latex": r"E = mc^2",
-            "equation_number": "7.3",
-            "math_status": SemanticStatus.VERIFIED,
-        }
-    )
-    write_jsonl(units_path, [unit])
-    refresh_batch(root, batch_id)
-    legacy_fingerprint = _legacy_v3_batch_fingerprint(root, batch_id)
-    legacy_packet = external_review._legacy_v3_packet_text(root, batch_id)[0]
-    current_packet = external_review._packet_text(root, batch_id, compact=False)[0]
-    assert original.source_text in legacy_packet
-    assert r"E = mc^2 \tag{7.3}" not in legacy_packet
-    assert r"E = mc^2 \tag{7.3}" in current_packet
-
+    old = root / "derived" / "historical-equation.json"
+    write_json(old, {"unit_id": manifests[0].unit_ids[0], "latex": r"E = mc^2 \tag{7.3}", "verified": True})
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-    runs_path = root / "reviews" / f"{batch_id}.external-runs.jsonl"
-    append_jsonl(
-        runs_path,
-        [
-            ExternalReviewRun(
-                schema_version=1,
-                run_id="legacy-equation-run",
-                batch_id=batch_id,
-                reviewer_id="legacy-reviewer",
-                driver="claude-code",
-                role="primary",
-                requested_model="legacy-model",
-                actual_model="legacy-model",
-                model_verified=True,
-                translation_fingerprint=legacy_fingerprint,
-                packet_sha256=sha256_text(legacy_packet),
-                prompt_version="v3",
-                verdict=ExternalReviewVerdict.ACCEPTED,
-                summary="Accepted under the v3 equation contract.",
-            )
-        ],
-    )
-
-    report = migrate_project_schema(root, 4)
-
-    assert report["importable"]["external_runs"] == 1
-    assert report["pending_recheck"]["external"] == []
-    migrated = read_jsonl(runs_path, ExternalReviewRun)[-1]
-    assert migrated.run_id == "legacy-equation-run-v4"
-    assert migrated.context_fingerprint
+    before = old.read_bytes()
+    rebuilt = tmp_path / "rebuilt"
+    rebuild_project(root, rebuilt)
+    assert old.read_bytes() == before
+    assert not (rebuilt / "derived" / "historical-equation.json").exists()
+    assert not read_jsonl(rebuilt / "derived" / "units.jsonl", SourceUnit)
+    assert not (rebuilt / "evidence" / "representations" / "index.json").exists()
 
 
 def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
     fingerprint = "legacy-fingerprint"
     accepted = ExternalReviewRun(
         schema_version=1,
@@ -4959,7 +4338,7 @@ def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> Non
         }
     )
 
-    chain, pending_recheck = _migratable_v3_external_chain(
+    chain, pending_recheck = namespace["_migratable_v3_external_chain"](
         [accepted, failed], fingerprint
     )
 
@@ -4967,31 +4346,24 @@ def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> Non
     assert pending_recheck is True
 
 
-def test_v3_migration_keeps_schema_retryable_when_verification_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rebuild_initialization_failure_preserves_history_and_allows_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import littrans.project as project_module
     root, _ = _make_project(tmp_path, 1)
     config = load_project(root)
     config.schema_version = 3
     save_project(root, config)
-    import littrans.verification as verification
-
-    original_verify = verification.verify_extraction
-
-    def fail_verification(*args: object, **kwargs: object) -> dict[str, object]:
-        raise ValueError("forced migration verification failure")
-
-    monkeypatch.setattr(verification, "verify_extraction", fail_verification)
-    with pytest.raises(ValueError, match="forced migration verification failure"):
-        migrate_project_schema(root, 4)
-
-    assert load_project(root).schema_version == 3
-    assert not (root / "evidence" / "migration-v3-v4.json").exists()
-
-    monkeypatch.setattr(verification, "verify_extraction", original_verify)
-    report = migrate_project_schema(root, 4)
-    assert report["source_verification"]["passed"]
-    assert load_project(root).schema_version == 4
+    before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    original = project_module.initialize_project
+    def fail_initialization(*args: object, **kwargs: object) -> object:
+        raise ValueError("forced rebuild initialization failure")
+    monkeypatch.setattr(project_module, "initialize_project", fail_initialization)
+    rebuilt = tmp_path / "rebuilt"
+    with pytest.raises(ValueError, match="forced rebuild initialization failure"):
+        rebuild_project(root, rebuilt)
+    assert not rebuilt.exists()
+    assert before == {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    monkeypatch.setattr(project_module, "initialize_project", original)
+    assert rebuild_project(root, rebuilt).schema_version == 6
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

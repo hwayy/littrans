@@ -1,33 +1,17 @@
 ---
 name: audit-literature-translation
-description: Independently audit a completed littrans translation batch for fidelity, omissions, additions, terminology, technical accuracy, citations, numbers, and Chinese style without editing target text. Use after deterministic QA passes, before machine approval, or after a revision requires targeted re-review.
+description: Independently audit LitTrans translations for fidelity, technical correctness and Chinese expression against source text and original images. Use after deterministic QA or for the dependency closure of a revision.
 ---
 
 # Audit Literature Translation
 
-Audit read-only and emit issues, never a replacement translation.
+Audit read-only and return issues, not replacement translations. Use [host-runtimes.md](../../references/host-runtimes.md) and [issue-contract.md](references/issue-contract.md).
 
-Use the bundled Python launcher described in `../../references/runtime.md` for every `littrans` command.
+1. Use three independent fresh local review tasks for fidelity, technical/terminology and Chinese expression. Each receives only its assigned audit packet, including original source images and recorded uncertainties. Do not provide expected verdicts or other reviewers' conclusions. Assign one lens across at most three consecutive batches.
+2. Inspect the original images needed to interpret source assets. Check every assigned unit for the assigned lens: logical direction and scope, omissions/additions, technical meaning, reference ownership, terminology, or Chinese fluency. A fluent translation may reverse a conditional or attach a transformation to the wrong matrix.
+3. Original-image formulas are valid reading content. Do not report unfinished LaTeX as a translation defect. The packet's "Contracts" paragraph lists renderer-owned markup that is absent from targets by design: list-item bullets and numbers, heading `#` marks, admonition shells; likewise `{{asset:ID}}` placeholders with no space next to Chinese text, full-width punctuation in Chinese prose, and `language_present=false` with notes for notation-only images. None of these is an omission. If the original mathematical meaning is unclear or translated incorrectly, report it; separate an image coverage defect from a candidate-transcription defect.
+4. Check caption/footnote relationships, equation numbers, cross-page continuity, translated table cells or corresponding table-region explanations, and figure-label explanations. Do not propose moving content across stable unit IDs.
+5. Return precise JSONL issues using the issue contract. Import each performed lens, including an empty result, with `review import` or the coordinated `review import-set`; the latter canonicalizes each `issue_id` to `audit-<hash>` and records the reviewer's id as `source_issue_id`, so `review resolve` accepts either (comma-separate several ids) and `review issues PROJECT BATCH` lists the open ones. Never claim an independent lens that was not actually performed.
+6. After a revision, review the packet's changed unit/dependency closure. Current unchanged coverage is reusable. If independent execution is unavailable, report that limitation rather than manufacturing independent approvals.
 
-## Independence
-
-- Prefer a fresh local session or independent subagent that receives only the raw batch artifacts. Do not provide the expected verdict, prior reviewer conclusions, or translator rationale beyond recorded uncertainties. Follow [host-runtimes.md](../../references/host-runtimes.md) for host-specific invocation.
-- When independent subagents are available, run three read-only lenses independently: fidelity, technical/terminology, and Chinese editing. Merge duplicate findings after all lenses finish. For a coordinated set, let `continue-literature-translation` assign one lens reviewer across at most three consecutive batches, even when the frozen Cursor wave is larger; the coordinator splits the wave into consecutive groups. If a reviewer cannot write files, take its returned JSONL and persist it before import.
-- Keep all audit work on the local host. Do not hand packets, PDFs, or review judgment to a cloud or remote subagent.
-- When independent execution is unavailable, perform the three passes sequentially and disclose that limitation.
-
-## Procedure
-
-1. Read the batch manifest, source, context, submitted translation, approved glossary, and protected tokens.
-2. Compare every translatable unit under all three lenses. Use [issue-contract.md](references/issue-contract.md). Preserve stable-unit source ownership: moving a clause into a neighboring target is an omission/addition pair, not an acceptable seam polish, and must never be proposed as a revision.
-3. Check non-translatable neighbors and structural metadata against the PDF: verify display and inline LaTeX, equation numbers, code indentation/language, figure-label translations, captions, paragraph continuation, titled sidebar grouping, and cross-references. Check every source/target table cell and its row/column alignment. Do not rewrite protected code or formulas.
-4. Write JSONL issues only. Use precise source and target spans, explain the actual defect, and propose a revision only when confident.
-5. Import each independent single-batch issue file with `review import --lenses <lens>` even when it is empty. Import a coordinated packet with `review import-set`; never claim lenses that the reviewer did not perform.
-6. Report issue counts and all blocker/major findings. Do not run `translation submit`, resolve findings, or approve the batch.
-
-If the project enables `external_review`, the internal audit remains mandatory and precedes
-the external stage. Follow [external-review.md](references/external-review.md) only after
-machine approval; external reviewers do not replace the three internal lenses.
-
-Audit evidence is unit-level. After a revision, review the packet's changed dependency closure;
-unchanged current coverage is reusable, but missing lens coverage always blocks approval.
+The asset-audit stage independently compares structured candidates and their renders with original images; it does not replace these translation lenses. Configured [external review](references/external-review.md) still follows machine approval. Reviewers do not submit translations, resolve their own findings or grant approval.

@@ -5,224 +5,101 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fidelity_fixtures import make_asset_fixture
 from typer.testing import CliRunner
 
-from littrans import cli
+from littrans import cli, fidelity, representations
 
 runner = CliRunner()
 
 
-def test_math_candidates_parses_repeatable_and_comma_separated_unit_ids(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed: list[tuple[Any, ...]] = []
-
-    def fake_generate(*args: Any) -> dict[str, Any]:
-        observed.append(args)
-        return {"selected_units": len(args[-1])}
-
-    monkeypatch.setattr(cli, "generate_math_candidates", fake_generate)
-    result = runner.invoke(
-        cli.app,
-        [
-            "source",
-            "math-candidates",
-            str(tmp_path),
-            "--unit-ids",
-            "p0001-u001-math,p0001-u002-math",
-            "--unit-ids",
-            "p0002-u001-math",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert observed[0][-1] == [
-        "p0001-u001-math",
-        "p0001-u002-math",
-        "p0002-u001-math",
-    ]
-    assert json.loads(result.output)["selected_units"] == 3
-
-
-def test_math_candidates_unit_id_help_and_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    called = False
-
-    def fake_generate(*args: Any) -> dict[str, Any]:
-        nonlocal called
-        called = True
-        return {}
-
-    monkeypatch.setattr(cli, "generate_math_candidates", fake_generate)
-    help_result = runner.invoke(cli.app, ["source", "math-candidates", "--help"])
-    assert help_result.exit_code == 0, help_result.output
-    assert "exact pilot" in help_result.output
-    assert "comma-separated" in help_result.output
-
-    duplicate = runner.invoke(
-        cli.app,
-        [
-            "source",
-            "math-candidates",
-            str(tmp_path),
-            "--unit-ids",
-            "same,same",
-        ],
-    )
-    assert duplicate.exit_code != 0
-    assert "duplicate unit IDs" in duplicate.output
-    assert called is False
-
-
-def test_math_review_packets_forwards_page_complete_packet_options(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed: list[tuple[Any, ...]] = []
-
-    def fake_build(*args: Any) -> dict[str, Any]:
-        observed.append(args)
-        return {"packet_count": 2}
-
-    monkeypatch.setattr(cli, "build_math_review_packets", fake_build)
-    result = runner.invoke(
-        cli.app,
-        [
-            "source",
-            "math-review-packets",
-            str(tmp_path),
-            "--pages",
-            "2-7",
-            "--target-units",
-            "12",
-            "--max-units",
-            "20",
-            "--output-root",
-            "packets/pilot",
-            "--manual-only",
-            "--require-candidates",
-            "--include-unit-ids",
-            "p0002-u004-paragraph,p0003-u001-equation",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    (
-        project,
-        pages,
-        target_units,
-        max_units,
-        output_root,
-        manual_only,
-        require_candidates,
-        include_unit_ids,
-    ) = observed[0]
-    assert project == tmp_path
-    assert pages == "2-7"
-    assert target_units == 12
-    assert max_units == 20
-    assert output_root == Path("packets/pilot")
-    assert manual_only is True
-    assert require_candidates is True
-    assert include_unit_ids == [
-        "p0002-u004-paragraph",
-        "p0003-u001-equation",
-    ]
-    assert json.loads(result.output)["packet_count"] == 2
-
-
-def test_math_review_packets_help_explains_limits() -> None:
-    result = runner.invoke(cli.app, ["source", "math-review-packets", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "page-complete" in result.output
-    assert "single denser" in result.output
-    assert "DeepSeek pilot fails" in result.output
-    assert "twice" in result.output
-    assert "fully local" in result.output
-    assert "--include-unit-ids" in result.output
-    assert "verified" in result.output
-
-
-def test_math_review_packets_rejects_invalid_include_unit_ids_before_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    called = False
-
-    def fake_build(*args: Any) -> dict[str, Any]:
-        nonlocal called
-        called = True
-        return {}
-
-    monkeypatch.setattr(cli, "build_math_review_packets", fake_build)
-    result = runner.invoke(
-        cli.app,
-        [
-            "source",
-            "math-review-packets",
-            str(tmp_path),
-            "--manual-only",
-            "--include-unit-ids",
-            "same,same",
-        ],
-    )
+@pytest.mark.parametrize("command", ["extract", "math-candidates", "math-review-packets", "import-math-review", "repair-math-structural-ledger"])
+def test_previous_source_entrypoints_are_removed(command: str) -> None:
+    result = runner.invoke(cli.app, ["source", command, "--help"])
     assert result.exit_code != 0
-    assert "duplicate unit IDs" in result.output
-    assert called is False
+    assert "No such command" in result.output
 
 
-def test_import_math_review_forwards_strict_structural_sidecar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed: list[tuple[Any, ...]] = []
-
-    def fake_import(*args: Any) -> dict[str, Any]:
+def test_source_prepare_preserves_page_scope_without_a_mode_selector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed = []
+    def prepare(*args: Any) -> dict[str, Any]:
         observed.append(args)
-        return {"structural_layout_override_count": 2}
-
-    monkeypatch.setattr(cli, "import_math_review", fake_import)
-    decisions = tmp_path / "result" / "decisions.jsonl"
-    sidecar = tmp_path / "result" / "structural-overrides.yaml"
-    result = runner.invoke(
-        cli.app,
-        [
-            "source",
-            "import-math-review",
-            str(tmp_path / "project"),
-            str(decisions),
-            "--confirm-visual-review",
-            "--structural-overrides",
-            str(sidecar),
-        ],
-    )
+        return {"prepared_pages": [2, 3]}
+    monkeypatch.setattr(fidelity, "prepare_source", prepare)
+    result = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--pages", "2-3"])
     assert result.exit_code == 0, result.output
-    project, input_file, confirmed, structural_file = observed[0]
-    assert project == tmp_path / "project"
-    assert input_file == decisions
-    assert confirmed is True
-    assert structural_file == sidecar
-    assert json.loads(result.output)["structural_layout_override_count"] == 2
+    assert observed == [(tmp_path, "2-3", False, False)]
+    assert json.loads(result.output)["prepared_pages"] == [2, 3]
+    invalid = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--mode", "visual"])
+    assert invalid.exit_code != 0
+    assert len(observed) == 1
 
 
-def test_import_math_review_help_marks_structural_yaml_as_strictly_bound() -> None:
-    result = runner.invoke(cli.app, ["source", "import-math-review", "--help"])
+def test_source_review_packet_retains_requested_pages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed = []
+    def build(*args: Any) -> dict[str, Any]:
+        observed.append(args)
+        return {"pages": [2, 3]}
+    monkeypatch.setattr(fidelity, "build_source_review_packet", build)
+    result = runner.invoke(cli.app, ["source", "review-packets", str(tmp_path), "--pages", "2-3"])
     assert result.exit_code == 0, result.output
-    assert "packet/hash/decision-bound" in result.output
-    assert "unbound layout YAML is rejected" in result.output
+    assert observed == [(tmp_path, "2-3")]
 
 
-def test_repair_math_structural_ledger_forwards_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed: list[Path] = []
-
-    def fake_repair(project: Path) -> dict[str, Any]:
-        observed.append(project)
-        return {"repaired_count": 1}
-
-    monkeypatch.setattr(cli, "repair_math_structural_review_ledger", fake_repair)
-    project = tmp_path / "project"
-    result = runner.invoke(
-        cli.app,
-        ["source", "repair-math-structural-ledger", str(project)],
-    )
+@pytest.mark.parametrize("lane", ["source", "assets"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_review_import_forwards_explicit_visual_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane: str, confirmed: bool) -> None:
+    observed = []
+    def importing(*args: Any) -> dict[str, Any]:
+        observed.append(args)
+        return {"reviewed": 1}
+    module = fidelity if lane == "source" else representations
+    name = "import_source_review" if lane == "source" else "import_asset_review"
+    monkeypatch.setattr(module, name, importing)
+    path = tmp_path / "review.json"
+    args = [lane, "import-review", str(tmp_path), str(path)]
+    if confirmed:
+        args.append("--confirm-visual-review")
+    result = runner.invoke(cli.app, args)
     assert result.exit_code == 0, result.output
-    assert observed == [project]
-    assert json.loads(result.output)["repaired_count"] == 1
+    assert observed == [(tmp_path, path, confirmed)]
+
+
+def test_asset_submission_is_separate_from_translation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed = []
+    def submit(*args: Any) -> dict[str, Any]:
+        observed.append(args)
+        return {"candidate_count": 1}
+    monkeypatch.setattr(representations, "submit_candidates", submit)
+    path = tmp_path / "candidate.json"
+    result = runner.invoke(cli.app, ["assets", "submit", str(tmp_path), str(path)])
+    assert result.exit_code == 0, result.output
+    assert observed == [(tmp_path, path)]
+
+
+def test_asset_packet_rejects_duplicate_ids_and_uses_source_context(tmp_path: Path) -> None:
+    root, units, _ = make_asset_fixture(tmp_path, [("Original context.", "math", "x=1")])
+    duplicate = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1,fixture-asset-1"])
+    assert duplicate.exit_code != 0
+    assert "unique" in str(duplicate.exception)
+    result = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1"])
+    assert result.exit_code == 0, result.output
+    packet = json.loads(result.output)
+    assert packet["asset_ids"] == ["fixture-asset-1"]
+    assert any(item["unit_id"] == units[0].unit_id for item in packet["context_units"])
+    assert packet["required_images"]
+
+
+def test_asset_revision_packet_forwards_bound_review_feedback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, units, _ = make_asset_fixture(tmp_path, [("Original context.", "figure", "Label")])
+    observed = []
+    def build(*args: Any, host: str | None = None) -> dict[str, Any]:
+        assert host == "auto"
+        observed.append(args)
+        return {"stage": "transcribe"}
+    monkeypatch.setattr(representations, "build_asset_packet", build)
+    result = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1", "--revision-notes", "Restore the omitted label."])
+    assert result.exit_code == 0, result.output
+    assert observed[0][1:3] == (["fixture-asset-1"], "transcribe")
+    assert observed[0][-1] == "Restore the omitted label."
+    assert any(unit.unit_id == units[0].unit_id for unit in observed[0][3])

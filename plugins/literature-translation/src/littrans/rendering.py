@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from functools import partial
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from littrans.models import (
     BatchManifest,
     CalloutKind,
     IssueStatus,
+    ProjectConfig,
     ProjectStatus,
     RenderPolicy,
     ReviewIssue,
@@ -33,11 +35,26 @@ from littrans.models import (
     SidebarRole,
     SourceUnit,
     TableData,
+    TranslationRecord,
     UnitKind,
 )
 from littrans.project import load_terms, translation_map
-from littrans.quality import audit_coverage, qa_report_is_current
+from littrans.quality import STATUS_ORDER, audit_coverage, qa_report_is_current
+from littrans.representations import (
+    ASSET_RE,
+    AssetRenderCache,
+    _index,
+    install_mathjax,
+    mathjax_bootstrap,
+    mathjax_publication_paths,
+    resolve_asset_html,
+    resolve_asset_markdown,
+)
 from littrans.semantics import (
+    DOLLAR_MATH_PATTERN,
+    FENCED_CODE_PATTERN,
+    FOOTNOTE_TOKEN_RE,
+    INLINE_CODE_PATTERN,
     escape_markdown_prose,
     fenced_code,
     normalize_zh_caption,
@@ -403,6 +420,8 @@ def _coalesce_table_units(
             and units[cursor].kind is UnitKind.TABLE
             and units[cursor].table is not None
             and units[cursor].continues_from_previous
+            and not any(part.footnote_refs for part in group)
+            and not units[cursor].footnote_refs
         ):
             group.append(units[cursor])
             cursor += 1
@@ -426,9 +445,38 @@ def _coalesce_table_units(
     return rendered, grouped_ids
 
 
+def _markdown_note_label(unit: SourceUnit) -> str:
+    return "fn-" + unit.unit_id.encode("utf-8").hex()
+
+
+def _markdown_note_definition(unit: SourceUnit, text: str) -> str:
+    lines = text.splitlines() or [""]
+    return f"[^{_markdown_note_label(unit)}]: " + lines[0] + "".join("\n    " + line for line in lines[1:])
+
+
+def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, SourceUnit]) -> str:
+    notes = [unit_map[uid] for uid in unit.footnote_refs if uid in unit_map]
+    # Older units without explicit relationships retain same-page number lookup.
+    if not unit.footnote_refs:
+        notes = [note for note in unit_map.values() if note.page == unit.page and note.kind is UnitKind.FOOTNOTE]
+    labels = {note.footnote_number: _markdown_note_label(note) for note in notes if note.footnote_number}
+    def replace(match: re.Match[str]) -> str:
+        number = match.group("number")
+        return f"[^{labels[number]}]" if number in labels else match[0]
+    return FOOTNOTE_TOKEN_RE.sub(replace, text)
+
+
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
-    text = target or unit.source_text
+    text = target if target is not None else unit.source_text
     safe_text = escape_markdown_prose(text)
+    if unit.kind is UnitKind.TABLE and unit.table:
+        return table_to_markdown(unit.table)
+    if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
+        return safe_text + (
+            f" ({unit.equation_number})"
+            if unit.equation_number and f"({unit.equation_number})" not in text
+            else ""
+        )
     if unit.sidebar_role is SidebarRole.TITLE:
         return f"> **{safe_text}**"
     if unit.sidebar_role is SidebarRole.BODY:
@@ -465,13 +513,18 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CAPTION:
         return f"*{safe_text}*"
     if unit.kind is UnitKind.FOOTNOTE:
-        return f"> **脚注：** {safe_text}"
+        return _markdown_note_definition(unit, safe_text)
     return safe_text
 
 
 INLINE_TOKEN_RE = re.compile(
-    r"(?P<code>(?<!\\)(?P<fence>`+)(?P<code_text>.+?)(?P=fence))"
-    r"|(?P<math>\$(?!\$)(?P<math_text>.+?)(?<!\\)\$)"
+    FENCED_CODE_PATTERN + "|" + INLINE_CODE_PATTERN
+    + "|" + DOLLAR_MATH_PATTERN
+    + r"|(?P<slash_inline>\\\((?P<slash_inline_text>[\s\S]*?)\\\))"
+    r"|(?P<slash_display>\\\[(?P<slash_display_text>[\s\S]*?)\\\])"
+    r"|(?P<strong_em>(?<!\\)\*\*\*(?P<strong_em_text>.+?)\*\*\*)"
+    r"|(?P<strong>(?<!\\)\*\*(?P<strong_text>.+?)\*\*)"
+    r"|(?P<footnote>(?<!\\)\[\^(?P<footnote_number>\d+)\])"
     r"|(?P<emphasis>(?<!\\)(?<!\*)\*(?!\*)(?P<emphasis_text>[^*\n]+?)(?<!\\)\*(?!\*))"
 )
 
@@ -483,12 +536,14 @@ def _mathml(latex: str, display: str) -> str:
         return f'<code class="math-fallback">{html.escape(latex)}</code>'
 
 
-def _inline_html(text: str) -> str:
+def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str, str] | None = None) -> str:
     parts: list[str] = []
     position = 0
     for match in INLINE_TOKEN_RE.finditer(text):
         parts.append(html.escape(text[position : match.start()]).replace("\n", " "))
-        if match.group("code") is not None:
+        if match.group("fenced_code") is not None:
+            parts.append("<pre><code>" + html.escape(match.group("fenced_text") or "") + "</code></pre>")
+        elif match.group("code") is not None:
             code_text = match.group("code_text").replace("\n", " ")
             if (
                 len(code_text) >= 2
@@ -498,21 +553,42 @@ def _inline_html(text: str) -> str:
             ):
                 code_text = code_text[1:-1]
             parts.append("<code>" + html.escape(code_text) + "</code>")
+        elif match.group("display_math") is not None:
+            parts.append('<span class="math display">' + _mathml(match.group("display_math_text"), "block") + "</span>")
         elif match.group("math") is not None:
             parts.append(
                 '<span class="math inline">'
                 + _mathml(match.group("math_text"), "inline")
                 + "</span>"
             )
+        elif match.group("slash_inline") is not None or match.group("slash_display") is not None:
+            display = "block" if match.group("slash_display") is not None else "inline"
+            latex = match.group("slash_display_text") if display == "block" else match.group("slash_inline_text")
+            parts.append(f'<span class="math {display}">' + _mathml(latex, display) + '</span>')
+        elif match.group("strong_em") is not None:
+            parts.append("<strong><em>" + _inline_html(match.group("strong_em_text"), footnote_scope, footnote_targets) + "</em></strong>")
+        elif match.group("strong") is not None:
+            parts.append("<strong>" + _inline_html(match.group("strong_text"), footnote_scope, footnote_targets) + "</strong>")
+        elif match.group("footnote") is not None:
+            number = match.group("footnote_number")
+            anchor = (footnote_targets or {}).get(number, f"fn-{footnote_scope}-{number}")
+            parts.append(f'<sup class="footnote-ref"><a href="#{html.escape(anchor)}">{number}</a></sup>')
         else:
             # Emphasis may legitimately contain inline code or math. Parse its
             # body through the same safe inline renderer so Markdown such as
             # ``*set the `Opacity` property*`` does not leak raw backticks into
             # bilingual HTML.
-            parts.append("<em>" + _inline_html(match.group("emphasis_text")) + "</em>")
+            parts.append("<em>" + _inline_html(match.group("emphasis_text"), footnote_scope, footnote_targets) + "</em>")
         position = match.end()
     parts.append(html.escape(text[position:]).replace("\n", " "))
     return "".join(parts)
+
+
+def _footnote_targets(unit: SourceUnit, unit_map: dict[str, SourceUnit], source_view: bool) -> dict[str, str]:
+    side = "source" if source_view else "target"
+    return {note.footnote_number: f"fn-{side}-{note.unit_id}"
+            for uid in unit.footnote_refs if (note := unit_map.get(uid)) is not None
+            and note.kind is UnitKind.FOOTNOTE and note.footnote_number}
 
 
 def _unit_html(
@@ -521,14 +597,31 @@ def _unit_html(
     target_table: Any = None,
     *,
     source_view: bool,
+    unit_map: dict[str, SourceUnit] | None = None,
 ) -> str:
+    targets = _footnote_targets(unit, unit_map or {}, source_view)
+    scope = f"p{unit.page}-{'source' if source_view else 'target'}"
+    def inline(value: str) -> str:
+        return _inline_html(value, scope, targets)
     text = target if target is not None else (unit.source_markdown or unit.source_text)
+    if (ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}
+            and not (unit.kind is UnitKind.TABLE and (target_table or unit.table))):
+        number = (
+            f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
+            if unit.equation_number and f"({unit.equation_number})" not in text
+            else ""
+        )
+        if unit.kind is UnitKind.FIGURE:
+            return '<figure class="fidelity-complex source-figure">' + inline(text) + "</figure>"
+        # A displayed line that also carries prose keeps its assets on the line.
+        mixed = " display-line" if unit.kind is UnitKind.EQUATION and ASSET_RE.sub("", text).strip() else ""
+        return f'<div class="fidelity-complex{mixed}">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
-        return '<aside class="sidebar-fragment sidebar-title"><h3>' + _inline_html(text) + "</h3></aside>"
+        return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
-            plain_unit, target, target_table, source_view=source_view
+            plain_unit, target, target_table, source_view=source_view, unit_map=unit_map
         ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
@@ -555,7 +648,7 @@ def _unit_html(
         ) + number + "</div>"
     if unit.kind is UnitKind.TABLE:
         table = target_table or unit.table
-        return table_to_html(table, _inline_html) if table else _inline_html(text)
+        return table_to_html(table, inline) if table else inline(text)
     if unit.kind is UnitKind.NOTE:
         variant = _note_variant(unit.source_text, unit.callout_kind)
         source_labels = {
@@ -575,28 +668,115 @@ def _unit_html(
         label = source_labels[variant] if source_view else target_labels[variant]
         return (
             f'<aside class="source-note"><strong>{label}</strong><p>'
-            + _inline_html(_note_body(text))
+            + inline(_note_body(text))
             + "</p></aside>"
         )
     if unit.kind is UnitKind.HEADING:
-        return "<h2>" + _inline_html(text) + "</h2>"
+        return "<h2>" + inline(text) + "</h2>"
     if unit.kind is UnitKind.LIST_ITEM:
         ordinal = _list_ordinal(unit.source_text)
-        body = _inline_html(_list_body(text))
+        body = inline(_list_body(text))
         if ordinal is not None:
             return f'<ol start="{ordinal}"><li>{body}</li></ol>'
+        if re.match(r"^\s*\([A-Za-z]\)", unit.source_text):
+            return '<ul style="list-style:none"><li>' + body + "</li></ul>"
         return "<ul><li>" + body + "</li></ul>"
     if unit.kind is UnitKind.CAPTION:
-        return "<figcaption>" + _inline_html(text) + "</figcaption>"
+        return "<figcaption>" + inline(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:
-        return '<aside class="footnote">' + _inline_html(text) + "</aside>"
+        label = f'<strong>脚注 {html.escape(unit.footnote_number)}：</strong>' if unit.footnote_number else ""
+        # The numbered anchor serves callers without explicit footnote_refs; an
+        # unnumbered note has no caller to serve and must not share one id.
+        numbered = f'<span id="fn-{scope}-{html.escape(unit.footnote_number)}"></span>' if unit.footnote_number else ""
+        return (numbered
+                + f'<aside class="footnote" id="fn-{"source" if source_view else "target"}-{html.escape(unit.unit_id)}">'
+                + label + inline(text) + "</aside>")
     if unit.kind is UnitKind.FIGURE and unit.figure_labels:
         labels = "".join(
-            f"<li>{_inline_html(label.source if source_view else (label.target or label.source))}</li>"
+            f"<li>{inline(label.source if source_view else (label.target or label.source))}</li>"
             for label in unit.figure_labels
         )
         return "<ul class=figure-labels>" + labels + "</ul>"
-    return "<p>" + _inline_html(text) + "</p>"
+    return "<p>" + inline(text) + "</p>"
+
+
+def _asset_companions(record: Any, unit: SourceUnit | None = None, unit_map: dict[str, SourceUnit] | None = None) -> tuple[str, str]:
+    """Translate image-native prose/labels beside the unchanged original asset."""
+    inline = partial(_inline_html, footnote_scope=f"p{unit.page}-target" if unit else "",
+                     footnote_targets=_footnote_targets(unit, unit_map or {}, False) if unit else {})
+    markdown: list[str] = []
+    markup: list[str] = []
+    for item in record.asset_translations if record is not None else []:
+        if not item.language_present:
+            continue
+        body: list[str] = []
+        if item.target_text:
+            markdown.append(escape_markdown_prose(item.target_text))
+            body.append("<p>" + inline(item.target_text) + "</p>")
+        if item.target_table is not None:
+            markdown.append(table_to_markdown(item.target_table))
+            body.append(table_to_html(item.target_table, inline))
+        for label in item.figure_labels:
+            markdown.append(f"- {escape_markdown_prose(label.source)}：{escape_markdown_prose(label.target or '')}")
+            body.append("<p>" + inline(label.source) + "：" + inline(label.target or "") + "</p>")
+        markup.append('<aside class="asset-translation" data-asset-id="' + html.escape(item.asset_id, quote=True)
+                      + '">' + "".join(body) + "</aside>")
+    return "\n\n".join(markdown), "".join(markup)
+
+
+def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep a source paragraph or statement's prose and displays in one row.
+
+    Preserve each child's markup and stable anchor: parent membership expresses
+    a semantic container, not permission to concatenate distinct list items.
+    """
+    grouped: list[dict[str, Any]] = []
+    for row in rows:
+        unit = row["unit"]
+        if (grouped and unit.parent_id
+                and grouped[-1]["unit"].parent_id == unit.parent_id
+                and not unit.sidebar_id
+                and unit.kind not in {UnitKind.HEADING, UnitKind.FOOTNOTE, UnitKind.NOTE}):
+            previous = grouped[-1]
+            anchor = html.escape(unit.unit_id)
+            previous["source_html"] += f'<a id="{anchor}"></a>' + row["source_html"]
+            previous["target_html"] += row["target_html"]
+            previous["reader_notes"].extend(row["reader_notes"])
+            previous["assets"].extend(row["assets"])
+            previous["last_page"] = max(previous["last_page"], row["last_page"])
+        else:
+            grouped.append({**row, "reader_notes": list(row["reader_notes"]), "assets": list(row["assets"])})
+    return grouped
+
+
+def _intersecting_manifests(root: Path, selected_ids: set[str]) -> list[BatchManifest]:
+    return [
+        manifest
+        for path in (root / "batches").iterdir()
+        if path.is_dir() and (path / "manifest.yaml").is_file()
+        for manifest in [load_manifest(root, path.name)]
+        if selected_ids & set(manifest.unit_ids)
+    ]
+
+
+def _rendered_status(
+    config: ProjectConfig,
+    units: list[SourceUnit],
+    translations: dict[str, TranslationRecord],
+) -> ProjectStatus:
+    """Lowest record status among the rendered units.
+
+    The project status is a high-water mark across every batch, so a single
+    batch render must not borrow it.
+    """
+    statuses = [
+        translations[unit.unit_id].status
+        for unit in units
+        if unit.translatable and unit.unit_id in translations
+    ]
+    if not statuses:
+        return config.status
+    return min(statuses, key=lambda status: STATUS_ORDER[status])
 
 
 def render_project(
@@ -606,8 +786,15 @@ def render_project(
     allow_draft: bool = False,
     batch_id: str | None = None,
     batch_ids: list[str] | None = None,
+    originals_only: bool = False,
 ) -> dict[str, str]:
     config = load_project(root)
+    originals_only_reason: str | None = "requested" if originals_only else None
+    if not originals_only and not _index(root)["candidates"]:
+        # Without any transcription candidate the per-formula "transcription
+        # pending" labels are pure noise; the original images are the edition.
+        originals_only = True
+        originals_only_reason = "no-transcription-candidates"
     publishable = (
         {ProjectStatus.EXTERNAL_REVIEWED, ProjectStatus.HUMAN_APPROVED}
         if config.external_review and config.external_review.enabled
@@ -631,7 +818,7 @@ def render_project(
     if batch_ids is not None:
         from littrans.workflow import _validate_batch_set
 
-        _validate_batch_set(root, batch_ids)
+        _validate_batch_set(root, batch_ids, label="Render")
     selected_batch_ids = batch_ids or ([batch_id] if batch_id else [])
     manifests = [load_manifest(root, value) for value in selected_batch_ids]
     pages = (
@@ -640,6 +827,7 @@ def render_project(
         else set(parse_page_spec(page_spec or "", config.source_pages))
     )
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    footnote_unit_map = {u.unit_id: u for u in all_units}
     if manifests:
         unit_map = {unit.unit_id: unit for unit in all_units}
         selected_manifest_unit_ids = [
@@ -670,7 +858,19 @@ def render_project(
         units = [unit for unit in all_units if unit.unit_id in selected_set]
     else:
         units = [unit for unit in all_units if unit.page in pages]
+    selected_with_notes = {unit.unit_id for unit in units}
+    while True:
+        expanded = selected_with_notes | {ref for unit in all_units if unit.unit_id in selected_with_notes for ref in unit.footnote_refs}
+        if expanded == selected_with_notes:
+            break
+        selected_with_notes = expanded
+    units = [unit for unit in all_units if unit.unit_id in selected_with_notes]
     units = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
+    parent_ids = {unit.parent_id for unit in units if unit.parent_id}
+    included_ids = {unit.unit_id for unit in units}
+    if any(unit.render_policy is RenderPolicy.INCLUDE and unit.parent_id in parent_ids
+           and unit.unit_id not in included_ids for unit in all_units):
+        raise ValueError("Rendering selection cuts a logical paragraph or statement; include its complete parent group")
     pages |= {unit.page for unit in units}
     if not allow_draft:
         require_verified_extraction(root, pages)
@@ -701,6 +901,16 @@ def render_project(
                 for manifest in manifests
                 if (series := _batch_series(manifest.batch_id)) is not None
             }
+            if not allow_draft:
+                from littrans.external_review import external_review_status
+
+                current_ids = {unit.unit_id for unit in all_units}
+                dependency_manifests = [manifest for manifest in dependency_manifests
+                    if set(manifest.unit_ids) <= current_ids
+                    and qa_report_is_current(root, manifest.batch_id)
+                    and audit_coverage(root, manifest.batch_id)["complete"]
+                    and (not config.external_review or not config.external_review.enabled
+                         or external_review_status(root, manifest.batch_id)["external_approvable"])]
             same_series_manifests = [
                 manifest
                 for manifest in dependency_manifests
@@ -737,14 +947,7 @@ def render_project(
         relevant_manifests = content_manifests
         gate_status: dict[str, tuple[bool, bool, bool]] = {}
         if not relevant_manifests:
-            candidate_manifests = [
-                manifest
-                for path in (root / "batches").iterdir()
-                if path.is_dir()
-                and (path / "manifest.yaml").is_file()
-                for manifest in [load_manifest(root, path.name)]
-                if selected_ids & set(manifest.unit_ids)
-            ]
+            candidate_manifests = _intersecting_manifests(root, selected_ids)
         current_unit_ids = {unit.unit_id for unit in all_units}
         if not relevant_manifests:
             if config.external_review and config.external_review.enabled:
@@ -876,14 +1079,17 @@ def render_project(
     unresolved_path = output / f"{output_name}.unresolved.md"
     render_qa_path = output / f"{output_name}.render-qa.json"
 
+    rendered_status = _rendered_status(config, units, translations)
+    asset_cache = AssetRenderCache(root)
     markdown: list[str] = [
         f"# {config.title}",
         "",
-        f"> 翻译状态：{config.status}；用途：{config.rights_status}。",
+        f"> 翻译状态：{rendered_status}；用途：{config.rights_status}。",
         "",
     ]
     rows: list[dict[str, Any]] = []
     pending_markdown_reader_notes: list[Any] = []
+    pending_markdown_companions: list[str] = []
     previous_page: int | None = None
     previous_unit: SourceUnit | None = None
     for unit_index, unit in enumerate(render_units):
@@ -897,7 +1103,7 @@ def render_project(
                     "",
                 ]
             )
-        record = translations.get(unit.unit_id)
+        record = translations.get(unit.unit_id) if unit.translatable else None
         target = _render_target_text(unit, record.target_text if record else None)
         if target is not None:
             bilingual_target = target
@@ -910,8 +1116,11 @@ def render_project(
         render_unit = unit
         target_table = record.target_table if record else None
         reader_notes = [record.reader_note] if record and record.reader_note else []
+        companion_sources = [(record, unit)]
         if unit.unit_id in grouped_table_ids:
             table_records = [translations.get(unit_id) for unit_id in grouped_table_ids[unit.unit_id]]
+            companion_sources = [(translations.get(unit_id), footnote_unit_map[unit_id])
+                                 for unit_id in grouped_table_ids[unit.unit_id]]
             if all(item and item.target_table for item in table_records):
                 target_table = _merge_continued_table_data(
                     [item.target_table for item in table_records if item and item.target_table]
@@ -926,14 +1135,30 @@ def render_project(
             render_unit = unit.model_copy(
                 update={"figure_labels": rendered_figure_labels}
             )
-        rendered = _target_markdown(render_unit, target)
+        rendered = (escape_markdown_prose(target or render_unit.source_text)
+                    if render_unit.kind is UnitKind.FOOTNOTE else _target_markdown(render_unit, target))
+        companions = [_asset_companions(item, source_unit, footnote_unit_map)
+                      for item, source_unit in companion_sources]
+        companion_md = "\n\n".join(md for md, _ in companions if md)
+        companion_html = "".join(markup for _, markup in companions)
+        if companion_md:
+            companion_md = resolve_asset_markdown(root, companion_md, output, originals_only=originals_only, cache=asset_cache)
+            if unit.kind is UnitKind.FOOTNOTE:
+                rendered += "\n\n" + companion_md
+            else:
+                pending_markdown_companions.append(_markdown_footnote_calls(companion_md, unit, footnote_unit_map))
+        rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only, cache=asset_cache)
+        rendered = _markdown_footnote_calls(rendered, unit, footnote_unit_map)
+        if unit.kind is UnitKind.FOOTNOTE:
+            rendered = _markdown_note_definition(unit, rendered)
         anchor = "".join(
-            f'<a id="{unit_id}"></a>'
+            f'<a id="{html.escape(unit_id)}"></a>'
             for unit_id in grouped_unit_ids.get(unit.unit_id, [unit.unit_id])
         )
         if (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.NOTE
             and unit.kind is UnitKind.NOTE
             and markdown
@@ -945,6 +1170,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.LIST_ITEM
             and unit.kind is UnitKind.LIST_ITEM
             and markdown
@@ -958,6 +1184,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.PARAGRAPH
             and unit.kind is UnitKind.PARAGRAPH
             and previous_unit.sidebar_role is SidebarRole.BODY
@@ -973,6 +1200,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and previous_unit is not None
+            and 0 <= unit.page - previous_unit.page <= 1
             and previous_unit.kind is UnitKind.PARAGRAPH
             and markdown
         ):
@@ -994,30 +1222,39 @@ def render_project(
         )
         next_continues_this_unit = bool(
             next_unit
+            and 0 <= next_unit.page - unit_last_page <= 1
             and next_unit.continues_from_previous
             and next_unit.kind is unit.kind
             and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
         )
+        if not next_continues_this_unit:
+            for companion in pending_markdown_companions:
+                markdown.extend([companion, ""])
+            pending_markdown_companions.clear()
         if not unit.continued_to_next and not next_continues_this_unit:
             for reader_note in pending_markdown_reader_notes:
                 markdown.extend([*_reader_note_markdown(reader_note), ""])
             pending_markdown_reader_notes.clear()
         assets = (
             [f"../{asset.path.replace('\\', '/')}" for asset in unit.asset_refs]
-            if unit.kind is UnitKind.FIGURE
+            if unit.kind is UnitKind.FIGURE and not ASSET_RE.search(unit.source_text)
             else []
         )
         source_html = _unit_html(
             unit,
             unit.source_markdown or unit.source_text,
             source_view=True,
+            unit_map=footnote_unit_map,
         )
         target_html = _unit_html(
             render_unit,
             bilingual_target,
             target_table,
             source_view=False,
+            unit_map=footnote_unit_map,
         )
+        source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only, cache=asset_cache)
+        target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only, cache=asset_cache)
         if unit.unit_id in grouped_unit_ids:
             extra_anchors = "".join(
                 f'<span id="{html.escape(unit_id)}"></span>'
@@ -1027,6 +1264,7 @@ def render_project(
         if (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.NOTE
             and unit.kind is UnitKind.NOTE
         ):
@@ -1060,6 +1298,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.LIST_ITEM
             and unit.kind is UnitKind.LIST_ITEM
         ):
@@ -1093,6 +1332,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
             and unit.kind is UnitKind.PARAGRAPH
             and rows[-1]["unit"].sidebar_role is SidebarRole.BODY
@@ -1128,6 +1368,7 @@ def render_project(
         elif (
             unit.continues_from_previous
             and rows
+            and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
             and source_html.startswith("<p>")
             and rows[-1]["source_html"].endswith("</p>")
@@ -1162,10 +1403,16 @@ def render_project(
                     "reader_notes": list(reader_notes),
                 }
             )
+        rows[-1].setdefault("companions", []).append(companion_html)
         previous_page = unit_last_page
         previous_unit = unit
+    for companion in pending_markdown_companions:
+        markdown.extend([companion, ""])
+    for row in rows:
+        row["target_html"] += "".join(row.pop("companions", []))
     for reader_note in pending_markdown_reader_notes:
         markdown.extend([*_reader_note_markdown(reader_note), ""])
+    rows = _group_parent_rows(rows)
     for index, row in enumerate(rows):
         sidebar_id = row["unit"].sidebar_id
         row["sidebar_start"] = bool(
@@ -1190,10 +1437,12 @@ def render_project(
     template = environment.from_string(template_text)
     html_text = template.render(
         config=config,
+        status=rendered_status,
         rows=rows,
-        pages=f"{min(pages)}–{max(pages)}",
+        pages=(f"{min(pages)}–{max(pages)}" if len(set(pages)) == max(pages) - min(pages) + 1 else "、".join(map(str, sorted(set(pages))))),
         pdf_uri=config.source(root).as_uri(),
         allow_draft=allow_draft,
+        mathjax_bootstrap="" if originals_only else mathjax_bootstrap(),
     )
     render_errors = _render_quality_errors(markdown_text, html_text, units)
     if render_errors:
@@ -1202,6 +1451,9 @@ def render_project(
         if name is None and batch_id is not None:
             _require_default_output_owner(output, output_name, batch_id)
         review_batch_ids = [manifest.batch_id for manifest in content_manifests]
+        quality_batch_ids = review_batch_ids or [
+            manifest.batch_id for manifest in _intersecting_manifests(root, selected_ids)
+        ]
         external_path = (
             output / f"{output_name}.external-review.md"
             if config.external_review
@@ -1218,12 +1470,24 @@ def render_project(
         ]
         if external_path is not None:
             publication_paths.append(external_path)
+        install_runtime = not originals_only and any(ASSET_RE.search(unit.source_markdown or unit.source_text) for unit in units)
+        if install_runtime:
+            publication_paths.extend(mathjax_publication_paths(output))
         publication_snapshot = snapshot_files(publication_paths)
         try:
+            if install_runtime:
+                install_mathjax(output)
             atomic_write_text(markdown_path, markdown_text)
             atomic_write_text(html_path, html_text)
             _write_quality_summary(
-                qa_path, root, units, missing, unapproved, open_severe
+                qa_path,
+                root,
+                units,
+                missing,
+                unapproved,
+                open_severe,
+                batch_ids=quality_batch_ids,
+                rendered_status=rendered_status,
             )
             _write_unresolved(unresolved_path, root, selected_ids)
             atomic_write_text(
@@ -1231,10 +1495,14 @@ def render_project(
                 json.dumps(
                     {
                         "passed": not render_errors,
+                        "rendered_status": rendered_status,
+                        "review_batch_ids": quality_batch_ids,
                         "selection": {
                             "batch_id": batch_id,
                             "batch_ids": selected_batch_ids or None,
                             "pages": sorted(pages),
+                            "originals_only": originals_only,
+                            "originals_only_reason": originals_only_reason,
                         },
                         "unit_ids": [unit.unit_id for unit in units],
                         "errors": render_errors,
@@ -1254,6 +1522,8 @@ def render_project(
             "unresolved": str(unresolved_path),
             "render_qa": str(render_qa_path),
         }
+        if originals_only_reason is not None:
+            outputs["originals_only_reason"] = originals_only_reason
         if external_path is not None:
             try:
                 _write_external_review_summary_set(
@@ -1343,7 +1613,7 @@ def _render_quality_errors(
     if re.search(r"(?m)^>[ \t]+>[ \t]+", markdown):
         errors.append("nested-admonition-marker")
     for unit in units:
-        anchor = f'<a id="{unit.unit_id}"></a>'
+        anchor = f'<a id="{html.escape(unit.unit_id)}"></a>'
         if markdown.count(anchor) != 1:
             errors.append(f"unit-anchor-count:{unit.unit_id}:{markdown.count(anchor)}")
     html_ids = re.findall(r'(?<![A-Za-z0-9_-])id="([^"]+)"', rendered_html)
@@ -1361,12 +1631,19 @@ def _write_quality_summary(
     missing: list[str],
     unapproved: list[str],
     open_severe: list[str],
+    *,
+    batch_ids: list[str],
+    rendered_status: ProjectStatus,
 ) -> None:
     translations = translation_map(root)
     translated = sum(unit.unit_id in translations for unit in units if unit.translatable)
     translatable = sum(unit.translatable for unit in units)
+    # Only the batches covering this selection; the project holds reports for
+    # every batch and those would misstate a single-batch edition.
     qa_reports = [
-        json.loads(item.read_text(encoding="utf-8")) for item in (root / "qa").glob("*.json")
+        json.loads(qa_file.read_text(encoding="utf-8"))
+        for batch_id in batch_ids
+        if (qa_file := root / "qa" / f"{batch_id}.json").is_file()
     ]
     review_issues = [
         issue
@@ -1377,6 +1654,8 @@ def _write_quality_summary(
     lines = [
         "# Translation quality summary",
         "",
+        f"- Translation status: {rendered_status}",
+        f"- Batches: {', '.join(batch_ids) if batch_ids else 'none'}",
         f"- Source units: {len(units)}",
         f"- Translatable units: {translatable}",
         f"- Translated units: {translated}",

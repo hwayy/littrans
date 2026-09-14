@@ -1,4 +1,4 @@
 interface:
   display_name: "Finalize Literature Translation"
-  short_description: "Gate, approve, and render reviewed translations"
-  default_prompt: "Use $finalize-literature-translation to validate and render the reviewed translation."
+  short_description: "Finalize reviewed LitTrans batches and render Chinese Markdown p"
+  default_prompt: "Use $finalize-literature-translation to render this reviewed batch with faithful original-image fallback."

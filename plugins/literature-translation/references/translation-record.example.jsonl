@@ -1,2 +1,1 @@
-{"unit_id":"p0001-u001-deadbeef","target_text":"示例译文。","source_hash":"replace-with-manifest-source-hash","reader_note":null,"term_proposals":[],"uncertainties":[]}
-
+{"unit_id": "p0001-u001-deadbeef", "target_text": "其范数满足 {{asset:example-asset-id}}。", "source_hash": "replace-with-packet-source-hash", "image_evidence": {"evidence/pages/fidelity-p0001.png": "replace-with-inspected-page-image-sha256", "derived/assets/fidelity/replace-with-asset-content-sha256/original.png": "replace-with-inspected-asset-image-sha256"}, "reader_note": null, "term_proposals": [], "uncertainties": []}
