@@ -17,6 +17,7 @@ BOLD_FONT = re.compile(r"bx|bold|heavy|black|semibold|demi|(?<![a-z])(?:cm|sf|ec
 # (CMTI, CMSL, CMBXTI, SFTI, SFBI, ECTI ...). Math italic (CMMI) is notation, not emphasis.
 ITALIC_FONT = re.compile(r"ital|oblique|slant|(?<![a-z])(?:cm|sf|ec|ae|lm|tc)(?:bx|b|ss|tt)?(?:ti|sl|it|bi|ri)\d", re.I)
 FORMAT_CONTROLS = {chr(9), chr(10), chr(13)}
+MATH_FONT = re.compile(r"cmmi|cmsy|cmex|msam|msbm|math|symbol|stix|cm[a-z]*sy", re.I)
 
 
 def font_style(font: str) -> str:
@@ -54,9 +55,17 @@ def _bold_run_in(glyphs: list[dict[str, Any]], previous: list[dict[str, Any]]) -
 
 def inked_glyph(glyph: dict[str, Any]) -> bool:
     """Whether a native glyph prints ink. Large TeX operators (CMEX braces, sums,
-    integrals) decode to control characters, which Python counts as whitespace."""
+    integrals) decode to control characters, which Python counts as whitespace; in a
+    mathematical face even CR (the CMEX integral) is a glyph, not a line format."""
     text = str(glyph["text"])
-    return bool(text.strip()) or any(ord(c) < 32 and c not in FORMAT_CONTROLS for c in text)
+    if text.strip():
+        return True
+    controls = [c for c in text if ord(c) < 32]
+    if not controls:
+        return False
+    if MATH_FONT.search(str(glyph.get("font", ""))):
+        return True
+    return any(c not in FORMAT_CONTROLS for c in controls)
 
 
 def _contains(g: dict[str, Any], box: Sequence[float]) -> bool:
@@ -518,7 +527,8 @@ def styled_text(tokens: list[tuple[str, str]]) -> str:
 
 def coalesce_inline_assets(units: list[SourceUnit], assets: dict[str, FidelityAsset], make_unit: Callable[..., SourceUnit], hash_value: Callable[[Any], str]) -> list[SourceUnit]:
     """Adjacent fragments of inline notation form one ordered multi-fragment asset."""
-    pattern = r"\{\{asset:[^}]+\}\}(?:\s*\{\{asset:[^}]+\}\})+"
+    # Fragments on one row only; a row break of a displayed block is a boundary.
+    pattern = r"\{\{asset:[^}]+\}\}(?:[ \t]*\{\{asset:[^}]+\}\})+"
     result = []
     for unit in units:
         text = unit.source_markdown or unit.source_text

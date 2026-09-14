@@ -131,7 +131,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.15-folded-terms|"
+        "deterministic-qa-v6.16-folded-regex|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -493,6 +493,13 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                                    message="Automatic number/token checks cover extracted prose only. "
                                    "Numbers, symbols, and text inside original images require independent visual review.",
                                    unit_id=unit_id))
+            source_rows = [row for row in (unit.source_markdown or unit.source_text).split("\n") if row.strip()]
+            target_rows = [row for row in record.target_text.split("\n") if row.strip()]
+            if unit.kind is UnitKind.EQUATION and len(source_rows) > 1 and len(target_rows) != len(source_rows):
+                warnings.append(QAItem(code="display-rows-mismatch", severity="warning",
+                                       message=f"The displayed block has {len(source_rows)} rows but the translation has "
+                                       f"{len(target_rows)}; keep one row per line so the rendered cases stay aligned.",
+                                       unit_id=unit_id))
         effective_source = ASSET_RE.sub("", effective_source)
         effective_target = ASSET_RE.sub("", effective_target)
         semantic_source = _semantic_comparison_text(effective_source)

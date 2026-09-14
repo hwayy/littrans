@@ -93,6 +93,34 @@ A printed equation label such as `(1.6)` beside a display is bound to the unit's
 line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
 label that stays in prose belongs to a block that preparation could not bind to a display asset.
 
+A displayed block whose lines carry native prose (a cases formula with condition words) keeps
+its rows: `source_text` separates them with `\n`, the Markdown edition emits hard breaks and the
+HTML editions stack them as `display-row` spans; when the first row opens with an asset
+placeholder followed by text (a stretched brace, an `X = {` head) that asset becomes the
+`display-lead` column beside the rows. Translators keep one target row per source row
+(`display-rows-mismatch` warning otherwise). Inline fragments are coalesced along a row only.
+
+An `equation` unit without asset placeholders whose text shows no notation (an upright `Prob`
+operator, a lone `otherwise.`) is native text: packets, Markdown and HTML render it — and its
+translation — as text, not as a symbol sequence. Text with LaTeX commands, relations, digits or
+Greek/operator characters, or a unit with `latex`, still renders as display math.
+
+Glyphs of a mathematical face (CMMI, CMSY, CMEX, MSAM/MSBM, STIX, ...) that decode to control
+characters are ink: CMEX encodes the integral sign as CR and big parentheses as LF, and a
+display region owns them like any other glyph. A stretched delimiter assembled from pieces on
+several baselines (⎧ ⎪ ⎨ ⎪ ⎩) is kept in one region; regions that had split it are merged and
+record `stretched-delimiter-merged`. The review packet's `boundary_diagnostics` report
+`math-ink-outside-ownership` when a symbol-face glyph inside a displayed crop is owned by
+another asset, since the explicit export draws owned paths only and would leave a hole.
+
+Words that stay inside a displayed formula's crop (`if`, `otherwise.`, `for all`, `is even`)
+are declared automatically as `formula_conditions` (provenance `auto-formula-conditions`),
+one per notation-free segment of a visual line, trimmed of surrounding brackets and
+punctuation; word gaps TeX sets without a space glyph appear as spaces in `source_text`. An
+upright operator name applied to its argument (`Prob(`, `Var(`) is notation, not a condition.
+The declared words make the unit translatable and require an `asset_translations` companion,
+exactly as reviewer-declared conditions do.
+
 Original glyph paths are measured from the page SVG to size assets, including pages MuPDF
 wraps in a page-sized clip group (CropBox differs from MediaBox). Glyphs that still cannot be
 measured keep their font metric box and the owning region records `ink-bounds-unmeasured` in
@@ -196,6 +224,10 @@ transaction rolls back on any violation.
   `translatable`. Across the page's units every page asset must be referenced exactly once. When
   `units` is omitted the units are re-derived from the regions with the normal structure
   assembly and inline-fragment coalescing.
+- A region `bbox` (or fragment `bbox`) is the target box: only owned glyph ink is padded by
+  0.5pt, so a `fragment.bbox` copied from the packet reproduces the same fragment, `width`,
+  `height`, `baseline` and `content_sha256`. Fragment dimensions derive from the 4-decimal
+  `bbox`, so a re-derived fragment compares byte for byte.
 - Footnote relationships are validated against the retained and replacement units together:
   unknown, non-footnote or duplicate targets and call numbers that do not match the referenced
   definitions reject the whole import.
@@ -206,10 +238,12 @@ transaction rolls back on any violation.
 
 ### Formula-contained language and original page overflow
 
-A complete displayed cases formula may contain condition words such as “and … is odd”. A
-reviewed region can declare `formula_conditions: [{glyph_ids: [...], source_text: "..."}]`. Each
-entry must match owned native glyphs in native order on one visual line. The source gate still
-checks all undeclared prose. It additionally requires the independent page review's
+A complete displayed cases formula may contain condition words such as “and … is odd”.
+Preparation declares them itself (see [Prepared units and assets](#prepared-units-and-assets));
+a reviewed region can also declare `formula_conditions: [{glyph_ids: [...], source_text: "..."}]`.
+Each entry must match owned native glyphs in native order on one visual line; `source_text`
+is compared ignoring whitespace, so TeX word gaps may be written as spaces. The source gate
+still checks all undeclared prose. It additionally requires the independent page review's
 `formula_conditions_checked`; the asset remains math, its source unit becomes translatable, and
 translation QA requires a Chinese companion and rejects a no-language attestation. Empty
 declarations are omitted from serialization to preserve existing source fingerprints.
@@ -405,8 +439,10 @@ Rules worth knowing when reading a report:
   term QA enforces.
 - `match` selects how `source` is located in the folded text: `substring` (default; `measure`
   also hits `measurable`), `word` (no letter/digit on either side), or `regex` (a Python pattern
-  searched case-insensitively in the folded text, e.g. `\bpartition\b(?! function)`). Invalid
-  modes or patterns fail loading.
+  searched case-insensitively in the folded text, e.g. `\bpartition\b(?! function)`). The
+  literal characters of a regex are folded like a substring source (`Hölder`, `Chebyshev’s`
+  and `H¨older`, `Chebyshev's` are the same pattern) while escape sequences such as `\b`, `\B`
+  or `\s` are kept verbatim. Invalid modes or patterns fail loading.
 - When `source` occurs in a unit, `target` must appear in that unit's translation
   (`approved-term-missing`). A `source` that matches no prepared unit at all is reported once per
   QA run as the warning `approved-term-never-matched`; fix the spelling or narrow the entry.
@@ -414,7 +450,9 @@ Rules worth knowing when reading a report:
   not that unit contains `source`. List only wording that is wrong in every context (a wrong
   transliteration), never a rendering that is merely wrong for this term (`mean` → 意味着).
 - Editing the glossary changes the QA context of every batch and the audit context of batches
-  whose relevant terms change; finish the terminology baseline before the audit wave.
+  whose relevant terms change (existing audits become `audit_stale`); finish the terminology
+  baseline before `source prepare`, or at the latest before the audit wave. Drafts belong in
+  `glossary/candidates.yaml`, which has no effect until an entry is moved into `approved.yaml`.
 
 ## Audit coverage
 

@@ -200,8 +200,10 @@ def load_terms(root: Path, filename: str = "approved.yaml", *, enforced_only: bo
         if mode not in TERM_MATCH_MODES:
             raise ValueError(f"{path}: term {source!r} has unknown match mode {mode!r}; use one of {TERM_MATCH_MODES}")
         if mode == "regex":
+            from littrans.evidence import fold_regex_pattern
+
             try:
-                re.compile(source, re.I)
+                re.compile(fold_regex_pattern(source), re.I)
             except re.error as exc:
                 raise ValueError(f"{path}: term {source!r} is not a valid regular expression: {exc}") from exc
         if enforced_only and str(term.get("status", "approved")) != "approved":

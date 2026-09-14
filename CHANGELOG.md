@@ -15,6 +15,35 @@ versioning and correspond to Git tags named `v<version>`.
   a source that matches no prepared unit is reported as the `approved-term-never-matched`
   warning. `fidelity-workflow.md` documents the entry contract, including that `forbidden`
   applies to every unit.
+- QA v6.16 folds the literal characters of `match: regex` glossary sources like substring
+  sources while keeping escape sequences verbatim, so `Hölder` or `Chebyshev’s` written in a
+  pattern no longer fails silently against the folded source text.
+- An `equation` unit without asset placeholders whose text is native words (`Prob`,
+  `otherwise.`) renders as upright text — and shows its translation — in packets, Markdown and
+  bilingual HTML instead of a spaced, slanted MathML symbol sequence.
+- Displayed blocks that carry native prose keep their rows (`\n` in `source_text`); the HTML
+  editions stack them as `display-row` spans with a leading asset (a stretched brace) as a
+  column beside them, Markdown emits hard breaks, inline fragments coalesce along a row only,
+  and QA warns `display-rows-mismatch` when the translation's row count differs.
+- Control characters in a mathematical face are ink: the CMEX integral (CR) and big
+  parentheses (LF) are owned by their display region instead of being cut out as a separate
+  asset bound to the following unit. The review packet reports `math-ink-outside-ownership`
+  for symbol-face ink inside a displayed crop owned by another asset.
+- Words kept inside a displayed formula (`if`, `otherwise.`, `for all`, `is even`) are declared
+  automatically as `formula_conditions` (provenance `auto-formula-conditions`), making the unit
+  translatable and requiring an image-language companion; operator names applied to their
+  argument (`Prob(`) are not conditions. Condition `source_text` is compared ignoring
+  whitespace, so TeX word gaps may be written as spaces.
+- Pieces of a stretched delimiter set on several baselines (⎧ ⎪ ⎨ ⎪ ⎩) stay in one region
+  (`stretched-delimiter-merged`) instead of splitting the brace between the display asset and
+  the native runs of its rows.
+- A region override's `bbox` is the target box: only owned glyph ink is padded, so a
+  `fragment.bbox` echoed from the packet reproduces the asset (`bbox`, `width`, `height`,
+  `baseline`, `content_sha256`) unchanged; fragment dimensions derive from the rounded box.
+  Raw regions without owned glyphs lose their extra 0.5pt padding, which changes their
+  identities on the next `--replace` preparation.
+- The source checkpoint's attention list groups pending grouping decisions per page with the
+  asset IDs collapsed in `<details>`, instead of one line per asset.
 - Original glyph paths are measured and exported through the page-sized clip group MuPDF emits
   when a PDF CropBox differs from its MediaBox; such pages no longer degrade every asset to a
   nominal-box `raw-region` crop that truncates stretched delimiters. Regions whose glyph ink

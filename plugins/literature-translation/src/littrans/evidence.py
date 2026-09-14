@@ -395,10 +395,35 @@ def source_representation_text(unit: SourceUnit) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def equation_markdown(unit: SourceUnit) -> str:
-    """Return the exact display-math representation emitted in formal Markdown."""
+# Characters that mark notation in an equation unit's text: TeX commands and
+# delimiters, relation/operator ASCII, digits, Greek, letterlike symbols, arrows, operators.
+_NOTATION_CHAR = re.compile(r"[\\$^_=<>|+*/{}\dͰ-Ͽ℀-⅏←-⋿⟀-⟯]")
+
+
+def equation_is_notation(unit: SourceUnit) -> bool:
+    """Whether an equation unit without asset placeholders carries mathematical notation.
+
+    Preserved sources never import LaTeX, so a displayed line the preparation kept as
+    native text (an upright ``Prob`` operator, an ``otherwise.`` case label) has plain
+    words as its text; typesetting those as a symbol sequence spaces and slants them.
+    """
+    if unit.latex:
+        return True
+    return _NOTATION_CHAR.search(unit.source_text) is not None
+
+
+def equation_markdown(unit: SourceUnit, text: str | None = None) -> str:
+    """Return the exact display-math representation emitted in formal Markdown.
+
+    ``text`` substitutes the translation of a native-text display line; notation
+    always renders from the source (``latex`` or the preserved text).
+    """
     if unit.kind is not UnitKind.EQUATION:
         raise ValueError(f"Unit is not an equation: {unit.unit_id}")
+    if not equation_is_notation(unit):
+        body = text if text is not None else unit.source_text
+        number = f" ({unit.equation_number})" if unit.equation_number and f"({unit.equation_number})" not in body else ""
+        return body + number
     number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
     return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
 
@@ -430,6 +455,26 @@ def fold_term_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).casefold()
 
 
+def fold_regex_pattern(pattern: str) -> str:
+    r"""Fold the literal characters of a glossary regex like ``fold_term_text``.
+
+    Escape sequences (``\b``, ``\B``, ``\s`` ...) are copied verbatim so that folding
+    never rewrites the pattern's meaning; only the text between them is folded, so
+    ``Hölder`` or ``Chebyshev’s`` inside a pattern still finds the folded source.
+    """
+    parts = []
+    for piece in re.split(r"(\\.)", pattern, flags=re.S):
+        if piece.startswith("\\") and len(piece) == 2:
+            parts.append(piece)
+        elif piece:
+            folded = piece.translate(_SPACING_ACCENTS)
+            folded = unicodedata.normalize("NFKD", folded)
+            folded = "".join(c for c in folded if unicodedata.category(c) != "Mn")
+            folded = folded.translate(_PUNCTUATION_FOLD)
+            parts.append(re.sub(r"\s+", " ", folded).casefold())
+    return "".join(parts)
+
+
 def without_quoted_titles(text: str) -> str:
     """Drop quoted titles: cited work names are not translated terminology."""
     return re.sub(r'["“][^"”]{2,}["”]', " ", text)
@@ -447,7 +492,7 @@ def term_matches(term: dict[str, Any], folded_source: str) -> bool:
         return False
     mode = str(term.get("match", "substring"))
     if mode == "regex":
-        return re.search(source_term, folded_source, re.I) is not None
+        return re.search(fold_regex_pattern(source_term), folded_source, re.I) is not None
     folded_term = fold_term_text(source_term)
     if mode == "word":
         return re.search(r"(?<!\w)" + re.escape(folded_term) + r"(?!\w)", folded_source) is not None

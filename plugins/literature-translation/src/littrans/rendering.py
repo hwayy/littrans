@@ -19,6 +19,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import (
     dependency_closure,
     effective_figure_labels,
+    equation_is_notation,
     equation_markdown,
 )
 from littrans.extractor import parse_page_spec
@@ -472,6 +473,9 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.TABLE and unit.table:
         return table_to_markdown(unit.table)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
+        if unit.kind is UnitKind.EQUATION and "\n" in safe_text:
+            # Rows of a displayed block stay rows: hard breaks, not a flowed paragraph.
+            safe_text = "  \n".join(row for row in safe_text.split("\n") if row.strip())
         return safe_text + (
             f" ({unit.equation_number})"
             if unit.equation_number and f"({unit.equation_number})" not in text
@@ -499,7 +503,8 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CODE:
         return fenced_code(unit.source_text, unit.code_language)
     if unit.kind is UnitKind.EQUATION:
-        return equation_markdown(unit)
+        # A native-text display line ("Prob", "otherwise.") renders its translation as text.
+        return equation_markdown(unit, safe_text if not equation_is_notation(unit) else None)
     if unit.kind is UnitKind.FIGURE:
         asset = _asset_markdown(unit) or f"`[figure: PDF page {unit.page}]`"
         labels = [
@@ -584,6 +589,21 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
     return "".join(parts)
 
 
+def _display_rows_html(rows: list[str], inline: Any, number: str) -> str:
+    """Stack the rows of a displayed block; a leading asset spans them.
+
+    A cases formula keeps its brace (or ``X = {`` head) as the lead and its rows as
+    a column, so a tall delimiter is not squeezed into a single flowed line.
+    """
+    lead = ""
+    first = ASSET_RE.match(rows[0])
+    if first and rows[0][first.end():].strip():
+        lead = '<span class="display-lead">' + inline(first[0]) + "</span>"
+        rows = [rows[0][first.end():].strip(), *rows[1:]]
+    body = "".join('<span class="display-row">' + inline(row) + "</span>" for row in rows)
+    return '<div class="fidelity-complex display-line multirow">' + lead + '<span class="display-rows">' + body + "</span>" + number + "</div>"
+
+
 def _footnote_targets(unit: SourceUnit, unit_map: dict[str, SourceUnit], source_view: bool) -> dict[str, str]:
     side = "source" if source_view else "target"
     return {note.footnote_number: f"fn-{side}-{note.unit_id}"
@@ -615,6 +635,9 @@ def _unit_html(
             return '<figure class="fidelity-complex source-figure">' + inline(text) + "</figure>"
         # A displayed line that also carries prose keeps its assets on the line.
         mixed = " display-line" if unit.kind is UnitKind.EQUATION and ASSET_RE.sub("", text).strip() else ""
+        rows = [row for row in text.split("\n") if row.strip()] if unit.kind is UnitKind.EQUATION else []
+        if len(rows) > 1:
+            return _display_rows_html(rows, inline, number)
         return f'<div class="fidelity-complex{mixed}">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
@@ -643,6 +666,9 @@ def _unit_html(
             if unit.equation_number
             else ""
         )
+        if not equation_is_notation(unit):
+            # Native words on a displayed line stay upright text and keep their translation.
+            return '<div class="fidelity-complex display-line">' + inline(text) + number + "</div>"
         return '<div class="math display">' + _mathml(
             unit.latex or unit.source_text, "block"
         ) + number + "</div>"

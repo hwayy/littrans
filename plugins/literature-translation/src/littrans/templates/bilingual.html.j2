@@ -54,6 +54,10 @@
     .fidelity-complex > .equation-number { display:block; position:static; transform:none; text-align:right; }
     .fidelity-complex.display-line { text-align:center; }
     .fidelity-complex.display-line .fidelity-asset[data-display="true"] { display:inline-block; margin:.2em .4em; vertical-align:middle; }
+    .fidelity-complex.display-line.multirow { display:flex; align-items:center; justify-content:center; gap:.3em; }
+    .display-rows { display:inline-flex; flex-direction:column; align-items:flex-start; text-align:left; }
+    .display-row { display:block; }
+    .display-lead .fidelity-asset[data-display="true"] { display:inline-block; margin:0; }
     .fidelity-asset [hidden] { display:none!important; }
     @media (max-width: 800px) { article { grid-template-columns:1fr; } .source { border-right:0; border-bottom:1px dashed var(--line); } }
     @media (prefers-color-scheme: dark) { :root { --paper:#181a1b; --ink:#e8e4dc; --muted:#aaa69e; --line:#3b3d3e; --accent:#8ec4ea; --note:#403619; } }

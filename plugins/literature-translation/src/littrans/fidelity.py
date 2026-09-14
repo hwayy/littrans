@@ -22,7 +22,7 @@ from littrans.fidelity_models import (
 )
 from littrans.layout_detector import detect_layout
 from littrans.models import AssetRef, SemanticStatus, SourceUnit, TranslationRecord, UnitKind
-from littrans.source_structure import BOLD_FONT, font_style, inked_glyph, is_bullet_line
+from littrans.source_structure import BOLD_FONT, MATH_FONT, font_style, inked_glyph, is_bullet_line
 from littrans.storage import (
     atomic_write_bytes,
     atomic_write_text,
@@ -38,7 +38,6 @@ from littrans.storage import (
     write_jsonl,
 )
 
-MATH_FONT = re.compile(r"cmmi|cmsy|cmex|msam|msbm|math|symbol|stix|cm[a-z]*sy", re.I)
 MATH_CHAR = re.compile(r"[\u0370-\u03ff\u2100-\u214f\u2190-\u22ff\u27c0-\u27ef=<>^_|]")
 MATH_OPERATORS = {"sin", "cos", "tan", "log", "ln", "exp", "lim", "sup", "inf", "max", "min", "det", "rank", "diag", "span", "arg", "dim", "ker", "poly", "tr"}
 # TeX-style spacing accents set as separate glyphs above a base letter.
@@ -333,6 +332,7 @@ def _prose_boundary_ids(glyphs: list[dict[str, Any]]) -> set[str]:
 def _boundary_diagnostics(glyphs: list[dict[str, Any]], assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     protected = _prose_boundary_ids(glyphs)
     diagnostics = []
+    owners = {gid: asset["id"] for asset in assets for fragment in asset["fragments"] for gid in fragment["glyph_ids"]}
     for asset in assets:
         if asset["kind"] != "math":
             continue
@@ -341,6 +341,16 @@ def _boundary_diagnostics(glyphs: list[dict[str, Any]], assets: list[dict[str, A
         if contaminated:
             diagnostics.append({"code": "prose-boundary-in-math", "asset_id": asset["id"], "glyph_ids": contaminated,
                                 "action": "Inspect original prose/citation context and correct glyph ownership before approval."})
+        if not asset.get("display"):
+            continue
+        # A symbol-face glyph inside a displayed formula's crop but owned elsewhere leaves a
+        # hole in the export (the explicit export draws owned paths only).
+        holes = [g["id"] for g in glyphs
+                 if g["id"] not in ids and owners.get(g["id"]) and inked_glyph(g) and MATH_FONT.search(g["font"])
+                 and any(_inside(g, fragment["bbox"]) for fragment in asset["fragments"])]
+        if holes:
+            diagnostics.append({"code": "math-ink-outside-ownership", "asset_id": asset["id"], "glyph_ids": holes,
+                                "action": "Notation inside this display crop belongs to another asset; merge the regions or correct ownership before approval."})
     return diagnostics
 
 
@@ -488,6 +498,119 @@ def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str,
     return ids
 
 
+# Unicode bracket pieces (⎧ ⎪ ⎨ ⎩ ⎛ ⎜ ⎝ ...) and the CMEX10 slots 0x30-0x47 that hold
+# delimiter halves and extenders; CMEX has no digits, so a "digit" in it is a piece.
+_DELIMITER_PIECE = re.compile(r"[⎛-⎭⎰⎱]")
+_CMEX_PIECE_SLOTS = set("0123456789:;<=>?@ABCDEFG")
+
+
+def _delimiter_piece(glyph: dict[str, Any]) -> bool:
+    text = str(glyph["text"])
+    if len(text) != 1:
+        return False
+    return bool(_DELIMITER_PIECE.fullmatch(text)) or (text in _CMEX_PIECE_SLOTS and "cmex" in glyph["font"].lower())
+
+
+def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep every piece of one stretched delimiter in one region.
+
+    TeX builds a tall brace or bracket from a top, extenders and a bottom on
+    separate baselines. Native runs are scanned per PDF line, so the corner pieces
+    land in the display box and the extenders in their own runs; the export then
+    draws the brace in two crops and the reading order splits its cases.
+    """
+    pieces = sorted((g for g in glyphs if _delimiter_piece(g)), key=lambda g: (round(g["bbox"][0]), g["bbox"][1]))
+    columns: list[list[dict[str, Any]]] = []
+    for glyph in pieces:
+        previous = columns[-1][-1] if columns else None
+        if (previous is not None and abs(glyph["bbox"][0] - previous["bbox"][0]) <= 1.5
+                and glyph["bbox"][1] - previous["bbox"][3] <= max(glyph.get("size", 10), previous.get("size", 10)) * 0.6):
+            columns[-1].append(glyph)
+        else:
+            columns.append([glyph])
+    for column in columns:
+        if len(column) < 2:
+            continue
+        owner_index = {gid: i for i, region in enumerate(regions) for gid in region.get("glyph_ids", [])}
+        owners = sorted({owner_index[g["id"]] for g in column if g["id"] in owner_index})
+        if not owners or (len(owners) == 1 and all(g["id"] in owner_index for g in column)):
+            continue
+        target = regions[owners[0]]
+        ids = set(target["glyph_ids"]) | {g["id"] for g in column}
+        boxes = [target["bbox"], *(g["bbox"] for g in column)]
+        for index in owners[1:]:
+            other = regions[index]
+            ids |= set(other["glyph_ids"])
+            boxes.append(other["bbox"])
+            target["provenance"] = sorted(set(target["provenance"] + other["provenance"]))
+            target["display"] = target["display"] or other["display"]
+        target["glyph_ids"] = [g["id"] for g in glyphs if g["id"] in ids]
+        target["bbox"] = _union(boxes)
+        if "stretched-delimiter-merged" not in target["provenance"]:
+            target["provenance"] = [*target["provenance"], "stretched-delimiter-merged"]
+        regions = [region for i, region in enumerate(regions) if i not in owners[1:]]
+    return regions
+
+
+def _spaced_text(glyphs: list[dict[str, Any]]) -> str:
+    """Glyph texts with a word space wherever TeX left a gap but no space glyph."""
+    parts: list[str] = []
+    for previous, glyph in zip([None, *glyphs], glyphs, strict=False):
+        gap = glyph["bbox"][0] - previous["bbox"][2] if previous is not None else 0.0
+        if (previous is not None and not previous["text"].isspace() and not glyph["text"].isspace()
+                and gap >= max(glyph.get("size", 10), previous.get("size", 10)) * 0.25):
+            parts.append(" ")
+        parts.append(glyph["text"])
+    return "".join(parts)
+
+
+def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Declare the words a displayed formula keeps inside its crop as formula conditions.
+
+    Case labels ("if x < 0,", "otherwise.", "for any fixed k") are language the
+    translator must render; an undeclared word inside an image is neither
+    translatable nor visible to QA. Each visual line is cut at notation glyphs and
+    every remaining segment with a word becomes one condition in native order, the
+    contract ``_formula_condition_glyphs`` verifies. An upright operator name set
+    flush against its argument (``Prob(``, ``Var``) is notation, not a condition.
+    """
+    owned = [glyph_by_id[gid] for gid in region.get("glyph_ids", []) if gid in glyph_by_id]
+    order = {gid: i for i, gid in enumerate(glyph_by_id)}
+    conditions: list[dict[str, Any]] = []
+    for line in _visual_lines(owned):
+        segment: list[dict[str, Any]] = []
+        for glyph in [*line, None]:
+            if glyph is not None and not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit()):
+                segment.append(glyph)
+                continue
+            # Brackets and spaces at the edges belong to the surrounding notation, as does
+            # the punctuation that closes the notation before a condition ("1, if").
+            while segment and (segment[0]["text"].isspace() or segment[0]["text"] in "()[]{},;:."):
+                segment.pop(0)
+            while segment and (segment[-1]["text"].isspace() or segment[-1]["text"] in "()[]{}"):
+                segment.pop()
+            text = _spaced_text(segment)
+            words = [w for w in re.findall(r"[A-Za-z]{2,}", text) if w.lower() not in MATH_OPERATORS]
+            if words and all(inked_glyph(g) or g["text"].isspace() for g in segment):
+                size = max(g.get("size", 10) for g in segment)
+                last = segment[-1]["bbox"]
+                # The argument of an operator may sit on another baseline (a \left( piece).
+                following = [g for g in owned if g not in segment and not g["text"].isspace() and g["bbox"][0] >= last[2] - 0.5
+                             and g["bbox"][3] >= last[1] - size and g["bbox"][1] <= last[3] + size]
+                after = min(following, key=lambda g: g["bbox"][0]) if following else None
+                # Flush against notation, or opening a (possibly stretched CMEX) delimiter.
+                applied = after is not None and (after["bbox"][0] - last[2] < size * 0.2
+                                                 or after["text"] in "([{" or "cmex" in after["font"].lower())
+                operator = len(words) == 1 and text == words[0] and applied and (words[0][0].isupper() or words[0].lower() in MATH_OPERATORS)
+                if not operator:
+                    # The validator compares against native page order, not visual order.
+                    segment.sort(key=lambda g: order[g["id"]])
+                    conditions.append({"glyph_ids": [g["id"] for g in segment], "source_text": _spaced_text(segment)})
+            segment = []
+    conditions.sort(key=lambda c: order[c["glyph_ids"][0]])
+    return conditions
+
+
 def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Use original visible paths when available: TeX accents and radicals often
     # have misleading native metric rectangles on an adjacent line.
@@ -612,7 +735,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             # owned glyph ink is the region. Rules and accents merge back below.
             region["bbox"] = _union([g["bbox"] for g in owned if inked_glyph(g)] or [g["bbox"] for g in owned])
         clean.append(region)
-    regions = clean
+    regions = _merge_delimiter_pieces(clean, glyphs)
     # Merge formula components and their rules, but never expand to a PDF text
     # block. Explicit ownership prevents overlapping font boxes stealing prose.
     changed = True
@@ -648,6 +771,11 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             if changed:
                 break
     for region in regions:
+        if region["kind"] == "math" and region["display"] and region.get("glyph_ids") and not region.get("formula_conditions"):
+            conditions = _auto_formula_conditions(region, glyph_by_id)
+            if conditions:
+                region["formula_conditions"] = conditions
+                region["provenance"] = [*region["provenance"], "auto-formula-conditions"]
         if unmeasured.intersection(region.get("glyph_ids", [])) and "ink-bounds-unmeasured" not in region["provenance"]:
             region["provenance"] = [*region["provenance"], "ink-bounds-unmeasured"]
     return sorted(regions, key=lambda r: (r["bbox"][1], r["bbox"][0]))
@@ -714,7 +842,9 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
         owned = [g for g in glyphs if g["id"] in selected]
     else:
         owned = [g for g in glyphs if _inside(g, rect)]
-    rect = (fitz.Rect(_union([list(rect), *[g["bbox"] for g in owned]])) + (-0.5, -0.5, 0.5, 0.5)) & page.rect
+    # The declared box is the target box; only owned glyph ink is padded. An exported
+    # fragment box fed back through a region override therefore reproduces itself.
+    rect = fitz.Rect(_union([list(rect), *[list(fitz.Rect(g["bbox"]) + (-0.5, -0.5, 0.5, 0.5)) for g in owned]])) & page.rect
     export_method: Literal["raw-region", "explicit-glyph-paths-v2"] = "explicit-glyph-paths-v2" if "glyph_ids" in region else "raw-region"
     owned_svg = None
     if export_method != "raw-region":
@@ -726,8 +856,8 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
             # Keep original evidence available, but require boundary correction.
             # Do not claim a raw crop is an isolated mathematical expression.
             export_method = "raw-region"
-            region = {**region, "kind": "mixed-region", "grouping_pending": True,
-                      "provenance": [*region.get("provenance", []), "precise-export-unavailable:" + str(exc)]}
+            region = {**{k: v for k, v in region.items() if k != "formula_conditions"}, "kind": "mixed-region", "grouping_pending": True,
+                      "provenance": [*(p for p in region.get("provenance", []) if p != "auto-formula-conditions"), "precise-export-unavailable:" + str(exc)]}
     identity = {"source_sha256": source_hash, "page": page_number, "bbox": _box(rect), "glyph_ids": [g["id"] for g in owned]}
     if export_method != "raw-region":
         identity["export_method"] = export_method
@@ -764,7 +894,8 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
     if not cache_receipt.is_file():
         write_json(cache_receipt, {"identity": identity, "files": {p.name: sha256_file(p) for p in (fragment_pdf, fragment_svg, fragment_png)}})
     paths = {name: str(p.relative_to(root)).replace("\\", "/") for name, p in {"png": fragment_png, "svg": fragment_svg, "pdf": fragment_pdf}.items()}
-    fragment = FidelityFragment(page=page_number, bbox=_box(rect), png_path=paths["png"], svg_path=paths["svg"], pdf_path=paths["pdf"], glyph_ids=[g["id"] for g in owned], width=rect.width, height=rect.height, baseline=(max(g["baseline"] for g in owned) - rect.y0) if owned else None, dpi=dpi, export_method=export_method, file_sha256={paths[k]: sha256_file(root / paths[k]) for k in paths})
+    box = _box(rect)
+    fragment = FidelityFragment(page=page_number, bbox=box, png_path=paths["png"], svg_path=paths["svg"], pdf_path=paths["pdf"], glyph_ids=[g["id"] for g in owned], width=round(box[2] - box[0], 4), height=round(box[3] - box[1], 4), baseline=round(max(g["baseline"] for g in owned) - box[1], 4) if owned else None, dpi=dpi, export_method=export_method, file_sha256={paths[k]: sha256_file(root / paths[k]) for k in paths})
     return FidelityAsset(id=aid, kind=region["kind"], source_sha256=source_hash, content_sha256=content, fragments=[fragment], grouping_pending=region.get("grouping_pending", False), display=region.get("display", False), provenance=region.get("provenance", ["visual-region-correction"]), formula_conditions=region.get("formula_conditions", []))
 
 
@@ -1015,7 +1146,12 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                         continue
                     tokens.append((glyph["text"], style))
         text = _rejoin_line_breaks(styled_text(tokens).strip(), hyphenation)
-        text = re.sub(r" {2,}", " ", re.sub(r"[ \t]*\n[ \t]*", " ", text))
+        if block["id"] in structure["display_blocks"]:
+            # A displayed block keeps its rows (a cases formula with native condition
+            # words); the renderer stacks them instead of flowing them into one line.
+            text = "\n".join(row for row in (re.sub(r" {2,}", " ", line.strip()) for line in text.split("\n")) if row)
+        else:
+            text = re.sub(r" {2,}", " ", re.sub(r"[ \t]*\n[ \t]*", " ", text))
         # A TeX math skip before sentence punctuation is not a textual space.
         text = re.sub(r"(\{\{asset:[^}]+\}\}) +([.,;:])", r"\1\2", text)
         if text:
@@ -1513,7 +1649,7 @@ def _formula_condition_glyphs(asset: dict[str, Any], glyphs: list[dict[str, Any]
         if (not ids or len(ids) != len(set(ids)) or declared.intersection(ids)
                 or not set(ids) <= owned or [g["id"] for g in selected] != ids):
             raise ValueError("formula condition glyph IDs must be unique, owned and in native order")
-        if "".join(g["text"] for g in selected) != condition["source_text"]:
+        if re.sub(r"\s+", "", "".join(g["text"] for g in selected)) != re.sub(r"\s+", "", condition["source_text"]):
             raise ValueError("formula condition source_text must exactly match its native glyphs")
         if not re.search(r"[A-Za-z]{2,}", condition["source_text"]):
             raise ValueError("formula condition must identify native language")

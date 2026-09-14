@@ -66,6 +66,10 @@ figcaption { margin:.35rem 0; font-size:.95em; color:var(--muted); font-style:it
 .fidelity-complex > .equation-number { display:block; text-align:right; }
 .kind-equation .display-line { padding-right:3.5rem; }
 .kind-equation .display-line .fidelity-asset[data-display="true"] { display:inline-block; margin:.2em .4em; vertical-align:middle; }
+.fidelity-complex.display-line.multirow { display:flex; align-items:center; justify-content:center; gap:.3em; }
+.display-rows { display:inline-flex; flex-direction:column; align-items:flex-start; text-align:left; }
+.display-row { display:block; }
+.display-lead .fidelity-asset[data-display="true"] { display:inline-block; margin:0; }
 .omitted { margin:.5rem 0 0; padding:.4rem .8rem; border:1px dashed var(--line); border-radius:.4rem; color:var(--muted); font-size:.8rem; }
 .omitted code { font-size:.8rem; }
 pre { margin:.25rem 0; padding:1rem; overflow:auto; border:1px solid var(--line); border-radius:.4rem; }
@@ -150,10 +154,16 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     attention: list[str] = []
     for error in verification.get("errors", []):
         attention.append("verify: " + html.escape(json.dumps(error, ensure_ascii=False)))
+    # One line per page, not per asset: hundreds of identical notices would push the
+    # body far below the fold and make the checkpoint unusable for visual review.
+    pending_by_page: dict[int, list[str]] = {}
     for aid in sorted(referenced):
         asset = assets.get(aid)
         if asset is not None and asset.grouping_pending:
-            attention.append(f"asset <code>{html.escape(aid)}</code> ({asset.kind}) has a pending grouping decision")
+            pending_by_page.setdefault(asset.fragments[0].page, []).append(f"<code>{html.escape(aid)}</code> ({html.escape(asset.kind)})")
+    for page, pending in sorted(pending_by_page.items()):
+        attention.append(f"page {page}: {len(pending)} asset(s) with a pending grouping decision "
+                         f"<details><summary>list</summary>{', '.join(pending)}</details>")
     for page in pages:
         ledger = _page_ledger(root, page)
         if ledger and ledger.get("layout_status") != "ok":
