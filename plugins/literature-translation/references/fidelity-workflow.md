@@ -88,6 +88,21 @@ formula conditions, kind, display and grouping state. Legacy version 1 remains r
 preparation or semantic overrides create version 2 identities and require current
 source/translation evidence.
 
+A printed equation label such as `(1.6)` beside a display is bound to the unit's
+`equation_number` and removed from `source_text`; the checkpoint HTML shows it in the unit meta
+line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
+label that stays in prose belongs to a block that preparation could not bind to a display asset.
+
+Original glyph paths are measured from the page SVG to size assets, including pages MuPDF
+wraps in a page-sized clip group (CropBox differs from MediaBox). Glyphs that still cannot be
+measured keep their font metric box and the owning region records `ink-bounds-unmeasured` in
+its provenance, so a crop that truncates a stretched delimiter is traceable rather than silent.
+
+Words hyphenated across a line end are rejoined only when the rest of the document does not
+print that compound more often than the joined word: `well-` / `known` stays `well-known` in
+a book that prints `well-known` mid-line, while `proba-` / `bility` becomes `probability`.
+A suspended hyphen inside a line (`pre- and post-processing`) is never altered.
+
 Source authority transactions snapshot the unit and asset registries, translations, page
 canvases, ledgers and receipts, and restore them on any error or user interruption. Source page
 canvases are atomically published and included in that rollback. Incomplete original asset
@@ -373,6 +388,33 @@ Rules worth knowing when reading a report:
 - Asset uncertainty across the dependency scope, including non-translatable formulas, blocks
   approval (`asset-semantic-uncertainty`); damaged images remain routable to source repair.
 - Structured target tables render once, including when `target_text` is explicitly empty.
+
+### Approved terminology
+
+`glossary/approved.yaml` holds a `terms` list. Each entry has `source`, `target`, and optionally
+`scope` (`document`, `page:N` or a parent unit ID), `status`, `match` and `forbidden`.
+
+- Only entries whose `status` is absent or `approved` are enforced or injected into packets;
+  `proposed`, `reference-only` and any other status are inert even inside `approved.yaml`.
+  `glossary/candidates.yaml` is never enforced; it is listed in the finalize unresolved report.
+- The unit's source representations (text, Markdown, table cells, figure labels) minus quoted
+  titles are folded before matching, and so is `source`: precomposed, combining and TeX spacing
+  accents (`Hölder` ≡ `H¨older`, `Lévy` ≡ `L´evy`), ligatures, curly quotes and apostrophes
+  (`Chebyshev's` ≡ `Chebyshev’s`), dash variants, whitespace runs and case. QA and the
+  `relevant_terms` packet injection share this folding, so a term shown to the translator is the
+  term QA enforces.
+- `match` selects how `source` is located in the folded text: `substring` (default; `measure`
+  also hits `measurable`), `word` (no letter/digit on either side), or `regex` (a Python pattern
+  searched case-insensitively in the folded text, e.g. `\bpartition\b(?! function)`). Invalid
+  modes or patterns fail loading.
+- When `source` occurs in a unit, `target` must appear in that unit's translation
+  (`approved-term-missing`). A `source` that matches no prepared unit at all is reported once per
+  QA run as the warning `approved-term-never-matched`; fix the spelling or narrow the entry.
+- `forbidden` wording is checked in **every** translated unit and asset companion, whether or
+  not that unit contains `source`. List only wording that is wrong in every context (a wrong
+  transliteration), never a rendering that is merely wrong for this term (`mean` → 意味着).
+- Editing the glossary changes the QA context of every batch and the audit context of batches
+  whose relevant terms change; finish the terminology baseline before the audit wave.
 
 ## Audit coverage
 

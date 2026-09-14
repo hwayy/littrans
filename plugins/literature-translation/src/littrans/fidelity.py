@@ -491,9 +491,13 @@ def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str,
 def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Use original visible paths when available: TeX accents and radicals often
     # have misleading native metric rectangles on an adjacent line.
+    unmeasured: set[str] = set()
     if hasattr(page, "get_svg_image"):
         from littrans.glyph_export import glyph_ink_boxes
         ink = glyph_ink_boxes(page, glyphs)
+        # A glyph without a measured path keeps its metric box; the region records
+        # that so a truncating crop is traceable instead of a silent fallback.
+        unmeasured = {g["id"] for g in glyphs if inked_glyph(g) and g["id"] not in ink}
         glyphs = [{**g, "bbox": ink.get(g["id"], g["bbox"])} for g in glyphs]
     regions: list[dict[str, Any]] = []
     # A damaged character does not make the surrounding paragraph opaque.
@@ -643,6 +647,9 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                     break
             if changed:
                 break
+    for region in regions:
+        if unmeasured.intersection(region.get("glyph_ids", [])) and "ink-bounds-unmeasured" not in region["provenance"]:
+            region["provenance"] = [*region["provenance"], "ink-bounds-unmeasured"]
     return sorted(regions, key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
 
@@ -884,6 +891,40 @@ def _expanded_native(page: fitz.Page, original_glyphs: list[dict[str, Any]]) -> 
     return glyphs, blocks
 
 
+_HYPHENATION_EVIDENCE: dict[str, tuple[Counter[str], Counter[str]]] = {}
+
+
+def _hyphenation_evidence(doc: fitz.Document, source_hash: str) -> tuple[Counter[str], Counter[str]]:
+    """Word forms the document itself prints: mid-line compounds and unbroken words.
+
+    A hyphen at a line end is ambiguous between a soft break ("proba-/bility") and a
+    compound TeX chose to break at ("well-/known"). The rest of the document is the
+    only evidence available for that decision.
+    """
+    if source_hash not in _HYPHENATION_EVIDENCE:
+        compounds: Counter[str] = Counter()
+        words: Counter[str] = Counter()
+        for page in doc:
+            text = page.get_text()
+            compounds.update(m.lower() for m in re.findall(r"[A-Za-z]+-[A-Za-z]+", text))
+            words.update(w.lower() for w in re.findall(r"[A-Za-z]+", text))
+        _HYPHENATION_EVIDENCE[source_hash] = (compounds, words)
+    return _HYPHENATION_EVIDENCE[source_hash]
+
+
+def _rejoin_line_breaks(text: str, evidence: tuple[Counter[str], Counter[str]]) -> str:
+    """Join words hyphenated across a line end unless the document prints the compound."""
+    compounds, words = evidence
+
+    def rejoin(match: re.Match[str]) -> str:
+        head, tail = match[1], match[2]
+        if compounds[f"{head}-{tail}".lower()] > words[f"{head}{tail}".lower()]:
+            return f"{head}-{tail}"
+        return head + tail
+
+    return re.sub(r"([A-Za-z]*[a-z])-[ \t]*\n[ \t]*([a-z][A-Za-z]*)", rejoin, text)
+
+
 def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str, layout: dict[str, Any], override: dict[str, Any] | None = None) -> tuple[list[SourceUnit], list[FidelityAsset], dict[str, Any]]:
     page = doc[number - 1]
     original_page_bbox = list(page.rect)
@@ -943,13 +984,15 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         edge_spaces[asset.id] = (bool(owned_glyphs and owned_glyphs[0]["text"].isspace()), bool(owned_glyphs and owned_glyphs[-1]["text"].isspace()))
     units, emitted = [], set()
     glyph_by_id = {g["id"]: g for g in glyphs}
+    hyphenation = _hyphenation_evidence(doc, source_hash)
     for block in blocks:
         # Style the block as a whole: emphasis and hyphenated words cross line breaks.
         tokens: list[tuple[str, str]] = []
         footnote_refs = []
         for line in block["lines"]:
             if tokens:
-                tokens.append((" ", ""))
+                # A line end is kept distinct from an in-line space until hyphens are resolved.
+                tokens.append(("\n", ""))
             for gid in line:
                 aid = owners.get(gid)
                 marker = structure["markers"].get(gid)
@@ -971,8 +1014,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                         # A kern the PDF reports as a space glyph is not a word space.
                         continue
                     tokens.append((glyph["text"], style))
-        text = re.sub(r" {2,}", " ", styled_text(tokens).strip())
-        text = re.sub(r"([a-z])-\s+([a-z])", r"\1\2", text)
+        text = _rejoin_line_breaks(styled_text(tokens).strip(), hyphenation)
+        text = re.sub(r" {2,}", " ", re.sub(r"[ \t]*\n[ \t]*", " ", text))
         # A TeX math skip before sentence punctuation is not a textual space.
         text = re.sub(r"(\{\{asset:[^}]+\}\}) +([.,;:])", r"\1\2", text)
         if text:

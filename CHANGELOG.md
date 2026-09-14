@@ -7,6 +7,22 @@ versioning and correspond to Git tags named `v<version>`.
 
 ### Changed
 
+- QA v6.15 folds glossary sources and unit source text alike before matching (TeX spacing and
+  combining accents, ligatures, curly quotes, dash variants, whitespace, case), so `Hölder`,
+  `Lévy's` or `Chebyshev's` gate the extracted `H¨older`, `L´evy’s` and `Chebyshev’s`. QA and
+  packet term injection share one `term_source_text`, including quoted-title removal. Entries
+  accept `match: substring|word|regex`; only `status: approved` (or absent) entries are enforced;
+  a source that matches no prepared unit is reported as the `approved-term-never-matched`
+  warning. `fidelity-workflow.md` documents the entry contract, including that `forbidden`
+  applies to every unit.
+- Original glyph paths are measured and exported through the page-sized clip group MuPDF emits
+  when a PDF CropBox differs from its MediaBox; such pages no longer degrade every asset to a
+  nominal-box `raw-region` crop that truncates stretched delimiters. Regions whose glyph ink
+  could not be measured record `ink-bounds-unmeasured`.
+- Line-end hyphens are rejoined only when the document does not print the compound more often
+  than the joined word (`well-` / `known` stays `well-known`); suspended hyphens inside a line are
+  left alone. Re-preparing affected pages with `--replace` changes those units' text and
+  invalidates their translations.
 - Preparation keeps footnote links on the prose chunk that still carries the call when a
   native block is split around a display formula, and rejects an inconsistent footnote graph
   inside the source transaction instead of publishing units that no packet can review.

@@ -175,14 +175,39 @@ def translation_map(root: Path) -> dict[str, TranslationRecord]:
     }
 
 
-def load_terms(root: Path, filename: str = "approved.yaml") -> list[dict[str, Any]]:
+TERM_MATCH_MODES = ("substring", "word", "regex")
+
+
+def load_terms(root: Path, filename: str = "approved.yaml", *, enforced_only: bool = True) -> list[dict[str, Any]]:
+    """Load glossary entries; by default only those whose ``status`` is enforced.
+
+    An entry without ``status`` counts as ``approved``. Any other status (``proposed``,
+    ``reference-only``, ...) is inert even inside ``approved.yaml`` unless the caller asks
+    for every entry, e.g. to list candidates.
+    """
     path = root / "glossary" / filename
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict) or not isinstance(data.get("terms", []), list):
         raise ValueError(f"{path} must contain a terms list")
-    return [term for term in data.get("terms", []) if isinstance(term, dict)]
+    terms = []
+    for term in data.get("terms", []):
+        if not isinstance(term, dict):
+            continue
+        source = str(term.get("source", ""))
+        mode = str(term.get("match", "substring"))
+        if mode not in TERM_MATCH_MODES:
+            raise ValueError(f"{path}: term {source!r} has unknown match mode {mode!r}; use one of {TERM_MATCH_MODES}")
+        if mode == "regex":
+            try:
+                re.compile(source, re.I)
+            except re.error as exc:
+                raise ValueError(f"{path}: term {source!r} is not a valid regular expression: {exc}") from exc
+        if enforced_only and str(term.get("status", "approved")) != "approved":
+            continue
+        terms.append(term)
+    return terms
 
 
 def project_status(root: Path) -> dict[str, Any]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
@@ -402,23 +403,71 @@ def equation_markdown(unit: SourceUnit) -> str:
     return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
 
 
+# PDF text extraction often prints a TeX accent as a spacing character before its
+# base letter ("L´evy", "H¨older"); NFKD alone would keep it as a stray space.
+_SPACING_ACCENTS = str.maketrans(
+    "", "", "´¨ˆ˜¯˘˙˚˝¸ˇ"
+)
+_PUNCTUATION_FOLD = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "−": "-",
+    " ": " ",
+})
+
+
+def fold_term_text(text: str) -> str:
+    """Fold source text and glossary sources to one comparable form.
+
+    Accents (precomposed, combining or TeX spacing marks), ligatures, curly quotes,
+    dash variants, whitespace runs and case are all normalized so that a glossary
+    source such as ``Hölder`` still gates the extracted ``H¨older``.
+    """
+    text = text.translate(_SPACING_ACCENTS)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = text.translate(_PUNCTUATION_FOLD)
+    return re.sub(r"\s+", " ", text).casefold()
+
+
+def without_quoted_titles(text: str) -> str:
+    """Drop quoted titles: cited work names are not translated terminology."""
+    return re.sub(r'["“][^"”]{2,}["”]', " ", text)
+
+
+def term_source_text(unit: SourceUnit) -> str:
+    """The folded source representation every terminology check matches against."""
+    return fold_term_text(without_quoted_titles(source_representation_text(unit)))
+
+
+def term_matches(term: dict[str, Any], folded_source: str) -> bool:
+    """Whether a glossary entry's source occurs in already folded source text."""
+    source_term = str(term.get("source", "")).strip()
+    if not source_term:
+        return False
+    mode = str(term.get("match", "substring"))
+    if mode == "regex":
+        return re.search(source_term, folded_source, re.I) is not None
+    folded_term = fold_term_text(source_term)
+    if mode == "word":
+        return re.search(r"(?<!\w)" + re.escape(folded_term) + r"(?!\w)", folded_source) is not None
+    return folded_term in folded_source
+
+
 def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
     selected = list(units)
-    source = "\n".join(
-        source_representation_text(unit) for unit in selected
-    ).casefold()
+    source = "\n".join(term_source_text(unit) for unit in selected)
     pages = {unit.page for unit in selected}
     parents = {unit.parent_id for unit in selected if unit.parent_id}
     matches: list[dict[str, Any]] = []
     for term in load_terms(root):
-        source_term = str(term.get("source", "")).strip()
         scope = str(term.get("scope", "document"))
         in_scope = (
             scope == "document"
             or scope in parents
             or any(scope == f"page:{page}" for page in pages)
         )
-        if source_term and in_scope and source_term.casefold() in source:
+        if in_scope and term_matches(term, source):
             matches.append(term)
     return matches
 

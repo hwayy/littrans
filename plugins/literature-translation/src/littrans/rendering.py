@@ -1672,7 +1672,7 @@ def _write_quality_summary(
 
 
 def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
-    candidate_terms = load_terms(root, "candidates.yaml")
+    candidate_terms = load_terms(root, "candidates.yaml", enforced_only=False)
     translations = translation_map(root)
     issues: list[ReviewIssue] = []
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):

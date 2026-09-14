@@ -109,3 +109,51 @@ def test_visible_pdf_path_survives_whitespace_unicode_mapping(tmp_path):
         assert result["matched_glyphs"] == 1
         with fitz.open("svg", (tmp_path / "delimiter.svg").read_bytes()) as preserved:
             assert preserved[0].get_drawings()
+
+
+def test_cropbox_clip_group_is_unwrapped_for_ink_and_export(tmp_path: Path) -> None:
+    """MuPDF wraps a page in <g clip-path> whenever CropBox differs from MediaBox."""
+    from littrans.glyph_export import glyph_ink_boxes
+
+    with fitz.open() as document:
+        page = document.new_page(width=500, height=700)
+        page.insert_text((50, 80), "(", fontsize=24)
+        page.set_cropbox(fitz.Rect(10, 10, 480, 690))
+        svg = ET.fromstring(page.get_svg_image(text_as_path=True))
+        assert [n.tag.split("}")[-1] for n in svg] == ["defs", "g"]
+        char = page.get_text("rawdict")["blocks"][0]["lines"][0]["spans"][0]["chars"][0]
+        glyph = {"id": "paren", "text": char["c"], "bbox": char["bbox"], "origin": char["origin"]}
+        ink = glyph_ink_boxes(page, [glyph])
+        assert set(ink) == {"paren"}
+        misleading_box = [char["bbox"][0], char["bbox"][1], char["bbox"][2], char["bbox"][1] + 3]
+        result = export_owned_fragment(page, [{**glyph, "bbox": misleading_box}], tmp_path / "paren.svg", tmp_path / "paren.png", 300, misleading_box)
+        assert result["matched_glyphs"] == 1
+        assert fitz.Rect(result["bbox"]).contains(fitz.Rect(ink["paren"]))
+        assert result["height"] > 10
+        with fitz.open("svg", (tmp_path / "paren.svg").read_bytes()) as preserved:
+            assert preserved[0].get_drawings()
+
+
+def test_smaller_clip_group_still_fails_closed() -> None:
+    from littrans.glyph_export import build_owned_fragment
+
+    with fitz.open() as document:
+        page = document.new_page()
+        page.insert_text((50, 80), "x")
+        char = page.get_text("rawdict")["blocks"][0]["lines"][0]["spans"][0]["chars"][0]
+        glyph = {"id": "x", "text": "x", "bbox": char["bbox"], "origin": char["origin"]}
+        svg = ET.fromstring(page.get_svg_image(text_as_path=True))
+        ns = "{http://www.w3.org/2000/svg}"
+        clip = ET.SubElement(svg.find(ns + "defs"), ns + "clipPath", {"id": "clip_9"})
+        ET.SubElement(clip, ns + "path", {"transform": "matrix(1,0,0,1,0,0)", "d": "M40 60H120V100H40Z"})
+        group = ET.SubElement(svg, ns + "g", {"clip-path": "url(#clip_9)"})
+        ET.SubElement(group, ns + "path", {"d": "M50 70H55V80H50Z", "fill": "black"})
+
+        class PageWithGroup:
+            rect = page.rect
+
+            def get_svg_image(self, **kwargs):
+                return ET.tostring(svg, encoding="unicode")
+
+        with pytest.raises(ValueError, match="intersecting"):
+            build_owned_fragment(PageWithGroup(), [glyph])

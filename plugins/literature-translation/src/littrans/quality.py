@@ -15,7 +15,8 @@ from littrans.evidence import (
     batch_unit_fingerprints,
     dependency_closure,
     effective_figure_labels,
-    source_representation_text,
+    term_matches,
+    term_source_text,
     translation_unit_fingerprint,
 )
 from littrans.models import (
@@ -130,7 +131,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.14-prose-omission-with-assets|"
+        "deterministic-qa-v6.15-folded-terms|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -338,10 +339,6 @@ def _comparison_source_text(
     return "\n".join([text, *missing])
 
 
-def _without_quoted_titles(text: str) -> str:
-    return re.sub(r'["“][^"”]{2,}["”]', " ", text)
-
-
 def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
     if unit.kind is UnitKind.HEADING and re.match(r"^\s*#{1,6}\s+", target):
         return "Heading target must contain body text only; the renderer owns the heading marker."
@@ -378,6 +375,14 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
     errors: list[QAItem] = []
     warnings: list[QAItem] = []
     approved_terms = load_terms(root)
+    # A gate whose source never occurs in the prepared document (typo, accent or
+    # quote variant) would otherwise fail silently; report it once per run.
+    folded_units = [term_source_text(unit) for unit in units.values()]
+    for term in approved_terms:
+        source_term = str(term.get("source", "")).strip()
+        if source_term and not any(term_matches(term, folded) for folded in folded_units):
+            warnings.append(QAItem(code="approved-term-never-matched", severity="warning",
+                                   message=f"Approved term never matches any prepared source unit: {source_term}"))
     fingerprint = batch_translation_fingerprint(root, batch_id)
     qa_context_fingerprint = current_qa_context_fingerprint(
         root, batch_id, units=list(units.values()), translations=translations, manifest=manifest
@@ -541,9 +546,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                             unit_id=unit_id,
                         )
                     )
-        source_folded = _without_quoted_titles(
-            source_representation_text(unit)
-        ).casefold()
+        source_folded = term_source_text(unit)
         # Forbidden wording applies to all translated content, independently of
         # whether image content can satisfy preservation checks for the prose.
         all_target = effective_target + "\n" + "\n".join(
@@ -555,7 +558,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             source_term = str(term.get("source", ""))
             target_term = str(term.get("target", ""))
             scope = str(term.get("scope", "document"))
-            if source_term and target_term and source_term.casefold() in source_folded:
+            if target_term and term_matches(term, source_folded):
                 if scope == "document" or scope == f"page:{unit.page}" or scope == unit.parent_id:
                     if target_term not in effective_target:
                         errors.append(
