@@ -30,6 +30,7 @@ from littrans.models import (
     ReviewScope,
     Severity,
     SourceUnit,
+    TranslationRecord,
     UnitKind,
     utc_now,
 )
@@ -134,14 +135,28 @@ def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     )
 
 
-def current_qa_context_fingerprint(root: Path, batch_id: str | None = None) -> str:
+def current_qa_context_fingerprint(
+    root: Path,
+    batch_id: str | None = None,
+    *,
+    units: list[SourceUnit] | None = None,
+    translations: dict[str, TranslationRecord] | None = None,
+    manifest: BatchManifest | None = None,
+) -> str:
+    """Hash every QA input outside the batch's own translation fingerprint.
+
+    Callers holding a consistent snapshot pass ``units``/``translations``/``manifest``
+    so coordination does not re-read the project once per batch.
+    """
     asset_ids = None
     scoped_units = None
-    units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    if units is None:
+        units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     if batch_id is not None:
         from littrans.fidelity_models import load_assets
 
-        manifest = load_manifest(root, batch_id)
+        if manifest is None:
+            manifest = load_manifest(root, batch_id)
         scoped_units = set(dependency_closure(root, [batch_id], manifest.unit_ids, all_units=units))
         asset_ids = sorted({key for unit in units if unit.unit_id in scoped_units
                             for key in ASSET_RE.findall(unit.source_markdown or unit.source_text)}
@@ -149,7 +164,8 @@ def current_qa_context_fingerprint(root: Path, batch_id: str | None = None) -> s
     uncertainty = {key: state["semantic_uncertainty"]
                    for key, state in representation_status(root, asset_ids)["assets"].items()
                    if state["semantic_uncertainty"]}
-    translations = translation_map(root)
+    if translations is None:
+        translations = translation_map(root)
     dependency_bindings = {unit.unit_id: {
         "content": translation_unit_fingerprint(unit, translations.get(unit.unit_id)),
         "translation_source_hash": translations[unit.unit_id].source_hash if unit.unit_id in translations else None,
@@ -363,7 +379,9 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
     warnings: list[QAItem] = []
     approved_terms = load_terms(root)
     fingerprint = batch_translation_fingerprint(root, batch_id)
-    qa_context_fingerprint = current_qa_context_fingerprint(root, batch_id)
+    qa_context_fingerprint = current_qa_context_fingerprint(
+        root, batch_id, units=list(units.values()), translations=translations, manifest=manifest
+    )
     existing_path = root / "qa" / f"{batch_id}.json"
     if existing_path.is_file():
         existing = QAReport.model_validate(read_json(existing_path))

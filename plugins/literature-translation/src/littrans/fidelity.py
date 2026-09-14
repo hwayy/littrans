@@ -961,7 +961,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         if text:
             kind = "paragraph"
             semantic_labels = {"doc_title": "heading", "paragraph_title": "heading", "title": "heading", "figure_caption": "caption", "figure_title": "caption", "table_caption": "caption", "table_title": "caption", "vision_footnote": "caption", "footnote": "footnote", "reference": "bibliography", "list": "list_item"}
-            for item in layout.get("pages", {}).get(str(image_path.resolve()), []):
+            for item in items:
                 if item.get("label") in semantic_labels and _inside({"bbox": block["bbox"]}, [v / 2 for v in item["bbox"]]):
                     kind = semantic_labels[item["label"]]
                     break
@@ -1162,14 +1162,23 @@ def _validate_footnote_relationships(units: list[SourceUnit]) -> None:
             raise ValueError(f"footnote call numbers do not match referenced definitions: {unit.unit_id}")
 
 
-def _current_page(root: Path, number: int) -> dict[str, Any]:
-    ledger = read_json(_page_path(root, number))
+def _current_units(root: Path) -> list[SourceUnit]:
+    """Load and validate the project's source units once for a multi-page check."""
     all_units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
     if len({u.unit_id for u in all_units}) != len(all_units):
         raise ValueError("duplicate source unit IDs anywhere in project")
     _validate_footnote_relationships(all_units)
+    return all_units
+
+
+def _current_page(root: Path, number: int, all_units: list[SourceUnit] | None = None,
+                  assets: dict[str, FidelityAsset] | None = None) -> dict[str, Any]:
+    ledger = read_json(_page_path(root, number))
+    if all_units is None:
+        all_units = _current_units(root)
+    if assets is None:
+        assets = load_assets(root)
     units = [u for u in all_units if u.page == number]
-    assets = load_assets(root)
     selected = [assets[aid] for aid in ledger["asset_ids"]]
     files = {ledger["page_image"]: sha256_file(_path(root, ledger["page_image"]))}
     if files[ledger["page_image"]] != ledger["page_image_sha256"]:
@@ -1206,9 +1215,10 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     pages = parse_page_spec(page_spec, config.source_pages)
     from littrans.evidence import page_evidence_units
 
-    all_units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+    all_units = _current_units(root)
+    assets = load_assets(root)
     pages = sorted(set(pages) | {u.page for page in pages for u in page_evidence_units(page, all_units)})
-    payload: dict[str, Any] = {"schema_version": 6, "kind": "source-fidelity-review", "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p) for p in pages]}
+    payload: dict[str, Any] = {"schema_version": 6, "kind": "source-fidelity-review", "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
     from littrans.structure_profile import structure_context
     profile_context = structure_context(root)
     if profile_context:
@@ -1391,15 +1401,15 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 write_json(_page_path(root, p), ledger)
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
                 changed.append(p)
-                continue
         _validate_footnote_relationships(units)
+        # Publish the corrected authority before receipts are checked against it.
         write_jsonl(root / "derived/units.jsonl", units)
         write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
         for decision in decisions:
             p = decision["page"]
             if decision.get("override"):
                 continue
-            if _current_page(root, p)["fingerprint"] != decision["fingerprint"]:
+            if _current_page(root, p, units, assets)["fingerprint"] != decision["fingerprint"]:
                 deferred.append(p)
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
                 continue
@@ -1416,13 +1426,11 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json",
                        {**receipt, "receipt_sha256": _hash(receipt)})
         decision_pages = {d["page"] for d in decisions}
-        _validate_footnote_relationships(units)
         for unit in units:
             if unit.page in decision_pages:
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
         units.sort(key=lambda u: u.page)
         write_jsonl(root / "derived/units.jsonl", units)
-        write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
     return {"approved_pages": approved, "changed_pages": changed, "deferred_pages": sorted(deferred),
             "requires_new_packet": bool(changed or deferred)}
 
@@ -1482,11 +1490,14 @@ def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     verified = []
     source_current = sha256_file(config.source(root)) == config.source_sha256
+    loaded: tuple[list[SourceUnit], dict[str, FidelityAsset]] | None = None
     for p in pages:
         try:
             if not source_current:
                 raise ValueError("source PDF changed")
-            current = _current_page(root, p)
+            if loaded is None:
+                loaded = (_current_units(root), load_assets(root))
+            current = _current_page(root, p, *loaded)
             opaque = _opaque_prose_assets(current)
             if opaque:
                 raise ValueError("recoverable prose remains inside image assets; re-prepare or split source regions: " + ", ".join(opaque))

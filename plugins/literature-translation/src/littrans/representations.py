@@ -476,10 +476,11 @@ def import_asset_review(root: Path, input_file: Path, confirm_visual_review: boo
         if not isinstance(decisions, list) or Counter(item["asset_id"] for item in decisions) != Counter(packet["asset_ids"]):
             raise ValueError("Review coverage must match the packet exactly")
         idx = _index(root)
+        assets = _assets(root)
         for decision in decisions:
             key = decision["asset_id"]
             candidate = packet["candidates"][key]
-            _require_format(_assets(root)[key], candidate)
+            _require_format(assets[key], candidate)
             sha = candidate["candidate_sha256"]
             if reviewer == candidate["author_task_id"]:
                 raise ValueError("Self-review cannot verify an asset candidate")
@@ -839,12 +840,39 @@ def _asset_html(root: Path, asset: dict[str, Any], output: Path,
     return "<span" + attributes + ">" + content + f'<small class="asset-state">{label}</small><span class="asset-original-links">{originals}</span></span>'
 
 
-def resolve_asset_html(root: Path, text: str, output: Path, *, originals_only: bool = False) -> str:
+class AssetRenderCache:
+    """Per-render memo of the immutable asset registry and candidate states.
+
+    One rendering resolves the same assets many times (source HTML, target HTML,
+    Markdown, companions); reloading the registry and re-hashing fragment files
+    for each call scales with units x assets instead of assets.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._assets: dict[str, dict[str, Any]] | None = None
+        self._status: dict[str, dict[str, Any]] = {}
+
+    def assets(self) -> dict[str, dict[str, Any]]:
+        if self._assets is None:
+            self._assets = _assets(self.root)
+        return self._assets
+
+    def status(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        missing = [key for key in dict.fromkeys(ids) if key not in self._status]
+        if missing:
+            self._status.update(representation_status(self.root, missing)["assets"])
+        return self._status
+
+
+def resolve_asset_html(root: Path, text: str, output: Path, *, originals_only: bool = False,
+                       cache: AssetRenderCache | None = None) -> str:
     if not ASSET_RE.search(text):
         return text
-    assets = _assets(root)
+    cache = cache if cache is not None else AssetRenderCache(root)
+    assets = cache.assets()
     ids = ASSET_RE.findall(text)
-    status = representation_status(root, ids)["assets"] if ids and not originals_only else {}
+    status = cache.status(ids) if ids and not originals_only else {}
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
@@ -876,12 +904,14 @@ def _candidate_markdown(candidate: dict[str, Any]) -> str:
     raise ValueError("Unsupported Markdown candidate format: " + kind)
 
 
-def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_only: bool = False) -> str:
+def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_only: bool = False,
+                           cache: AssetRenderCache | None = None) -> str:
     if not ASSET_RE.search(text):
         return text
-    assets = _assets(root)
+    cache = cache if cache is not None else AssetRenderCache(root)
+    assets = cache.assets()
     ids = ASSET_RE.findall(text)
-    status = representation_status(root, ids)["assets"] if ids and not originals_only else {}
+    status = cache.status(ids) if ids and not originals_only else {}
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
@@ -893,8 +923,7 @@ def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_onl
             sha = status[key]["candidate_sha256"]
             candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
             if candidate["format"] == "latex":
-                display = asset.get("display", asset.get("kind") not in {"inline_math", "inline", "variable"})
-                delimiter = "$$" if display else "$"
+                delimiter = "$$" if asset.get("display", False) else "$"
                 return f'{delimiter}{candidate["content"]}{delimiter} {pictures}（已核验；原式备查）'
             return _candidate_markdown(candidate) + "\n\n" + pictures + "（已核验；原式备查）"
         if originals_only:

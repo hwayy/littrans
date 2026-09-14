@@ -42,6 +42,7 @@ from littrans.project import load_terms, translation_map
 from littrans.quality import STATUS_ORDER, audit_coverage, qa_report_is_current
 from littrans.representations import (
     ASSET_RE,
+    AssetRenderCache,
     _index,
     install_mathjax,
     mathjax_bootstrap,
@@ -684,8 +685,11 @@ def _unit_html(
         return "<figcaption>" + inline(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:
         label = f'<strong>脚注 {html.escape(unit.footnote_number)}：</strong>' if unit.footnote_number else ""
-        return (f'<span id="fn-{scope}-{html.escape(unit.footnote_number or chr(48))}"></span>'
-                f'<aside class="footnote" id="fn-{"source" if source_view else "target"}-{html.escape(unit.unit_id)}">'
+        # The numbered anchor serves callers without explicit footnote_refs; an
+        # unnumbered note has no caller to serve and must not share one id.
+        numbered = f'<span id="fn-{scope}-{html.escape(unit.footnote_number)}"></span>' if unit.footnote_number else ""
+        return (numbered
+                + f'<aside class="footnote" id="fn-{"source" if source_view else "target"}-{html.escape(unit.unit_id)}">'
                 + label + inline(text) + "</aside>")
     if unit.kind is UnitKind.FIGURE and unit.figure_labels:
         labels = "".join(
@@ -1076,6 +1080,7 @@ def render_project(
     render_qa_path = output / f"{output_name}.render-qa.json"
 
     rendered_status = _rendered_status(config, units, translations)
+    asset_cache = AssetRenderCache(root)
     markdown: list[str] = [
         f"# {config.title}",
         "",
@@ -1137,12 +1142,12 @@ def render_project(
         companion_md = "\n\n".join(md for md, _ in companions if md)
         companion_html = "".join(markup for _, markup in companions)
         if companion_md:
-            companion_md = resolve_asset_markdown(root, companion_md, output, originals_only=originals_only)
+            companion_md = resolve_asset_markdown(root, companion_md, output, originals_only=originals_only, cache=asset_cache)
             if unit.kind is UnitKind.FOOTNOTE:
                 rendered += "\n\n" + companion_md
             else:
                 pending_markdown_companions.append(_markdown_footnote_calls(companion_md, unit, footnote_unit_map))
-        rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only)
+        rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only, cache=asset_cache)
         rendered = _markdown_footnote_calls(rendered, unit, footnote_unit_map)
         if unit.kind is UnitKind.FOOTNOTE:
             rendered = _markdown_note_definition(unit, rendered)
@@ -1248,8 +1253,8 @@ def render_project(
             source_view=False,
             unit_map=footnote_unit_map,
         )
-        source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only)
-        target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only)
+        source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only, cache=asset_cache)
+        target_html = resolve_asset_html(root, target_html, output, originals_only=originals_only, cache=asset_cache)
         if unit.unit_id in grouped_unit_ids:
             extra_anchors = "".join(
                 f'<span id="{html.escape(unit_id)}"></span>'

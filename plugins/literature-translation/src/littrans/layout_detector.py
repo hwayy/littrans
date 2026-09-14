@@ -59,8 +59,13 @@ def runtime_paths() -> tuple[Path | None, Path | None]:
     return Path(interpreter) if interpreter else None, Path(weight) if weight else None
 
 
-def runtime_readiness_error(python: Path, model: Path, cache: Path | None = None) -> str | None:
-    """Require the managed smoke receipt, including redirected cache components."""
+def runtime_readiness_error(python: Path, model: Path, cache: Path | None = None,
+                            weights: dict[str, str] | None = None) -> str | None:
+    """Require the managed smoke receipt, including redirected cache components.
+
+    ``weights`` lets a caller that already hashed the snapshot skip a second pass
+    over the detector weights.
+    """
     cache = layout_cache_root() if cache is None else cache
     managed = any(path.absolute().is_relative_to(cache.absolute())
                   or path.resolve().is_relative_to(cache.resolve()) for path in (python, model))
@@ -73,7 +78,7 @@ def runtime_readiness_error(python: Path, model: Path, cache: Path | None = None
     if recorded is None:
         return "managed layout ready receipt lacks weight hashes; run littrans layout install"
     try:
-        current = model_weight_hashes(model)
+        current = model_weight_hashes(model) if weights is None else weights
     except OSError:
         return "managed layout weights are unreadable; run littrans layout install"
     if recorded != current:
@@ -104,7 +109,11 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     python, model = runtime_paths()
     if not python or not python.is_file() or not model or not model.is_dir():
         return {"status": "unavailable", "reason": "Layout runtime missing: run `littrans layout install` (MinerU 3.4.5, PP-DocLayoutV2) or configure LITTRANS_LAYOUT_PYTHON and LITTRANS_LAYOUT_MODEL; native evidence requires full visual region review.", "pages": {}}
-    readiness_error = runtime_readiness_error(python, model)
+    try:
+        weights = model_weight_hashes(model)
+    except OSError:
+        return {"status": "unavailable", "reason": "managed layout weights are unreadable; run littrans layout install", "pages": {}}
+    readiness_error = runtime_readiness_error(python, model, weights=weights)
     if readiness_error:
         return {"status": "unavailable", "reason": readiness_error, "pages": {}}
     worker = Path(__file__).with_name("layout_worker.py")
@@ -113,7 +122,6 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         worker_sha = sha256_file(worker)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"status": "unavailable", "reason": str(exc), "pages": {}}
-    weights = model_weight_hashes(model)
     request = {"images": [str(p.resolve()) for p in images], "image_sha256": {str(p.resolve()): sha256_file(p) for p in images}, "model": str(model.resolve()), "weights": weights}
     request.update(runtime=runtime, worker_sha256=worker_sha)
     request["fingerprint"] = sha256_text(str(request))

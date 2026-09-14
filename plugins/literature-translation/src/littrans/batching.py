@@ -155,11 +155,9 @@ def create_batches(
     unit_ids: list[str] | None = None,
 ) -> list[BatchManifest]:
     config = load_project(root)
-    profile_settings = load_profile(config.profile).get("batch", {})
-    soft_max_assets = int(profile_settings.get("soft_max_assets", 60))
+    batch_settings = load_profile(config.profile).get("batch", {})
+    soft_max_assets = int(batch_settings.get("soft_max_assets", 60))
     if max_words is None:
-        profile = load_profile(config.profile)
-        batch_settings = profile.get("batch", {})
         max_words = int(batch_settings.get("max_source_words", 900))
     if max_words < 100:
         raise ValueError("max_words must be at least 100")

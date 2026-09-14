@@ -56,7 +56,6 @@ app.add_typer(assets_app, name="assets")
 app.add_typer(layout_app, name="layout")
 
 
-
 def _configure_console_stream(stream: Any) -> None:
     """Emit UTF-8 with LF line endings regardless of the console code page.
 
@@ -83,8 +82,6 @@ def emit(payload: object) -> None:
     if isinstance(payload, BaseModel):
         payload = payload.model_dump(mode="json")
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-
-
 
 
 @app.command()
@@ -144,15 +141,9 @@ def project_init(
     emit(initialize_project(source, project, profile, title, source_language, target_language))
 
 
-
-
 @source_app.command("inspect")
 def source_inspect(project: PathArg, pages: str = typer.Option("all")) -> None:
     emit(inspect_source(project, pages))
-
-
-
-
 
 
 @source_app.command("verify")
@@ -163,17 +154,6 @@ def source_verify(
 ) -> None:
     """Check current source coverage, original assets and visual-review evidence."""
     emit(verify_extraction(project, pages, force))
-
-
-
-
-
-
-
-
-
-
-
 
 
 @project_app.command("rebuild")
@@ -301,8 +281,6 @@ def translation_submit(project: PathArg, batch_id: str, input_file: PathArg) -> 
             for record in submit_translation(project, batch_id, input_file)
         ]
     )
-
-
 
 
 @qa_app.command("run")

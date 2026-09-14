@@ -81,6 +81,8 @@ class WorkflowSnapshot:
     external_enabled: bool
     qa_context_fingerprints: dict[str, str]
     source_checks: dict[tuple[int, ...], bool] = field(default_factory=dict)
+    # Asset lanes hash every fragment file; compute each batch's lane once per snapshot.
+    asset_lanes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _translation_fingerprint_from_snapshot(
@@ -173,7 +175,12 @@ def _load_workflow_snapshot(
         audit_runs=audit_runs,
         external_status=external_status,
         external_enabled=bool(config.external_review and config.external_review.enabled),
-        qa_context_fingerprints={m.batch_id: current_qa_context_fingerprint(root, m.batch_id) for m in manifests},
+        qa_context_fingerprints={
+            m.batch_id: current_qa_context_fingerprint(
+                root, m.batch_id, units=list(units), translations=translations, manifest=m
+            )
+            for m in manifests
+        },
     )
 
 
@@ -260,7 +267,7 @@ def _batch_stage_details(
     translations = snapshot.translations
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
         return "translate", {}
-    lane = _asset_lane(root, manifest, snapshot.unit_map)
+    lane = _snapshot_lane(root, manifest, snapshot)
     if lane["recovery"]:
         return "transcribe", {}
     if any(row["state"] == "asset-audit" and row["semantic_uncertainty"] for row in lane["states"].values()):
@@ -274,9 +281,8 @@ def _batch_stage_details(
     ):
         return "qa", {}
     if not qa_report.passed:
-        if qa_report.errors and all(error.code == "asset-semantic-uncertainty" for error in qa_report.errors):
-            if _asset_lane(root, manifest, snapshot.unit_map)["recovery"]:
-                return "transcribe", {}
+        # Asset uncertainty was routed to transcribe/asset-audit above; a current
+        # failing report here needs translator revision.
         return "revise", {}
     coverage = audit_coverage(
         root,
@@ -374,10 +380,11 @@ def _asset_lane(root: Path, manifest: BatchManifest, units: dict[str, SourceUnit
     return {"states": states, "pending": pending, "recovery": recovery, "complete": not any(pending.values())}
 
 
-def _dispatch_stage(translation_stage: str, lane: dict[str, Any]) -> str:
-    # Original images are a complete reading representation. Enhancement work
-    # remains available independently, including after translation completion.
-    return translation_stage
+def _snapshot_lane(root: Path, manifest: BatchManifest, snapshot: WorkflowSnapshot) -> dict[str, Any]:
+    lane = snapshot.asset_lanes.get(manifest.batch_id)
+    if lane is None:
+        lane = snapshot.asset_lanes[manifest.batch_id] = _asset_lane(root, manifest, snapshot.unit_map)
+    return lane
 
 
 def _editable_revision_batches(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot) -> list[str]:
@@ -426,7 +433,7 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                 tasks.append({"batch_id": bid, "stage": stage, "depends_on": [], "fresh_context": True,
                               "instruction": "Repair source evidence and create a source-review packet; independently review before resuming."})
             continue
-        lane = _asset_lane(root, by_id[bid], snapshot.unit_map)
+        lane = _snapshot_lane(root, by_id[bid], snapshot)
         if stage != "complete" and not optional_assets:
             # Revision is translator work: it reuses the translate model policy.
             role = "translate" if stage == "revise" else stage
@@ -547,18 +554,13 @@ def workflow_next(
         manifest.batch_id: _batch_stage_details(root, manifest.batch_id, snapshot, context_cache)
         for manifest in manifests
     }
-    stages = [
-        (
-            manifest.batch_id,
-            _dispatch_stage(stage_details[manifest.batch_id][0],
-                            _asset_lane(root, manifest, snapshot.unit_map)),
-        )
-        for manifest in manifests
-    ]
+    # Original images are a complete reading representation: enhancement work
+    # stays optional and never changes the translation stage.
+    stages = [(manifest.batch_id, stage_details[manifest.batch_id][0]) for manifest in manifests]
     start = next((index for index, (_, stage) in enumerate(stages) if stage != "complete"), None)
     if start is None:
         pending = [m.batch_id for m in manifests
-                   if not _asset_lane(root, m, snapshot.unit_map)["complete"]][:resolved_limit]
+                   if not _snapshot_lane(root, m, snapshot)["complete"]][:resolved_limit]
         return {
             "stage": "complete",
             "batch_ids": [],
@@ -690,7 +692,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
     }
     stages = {batch_id: details[0] for batch_id, details in stage_details.items()}
     unique_stages = set(stages.values())
-    lanes = {m.batch_id: _asset_lane(root, m, snapshot.unit_map) for m in requested_manifests}
+    lanes = {m.batch_id: _snapshot_lane(root, m, snapshot) for m in requested_manifests}
     return {
         "batch_ids": requested,
         "host": resolved_host,
