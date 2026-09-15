@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.3`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.4`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -55,6 +55,23 @@ update` sees a change; the release drops the suffix.
   import with the missing fingerprint and the page to re-detect, instead of re-preparing the
   reviewed page as `unavailable`; `source prepare --replace` replays such a page on the fresh
   detection and lists it in `redetected_override_pages`.
+- A printed list label opening a line — a closed number (`1.`, `1.11.`, `3.2.1.`, `2)`) or a
+  bracketed clause marker (`(a)`, `(iv)`, `(2)`) set in a text face and followed by text on
+  the same line — is a structure boundary. Preparation cuts a chunk at each label it can
+  place geometrically (it opens its block, follows a label, opens right of the running text
+  or of the open item's label, or its text column is an open item's), keeps the lines aligned
+  with an item's text column as that item's continuation whatever the page's dominant
+  line-start margin is, and records the decisions in the page ledger's
+  `structure.list_items` (`{"label", "body_x"}` per label chunk, `{"continues"}` per
+  continuation chunk; the key is absent on pages without labels, whose ledgers stay
+  unchanged). Structure assembly opens a parent group at every numbered label unless a
+  statement is open (its items join the statement like bracketed clauses do), never merges
+  a label unit into the preceding unit, and treats a continuation chunk as the item's text
+  rather than an indented paragraph. A word hyphenated across the seam of two merged
+  fragments follows the same document evidence as a line end inside a block. Exercises
+  numbered `1.11.` therefore become one unit each with their clauses and displays as
+  children; pages carrying labelled lines change fingerprint on their next `--replace`
+  preparation (chapter-1 clause lists keep their units; the Exercises pages change units).
 - A `preserve_asset_id` region on a `math` asset without a declaration is declared
   automatically from the asset's own glyphs, like a region naming the same glyphs (provenance
   gains `auto-formula-conditions`), so a preserved crop no longer needs a hand-written copy of

@@ -122,6 +122,22 @@ placeholder followed by text (a stretched brace, an `X = {` head) that asset bec
 `display-lead` column beside the rows. Translators keep one target row per source row
 (`display-rows-mismatch` warning otherwise). Inline fragments are coalesced along a row only.
 
+A printed list label opening a line is a structure boundary: a closed number (`1.`, `1.11.`,
+`3.2.1.`, `2)`) or a bracketed clause marker (`(a)`, `(iv)`, `(2)`) set in a text face and
+followed by text on the same line. A bare `1.1`, a four-digit year, a number alone on a wrapped
+line (`1.32.`), a label in a mathematical face, a heading inside a title box, a display line and
+running material are not labels. Preparation places a label geometrically before cutting at it —
+it opens its PDF block, follows another label, opens right of the running text or of the open
+item's label (a nested clause), or its text column is an open item's (a sibling returning to the
+label column; hanging numbers such as `1.9.`/`1.10.` share a text column, not an x) — so a
+sentence wrapping onto `2.3. The …` at the text column stays prose. Lines aligned with an item's
+text column are that item's continuation and are never cut as indented paragraphs, even on a
+page whose most common line start is the item column itself; prose resuming at an outer item's
+column after a nested list starts its own chunk. The ledger's `structure.list_items` records
+`{"label", "body_x"}` for each label chunk and `{"continues": <chunk>}` for each continuation
+chunk; the key is absent on pages without labels. Bullet items keep their own rule (a bullet
+always hangs, so prose returning left of the bullet column ends the item).
+
 An `equation` unit without asset placeholders whose text shows no notation (an upright `Prob`
 operator, a lone `otherwise.`) is native text: packets, Markdown and HTML render it — and its
 translation — as text, not as a symbol sequence. Text with LaTeX commands, relations, digits or
@@ -433,7 +449,13 @@ links to the original footnote unit anchors and displays its recorded number.
 Reviewed `parent_id` groups retain a theorem, lemma, proposition, definition, corollary or claim
 together with enumerated clauses and display equations. Preparation recognizes explicit statement
 labels and enumerated children conservatively; a heading, proof or new indented prose ends the
-inferred statement. Source review must confirm ambiguous and cross-page boundaries. Children
+inferred statement. A numbered label unit (`1.11. Let …`, an exercise or numbered item) opens a
+parent group of its own unless a statement is open, in which case it joins the statement like a
+bracketed clause; bracketed clauses (`(a)`, `(ii)`) join the paragraph or statement that
+introduces them, and the item's displays and continuation chunks join its group. A label unit
+is never merged into the unit before it; a word hyphenated across the seam of two merged
+fragments is rejoined by the same document evidence as a line end inside a block
+(`well-`/`known` stays `well-known`). Source review must confirm ambiguous and cross-page boundaries. Children
 retain stable IDs, equation numbers and markup. Batching keeps a whole parent group together and
 bilingual rendering presents contiguous children in one row, preserving child anchors and
 paragraph/list boundaries. Parent groups participate in source evidence and audit dependency

@@ -32,6 +32,15 @@ MATH_OPERATORS = {
 LANGUAGE_TOKEN = re.compile(r"[A-Za-z](?:\.[A-Za-z])+\.?|[A-Za-z]{2,}")
 # Printed equation labels: (1), (2.3a), (A.4); named tags such as (ODE), (SDE); starred (*).
 EQUATION_LABEL = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?|[A-Z]{2,6}\d?|\*{1,3})\)"
+# Printed list labels: a bracketed clause marker ((a), (iv), (2)) or a closed number set
+# in the margin of an exercise or enumerated item (1., 1.11., 3.2.1., 2)). A bare "1.1"
+# without closing punctuation is as likely a section reference wrapped onto a new line.
+LIST_LABEL = re.compile(r"\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)]", re.I)
+# The same label opening a unit's text; a number must be followed by a space (after any
+# emphasis marker) so "1.5" inside a formula fragment never counts.
+LIST_LABEL_START = re.compile(
+    r"[*\s]*(?:\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)](?=\**\s))", re.I
+)
 
 
 def language_words(text: str) -> list[str]:
@@ -104,6 +113,30 @@ def is_bullet_line(inked: list[dict[str, Any]]) -> bool:
         return False
     following = str(inked[1]["text"])[:1]
     return bool(following) and (following.isalnum() or (inked[0]["text"] != "\u00b7" and following not in LIST_BULLETS))
+
+
+def list_label(line: list[dict[str, Any]], font_size: float) -> tuple[str, float] | None:
+    """The printed label opening a line ("1.11.", "(b)") and the x where its text starts.
+
+    The label is the leading run of text-face glyphs up to the first space or gap; a run
+    with no text after it on the line ("1.32." wrapped alone to the margin) is not a label.
+    """
+    glyphs = [g for g in line if inked_glyph(g) or str(g["text"]).isspace()]
+    text, last, rest = "", None, len(glyphs)
+    for index, g in enumerate(glyphs):
+        if str(g["text"]).isspace() or (last is not None and g["origin"][0] - last["bbox"][2] > 0.2 * font_size):
+            rest = index
+            break
+        if MATH_FONT.search(str(g.get("font", ""))):
+            return None
+        text += str(g["text"])
+        last = g
+    if not LIST_LABEL.fullmatch(text):
+        return None
+    body = next((g for g in glyphs[rest:] if inked_glyph(g)), None)
+    return (text, float(body["origin"][0])) if body else None
+
+
 STATEMENT_NAMES = (
     "Theorem|Lemma|Proposition|Definition|Corollary|Claim|Example|Remark|Notation|Exercise|"
     "Assumption|Conjecture|Problem|Warning|Hypothesis|Axiom|Fact|Observation|Convention"
@@ -241,14 +274,23 @@ def plan_structure(
     )
     pitch = pitches[len(pitches) // 2] if pitches else font_size * 1.2
     gap_threshold = max(font_size * 1.75, pitch * 1.45)
+    # Open labelled items, innermost last: (chunk id, label x, text column). A label's text
+    # column is where its continuation lines start, whatever the page's dominant margin is;
+    # the labels themselves may be right-aligned ("1.9." / "1.10.") and share no x.
+    items: list[tuple[str, float, float]] = []
+    list_items: dict[str, dict[str, Any]] = {}
+    align = font_size * 0.15
     for b in blocks:
         gs = [gm[gid] for line in b["lines"] for gid in line]
         # A wrapped heading keeps its continuation line even though the wrap is indented.
         heading_block = bool(gs) and any(all(_contains(g, box) for g in gs) for box in title_boxes)
         chunks: list[list[list[str]]] = []
         current: list[list[str]] = []
+        chunk_roles: list[dict[str, Any]] = [{}]
         last_y: float | None = None
+        last_x: float | None = None
         previous_display = False
+        previous_label = False
         bullet_x: float | None = None
         for line in b["lines"]:
             g = gm[line[0]]
@@ -266,26 +308,75 @@ def plan_structure(
             run_in = new_line and x < margin + font_size * 0.8 and _bold_run_in(
                 [gm[gid] for gid in line], [gm[gid] for gid in current[-1]] if current else []
             )
+            label = None
+            if not (heading_block or display_line or bullet_line or b["id"] in omitted):
+                label = list_label([gm[gid] for gid in line], font_size)
+            # The innermost open item whose text column this line starts at.
+            owner = next((i for i in range(len(items) - 1, -1, -1) if abs(x - items[i][2]) <= align), None)
+            # A label opens an item only where the geometry shows one: its text column is an
+            # open item's (a sibling returning to the label column), or it starts its block,
+            # follows another label, or opens right of the running text or of the open
+            # item's label (a nested item). A number opening a line at the text column of
+            # wrapped prose is a sentence, not an item.
+            label_line = label is not None and (
+                any(abs(label[1] - column) <= align for _, _, column in items)
+                or (owner is None and (
+                    last_x is None or previous_label or x > last_x + font_size * 0.3
+                    or (bool(items) and x > items[-1][1] + font_size * 0.3)
+                ))
+            )
+            continues: str | None = None
+            resumes = False
+            if label_line and label is not None:
+                while items and items[-1][2] >= label[1] - align:
+                    items.pop()
+            else:
+                # Aligned with an open item's text column: its continuation. Deeper items are
+                # closed, and prose resuming after a nested list starts its own chunk.
+                if owner is not None:
+                    continues = items[owner][0]
+                    resumes = owner < len(items) - 1
+                    del items[owner + 1:]
+                elif not display_line:
+                    # Text back at or left of the label column closes the item; whether it
+                    # is a new paragraph or the item's own wrap is left to the rules above.
+                    while items and x <= items[-1][1] + font_size * 0.3:
+                        items.pop()
             if current and not heading_block and (
-                (indent and new_line)
+                (indent and new_line and continues is None)
                 or gap
                 or run_in
                 or display_line != previous_display
                 or bullet_line
                 or list_end
+                or label_line
+                or resumes
             ):
                 chunks.append(current)
                 current = []
+                chunk_roles.append({})
                 bullet_x = None
             if bullet_line:
                 bullet_x = gm[inked[0]]["origin"][0]
+            if not current:
+                if label_line and label is not None:
+                    chunk_roles[-1] = {"label": label[0], "body_x": round(label[1], 1)}
+                elif continues is not None:
+                    chunk_roles[-1] = {"continues": continues}
+            if label_line and label is not None:
+                chunk_id = b["id"] if not chunks else b["id"] + f"-s{len(chunks) + 1}"
+                items.append((chunk_id, x, label[1]))
             current.append(line)
             last_y = y
+            last_x = x
             previous_display = display_line
+            previous_label = label_line
         if current:
             chunks.append(current)
         for i, lines in enumerate(chunks):
             bid = b["id"] if i == 0 else b["id"] + f"-s{i + 1}"
+            if chunk_roles[i]:
+                list_items[bid] = chunk_roles[i]
             gg = [gm[gid] for line in lines for gid in line]
             box = [
                 min(g["bbox"][0] for g in gg),
@@ -320,11 +411,21 @@ def plan_structure(
         "note_top": note_top,
         "first_x": first_x,
         "display_blocks": sorted(display_blocks),
+        # Present only on pages with labelled items: a page without them keeps a ledger
+        # identical to one prepared before labels were recognised.
+        **({"list_items": list_items} if list_items else {}),
     }
 
 
-def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset], plan: dict[str, Any], make_unit: Callable[..., SourceUnit]) -> list[SourceUnit]:
-    """Use parent_id for a paragraph containing independently numbered displays."""
+def assemble_structure(
+    units: list[SourceUnit], assets: dict[str, FidelityAsset], plan: dict[str, Any], make_unit: Callable[..., SourceUnit],
+    rejoin: Callable[[str], str] | None = None,
+) -> list[SourceUnit]:
+    """Use parent_id for a paragraph containing independently numbered displays.
+
+    ``rejoin`` resolves a word hyphenated across the seam of two merged fragments
+    (``"condi-\\ntioning"``); without it the halves are always joined.
+    """
     from littrans.fidelity_models import asset_reference_ids
     from littrans.models import RenderPolicy
 
@@ -333,6 +434,7 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
     active_note: str | None = None
     statement = None
     display_blocks = set(plan.get("display_blocks", ()))
+    list_items: dict[str, dict[str, Any]] = plan.get("list_items", {})
 
     def rebuild(u: SourceUnit, text: str | None = None, **changes: Any) -> SourceUnit:
         extra = {
@@ -385,23 +487,29 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
             )
         else:
             x = plan["first_x"].get(bid, plan["margin"])
-            indented = (
+            # A chunk continuing a labelled item sits at the item's text column, not at a
+            # paragraph indent, whatever the page's dominant margin makes of that x.
+            indented = "continues" not in list_items.get(bid, {}) and (
                 plan["margin"] + plan["font_size"] * 0.8
                 < x
                 < plan["margin"] + plan["font_size"] * 2.8
             )
             starts_statement = _starts_statement(u.source_text)
-            enumerated = bool(re.match(r"[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)", u.source_text, re.I))
+            label = LIST_LABEL_START.match(u.source_text)
+            # A bracketed clause ((a), (ii)) belongs to the paragraph or statement that
+            # introduces it; a closed number (1.11.) opens an exercise or item of its own.
+            enumerated = label is not None and label[0].lstrip("* \t").startswith("(")
+            numbered = label is not None and not enumerated
             proof = bool(re.match(r"[*\s]*Proof\b", u.source_text))
             # A bold run-in label ("2.1.4. Stochastic processes.") opens a paragraph.
             run_in = bool(RUN_IN_LABEL.match(u.source_text))
-            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption"} or starts_statement or proof or run_in
+            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption"} or starts_statement or proof or run_in or numbered
             if starts_statement:
                 statement = u.unit_id
             elif (
                 u.kind.value == "heading"
                 or proof
-                or (indented and not enumerated and u.kind.value != "equation")
+                or (indented and label is None and u.kind.value != "equation")
             ):
                 statement = None
             previous_body = next((r for r in reversed(result) if r.render_policy != RenderPolicy.OMIT), None)
@@ -430,7 +538,7 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
                 # List items belong to the paragraph that introduces them and to
                 # each other; the list is one structure, not scattered elements.
                 group = previous_body.parent_id or previous_body.unit_id
-            elif statement and (starts_statement or enumerated or u.kind.value == "equation"):
+            elif statement and (starts_statement or label is not None or u.kind.value == "equation"):
                 group = statement
             elif group is None or after_heading or (u.kind.value != "equation" and (indented or boundary)):
                 group = u.unit_id
@@ -476,13 +584,15 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
             and not previous_display
             and previous.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
             and u.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
-            and not re.match(r"[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)", u.source_text, re.I)
+            and not LIST_LABEL_START.match(u.source_text)
             # A printed equation label preparation could not bind stays its own unit.
             and not re.match(r"[*\s]*" + EQUATION_LABEL, u.source_text)
         )):
-            joined = previous.source_text.rstrip() + " " + u.source_text.lstrip()
+            # The seam is a line end until hyphenation is resolved, as inside a block.
+            joined = previous.source_text.rstrip() + "\n" + u.source_text.lstrip()
             joined = re.sub(r"\s+([,.;:”’)\]])", r"\1", joined)
-            joined = re.sub(r"([a-z])-\s+([a-z])", r"\1\2", joined)
+            joined = rejoin(joined) if rejoin else re.sub(r"([a-z])-\s+([a-z])", r"\1\2", joined)
+            joined = joined.replace("\n", " ")
             merged = rebuild(
                 previous,
                 joined,

@@ -1464,7 +1464,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         return max(previous, default=-1) + 0.5
     units.sort(key=order)
     units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()})
-    units = assemble_structure(units, by_id, structure, _make_unit)
+    units = assemble_structure(units, by_id, structure, _make_unit, rejoin=lambda text: _rejoin_line_breaks(text, hyphenation))
     if not (override and "units" in override):
         units = coalesce_inline_assets(units, by_id, _make_unit, _hash)
     assets = list(by_id.values())
