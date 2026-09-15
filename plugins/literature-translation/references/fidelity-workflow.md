@@ -54,12 +54,25 @@ Fully external interpreter and model configurations (`LITTRANS_LAYOUT_PYTHON`,
 `LITTRANS_LAYOUT_MODEL`) retain their external-runtime exemption.
 
 Layout cache identities bind the worker SHA-256, configured/resolved interpreter, interpreter
-SHA-256, Python identity and installed distribution versions as well as images and weights. An
-unsuccessful runtime metadata probe cannot reuse cached layout evidence. Worker results are
-published atomically; unreadable or incomplete cached JSON triggers recomputation, and malformed
-worker results (a page without a list-valued prediction) report unavailable rather than being
-accepted. Source-review overrides reuse the page's recorded layout result, skip unreadable
-unrelated caches and explicitly degrade to `unavailable` when no valid matching layout remains.
+SHA-256, Python identity and installed distribution versions as well as the image contents and
+weights — never a path of the project. A result under `derived/fidelity-layout/` keys its
+`pages` by page-image SHA-256 (`images` maps the paths of the detection run to those keys), so
+the same tree detects, finds and replays the same result under any root: a worktree, a clone
+or a restored backup keeps its layout evidence without editing the cache. Results written by
+earlier builds keyed pages by absolute image path; they are still read by that path or, once
+the tree has moved, by the page image's file name. An unsuccessful runtime metadata probe
+cannot reuse cached layout evidence. Worker results are published atomically; unreadable or
+incomplete cached JSON triggers recomputation, and malformed worker results (a page without a
+list-valued prediction) report unavailable rather than being accepted.
+
+The recorded result is a correctness input of every override replay, not a performance cache:
+the page ledger names it (`layout_fingerprint`, `page_image_sha256`) and a replay cuts the
+page with exactly that result. When the ledger records a result that the directory no longer
+holds, the reason names the missing fingerprint and the two paths differ deliberately: an
+override import stops with an error (re-cutting the reviewed page by the fallback rules would
+silently change what the reviewer approved), while `source prepare --replace` replays the
+override on the fresh detection of that run and lists the page in
+`redetected_override_pages` — review it again from a new packet.
 
 ### Document-specific preparation
 
@@ -174,6 +187,34 @@ caches are regenerated when their evidence receipt is absent, and a receipt whos
 not the current one (`original.svg` + `original.png`) is stale: the crop is re-exported and the
 extra files are removed.
 
+### Asset identity
+
+An asset carries three related hashes; a consumer that recomputes any of them must follow
+these rules (all hashes are SHA-256 of compact JSON with sorted keys, `_hash` in
+`fidelity.py`):
+
+- **Export identity** — `identity` in the crop directory's `evidence.json`:
+  `{source_sha256, page, bbox, glyph_ids}` plus `export_method` unless the fragment is a raw
+  region crop. The crop files are exported once per export identity and never rewritten.
+- **Directory name and default asset ID** — fixed when the asset is created:
+  `hash(identity)`, folded once more as `hash({"original_content": <that>,
+  "formula_conditions": [...]})` when the creating region declared conditions (an asset with
+  several fragments hashes the list of its fragments' values first). The default ID is
+  `a-p<page>-<first 12 hex digits>`; a region `id` replaces the ID but not the directory. The
+  directory name is therefore not derivable from `content_sha256`, and a declared condition
+  changes both the name and the default ID of a *newly created* asset.
+- **`content_sha256`** — the live identity that units and page fingerprints bind to:
+  the fragment values above, folded with the current `formula_conditions`, then (content
+  identity version 2) with `kind`, `display` and `grouping_pending`.
+
+A preserved asset (`preserve_asset_id`) keeps the ID and directory it was created with: a
+later change of `formula_conditions`, `kind`, `display` or `grouping_pending` moves only
+`content_sha256`. Units and page ledgers reference the ID, so freezing it is what lets a
+correction survive; a checker that recomputes directory names must therefore accept, for
+every asset a page ledger's `source_overrides.regions[].preserve_asset_id` names, the
+creation-time value (the identity hash without conditions declared after creation). No other
+asset can have a directory name that differs from the rule above.
+
 Crop directories under `derived/assets/fidelity/<hash>/` are addressed by export identity, so a
 changed geometry writes a new directory. Once `source prepare --replace` or an override import
 has committed the new registry it removes every directory no current fragment refers to
@@ -199,7 +240,8 @@ page (continuation or container closure), loses its receipt explicitly and is li
 A page ledger records the reviewer's `source_overrides` and, since it was imported, their
 `source_overrides_origin` (`packet_id`, `reviewer`). `source prepare --replace` on such a page
 replays the recorded override: the human decision is reproduced exactly (the recorded detector
-result is reused when its cache is present), never silently replaced by a fresh derivation. The
+result is reused; a page whose recorded result is gone is replayed on the fresh detection and
+also listed in `redetected_override_pages`), never silently replaced by a fresh derivation. The
 result lists these pages in `replayed_override_pages`. Pass `--discard-overrides` to re-derive
 them from the current extraction rules instead (`discarded_override_pages`); a replay that no
 longer applies (a pinned asset gone, glyph IDs changed) fails the whole transaction with the
@@ -305,9 +347,14 @@ transaction rolls back on any violation.
   `provenance` and `formula_conditions` (any `math` asset, inline or displayed; a `math` region
   that omits the key is declared automatically, an explicit list is kept as written).
   `preserve_asset_id` reuses an unchanged existing asset of the same page and may only change
-  `kind`, `display`, `grouping_pending` or `formula_conditions`. A region may not import
-  `latex`. Glyph ownership may not overlap between assets, and asset IDs may not collide across
-  decisions or with assets of another page.
+  `kind`, `display`, `grouping_pending` or `formula_conditions`. A preserved `math` asset that
+  carries no declaration is declared automatically from its own glyphs, exactly as a region
+  naming the same glyphs would be (provenance gains `auto-formula-conditions`); an existing
+  declaration is kept and an explicit list, even an empty one, is the reviewer's decision. A
+  preserved asset keeps its ID and crop directory whatever the change (see
+  [Asset identity](#asset-identity)). A region may not import `latex`. Glyph ownership may not
+  overlap between assets, and asset IDs may not collide across decisions or with assets of
+  another page.
 - `units` replaces the page's source units. Each unit needs `unit_id`
   (`[A-Za-z0-9][A-Za-z0-9._-]*`, unique across the project), `source_markdown` (prose with
   `{{asset:ID}}` placeholders and `[^n]` footnote calls) and `bbox`; optional `kind` (default

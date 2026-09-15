@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.1`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.2`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -39,6 +39,25 @@ update` sees a change; the release drops the suffix.
 - `source prepare --replace` replays a page's recorded reviewer override instead of silently
   re-deriving the page (`replayed_override_pages`); `--discard-overrides` re-derives
   (`discarded_override_pages`). Ledgers record `source_overrides_origin` (packet, reviewer).
+- Layout results (`derived/fidelity-layout/*.json`) key their `pages` by page-image SHA-256
+  and their fingerprint binds image content, weights, runtime and worker — never a path of the
+  project — so a moved, cloned or restored tree finds and replays its own layout evidence
+  instead of silently re-cutting pages by the fallback rules (`layout_page_items`; results
+  written by earlier builds are still read by path or, once moved, by image file name).
+  Pages prepared without an override by an earlier development build change
+  `layout_fingerprint` (and so their page fingerprint) once when re-prepared.
+- A recorded layout result that `derived/fidelity-layout/` no longer holds stops an override
+  import with the missing fingerprint and the page to re-detect, instead of re-preparing the
+  reviewed page as `unavailable`; `source prepare --replace` replays such a page on the fresh
+  detection and lists it in `redetected_override_pages`.
+- A `preserve_asset_id` region on a `math` asset without a declaration is declared
+  automatically from the asset's own glyphs, like a region naming the same glyphs (provenance
+  gains `auto-formula-conditions`), so a preserved crop no longer needs a hand-written copy of
+  the conditions to pass `undeclared-formula-language`; an existing declaration is kept and an
+  explicit list is the reviewer's. `fidelity-workflow.md` gains an "Asset identity" section:
+  export identity (`evidence.json`), the creation-time directory name and default ID (folded
+  with the conditions declared at creation), `content_sha256`, and the preserved asset's
+  frozen ID and directory.
 - Review imports and preparation report pages outside the operation whose receipt depended on
   a changed page (`invalidated_pages`) and remove that receipt explicitly.
 - The approval gate and the checkpoint attention list share `page_review_findings`: an asset

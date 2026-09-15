@@ -22,7 +22,7 @@ from littrans.fidelity_models import (
     asset_reference_ids,
     load_assets,
 )
-from littrans.layout_detector import detect_layout
+from littrans.layout_detector import detect_layout, layout_page_items
 from littrans.models import AssetRef, SemanticStatus, SourceUnit, TranslationRecord, UnitKind
 from littrans.source_structure import (
     BOLD_FONT,
@@ -971,21 +971,31 @@ def _join_line_break_runs(regions: list[dict[str, Any]]) -> list[dict[str, Any]]
     return result
 
 
-def _declare_override_conditions(page: fitz.Page, region: dict[str, Any], glyphs: list[dict[str, Any]]) -> dict[str, Any]:
+def _declare_override_conditions(page: fitz.Page, region: dict[str, Any], glyphs: list[dict[str, Any]],
+                                 assets: dict[str, FidelityAsset] | None = None) -> dict[str, Any]:
     """Declare the language inside a reviewer's math region as preparation would.
 
     A region that names its glyphs but says nothing about ``formula_conditions`` gets the
     automatic declaration; an explicit list (even an empty one) is the reviewer's decision.
+    A ``preserve_asset_id`` region owns the preserved asset's glyphs: it is declared the
+    same way when that asset carries no declaration yet, so the gate that requires one
+    is never asking a path that cannot answer.
     """
-    if "formula_conditions" in region or region.get("kind") != "math" or "preserve_asset_id" in region:
+    if "formula_conditions" in region:
         return region
-    # Ownership as `_asset_impl` resolves it: named glyphs, else the glyphs inside the box.
     ids: list[str] = []
-    for fragment in region.get("fragments") or [region]:
-        if "glyph_ids" in fragment:
-            ids.extend(fragment["glyph_ids"])
-        elif "bbox" in fragment:
-            ids.extend(g["id"] for g in glyphs if _inside(g, fragment["bbox"]))
+    if "preserve_asset_id" in region:
+        preserved = (assets or {}).get(region["preserve_asset_id"])
+        if preserved is None or preserved.formula_conditions or region.get("kind", preserved.kind) != "math":
+            return region
+        ids = [gid for fragment in preserved.fragments for gid in fragment.glyph_ids]
+    elif region.get("kind") == "math":
+        # Ownership as `_asset_impl` resolves it: named glyphs, else the glyphs inside the box.
+        for fragment in region.get("fragments") or [region]:
+            if "glyph_ids" in fragment:
+                ids.extend(fragment["glyph_ids"])
+            elif "bbox" in fragment:
+                ids.extend(g["id"] for g in glyphs if _inside(g, fragment["bbox"]))
     if not ids:
         return region
     if hasattr(page, "get_svg_image"):
@@ -1027,6 +1037,8 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
         if existing.source_sha256 != source_hash or any(f.page != page_number for f in existing.fragments):
             raise ValueError("preserved asset belongs to different source/page")
         changes: dict[str, Any] = {k: region[k] for k in ("kind", "display", "grouping_pending", "formula_conditions") if k in region}
+        if "auto-formula-conditions" in region.get("provenance", []) and "auto-formula-conditions" not in existing.provenance:
+            changes["provenance"] = [*existing.provenance, "auto-formula-conditions"]
         if "formula_conditions" in changes:
             hashes = [_hash({"source_sha256": existing.source_sha256, "page": f.page, "bbox": f.bbox, "glyph_ids": f.glyph_ids,
                              **({"export_method": f.export_method} if f.export_method != "raw-region" else {})}) for f in existing.fragments]
@@ -1319,7 +1331,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         plan_structure,
         styled_text,
     )
-    items = layout.get("pages", {}).get(str(image_path.resolve()), [])
+    image_sha256 = sha256_file(image_path)
+    items = layout_page_items(layout, image_path, image_sha256) or []
     structure = plan_structure(glyphs, blocks, items, page.rect.height,
                                display_glyph_ids=_display_line_glyph_ids(glyphs, items))
     from littrans.structure_profile import structure_context
@@ -1328,7 +1341,11 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         structure["document_profile"] = {key: profile_context[key] for key in ("path", "sha256", "authority")}
     blocks = structure["blocks"]
     content_glyphs = [g for g in glyphs if g["id"] not in structure["markers"]]
-    regions = [_declare_override_conditions(page, r, content_glyphs) for r in override["regions"]] if override and "regions" in override else _regions(page, content_glyphs, items)
+    if override and "regions" in override:
+        preserved = load_assets(root) if any("preserve_asset_id" in r for r in override["regions"]) else {}
+        regions = [_declare_override_conditions(page, r, content_glyphs, preserved) for r in override["regions"]]
+    else:
+        regions = _regions(page, content_glyphs, items)
     if not glyphs and not regions and page.get_images():
         regions = [{"kind": "mixed-region", "bbox": list(page.rect), "grouping_pending": True, "display": True, "provenance": ["no-text-layer"]}]
     assets = [_asset(root, doc, number, source_hash, r, glyphs) for r in regions]
@@ -1472,7 +1489,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         if hashes != unit.asset_content_hashes:
             unit.asset_content_hashes = hashes
             unit.source_hash = _hash({"prepared_source_hash": unit.source_hash, "asset_content_hashes": hashes})
-    ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": sha256_file(image_path), "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
+    ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": image_sha256, "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
     if override is not None and override_origin:
         # Where the correction came from, so a replayed override stays auditable.
         ledger["source_overrides_origin"] = override_origin
@@ -1640,6 +1657,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
     from littrans.structure_profile import structure_context
     profile_context = structure_context(root)
     replayed: list[int] = []
+    redetected: list[int] = []
     discarded: list[int] = []
     with ExitStack() as stack:
         stack.enter_context(project_write_lock(root))
@@ -1672,10 +1690,13 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
             recorded = old_ledgers.get(number, {})
             override = recorded.get("source_overrides")
             if override and not discard_overrides:
-                # The recorded detector result keeps the replay exact; a missing cache
-                # falls back to the fresh detection of this run.
+                # The recorded detector result keeps the replay exact. When the ledger
+                # records one that is gone, the override is replayed on this run's fresh
+                # detection and the page is named in `redetected_override_pages`.
                 page_layout = _cached_layout(root, recorded)
                 if page_layout["status"] != "ok":
+                    if recorded.get("layout_status") == "ok":
+                        redetected.append(number)
                     page_layout = layout
                 try:
                     page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, override, recorded.get("source_overrides_origin"))
@@ -1707,20 +1728,29 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
     pruned = prune_asset_directories(root, registry.values(), apply=True)
     packet = build_source_review_packet(root, ",".join(map(str, pages)))
     return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry),
-            "replayed_override_pages": replayed, "discarded_override_pages": discarded,
+            "replayed_override_pages": replayed, "redetected_override_pages": redetected, "discarded_override_pages": discarded,
             "retained_receipt_pages": retained, "invalidated_pages": [p for p in invalidated if p not in needed],
             "pruned_asset_directories": pruned["removed"], "layout_status": layout["status"], "requires_visual_review": True,
             "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context, "generator": build_identity()}
 
 
 def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
-    """Reuse the page's recorded detector result so corrections keep its layout evidence."""
+    """Reuse the page's recorded detector result so corrections keep its layout evidence.
+
+    The recorded result is a correctness input of every replay, not a performance cache:
+    it is found by the ledger's ``layout_fingerprint`` and the page image's content, so a
+    moved or cloned tree still reads its own evidence. A result the ledger records but
+    ``derived/fidelity-layout/`` no longer holds comes back ``unavailable`` with a reason
+    that names the missing fingerprint; callers decide whether that stops them.
+    """
     fallback = {"status": ledger["layout_status"], "reason": ledger.get("layout_reason"), "pages": {}}
     fingerprint = ledger.get("layout_fingerprint")
     if ledger["layout_status"] != "ok" or not fingerprint:
         return fallback
     page_image = ledger.get("page_image")
-    image_key = str(_path(root, page_image)) if page_image else None
+    if not page_image:
+        return {**fallback, "status": "unavailable", "reason": "ledger names no page image"}
+    image = _path(root, page_image)
     for path in sorted((root / "derived/fidelity-layout").glob("*.json")):
         if path.name.endswith(".request.json"):
             continue
@@ -1729,10 +1759,10 @@ def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError):
             continue
         if (payload.get("fingerprint") == fingerprint and payload.get("status") == "ok"
-                and isinstance(payload.get("pages"), dict) and image_key is not None
-                and isinstance(payload["pages"].get(image_key), list)):
+                and layout_page_items(payload, image, ledger.get("page_image_sha256")) is not None):
             return payload
-    return {**fallback, "status": "unavailable", "reason": "cached layout result missing; re-run source prepare --replace"}
+    return {**fallback, "status": "unavailable",
+            "reason": f"the layout result the ledger records (fingerprint {fingerprint}) is missing from derived/fidelity-layout/"}
 
 
 def _validate_footnote_relationships(units: list[SourceUnit]) -> None:
@@ -2070,8 +2100,14 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         for decision in decisions:
             p = decision["page"]
             if decision.get("override"):
+                layout = _cached_layout(root, by_page[p]["ledger"])
+                if layout["status"] != by_page[p]["ledger"]["layout_status"]:
+                    # The reviewer corrected a page cut with the recorded layout evidence;
+                    # cutting it again by the fallback rules would change what they reviewed.
+                    raise ValueError(f"page {p}: {layout['reason']}; restore the cache, or re-detect with "
+                                     f"`source prepare --pages {p} --replace` (the override is replayed on the fresh "
+                                     "detection and reported in redetected_override_pages) and review a new packet")
                 with fitz.open(config.source(root)) as doc:
-                    layout = _cached_layout(root, by_page[p]["ledger"])
                     new_units, new_assets, ledger = _page_prepare(root, doc, p, config.source_sha256, layout, decision["override"],
                                                                   {"packet_id": packet_id, "reviewer": review["reviewer"]})
                 new_unit_ids = [unit.unit_id for unit in new_units]

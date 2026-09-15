@@ -165,10 +165,13 @@ def test_detector_checks_prediction_lists(tmp_path, monkeypatch, invalid, where)
     if where == "worker":
         assert result["status"] == "unavailable"
     else:
+        # Published results are keyed by image content, not by the request's paths.
+        key = hashlib.sha256(image.read_bytes()).hexdigest()
+        assert set(read_json(output)["pages"]) == {key} and read_json(output)["images"] == {str(image.resolve()): key}
         damaged = read_json(output)
-        damaged["pages"][str(image.resolve())] = invalid
+        damaged["pages"][key] = invalid
         write_json(output, damaged)
-        assert layout_detector.detect_layout([image], output)["pages"][str(image.resolve())] == []
+        assert layout_detector.detect_layout([image], output)["pages"][key] == []
         assert len(calls) == 2
 
 
