@@ -230,9 +230,10 @@ def test_unchanged_translation_retains_fresh_images_after_boundary_repair(tmp_pa
     source = tmp_path / "boundary.pdf"
     with fitz.open() as doc:
         page = doc.new_page()
-        # The incomplete prose parenthesis context deliberately leaves the
-        # automatic candidate needing an explicit reviewer correction.
-        page.insert_text((50, 60), "Let x = 1) be the size.")
+        # A balanced parenthesis around the notation stays in the automatic candidate
+        # (an unbalanced prose one is trimmed by balance), so the reviewer's decision
+        # to drop it is a genuine glyph ownership repair.
+        page.insert_text((50, 60), "Let x = (1) be the size.")
         doc.save(source)
     root = tmp_path / "boundary-project"
     initialize_project(source, root, "technical-book")

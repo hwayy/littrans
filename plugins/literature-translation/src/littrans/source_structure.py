@@ -18,6 +18,25 @@ BOLD_FONT = re.compile(r"bx|bold|heavy|black|semibold|demi|(?<![a-z])(?:cm|sf|ec
 ITALIC_FONT = re.compile(r"ital|oblique|slant|(?<![a-z])(?:cm|sf|ec|ae|lm|tc)(?:bx|b|ss|tt)?(?:ti|sl|it|bi|ri)\d", re.I)
 FORMAT_CONTROLS = {chr(9), chr(10), chr(13)}
 MATH_FONT = re.compile(r"cmmi|cmsy|cmex|msam|msbm|math|symbol|stix|cm[a-z]*sy", re.I)
+# Upright operator names TeX sets in the text face; they are notation, never prose words
+# or formula conditions. English words that double as operators (mean, area, mod) are
+# recognised only when set flush against their argument's opening bracket.
+MATH_OPERATORS = {
+    "sin", "cos", "tan", "cot", "sec", "csc", "sinh", "cosh", "tanh", "arcsin", "arccos", "arctan",
+    "log", "ln", "lg", "exp", "lim", "limsup", "liminf", "sup", "inf", "max", "min", "argmax", "argmin",
+    "det", "rank", "diag", "span", "arg", "dim", "ker", "poly", "tr", "cov", "var", "corr", "prob",
+    "sgn", "gcd", "lcm", "supp", "ess", "vol",
+}
+# A token of native language: a word of two or more letters, or a letter-dot abbreviation
+# (i.o., a.s., i.e.) that a word pattern would split into single letters.
+LANGUAGE_TOKEN = re.compile(r"[A-Za-z](?:\.[A-Za-z])+\.?|[A-Za-z]{2,}")
+# Printed equation labels: (1), (2.3a), (A.4); named tags such as (ODE), (SDE); starred (*).
+EQUATION_LABEL = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?|[A-Z]{2,6}\d?|\*{1,3})\)"
+
+
+def language_words(text: str) -> list[str]:
+    """Language tokens of ``text`` that are not operator names."""
+    return [token for token in LANGUAGE_TOKEN.findall(text) if token.lower() not in MATH_OPERATORS]
 
 
 def font_style(font: str) -> str:
@@ -458,6 +477,8 @@ def assemble_structure(units: list[SourceUnit], assets: dict[str, FidelityAsset]
             and previous.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
             and u.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
             and not re.match(r"[*\s]*\((?:[a-z]|[ivxlcdm]+|\d+)\)", u.source_text, re.I)
+            # A printed equation label preparation could not bind stays its own unit.
+            and not re.match(r"[*\s]*" + EQUATION_LABEL, u.source_text)
         )):
             joined = previous.source_text.rstrip() + " " + u.source_text.lstrip()
             joined = re.sub(r"\s+([,.;:”’)\]])", r"\1", joined)
@@ -527,7 +548,9 @@ def styled_text(tokens: list[tuple[str, str]]) -> str:
 
 def coalesce_inline_assets(units: list[SourceUnit], assets: dict[str, FidelityAsset], make_unit: Callable[..., SourceUnit], hash_value: Callable[[Any], str]) -> list[SourceUnit]:
     """Adjacent fragments of inline notation form one ordered multi-fragment asset."""
-    # Fragments on one row only; a row break of a displayed block is a boundary.
+    # Placeholders separated by spaces or tabs only: a newline (a row break of a displayed
+    # block) is a boundary. Fragments of one wrapped expression may sit on different visual
+    # lines; region preparation joins the halves it can identify (line-break-continued).
     pattern = r"\{\{asset:[^}]+\}\}(?:[ \t]*\{\{asset:[^}]+\}\})+"
     result = []
     for unit in units:

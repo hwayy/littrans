@@ -69,8 +69,8 @@ class FidelityAsset(StrictModel):
 
     @model_validator(mode="after")
     def valid_formula_conditions(self) -> FidelityAsset:
-        if self.formula_conditions and (self.kind != "math" or not self.display):
-            raise ValueError("formula_conditions require a displayed math asset")
+        if self.formula_conditions and self.kind != "math":
+            raise ValueError("formula_conditions require a math asset")
         owned = {gid for fragment in self.fragments for gid in fragment.glyph_ids}
         declared = [gid for condition in self.formula_conditions for gid in condition.glyph_ids]
         if len(declared) != len(set(declared)) or not set(declared) <= owned:

@@ -5,8 +5,55 @@ versioning and correspond to Git tags named `v<version>`.
 
 ## [0.6.0] - Unreleased
 
+Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
+(`0.6.0-dev.N`, currently `0.6.0-dev.1`) that is bumped with every behaviour-changing commit, so
+plugin caches keyed by version no longer share a directory between builds and `claude plugin
+update` sees a change; the release drops the suffix.
+
 ### Changed
 
+- Inline notation keeps a text-face operator name set flush against its argument's bracket
+  (`Cov(`, `mean(`, `area(`) like a known operator; `MATH_OPERATORS` gains `limsup`, `liminf`,
+  `cov`, `var`, `corr`, `prob`, `vol` and the hyperbolic/inverse trigonometric names, so
+  `limsup` is no longer declared as a formula condition.
+- A text-face closing bracket is trimmed from an inline run only when the run's closers
+  outnumber its openers and prose follows it (`(the space L^p(Ω))`); intervals count every
+  bracket kind together and brackets at a line edge are kept.
+- An inline formula TeX broke after a relation or operator (`f(λ) >` / `0`, a summation sign
+  ending a block) is one asset with a fragment per line (`line-break-continued`); the digit or
+  bracket opening the next line is part of it.
+- A displayed formula box owns the rows a stretched delimiter it owns brackets (`0,
+  otherwise.`) and no longer returns a fraction denominator (`vol(B)`) to the paragraph as a
+  set-off phrase; the p33-style cases density exports complete.
+- Language tokens include letter-dot abbreviations (`i.o.`, `a.s.`, `i.e.`) everywhere one
+  predicate now serves: automatic conditions, condition validation and recoverable-prose
+  counting. `formula_conditions` may be declared on any math asset, inline or displayed, and
+  preparation declares them for inline crops and for reviewer regions that omit the key.
+- An equation label sharing its PDF block with a proof tombstone (`□ (1.50)`) binds to its
+  display; the tombstone stays in the reading order. Structure assembly never merges a printed
+  label (`(1.50)`, `(A.4)`) into the preceding paragraph.
+- The build identity (`generator`) is recorded but never fingerprinted: page ledger
+  fingerprints, packet page fingerprints and packet identities exclude it, so re-preparing
+  identical content keeps the packet ID and the review receipt (`retained_receipt_pages`).
+  Pages prepared by the earlier 0.6.0 development build change fingerprint once.
+- `source prepare --replace` replays a page's recorded reviewer override instead of silently
+  re-deriving the page (`replayed_override_pages`); `--discard-overrides` re-derives
+  (`discarded_override_pages`). Ledgers record `source_overrides_origin` (packet, reviewer).
+- Review imports and preparation report pages outside the operation whose receipt depended on
+  a changed page (`invalidated_pages`) and remove that receipt explicitly.
+- The approval gate and the checkpoint attention list share `page_review_findings`: an asset
+  with a pending grouping decision blocks approval unless the decision lists it in
+  `accepted_grouping_pending` with a reason; language a math crop holds without a declaration
+  (`undeclared-formula-language`) blocks approval; receipts record `failures` and imports
+  return `rejected_pages`. `review-template.json` pages carry a `context` block (declared
+  formula conditions, pending grouping assets, boundary diagnostics, findings). Existing
+  approved receipts of pages with unaccepted pending grouping decisions fail verification
+  until re-reviewed.
+- A receipt whose packet directory is missing fails with a message naming the packet as a
+  live review dependency; `source verify` reports `receipt_packets` and `source gc` reports
+  `live_source_packets`/`unreferenced_source_packets` without deleting packets.
+- `littrans doctor` prints the installed `build` (`plugin_version`, `build_digest`,
+  `package_path`).
 - QA v6.15 folds glossary sources and unit source text alike before matching (TeX spacing and
   combining accents, ligatures, curly quotes, dash variants, whitespace, case), so `Hölder`,
   `Lévy's` or `Chebyshev's` gate the extracted `H¨older`, `L´evy’s` and `Chebyshev’s`. QA and

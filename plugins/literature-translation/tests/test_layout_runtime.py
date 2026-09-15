@@ -58,7 +58,7 @@ def test_cli_prepare_forwards_allow_missing_layout(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(fidelity, "prepare_source", prepare)
     result = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--allow-missing-layout"])
     assert result.exit_code == 0, result.output
-    assert observed == [(tmp_path, "all", False, True)]
+    assert observed == [(tmp_path, "all", False, True, False)]
 
 
 def test_layout_status_reports_missing_interpreter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -91,16 +91,32 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 - Never delete an installed cache version while a running task may still call its scripts,
   templates, schemas, or skill references.
 
+## Development versions
+
+Between releases the version is a semantic-versioning pre-release of the next release,
+`<next>-dev.N` (for example `0.6.0-dev.1`), set in the same five files as a release version.
+Bump `N` in every commit that changes behaviour on the development branch, whether or not it
+is installed anywhere: the version string is the only signal `claude plugin update` compares,
+and it names the cache directory, so two builds under one version share a directory and
+`update` reports "already at the latest version" while the installed commit falls behind.
+Artifacts record the exact build in their `generator` block (`plugin_version`, `build_digest`)
+and `littrans doctor` prints the installed `build`, so an installation can always be checked
+against a checkout. The release commit replaces the suffix with the plain version;
+`validate_release.py` accepts both forms.
+
 ## Development builds on Claude Code
 
 `claude plugin update` is a no-op while the installed version string is unchanged, so a
-development build with the same version must be reinstalled (`claude plugin uninstall` then
+development build that kept its version must be reinstalled (`claude plugin uninstall` then
 `claude plugin install literature-translation@littrans`) or loaded from the checkout with
 `claude --plugin-dir plugins/literature-translation`. The installed launcher runs from the cached
 `src/` tree, so a hot copy of changed files into the cache is a valid short-lived test only.
+A directory marketplace copies the working tree, caches included: clear `__pycache__` and the
+tool caches before installing if a file-by-file comparison of the installation matters.
 
 ## Development cachebusters
 
 Local cachebuster versions such as `0.2.2+codex.<timestamp>` may be used temporarily while testing
 an installed local Codex development build. They are not release versions and must not be committed
-to `main` or tagged. Published releases use the plain semantic version.
+to `main` or tagged; the committed development version is the `-dev.N` pre-release above.
+Published releases use the plain semantic version.

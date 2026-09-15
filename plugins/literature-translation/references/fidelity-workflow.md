@@ -91,7 +91,10 @@ source/translation evidence.
 A printed equation label such as `(1.6)` beside a display is bound to the unit's
 `equation_number` and removed from `source_text`; the checkpoint HTML shows it in the unit meta
 line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
-label that stays in prose belongs to a block that preparation could not bind to a display asset.
+label that shares its PDF block with the tombstone closing a proof (`□ (1.50)`) binds too; the
+tombstone stays in the reading order and structure assembly attaches it to the paragraph the
+proof ends in. A label that stays in prose belongs to a block that preparation could not bind
+to a display asset; structure assembly never merges such a label into the preceding paragraph.
 
 A displayed block whose lines carry native prose (a cases formula with condition words) keeps
 its rows: `source_text` separates them with `\n`, the Markdown edition emits hard breaks and the
@@ -113,13 +116,39 @@ record `stretched-delimiter-merged`. The review packet's `boundary_diagnostics` 
 `math-ink-outside-ownership` when a symbol-face glyph inside a displayed crop is owned by
 another asset, since the explicit export draws owned paths only and would leave a hole.
 
-Words that stay inside a displayed formula's crop (`if`, `otherwise.`, `for all`, `is even`)
-are declared automatically as `formula_conditions` (provenance `auto-formula-conditions`),
-one per notation-free segment of a visual line, trimmed of surrounding brackets and
-punctuation; word gaps TeX sets without a space glyph appear as spaces in `source_text`. An
-upright operator name applied to its argument (`Prob(`, `Var(`) is notation, not a condition.
-The declared words make the unit translatable and require an `asset_translations` companion,
-exactly as reviewer-declared conditions do.
+Words that stay inside a math crop, displayed or inline (`if`, `otherwise.`, `for all`,
+`is even`, `i.o.`, `a.s.`), are declared automatically as `formula_conditions` (provenance
+`auto-formula-conditions`), one per notation-free segment of a visual line, trimmed of
+surrounding brackets and punctuation; word gaps TeX sets without a space glyph appear as spaces
+in `source_text`. A language token is a word of two or more letters or a letter-dot
+abbreviation (`i.o.`, `a.s.`, `i.e.`); the same predicate counts recoverable prose and
+validates declared conditions. An operator name applied to its argument is notation, not a
+condition: a known name (`limsup`, `Var`, `vol`), a capitalised name (`Prob(`) or any name set
+flush against its argument's opening bracket (`mean(`, `area(`), whereas `if (` keeps its
+text-mode space and remains a condition. The declared words make the unit translatable and
+require an `asset_translations` companion, exactly as reviewer-declared conditions do. A
+reviewer's region that names its glyphs or box but says nothing about `formula_conditions` is
+declared the same way; an explicit list (even empty) is the reviewer's decision, and the
+approval gate then reports language that list leaves undeclared.
+
+A displayed formula box owns every row a stretched delimiter it owns brackets (the cases of
+`ρ(x) = {…`), including a row that is mostly a condition word (`0, otherwise.`), and a phrase is
+returned to the paragraph as set-off prose only when it sits beside the whole formula, not when
+it lies within the horizontal extent of the formula's other rows (a fraction denominator such as
+`vol(B)`).
+
+Inline notation is collected per native line, and a text-face operator name set flush against
+its argument's bracket (`Cov(`, `mean(`, `area(`) joins the run like a single letter or a known
+operator does. A closing bracket in the text face is trimmed from the run's end only when the
+run's closers outnumber its openers and prose follows it (`(the space L^p(Ω))`); intervals
+count every bracket kind together, and a bracket at a line edge is never trimmed, since it may
+belong to an expression continuing on the next line.
+
+TeX breaks an inline formula only after a relation or operator. A native run that closes its
+line with one (`f(λ) >`, a summation sign) continues in the run that opens the next line, even
+when that run starts with a digit or bracket (`0`), and the two halves become one asset with
+one fragment per line (provenance `line-break-continued`). A half that a display region
+absorbed stays where it is; text-adjacent placeholders are still coalesced afterwards.
 
 Original glyph paths are measured from the page SVG to size assets, including pages MuPDF
 wraps in a page-sized clip group (CropBox differs from MediaBox). Glyphs that still cannot be
@@ -155,9 +184,26 @@ are not reclaimed.
 
 `derived/provenance.json`, every page ledger and every source review packet carry a `generator`
 block (`plugin_version`, `build_digest` of the package sources, `generated_at`), so an artifact
-names the build that wrote it. The block is excluded from the packet identity: identical
-content keeps its packet ID and an existing valid packet is returned untouched rather than
-rewritten, which keeps reviews bound to its bytes valid.
+names the build that wrote it. The block is never fingerprinted: the page ledger's
+`fingerprint`, the packet page fingerprint receipts bind to and the packet identity are
+computed without it, so re-preparing identical content keeps the page fingerprint, the packet
+ID (an existing valid packet is returned untouched rather than rewritten) and the review
+receipt. `source prepare --replace` reports such pages in `retained_receipt_pages`; a page
+whose fingerprint moved, or a page outside the run whose receipt depends on a re-prepared
+page (continuation or container closure), loses its receipt explicitly and is listed in
+`invalidated_pages`. `littrans doctor` prints the installed `build` (`plugin_version`,
+`build_digest`, `package_path`) for comparison with an artifact's `generator`.
+
+### Replaying reviewer overrides
+
+A page ledger records the reviewer's `source_overrides` and, since it was imported, their
+`source_overrides_origin` (`packet_id`, `reviewer`). `source prepare --replace` on such a page
+replays the recorded override: the human decision is reproduced exactly (the recorded detector
+result is reused when its cache is present), never silently replaced by a fresh derivation. The
+result lists these pages in `replayed_override_pages`. Pass `--discard-overrides` to re-derive
+them from the current extraction rules instead (`discarded_override_pages`); a replay that no
+longer applies (a pinned asset gone, glyph IDs changed) fails the whole transaction with the
+page number and that hint, so re-import the review file or discard deliberately.
 
 ## Source review packets, decisions and overrides
 
@@ -172,8 +218,16 @@ Source-review receipts bind the decision, reviewer, source, page fingerprint and
 identity/hash with `receipt_sha256`. Submissions must echo `visual_report_sha256` after
 inspection, and receipts retain it. Approval consumers (`source verify`, batch creation,
 workflow coordination) verify the receipt and packet, then recheck the visual decision
-conditions. Keep the original packet available. Legacy receipts without these bindings require a
-fresh visual review import; no automatic approval migration is performed.
+conditions. Legacy receipts without these bindings require a fresh visual review import; no
+automatic approval migration is performed.
+
+The packet directory a receipt names (`packets/source-<hash>/packet.json`, `coverage.html`
+and the page images its manifest lists) is a live dependency of that review however many newer
+packets exist: keep it on disk and under version control for as long as the receipt is meant to
+verify. `source verify` lists the packets its verified receipts depend on in `receipt_packets`,
+`source gc` reports `live_source_packets` and `unreferenced_source_packets` without deleting
+either (a review file not yet imported may name an unreferenced one), and a receipt whose
+packet is missing fails verification with a message naming the packet as a review dependency.
 
 ### Decision fields
 
@@ -181,15 +235,29 @@ Each entry of `pages` in the submitted review carries the packet page's `page` a
 plus the attestation flags from the template: `viewed_original`, `coverage_complete`,
 `boundaries_complete`, `reading_order_correct`, `grouping_checked`, and, when the ledger requires
 them, `layout_fallback_checked` (layout not `ok`), `overflow_canvas_checked` (a page canvas
-override) and `formula_conditions_checked` (declared formula conditions). A page passes only
-when every required flag is `true`, `issues` is empty, no `override` is present and no
-`math`/`mixed-region` asset still owns six or more ordinary words (`recoverable-prose-in-image`).
-A `mixed-region` image is never textual coverage of recoverable paragraphs: split the source
-region and obtain a fresh packet.
+override) and `formula_conditions_checked` (declared formula conditions: the reviewer confirms
+the listed declarations are correct and complete, not that words are absent from the crop).
+The template's `context` block lists what the ledger already knows for that page —
+`formula_conditions` (asset, text, box), `grouping_pending` asset IDs, `boundary_diagnostics`
+and `findings` — so the review confirms a list instead of guessing from crops.
+
+The approval gate and the checkpoint's attention list share one predicate
+(`page_review_findings`): an approved page is a page that needs no attention. A page passes
+only when every required flag is `true`, `issues` is empty, no `override` is present and no
+finding remains: `grouping-pending` (an asset with `grouping_pending` that the decision does
+not list in `accepted_grouping_pending: [{"asset_id", "reason"}]` with a non-empty reason),
+`undeclared-formula-language` (language inside a `math` crop that no formula condition
+declares) and `recoverable-prose-in-image` (a `math`/`mixed-region` asset owning six or more
+undeclared words). A receipt that does not pass records the reasons in `failures`, and the
+import result lists them in `rejected_pages`. A `mixed-region` image is never textual coverage
+of recoverable paragraphs: split the source region and obtain a fresh packet.
 
 Overrides are applied before approvals. Decisions whose dependency fingerprints changed because
 another decision in the same import corrected a page appear in `deferred_pages`; corrected pages
-appear in `changed_pages`. Both require a new packet and review, never an immediately stale receipt.
+appear in `changed_pages`; pages outside the review whose receipt depended on a corrected page
+(continuation or container closure) lose that receipt and appear in `invalidated_pages`. The
+three lists are disjoint and together are what needs a new packet and review, never an
+immediately stale receipt.
 
 ### Override contract
 
@@ -234,10 +302,12 @@ transaction rolls back on any violation.
   on the same page (cross-page elements use continuation links instead). Optional fields:
   `id` (`[A-Za-z0-9][A-Za-z0-9._-]*`, default `a-p<page>-<content hash>`), `glyph_ids` (explicit
   native glyph ownership; see the glyph corrections section), `display`, `grouping_pending`,
-  `provenance` and `formula_conditions`. `preserve_asset_id` reuses an unchanged existing asset
-  of the same page and may only change `kind`, `display`, `grouping_pending` or
-  `formula_conditions`. A region may not import `latex`. Glyph ownership may not overlap between
-  assets, and asset IDs may not collide across decisions or with assets of another page.
+  `provenance` and `formula_conditions` (any `math` asset, inline or displayed; a `math` region
+  that omits the key is declared automatically, an explicit list is kept as written).
+  `preserve_asset_id` reuses an unchanged existing asset of the same page and may only change
+  `kind`, `display`, `grouping_pending` or `formula_conditions`. A region may not import
+  `latex`. Glyph ownership may not overlap between assets, and asset IDs may not collide across
+  decisions or with assets of another page.
 - `units` replaces the page's source units. Each unit needs `unit_id`
   (`[A-Za-z0-9][A-Za-z0-9._-]*`, unique across the project), `source_markdown` (prose with
   `{{asset:ID}}` placeholders and `[^n]` footnote calls) and `bbox`; optional `kind` (default
@@ -261,12 +331,14 @@ transaction rolls back on any violation.
 
 ### Formula-contained language and original page overflow
 
-A complete displayed cases formula may contain condition words such as “and … is odd”.
-Preparation declares them itself (see [Prepared units and assets](#prepared-units-and-assets));
-a reviewed region can also declare `formula_conditions: [{glyph_ids: [...], source_text: "..."}]`.
+A complete displayed cases formula may contain condition words such as “and … is odd”, and an
+inline crop may hold an abbreviation such as `i.o.` or `a.s.`. Preparation declares them itself
+(see [Prepared units and assets](#prepared-units-and-assets)); a reviewed region can also
+declare `formula_conditions: [{glyph_ids: [...], source_text: "..."}]` on any `math` asset.
 Each entry must match owned native glyphs in native order on one visual line; `source_text`
 is compared ignoring whitespace, so TeX word gaps may be written as spaces. The source gate
-still checks all undeclared prose. It additionally requires the independent page review's
+still checks all undeclared prose and reports language the declarations miss as the
+`undeclared-formula-language` finding. It additionally requires the independent page review's
 `formula_conditions_checked`; the asset remains math, its source unit becomes translatable, and
 translation QA requires a Chinese companion and rejects a no-language attestation. Empty
 declarations are omitted from serialization to preserve existing source fingerprints.

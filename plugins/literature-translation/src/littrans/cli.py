@@ -10,7 +10,9 @@ from typing import Annotated, Any
 import typer
 from pydantic import BaseModel
 
+import littrans
 from littrans.batching import create_batches, refresh_batch, show_batch
+from littrans.build_info import build_identity
 from littrans.external_review import external_review_status, run_external_review
 from littrans.extractor import inspect_source
 from littrans.models import IssueStatus
@@ -103,6 +105,8 @@ def doctor() -> None:
         {
             "python": sys.version,
             "python_ok": sys.version_info >= (3, 12),
+            # The installed build, comparable with the `generator` block of artifacts.
+            "build": {**{k: v for k, v in build_identity().items() if k != "generated_at"}, "package_path": str(Path(littrans.__file__).resolve().parent)},
             "modules": {name: importlib.util.find_spec(name) is not None for name in modules},
             "pdftoppm": shutil.which("pdftoppm"),
             "pdfinfo": shutil.which("pdfinfo"),
@@ -174,6 +178,10 @@ def source_prepare(
     project: PathArg,
     pages: str = typer.Option("all"),
     replace: bool = typer.Option(False),
+    discard_overrides: bool = typer.Option(
+        False, "--discard-overrides",
+        help="With --replace, re-derive pages that carry a reviewer's override instead of replaying it.",
+    ),
     allow_missing_layout: bool = typer.Option(
         False, "--allow-missing-layout",
         help="Only at the user's explicit request: prepare without the layout detector; every region then needs full visual review.",
@@ -181,7 +189,7 @@ def source_prepare(
 ) -> None:
     """Preserve original prose and complex visual assets without formula transcription."""
     from littrans.fidelity import prepare_source
-    emit(prepare_source(project, pages, replace, allow_missing_layout))
+    emit(prepare_source(project, pages, replace, allow_missing_layout, discard_overrides))
 
 
 @source_app.command("gc")

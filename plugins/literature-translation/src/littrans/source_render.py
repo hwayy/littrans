@@ -154,21 +154,34 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     attention: list[str] = []
     for error in verification.get("errors", []):
         attention.append("verify: " + html.escape(json.dumps(error, ensure_ascii=False)))
-    # One line per page, not per asset: hundreds of identical notices would push the
-    # body far below the fold and make the checkpoint unusable for visual review.
-    pending_by_page: dict[int, list[str]] = {}
-    for aid in sorted(referenced):
-        asset = assets.get(aid)
-        if asset is not None and asset.grouping_pending:
-            pending_by_page.setdefault(asset.fragments[0].page, []).append(f"<code>{html.escape(aid)}</code> ({html.escape(asset.kind)})")
-    for page, pending in sorted(pending_by_page.items()):
-        attention.append(f"page {page}: {len(pending)} asset(s) with a pending grouping decision "
-                         f"<details><summary>list</summary>{', '.join(pending)}</details>")
+    # The same predicate as the approval gate, one line per finding and page (hundreds of
+    # per-asset notices would push the body below the fold): an approved page needs no
+    # attention, and a grouping decision the review accepted shows as accepted.
+    from littrans.fidelity import page_review_findings
+
     for page in pages:
         ledger = _page_ledger(root, page)
-        if ledger and ledger.get("layout_status") != "ok":
+        if not ledger:
+            continue
+        receipt_path = root / f"evidence/pages/fidelity-p{page:04d}.review.json"
+        decision = read_json(receipt_path).get("decision", {}) if receipt_path.is_file() else {}
+        payload = {"ledger": ledger, "assets": [assets[aid].model_dump(mode="json") for aid in ledger.get("asset_ids", []) if aid in assets]}
+        wording = {"grouping-pending": "asset(s) with a pending grouping decision",
+                   "undeclared-formula-language": "math asset(s) with undeclared language inside the crop",
+                   "recoverable-prose-in-image": "image asset(s) holding recoverable prose"}
+        for finding in page_review_findings(payload, decision):
+            ids = finding.get("asset_ids") or [finding.get("asset_id")]
+            listed = ", ".join(f"<code>{html.escape(str(aid))}</code>" for aid in ids)
+            attention.append(f"page {page}: {len(ids)} {wording.get(finding['code'], html.escape(finding['code']))} "
+                             f"<details><summary>list</summary>{listed}</details>")
+        accepted = [item for item in decision.get("accepted_grouping_pending", []) if isinstance(item, dict)]
+        if accepted:
+            listed = ", ".join(f"<code>{html.escape(str(item.get('asset_id')))}</code> ({html.escape(str(item.get('reason', '')))})" for item in accepted)
+            attention.append(f"page {page}: {len(accepted)} pending grouping decision(s) accepted by review "
+                             f"<details><summary>list</summary>{listed}</details>")
+        if ledger.get("layout_status") != "ok":
             attention.append(f"page {page}: layout detector {html.escape(str(ledger.get('layout_status')))} — {html.escape(str(ledger.get('layout_reason')))}")
-        if ledger and not (root / f"evidence/pages/fidelity-p{page:04d}.review.json").is_file():
+        if not receipt_path.is_file():
             attention.append(f"page {page}: no approved source review receipt yet")
 
     sections: list[str] = []

@@ -289,6 +289,8 @@ def test_source_gc_lists_before_it_deletes(fidelity_project: Path) -> None:
     orphan.mkdir()
     (orphan / "original.svg").write_bytes(b"<svg/>")
     listed = gc_asset_directories(fidelity_project)
+    packet_ids = listed.pop("unreferenced_source_packets")
+    assert len(packet_ids) == 1 and packet_ids[0].startswith("source-") and listed.pop("live_source_packets") == []
     assert listed == {"mode": "dry-run", "candidates": [orphan.name], "candidate_bytes": 6, "removed": []}
     assert orphan.exists()
     runner = CliRunner()

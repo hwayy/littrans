@@ -80,7 +80,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
             "set language_present=false and explain in notes; the technical auditor must verify this. "
             "The v6 asset-reference contract overrides incompatible historical style instructions. "
             + TARGET_TEXT_CONTRACTS
-        ) + (" Displayed math with formula_conditions contains source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
+        ) + (" Math assets with formula_conditions contain source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
         "units": [{"unit_id": u.unit_id, "source_hash": u.source_hash,
                    "source": u.source_markdown or u.source_text, "page": u.page,
                    "equation_number": u.equation_number, "parent_id": u.parent_id, "footnote_number": u.footnote_number, "footnote_refs": u.footnote_refs} for u in units],
