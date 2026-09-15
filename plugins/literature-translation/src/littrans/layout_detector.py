@@ -131,12 +131,20 @@ def _content_keyed(pages: Any, image_sha256: dict[str, str]) -> dict[str, Any] |
     return {image_sha256[name]: items for name, items in pages.items()}
 
 
-def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
+def layout_result_path(store: Path, fingerprint: str) -> Path:
+    """Where a detection result lives: one file per fingerprint, never overwritten by another."""
+    return store / f"{fingerprint}.json"
+
+
+def detect_layout(images: list[Path], store: Path) -> dict[str, Any]:
     """Return per-image pixel boxes, retaining inline formulas, or explicit unavailable state.
 
     ``pages`` is keyed by image SHA-256 and the fingerprint binds image content, detector
     weights, runtime and worker, never a path of the project, so the same tree detects and
-    replays the same result under any root.
+    replays the same result under any root. Results are content-addressed inside ``store``
+    (``<fingerprint>.json`` with its ``.request.json`` and ``.log``): a rerun on the same
+    runtime reuses its file, a rerun on another runtime writes a new one, and a result a
+    page ledger already records is never overwritten (``path`` names the file).
     """
     python, model = runtime_paths()
     if not python or not python.is_file() or not model or not model.is_dir():
@@ -160,6 +168,7 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
     identity = {"image_sha256": sorted(set(image_sha256.values())), "weights": weights, "runtime": runtime, "worker_sha256": worker_sha}
     request["fingerprint"] = sha256_text(json.dumps(identity, sort_keys=True))
     expected_keys = set(image_sha256.values())
+    output = layout_result_path(store, request["fingerprint"])
     if output.is_file():
         try:
             existing = read_json(output)
@@ -168,7 +177,7 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         if (existing.get("fingerprint") == request["fingerprint"] and existing.get("status") == "ok"
                 and isinstance(existing.get("pages"), dict) and set(existing["pages"]) == expected_keys
                 and all(isinstance(value, list) for value in existing["pages"].values())):
-            return existing
+            return {**existing, "path": str(output)}
     request_path = output.with_suffix(".request.json")
     write_json(request_path, request)
     env = os.environ.copy()
@@ -185,8 +194,8 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
             raise ValueError("layout worker returned incomplete or stale output")
         payload.update(pages=pages, images=image_sha256, elapsed_seconds=time.monotonic() - started)
         write_json(output, payload)
-        return payload
+        return {**payload, "path": str(output)}
     except (OSError, ValueError, subprocess.TimeoutExpired, RuntimeError) as exc:
         payload = {"status": "unavailable", "reason": str(exc), "pages": {}, "elapsed_seconds": time.monotonic() - started}
         write_json(output, payload)
-        return payload
+        return {**payload, "path": str(output)}

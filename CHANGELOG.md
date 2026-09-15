@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.2`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.3`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -46,6 +46,11 @@ update` sees a change; the release drops the suffix.
   written by earlier builds are still read by path or, once moved, by image file name).
   Pages prepared without an override by an earlier development build change
   `layout_fingerprint` (and so their page fingerprint) once when re-prepared.
+- The layout store is content-addressed: `detect_layout` takes the store directory and
+  writes `<fingerprint>.json` (plus `.request.json`/`.log`, `path` in the result), so a rerun
+  on another runtime writes a new file instead of overwriting the result the page ledgers
+  record; a whole-chapter `--replace` after an upgrade therefore replays every override page
+  on its recorded result and keeps its receipt, re-detecting only the pages without one.
 - A recorded layout result that `derived/fidelity-layout/` no longer holds stops an override
   import with the missing fingerprint and the page to re-detect, instead of re-preparing the
   reviewed page as `unavailable`; `source prepare --replace` replays such a page on the fresh

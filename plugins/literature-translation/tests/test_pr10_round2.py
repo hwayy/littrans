@@ -75,18 +75,17 @@ def test_unready_managed_detector_never_runs_or_reuses_cache(tmp_path: Path, mon
     (model / 'model.safetensors').touch()
     monkeypatch.setattr(layout_detector, 'layout_cache_root', lambda: cache)
     monkeypatch.setattr(layout_detector, 'runtime_paths', lambda: (python, model))
-    output = tmp_path / 'layout.json'
-    def run(*args, **kwargs):
-        write_json(output, {'status': 'ok', 'pages': {}})
+    store = tmp_path / 'layout'
+    def run(command, **kwargs):
+        write_json(Path(command[3]), {'status': 'ok', 'pages': {}})
         return subprocess.CompletedProcess([], 0, '', '')
     monkeypatch.setattr(layout_detector.subprocess, 'run', run)
     if cached:
-        write_json(output, {'status': 'ok', 'pages': {}, 'fingerprint': 'old'})
-    before = output.read_bytes() if output.exists() else None
-    result = layout_detector.detect_layout([], output)
+        write_json(store / 'old.json', {'status': 'ok', 'pages': {}, 'fingerprint': 'old'})
+    before = sorted((p.name, p.read_bytes()) for p in store.glob('*')) if store.exists() else None
+    result = layout_detector.detect_layout([], store)
     assert result['status'] == 'unavailable' and 'smoke' in result['reason']
-    assert (output.read_bytes() if output.exists() else None) == before
-    assert not output.with_suffix('.request.json').exists()
+    assert (sorted((p.name, p.read_bytes()) for p in store.glob('*')) if store.exists() else None) == before
 
 
 @pytest.mark.parametrize('managed_python,managed_model', [(True, True), (True, False), (False, True), (False, False)])
@@ -101,25 +100,25 @@ def test_detector_readiness_and_cache_lifecycle(tmp_path: Path, monkeypatch: pyt
     (model / 'model.safetensors').write_bytes(b'weights')
     monkeypatch.setattr(layout_detector, 'layout_cache_root', lambda: cache)
     monkeypatch.setattr(layout_detector, 'runtime_paths', lambda: (python, model))
-    output = tmp_path / 'layout.json'
+    store = tmp_path / 'layout'
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
         request = read_json(Path(command[2]))
-        write_json(output, {'status': 'ok', 'pages': {}, 'fingerprint': request['fingerprint']})
+        write_json(Path(command[3]), {'status': 'ok', 'pages': {}, 'fingerprint': request['fingerprint']})
         return subprocess.CompletedProcess(command, 0, '', '')
 
     monkeypatch.setattr(layout_detector.subprocess, 'run', run)
     monkeypatch.setattr(layout_detector, '_runtime_identity', lambda python: {'python': 'test'})
     marker = cache / 'venv' / layout_detector.READY_MARKER
     layout_detector.write_ready_marker(marker, model)
-    assert layout_detector.detect_layout([], output)['status'] == 'ok'
-    assert layout_detector.detect_layout([], output)['status'] == 'ok'
+    assert layout_detector.detect_layout([], store)['status'] == 'ok'
+    assert layout_detector.detect_layout([], store)['status'] == 'ok'
     assert len(calls) == 1
     marker.unlink()
     expected = 'unavailable' if managed_python or managed_model else 'ok'
-    assert layout_detector.detect_layout([], output)['status'] == expected
+    assert layout_detector.detect_layout([], store)['status'] == expected
     assert len(calls) == 1
 
 

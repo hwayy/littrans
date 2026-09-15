@@ -24,18 +24,19 @@ def test_unreadable_layout_cache_retries(tmp_path, monkeypatch, cached):
     model.mkdir()
     monkeypatch.setattr(layout_detector, "runtime_paths", lambda: (python, model))
     monkeypatch.setattr(layout_detector, "_runtime_identity", lambda _: {"python": "test"})
-    output = tmp_path / "layout.json"
-    output.write_text(cached, encoding="utf-8")
+    store = tmp_path / "layout"
     executions = []
     def run(command, **kwargs):
         executions.append(command)
         request = read_json(Path(command[2]))
-        write_json(output, {"status": "ok", "pages": {}, "fingerprint": request["fingerprint"]})
+        write_json(Path(command[3]), {"status": "ok", "pages": {}, "fingerprint": request["fingerprint"]})
         return subprocess.CompletedProcess(command, 0, "", "")
     monkeypatch.setattr(layout_detector.subprocess, "run", run)
-    assert layout_detector.detect_layout([], output)["status"] == "ok"
-    assert layout_detector.detect_layout([], output)["status"] == "ok"
-    assert len(executions) == 1
+    output = Path(layout_detector.detect_layout([], store)["path"])
+    output.write_text(cached, encoding="utf-8")
+    assert layout_detector.detect_layout([], store)["status"] == "ok"
+    assert layout_detector.detect_layout([], store)["status"] == "ok"
+    assert len(executions) == 2
 
 
 @pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])

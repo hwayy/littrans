@@ -22,7 +22,7 @@ from littrans.fidelity_models import (
     asset_reference_ids,
     load_assets,
 )
-from littrans.layout_detector import detect_layout, layout_page_items
+from littrans.layout_detector import detect_layout, layout_page_items, layout_result_path
 from littrans.models import AssetRef, SemanticStatus, SourceUnit, TranslationRecord, UnitKind
 from littrans.source_structure import (
     BOLD_FONT,
@@ -1677,7 +1677,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
             image.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(image, doc[number - 1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes("png"))
             images.append(image)
-        layout = detect_layout(images, root / f"derived/fidelity-layout/{_hash([digest, needed])}.json")
+        layout = detect_layout(images, root / "derived/fidelity-layout")
         if layout["status"] != "ok" and not allow_missing_layout:
             raise ValueError(
                 "Layout runtime unavailable: " + str(layout.get("reason")) + ". Run `littrans layout install` "
@@ -1751,8 +1751,11 @@ def _cached_layout(root: Path, ledger: dict[str, Any]) -> dict[str, Any]:
     if not page_image:
         return {**fallback, "status": "unavailable", "reason": "ledger names no page image"}
     image = _path(root, page_image)
-    for path in sorted((root / "derived/fidelity-layout").glob("*.json")):
-        if path.name.endswith(".request.json"):
+    store = root / "derived/fidelity-layout"
+    # The content-addressed file first; results of earlier builds were named by page set.
+    candidates = [layout_result_path(store, fingerprint), *sorted(store.glob("*.json"))]
+    for path in dict.fromkeys(candidates):
+        if path.name.endswith(".request.json") or not path.is_file():
             continue
         try:
             payload = read_json(path)

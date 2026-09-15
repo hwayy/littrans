@@ -114,16 +114,17 @@ def test_review_import_reuses_cached_layout_detections(project: Path, monkeypatc
     """A units/regions correction must re-prepare with the page's recorded detector output."""
     import littrans.fidelity as fidelity
     from littrans.fidelity import build_source_review_packet, import_source_review
+    from littrans.layout_detector import layout_result_path
     from littrans.storage import read_json, write_json
 
     calls: list[list[Path]] = []
 
-    def fake_detect(images: list[Path], output: Path) -> dict[str, Any]:
+    def fake_detect(images: list[Path], store: Path) -> dict[str, Any]:
         calls.append(images)
         payload = {"status": "ok", "fingerprint": "fake-fingerprint", "pages": {
             str(images[0].resolve()): [{"label": "title", "bbox": [100, 140, 700, 200], "score": 0.9}],
         }}
-        write_json(output, payload)
+        write_json(layout_result_path(store, payload["fingerprint"]), payload)
         return payload
 
     monkeypatch.setattr(fidelity, "detect_layout", fake_detect)

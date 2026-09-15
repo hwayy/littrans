@@ -63,7 +63,7 @@ def test_layout_cache_binds_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(layout_detector, '__file__', str(tmp_path / 'layout_detector.py'))
     monkeypatch.setattr(layout_detector, 'runtime_paths', lambda: (python, model))
     identity = {'python': '3.12', 'packages': {'mineru': '3.4.5'}}
-    output = tmp_path / 'result.json'
+    store = tmp_path / 'layout'
     executions = []
 
     def run(command, **kwargs):
@@ -74,12 +74,12 @@ def test_layout_cache_binds_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             return subprocess.CompletedProcess(command, 0, json.dumps(identity), '')
         executions.append(command)
         request = read_json(Path(command[2]))
-        write_json(output, {'status': 'ok', 'pages': {}, 'fingerprint': request['fingerprint']})
+        write_json(Path(command[3]), {'status': 'ok', 'pages': {}, 'fingerprint': request['fingerprint']})
         return subprocess.CompletedProcess(command, 0, '', '')
 
     monkeypatch.setattr(layout_detector.subprocess, 'run', run)
-    assert layout_detector.detect_layout([], output)['status'] == 'ok'
-    assert layout_detector.detect_layout([], output)['status'] == 'ok'
+    assert layout_detector.detect_layout([], store)['status'] == 'ok'
+    assert layout_detector.detect_layout([], store)['status'] == 'ok'
     assert len(executions) == 1
     if change == 'worker':
         worker.write_text('# worker v2', encoding='utf-8')
@@ -90,9 +90,11 @@ def test_layout_cache_binds_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         identity['python'] = '3.13'
     else:
         identity['failed'] = True
-    result = layout_detector.detect_layout([], output)
+    result = layout_detector.detect_layout([], store)
     assert result['status'] == ('unavailable' if change == 'failed-probe' else 'ok')
     assert len(executions) == (1 if change == 'failed-probe' else 2)
+    # A changed identity writes its own file; the earlier result stays for the ledgers naming it.
+    assert len(list(store.glob('*.json'))) == (2 if change == 'failed-probe' else 4)
 
 
 @pytest.mark.parametrize('field', ['reviewer', 'decision', 'source', 'page', 'packet_id'])

@@ -58,9 +58,15 @@ SHA-256, Python identity and installed distribution versions as well as the imag
 weights — never a path of the project. A result under `derived/fidelity-layout/` keys its
 `pages` by page-image SHA-256 (`images` maps the paths of the detection run to those keys), so
 the same tree detects, finds and replays the same result under any root: a worktree, a clone
-or a restored backup keeps its layout evidence without editing the cache. Results written by
-earlier builds keyed pages by absolute image path; they are still read by that path or, once
-the tree has moved, by the page image's file name. An unsuccessful runtime metadata probe
+or a restored backup keeps its layout evidence without editing the cache. The store is
+content-addressed: each result lives in `<fingerprint>.json` (with its `.request.json` and
+`.log`), so a rerun on the same runtime reuses its file, a rerun on another runtime (an
+upgraded detector or worker) writes a new file beside it, and a result some page ledger
+records is never overwritten — a whole-chapter `--replace` after an upgrade re-detects the
+pages without an override while every override page still replays on its recorded result.
+Results written by earlier builds were named by source and page set and keyed pages by
+absolute image path; they are still found by fingerprint and read by that path or, once the
+tree has moved, by the page image's file name. An unsuccessful runtime metadata probe
 cannot reuse cached layout evidence. Worker results are published atomically; unreadable or
 incomplete cached JSON triggers recomputation, and malformed worker results (a page without a
 list-valued prediction) report unavailable rather than being accepted.

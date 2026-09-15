@@ -19,7 +19,7 @@ from littrans.fidelity import (
     prepare_source,
 )
 from littrans.fidelity_models import load_assets
-from littrans.layout_detector import layout_page_items
+from littrans.layout_detector import layout_page_items, layout_result_path
 from littrans.storage import read_json, sha256_file, write_json
 
 project = fidelity_project
@@ -27,18 +27,18 @@ project = fidelity_project
 TITLE_BOX = {"label": "title", "bbox": [100, 140, 700, 200], "score": 0.9}
 
 
-def _content_keyed_detect(images: list[Path], output: Path) -> dict[str, Any]:
-    """What `detect_layout` publishes since 0.6.0-dev.2: pages keyed by image content."""
+def _content_keyed_detect(images: list[Path], store: Path) -> dict[str, Any]:
+    """What `detect_layout` publishes since 0.6.0-dev.2: content-keyed pages in a fingerprint-named file."""
     payload = {"status": "ok", "fingerprint": "content-keyed", "pages": {sha256_file(p): [TITLE_BOX] for p in images},
                "images": {str(p.resolve()): sha256_file(p) for p in images}}
-    write_json(output, payload)
+    write_json(layout_result_path(store, payload["fingerprint"]), payload)
     return payload
 
 
-def _path_keyed_detect(images: list[Path], output: Path) -> dict[str, Any]:
-    """What earlier builds published: pages keyed by the absolute image path."""
+def _path_keyed_detect(images: list[Path], store: Path) -> dict[str, Any]:
+    """What earlier builds published: pages keyed by the absolute image path, file named by page set."""
     payload = {"status": "ok", "fingerprint": "path-keyed", "pages": {str(p.resolve()): [TITLE_BOX] for p in images}}
-    write_json(output, payload)
+    write_json(store / "0123abcd-page-set.json", payload)
     return payload
 
 
@@ -78,9 +78,10 @@ def test_detector_fingerprint_and_keys_do_not_depend_on_the_project_root(tmp_pat
         image = tmp_path / root / "evidence/pages/fidelity-p0001.png"
         image.parent.mkdir(parents=True)
         image.write_bytes(b"same page bytes")
-        results.append(layout_detector.detect_layout([image], tmp_path / root / "derived/fidelity-layout/x.json"))
+        results.append(layout_detector.detect_layout([image], tmp_path / root / "derived/fidelity-layout"))
     digest = sha256_file(tmp_path / "original/evidence/pages/fidelity-p0001.png")
     assert results[0]["fingerprint"] == results[1]["fingerprint"]
+    assert [Path(r["path"]).name for r in results] == [results[0]["fingerprint"] + ".json"] * 2
     assert set(results[0]["pages"]) == set(results[1]["pages"]) == {digest}
     assert list(results[0]["images"].values()) == [digest]
 
@@ -129,9 +130,9 @@ def test_missing_recorded_layout_result_stops_the_import_and_is_reported_by_repl
     assert result["replayed_override_pages"] == [1] and result["redetected_override_pages"] == []
     assert read_json(project / "derived/fidelity-pages/p0001.json")["layout_fingerprint"] == "content-keyed"
 
-    def upgraded_detect(images: list[Path], output: Path) -> dict[str, Any]:
-        payload = {**_content_keyed_detect(images, output), "fingerprint": "content-keyed-v2"}
-        write_json(output, payload)
+    def upgraded_detect(images: list[Path], store: Path) -> dict[str, Any]:
+        payload = {"status": "ok", "fingerprint": "content-keyed-v2", "pages": {sha256_file(p): [TITLE_BOX] for p in images}}
+        write_json(layout_result_path(store, payload["fingerprint"]), payload)
         return payload
 
     monkeypatch.setattr(fidelity, "detect_layout", upgraded_detect)
@@ -167,3 +168,39 @@ def test_preserved_math_asset_is_declared_automatically_and_keeps_its_identity(p
     assert load_assets(project)["silent"].formula_conditions == preserved.formula_conditions
     _override_page_one(project, {"preserve_asset_id": "silent", "formula_conditions": []})
     assert not load_assets(project)["silent"].formula_conditions
+
+
+# --- LT-035: a rerun never overwrites the result a ledger records --------------------------
+
+def test_whole_chapter_rerun_on_a_new_runtime_keeps_recorded_results_and_override_receipts(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real store: one file per fingerprint, so override pages replay on the old result."""
+    python = tmp_path / "python.exe"
+    python.touch()
+    model = tmp_path / "model"
+    model.mkdir()
+    identity = {"python": "runtime-a"}
+    monkeypatch.setattr(layout_detector, "runtime_paths", lambda: (python, model))
+    monkeypatch.setattr(layout_detector, "_runtime_identity", lambda _: dict(identity))
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        request = read_json(Path(command[2]))
+        write_json(Path(command[3]), {"status": "ok", "fingerprint": request["fingerprint"], "pages": {name: [TITLE_BOX] for name in request["images"]}})
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(layout_detector.subprocess, "run", run)
+    monkeypatch.setattr(fidelity, "detect_layout", layout_detector.detect_layout)
+    prepare_source(project)
+    store = project / "derived/fidelity-layout"
+    first = read_json(project / "derived/fidelity-pages/p0001.json")["layout_fingerprint"]
+    assert (store / f"{first}.json").is_file()
+    _override_page_one(project, {"id": "kept-rule", "kind": "mixed-region", "bbox": [95, 95, 155, 105], "grouping_pending": False})
+    assert approve(project, "1,2")["approved_pages"] == [1, 2]
+    identity["python"] = "runtime-b"
+    result = prepare_source(project, replace=True)
+    ledgers = {p: read_json(project / f"derived/fidelity-pages/p{p:04d}.json") for p in (1, 2)}
+    # The recorded result survives the rerun beside the new one; the override page replays on it.
+    assert (store / f"{first}.json").is_file() and ledgers[1]["layout_fingerprint"] == first
+    assert ledgers[2]["layout_fingerprint"] != first and (store / f"{ledgers[2]['layout_fingerprint']}.json").is_file()
+    assert result["replayed_override_pages"] == [1] and result["redetected_override_pages"] == []
+    assert result["retained_receipt_pages"] == [1] and 2 not in result["retained_receipt_pages"]
+    assert "kept-rule" in load_assets(project)
