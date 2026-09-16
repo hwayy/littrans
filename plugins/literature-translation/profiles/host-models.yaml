@@ -2,8 +2,15 @@
 #
 # `project init` copies this mapping into the project's `project.yaml` under
 # `agent_models`. Review and adjust it per project: packets carry the configured
-# model/effort, submissions must match, and a missing or unavailable model is a
+# model/effort, submissions echo them, and a missing or unavailable model is a
 # configuration problem to report, never a reason to substitute silently.
+#
+# Every value is a dispatch value: what the coordinator hands to the host's task
+# launcher. Whether that is a category alias or a concrete model id is the host's
+# convention, and which model the host serves under it is the host's own
+# configuration (a Claude Code alias may be routed to any provider). The plugin
+# never verifies a dispatched subagent's model; a writer may record what its
+# environment reports in the submission's `served_model_label`, unverified.
 #
 # Roles: `translate` (target-prose writer), `transcribe` (structured asset
 # candidate author) and a shared `reasoning_effort`. Reviewer lenses use the

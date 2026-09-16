@@ -28,6 +28,14 @@ remains intact, while least-used selection counts completed and active calls onl
 Concurrent selections reserve their reviewer briefly so separate services can be used in parallel
 without choosing the same least-used reviewer in a race.
 
+A reviewer's `model` (and each fallback's) is the dispatch value passed to the provider CLI. Host
+metadata must report it: the `claude-code` and `antigravity` drivers accept a family match
+(`sonnet` against `claude-sonnet-5`), `cursor-cli` requires the exact identity. When the host
+routes an alias to another model, declare the served id in `model_identity` (per reviewer or
+fallback) and keep `model` as the alias; verification then compares host evidence with the
+identity. A run whose served model cannot be verified is recorded with `model_verified: false`,
+the served label in `actual_model_label` and `failure_type: model`; it never counts as accepted.
+
 For `cursor-cli`, use exact Cursor model IDs and omit separate `effort` and `fast` fields. Cursor
 first-party quota failures (including Grok, Composer, and Auto) and third-party quota failures
 (including Claude) are recorded separately per attempt. The CLI exhausts the reviewer's configured

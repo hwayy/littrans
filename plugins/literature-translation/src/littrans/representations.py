@@ -388,10 +388,16 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
         if not isinstance(author, str) or not author.strip():
             raise ValueError("Candidate author_task_id is required")
         if not payload.get("model"):
-            raise ValueError("Record the actual candidate model")
+            raise ValueError("Record the packet's dispatch model")
+        # The echo proves the task ran under the packet's policy; it is not an
+        # identity check. A host may serve another model under the same alias,
+        # and that observation belongs in served_model_label.
         if ((packet["model"] and payload.get("model") != packet["model"])
                 or (packet["reasoning_effort"] and payload.get("reasoning_effort") != packet["reasoning_effort"])):
-            raise ValueError("Candidate model/effort must match the dispatched packet")
+            raise ValueError(
+                "Candidate model/effort must echo the dispatched packet's model policy "
+                "(dispatch values, not the served model; record a served model in served_model_label)"
+            )
         records = payload.get("candidates", [])
         if not isinstance(records, list) or Counter(item["asset_id"] for item in records) != Counter(packet["asset_ids"]):
             raise ValueError("Candidate coverage must match packet assets exactly, once each")
@@ -427,6 +433,7 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
                 "asset_id": key, "asset_fingerprint": packet["asset_fingerprints"][key],
                 "packet_id": packet["packet_id"], "author_task_id": author,
                 "model": payload["model"], "reasoning_effort": payload.get("reasoning_effort"),
+                "served_model_label": payload.get("served_model_label"),
                 "format": item.get("format", "latex"), "content": item.get("content", ""),
                 "status": item.get("status", "candidate"),
                 "notes": item.get("notes", ""),

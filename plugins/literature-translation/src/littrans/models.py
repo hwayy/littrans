@@ -169,16 +169,36 @@ MathStructuralField = Literal[
 Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
+_MODEL_IDENTITY_DESCRIPTION = (
+    "Concrete model the host must report as served for `model`. Set it when `model` is a host "
+    "alias (for example `sonnet`) that the host routes to another model; when unset, `model` "
+    "itself is the identity that host evidence must match."
+)
+
+
+def _nonempty_model_identity(value: str | None) -> str | None:
+    if value is not None and not value.strip():
+        raise ValueError("external reviewer model_identity must not be empty when set")
+    return value
+
+
 class ExternalReviewFallback(StrictModel):
-    model: str
+    model: str = Field(description="Dispatch value passed to the provider CLI.")
+    model_identity: str | None = Field(default=None, description=_MODEL_IDENTITY_DESCRIPTION)
     effort: str | None = None
+
+    @field_validator("model_identity")
+    @classmethod
+    def require_nonempty_fallback_model_identity(cls, value: str | None) -> str | None:
+        return _nonempty_model_identity(value)
 
 
 class ExternalReviewerConfig(StrictModel):
     id: str
     driver: ExternalReviewDriver
     command: str
-    model: str
+    model: str = Field(description="Dispatch value passed to the provider CLI's model option.")
+    model_identity: str | None = Field(default=None, description=_MODEL_IDENTITY_DESCRIPTION)
     effort: str | None = None
     fast: bool | None = None
     fallbacks: list[ExternalReviewFallback] = Field(default_factory=list)
@@ -189,6 +209,11 @@ class ExternalReviewerConfig(StrictModel):
         if not value.strip():
             raise ValueError("external reviewer values must not be empty")
         return value
+
+    @field_validator("model_identity")
+    @classmethod
+    def require_nonempty_model_identity(cls, value: str | None) -> str | None:
+        return _nonempty_model_identity(value)
 
     @model_validator(mode="after")
     def validate_driver_options(self) -> ExternalReviewerConfig:
@@ -285,7 +310,15 @@ class ProjectConfig(StrictModel):
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
     external_review: ExternalReviewConfig | None = None
-    agent_models: dict[str, dict[str, str]] = Field(default_factory=host_model_defaults)
+    agent_models: dict[str, dict[str, str]] = Field(
+        default_factory=host_model_defaults,
+        description=(
+            "Per-host role model policy (translate, transcribe, reasoning_effort). Each value is "
+            "the dispatch value handed to that host's task launcher, a host alias or a concrete "
+            "id as the host defines; which model the host serves under it is the host's own "
+            "configuration and is never verified here."
+        ),
+    )
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)
@@ -896,8 +929,18 @@ class WorkflowPacketManifest(StrictModel):
     batch_ids: list[BatchId] = Field(min_length=1, max_length=WAVE_BATCH_SET_MAX)
     lens: str | None = None
     host: str | None = None
-    model: str | None = None
-    reasoning_effort: str | None = None
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Dispatch model for the stage from agent_models.<host>: the value passed to the "
+            "host's task launcher (alias or concrete id, host-specific), echoed by submissions. "
+            "Not the served model."
+        ),
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="Dispatched reasoning effort from agent_models.<host>, echoed by submissions.",
+    )
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
     # v2 binds evidence to each batch's own coverage and dependency closure.

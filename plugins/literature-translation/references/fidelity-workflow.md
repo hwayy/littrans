@@ -522,8 +522,9 @@ review, never silently repairs an old approval.
 ### Submission and review
 
 Submit transcription through `assets submit PROJECT INPUT`; the envelope includes `packet_id`,
-`author_task_id`, actual `model`, `reasoning_effort`, `image_evidence`, `candidates` and available
-`usage` (otherwise `null`). Candidates name `asset_id`, `format` and `content`; `status` is
+`author_task_id`, the packet's dispatch `model` and `reasoning_effort` echoed verbatim, `image_evidence`,
+`candidates` and available `usage` (otherwise `null`); an optional `served_model_label` records the model the
+host environment reported under that dispatch value (stored as is, unverified, never gated). Candidates name `asset_id`, `format` and `content`; `status` is
 `candidate` or `unresolved`, with `notes` and `semantic_uncertainty` as needed. LaTeX content is a
 math body without dollar delimiters; table content uses a rectangular `rows` array of cell
 strings. Both candidate and review envelopes record actual viewing in `image_evidence` using the

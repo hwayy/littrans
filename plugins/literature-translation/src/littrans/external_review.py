@@ -181,6 +181,7 @@ class ExternalInvocationError(RuntimeError):
         cost_usd: float | None = None,
         duration_seconds: float = 0.0,
         failure_type: FailureType = "unknown",
+        actual_model_label: str | None = None,
     ) -> None:
         super().__init__(message)
         self.attempts = attempts
@@ -190,6 +191,9 @@ class ExternalInvocationError(RuntimeError):
         self.cost_usd = cost_usd
         self.duration_seconds = duration_seconds
         self.failure_type = failure_type
+        # What the host reported as served on the last attempt, when known,
+        # so an unverified run still records the observation.
+        self.actual_model_label = actual_model_label
 
 
 def _review_config(root: Path) -> ExternalReviewConfig:
@@ -928,18 +932,25 @@ def _load_cursor_host_result(
         raise ValueError("from-result is only supported for the cursor-cli driver")
     actual_model = host_actual_model.strip()
     configured_models = [reviewer.model, *[item.model for item in reviewer.fallbacks]]
+    configured_identities = [
+        _expected_identity(reviewer.model, reviewer.model_identity),
+        *[_expected_identity(item.model, item.model_identity) for item in reviewer.fallbacks],
+    ]
     matched_model = next(
         (
             configured_model
-            for configured_model in configured_models
-            if _cursor_model_matches(configured_model, actual_model)
+            for configured_model, identity in zip(
+                configured_models, configured_identities, strict=True
+            )
+            if _cursor_model_matches(identity, actual_model)
         ),
         None,
     )
     if matched_model is None:
         raise ValueError(
-            "Cursor host actual model does not match any configured reviewer model: "
-            f"configured={configured_models}, actual={actual_model}"
+            "Cursor host actual model does not match any configured reviewer model "
+            f"identity: configured={configured_models}, "
+            f"expected={configured_identities}, actual={actual_model}"
         )
     raw = from_result.read_text(encoding="utf-8")
     host_payload = json.loads(_strip_json_wrapping(raw))
@@ -1461,6 +1472,11 @@ def _normalized_model(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").casefold()).replace("thinking", "")
 
 
+def _expected_identity(model: str, identity: str | None) -> str:
+    """The model that host evidence must report for a configured dispatch value."""
+    return identity or model
+
+
 def _model_matches(requested: str | None, actual: str | None) -> bool:
     requested_norm = _normalized_model(requested)
     actual_norm = _normalized_model(actual)
@@ -1724,12 +1740,17 @@ def _invoke(
 ]:
     if shutil.which(reviewer.command) is None:
         raise FileNotFoundError(f"External reviewer command not found: {reviewer.command}")
-    candidates = [(reviewer.model, reviewer.effort), *[
-        (fallback.model, fallback.effort) for fallback in reviewer.fallbacks
-    ]]
+    candidates = [
+        (reviewer.model, reviewer.effort, _expected_identity(reviewer.model, reviewer.model_identity)),
+        *[
+            (fallback.model, fallback.effort, _expected_identity(fallback.model, fallback.model_identity))
+            for fallback in reviewer.fallbacks
+        ],
+    ]
     errors: list[str] = []
     attempts = 0
     last_raw = ""
+    last_actual_label: str | None = None
     last_delivery = forced_delivery or PromptDelivery.FILE
     usage_totals = {field: 0 for field in ReviewUsage.model_fields}
     total_cost_usd = 0.0
@@ -1741,7 +1762,7 @@ def _invoke(
         if claude_minimal_file_protocol is None
         else claude_minimal_file_protocol
     )
-    for model, effort in candidates:
+    for model, effort, identity in candidates:
         candidate = reviewer.model_copy(update={"model": model, "effort": effort})
         quota_pool = (
             _cursor_quota_pool(model)
@@ -1862,26 +1883,33 @@ def _invoke(
                         )
                     if candidate.driver is ExternalReviewDriver.CLAUDE_CODE:
                         payload, actual_model, fast_mode = _parse_claude(
-                            result.stdout, model
+                            result.stdout, identity
                         )
-                        verified = _model_matches(model, actual_model) and fast_mode == "off"
+                        verified = _model_matches(identity, actual_model) and fast_mode == "off"
                         actual_label = actual_model
                     elif candidate.driver is ExternalReviewDriver.ANTIGRAVITY:
                         payload, actual_label = _parse_antigravity(
                             result.stdout, log_text
                         )
-                        verified = _model_matches(model, actual_label)
+                        verified = _model_matches(identity, actual_label)
                         actual_model = actual_label
                         fast_mode = None
                     else:
                         payload, actual_label = _parse_cursor(result.stdout)
-                        verified = _cursor_model_matches(model, actual_label)
+                        verified = _cursor_model_matches(identity, actual_label)
                         actual_model = actual_label
                         fast_mode = None
+                    last_actual_label = actual_label
                     if not verified:
+                        hint = (
+                            f"; if {model} is a host alias routed to another model, set "
+                            "model_identity to the served id"
+                            if identity == model
+                            else ""
+                        )
                         raise RuntimeError(
                             "actual model could not be verified: "
-                            f"requested={model}, actual={actual_label}"
+                            f"requested={model}, expected={identity}, served={actual_label}{hint}"
                         )
                     _validate_issue_evidence(payload, evidence)
                     _record_local_attempt(
@@ -1977,6 +2005,9 @@ def _invoke(
                             "reviewer_id": reviewer.id,
                             "driver": candidate.driver.value,
                             "requested_model": model,
+                            "actual_model": (
+                                last_actual_label if last_failure_type == "model" else None
+                            ),
                             "effort": effort,
                             "prompt_delivery": delivery.value,
                             "duration_seconds": time.perf_counter() - attempt_started,
@@ -2001,6 +2032,7 @@ def _invoke(
         total_cost_usd if has_cost else None,
         time.perf_counter() - started,
         last_failure_type,
+        last_actual_label if last_failure_type == "model" else None,
     )
 
 
@@ -3094,6 +3126,7 @@ def run_external_review(
                                     "second-opinion" if second_opinion else "primary"
                                 ),
                                 requested_model=reviewer.model,
+                                actual_model_label=exc.actual_model_label,
                                 model_verified=False,
                                 cli_version=failure_cli_version,
                                 effort=reviewer.effort,

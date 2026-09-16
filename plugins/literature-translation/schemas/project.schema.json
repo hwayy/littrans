@@ -73,8 +73,22 @@
       "additionalProperties": false,
       "properties": {
         "model": {
+          "description": "Dispatch value passed to the provider CLI.",
           "title": "Model",
           "type": "string"
+        },
+        "model_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Concrete model the host must report as served for `model`. Set it when `model` is a host alias (for example `sonnet`) that the host routes to another model; when unset, `model` itself is the identity that host evidence must match.",
+          "title": "Model Identity"
         },
         "effort": {
           "anyOf": [
@@ -110,8 +124,22 @@
           "type": "string"
         },
         "model": {
+          "description": "Dispatch value passed to the provider CLI's model option.",
           "title": "Model",
           "type": "string"
+        },
+        "model_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Concrete model the host must report as served for `model`. Set it when `model` is a host alias (for example `sonnet`) that the host routes to another model; when unset, `model` itself is the identity that host evidence must match.",
+          "title": "Model Identity"
         },
         "effort": {
           "anyOf": [
@@ -271,6 +299,7 @@
         },
         "type": "object"
       },
+      "description": "Per-host role model policy (translate, transcribe, reasoning_effort). Each value is the dispatch value handed to that host's task launcher, a host alias or a concrete id as the host defines; which model the host serves under it is the host's own configuration and is never verified here.",
       "title": "Agent Models",
       "type": "object"
     },

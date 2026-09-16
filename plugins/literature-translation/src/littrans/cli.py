@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 import typer
 from pydantic import BaseModel
+from typer.core import TyperGroup
 
 import littrans
 from littrans.batching import create_batches, refresh_batch, show_batch
@@ -37,7 +38,33 @@ from littrans.workflow import (
     workflow_status,
 )
 
-app = typer.Typer(no_args_is_help=True, help="Controlled literature translation tooling.")
+# Typer renders click's own exception class as a clean error panel; resolve it
+# through BadParameter so the lookup survives typer bundling click privately.
+_ClickException: type[Exception] = next(
+    base for base in typer.BadParameter.__mro__ if base.__name__ == "ClickException"
+)
+
+
+class _GuardedGroup(TyperGroup):
+    """Report a refused precondition as an error, not as a crash.
+
+    Workflow guards (stale packets, missing batches, invalid submissions) signal
+    "not available" with ValueError, pydantic's ValidationError included, and a
+    wrong path surfaces as FileNotFoundError. At the CLI boundary those are an
+    error message with exit code 1, never a traceback that reads like a defect
+    and invites bypassing the guard.
+    """
+
+    def invoke(self, ctx: Any) -> Any:
+        try:
+            return super().invoke(ctx)
+        except ValueError as exc:
+            raise _ClickException(str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise _ClickException(f"{exc.strerror or 'File not found'}: {exc.filename}") from exc
+
+
+app = typer.Typer(cls=_GuardedGroup, no_args_is_help=True, help="Controlled literature translation tooling.")
 project_app = typer.Typer(no_args_is_help=True)
 source_app = typer.Typer(no_args_is_help=True)
 batch_app = typer.Typer(no_args_is_help=True)

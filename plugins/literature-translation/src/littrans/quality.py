@@ -1069,7 +1069,11 @@ def _prepare_review_import_locked(
             if fingerprints.get(unit_id) != expected
         )
         if stale:
-            raise ValueError(f"Audit packet is stale for units: {stale}")
+            raise ValueError(
+                f"Audit packet is stale for units: {stale}. Their source or translation "
+                "changed after the packet was built; rebuild the audit packet "
+                "(workflow packet --stage audit ...) and re-run the lens on it"
+            )
     run_context_ids: list[str] = []
     run_context_fingerprint: str | None = None
     run_shared_fingerprint: str | None = None
@@ -1108,7 +1112,12 @@ def _prepare_review_import_locked(
             expected_context_fingerprint is not None
             and run_context_fingerprint != expected_context_fingerprint
         ):
-            raise ValueError("Audit packet context is stale")
+            raise ValueError(
+                "Audit packet context is stale: the shared context (document brief, style "
+                "guide, approved glossary) or a covered translation changed after the packet "
+                "was built. Rebuild the audit packet (workflow packet --stage audit ...) and "
+                "re-run the lens on it instead of editing the recorded context"
+            )
 
     issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
     existing = {

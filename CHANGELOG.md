@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.4`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.5`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -354,6 +354,21 @@ update` sees a change; the release drops the suffix.
   Windows console needs no `PYTHONIOENCODING` and carries no carriage returns; generated batch, context and
   schema files are written with LF. PyMuPDF is imported as `pymupdf`, so its `fitz` deprecation
   notice no longer lands in the CLI's stdout.
+- A packet's `model` and `reasoning_effort` are dispatch values: what the coordinator hands to
+  the host's task launcher (`agent_models.<host>`, an alias such as `sonnet` on Claude Code or a
+  concrete id), never a claim about the model the host served. `assets submit` still requires
+  the submission to echo them, but says so; a new optional `served_model_label` records the
+  model the writer's environment reported, verbatim and unverified, next to `model` in the
+  candidate record. The submission, packet-manifest and project schemas describe the fields.
+- External reviewers (and their fallbacks) take an optional `model_identity`: the concrete id
+  host metadata must report when the configured `model` is a host alias routed to another model.
+  Verification compares host evidence with the identity (or with `model` when unset); a failed
+  verification names requested, expected and served models, and the failed run and attempt
+  keep the served label (`actual_model_label`, `actual_model`) with `model_verified: false`.
+- The CLI reports a refused precondition (a stale audit packet, a missing batch, an invalid
+  submission, a path that does not exist) as its error message with exit code 1 instead of a
+  traceback; the stale audit packet messages say what changed and that the packet must be
+  rebuilt and re-reviewed.
 
 ### Fixed
 
