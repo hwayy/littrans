@@ -25,8 +25,11 @@ def build(output: Path) -> dict[str, object]:
     env["PYTHONPATH"] = str(PLUGIN / "src")
     subprocess.run([sys.executable, str(ROOT / "scripts/validate_release.py")], env=env, check=True)
     subprocess.run([sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(output)], cwd=PLUGIN, check=True)
-    wheel = output / f"littrans-{version}-py3-none-any.whl"
-    allowed = {".claude-plugin", ".codex-plugin", ".cursor-plugin", "agents", "profiles", "references", "schemas", "scripts", "skills", "src"}
+    wheels = sorted(output.glob("littrans-*-py3-none-any.whl"), key=lambda path: path.stat().st_mtime)
+    if not wheels:
+        raise ValueError(f"Hatchling did not produce a wheel in {output}")
+    wheel = wheels[-1]
+    allowed = {".claude-plugin", ".codex-plugin", ".cursor-plugin", ".qoder-plugin", "agents", "profiles", "references", "schemas", "scripts", "skills", "src"}
     standalone = {"pyproject.toml", "README.md", "MIGRATING.md"}
     archive = output / f"literature-translation-{version}.zip"
     source_hashes = {}

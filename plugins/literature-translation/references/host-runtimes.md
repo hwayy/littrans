@@ -1,6 +1,6 @@
 # Host runtimes
 
-LitTrans supports local Codex, Cursor and Claude Code orchestration through the launcher in [runtime.md](runtime.md). Keep source PDFs, project state and review workspaces on the local host. External reviewer services remain controlled by project configuration.
+LitTrans supports local Codex, Cursor, Claude Code and Qoder orchestration through the launcher in [runtime.md](runtime.md). Keep source PDFs, project state and review workspaces on the local host. External reviewer services remain controlled by project configuration.
 
 ## Scheduling and models
 
@@ -9,10 +9,11 @@ LitTrans supports local Codex, Cursor and Claude Code orchestration through the 
 | Codex | 3 | 3 | `agent_models.codex` (recommended: fresh `gpt-5.6-luna`, `max` effort) |
 | Cursor | 6 | 9 | `agent_models.cursor`: explicit host-available role model configuration |
 | Claude Code | 3 | 6 | `agent_models.claude` (recommended: `sonnet`, `high` effort) |
+| Qoder | 3 | 6 | `agent_models.qoder`: explicit host-available role model configuration |
 
 A wave is a coordination scope, not permission to exceed the host's active task capacity. Transcription is optional and can run at any later time. When selected, independent transcribe and translate tasks receive the same source text and original images with no shared candidate output. Queue work when slots are full; a finished translation may enter its audit while other work continues.
 
-`workflow next` auto-detects the host from its environment (`CODEX_*`, `CURSOR_*`, `CLAUDECODE`); mixed or unknown environments use Codex. Explicit `--host codex`, `--host cursor` or `--host claude` overrides detection. Pass the same explicit `--host` to `workflow packet` (including transcribe and asset-audit) and direct `assets packet`; it overrides local detection during packet validation. Once selected, keep batch IDs fixed and use `workflow status --batch-ids`. Assign a translation audit lens across at most three consecutive batches; split larger Cursor waves accordingly.
+`workflow next` auto-detects the host from its environment (`CODEX_*`, `CURSOR_*`, `CLAUDECODE`, `QODER_*`); mixed or unknown environments use Codex. Explicit `--host codex`, `--host cursor`, `--host claude` or `--host qoder` overrides detection. Pass the same explicit `--host` to `workflow packet` (including transcribe and asset-audit) and direct `assets packet`; it overrides local detection during packet validation. Once selected, keep batch IDs fixed and use `workflow status --batch-ids`. Assign a translation audit lens across at most three consecutive batches; split larger Cursor waves accordingly.
 
 Role models are not hard-coded. The plugin ships recommended defaults per host in `profiles/host-models.yaml`; `project init` copies them into the project's `project.yaml` under `agent_models`, where each project should confirm or override them. Every configured value is a **dispatch value**: what the coordinator hands to the host's task launcher, a category alias (`sonnet` on Claude Code) or a concrete id as the host's convention has it. Which model the host serves under that value is the host's own configuration; the plugin never verifies a dispatched subagent's model. Packets carry the configured model and effort, and submissions echo them (`assets submit` rejects a candidate whose `model`/`reasoning_effort` differ from its packet); a writer may additionally record what its environment reports in `served_model_label`, which is stored verbatim, unverified and never gated. When the required model is unavailable, report the configuration problem; do not silently substitute. Existing review-role model configurations remain in force. Fresh task context is required for independence; a task fork that contains another worker's candidate or expected verdict is not independent.
 
@@ -35,6 +36,14 @@ The coordinating session runs the CLI itself and dispatches one fresh subagent p
 For a `revise` stage, create a `--stage revise` packet and dispatch a fresh `literature-translator` with the translate model; it resubmits the batch and reports the issue ids it addressed, which the parent closes with `review resolve` (canonical or reviewer-supplied ids, comma-separated). The CLI reconfigures stdout and stderr to UTF-8 with LF line endings, so piping its JSON into files on a GBK Windows console needs no `PYTHONIOENCODING` and produces no carriage returns.
 
 Permission prompts apply to the CLI; allowing `Bash(python <plugin-root>/scripts/littrans.py *)` avoids repeated approvals. The `claude-code` external-review driver must not be launched from inside a Claude Code session (nested `claude -p`); Claude-hosted external review is a separate, later revision.
+
+## Qoder
+
+Qoder is Claude-Code-compatible: it reads the same plugin tree through `.qoder-plugin/plugin.json` and reuses the shared `skills/*/SKILL.md` and `agents/*.md`. Install through the repository marketplace (`.qoder-plugin/marketplace.json`) or copy the plugin directory into `~/.qoder-cn/plugins/literature-translation`, enable it, and start a new session. Skills are invoked as `/literature-translation:skill-name` (or by describing the task); the same `agents/*.md` provide the plugin subagents, addressed as `literature-translation:agent-name`.
+
+The coordinating session runs the CLI itself and dispatches one fresh subagent per packet. Pass the packet path, the project path and the packet's `model`. Because Qoder's accepted model aliases are not bundled, `agent_models.qoder` ships empty: configure the dispatch values per project before creating translate, revise or transcribe packets, or the CLI reports the missing `agent_models.qoder` configuration. Reviewer agents are restricted to `Read`, `Glob` and `Grep`, so they cannot write project files: the parent saves and imports their JSONL issues or review JSON. Translators and transcribers run `translation submit`, `qa run` or `assets submit` themselves and report the outcome. Independence rules are unchanged: give a subagent only its packet, never another worker's candidate or an expected verdict.
+
+As on every host, a plugin update is only picked up when the version string changes; recopy the plugin directory and start a new session after a release. Qoder-hosted external review is a separate, later revision.
 
 ## External review
 

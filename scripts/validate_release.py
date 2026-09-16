@@ -78,6 +78,8 @@ def main() -> None:
     cursor_manifest_path = PLUGIN_ROOT / ".cursor-plugin" / "plugin.json"
     claude_marketplace_path = ROOT / ".claude-plugin" / "marketplace.json"
     claude_manifest_path = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+    qoder_marketplace_path = ROOT / ".qoder-plugin" / "marketplace.json"
+    qoder_manifest_path = PLUGIN_ROOT / ".qoder-plugin" / "plugin.json"
     pyproject_path = PLUGIN_ROOT / "pyproject.toml"
 
     unexpected_workspaces = unexpected_plugin_workspaces()
@@ -93,6 +95,8 @@ def main() -> None:
     cursor_manifest = load_json(cursor_manifest_path)
     claude_marketplace = load_json(claude_marketplace_path)
     claude_manifest = load_json(claude_manifest_path)
+    qoder_marketplace = load_json(qoder_marketplace_path)
+    qoder_manifest = load_json(qoder_manifest_path)
     with pyproject_path.open("rb") as stream:
         pyproject = tomllib.load(stream)
 
@@ -104,6 +108,10 @@ def main() -> None:
         raise ValueError("Claude Code marketplace name must be 'littrans'")
     if not isinstance(claude_marketplace.get("owner"), dict) or not claude_marketplace["owner"].get("name"):
         raise ValueError("Claude Code marketplace must name an owner")
+    if qoder_marketplace.get("name") != "littrans":
+        raise ValueError("Qoder marketplace name must be 'littrans'")
+    if not isinstance(qoder_marketplace.get("owner"), dict) or not qoder_marketplace["owner"].get("name"):
+        raise ValueError("Qoder marketplace must name an owner")
 
     entries = marketplace.get("plugins")
     if not isinstance(entries, list) or len(entries) != 1:
@@ -126,6 +134,13 @@ def main() -> None:
     if not isinstance(claude_entry, dict):
         raise ValueError("Claude Code marketplace plugin entry must be an object")
 
+    qoder_entries = qoder_marketplace.get("plugins")
+    if not isinstance(qoder_entries, list) or len(qoder_entries) != 1:
+        raise ValueError("Qoder marketplace must contain exactly one plugin entry")
+    qoder_entry = qoder_entries[0]
+    if not isinstance(qoder_entry, dict):
+        raise ValueError("Qoder marketplace plugin entry must be an object")
+
     plugin_name = manifest.get("name")
     if plugin_name != "literature-translation" or entry.get("name") != plugin_name:
         raise ValueError("Plugin names in the marketplace and manifest do not match")
@@ -143,6 +158,13 @@ def main() -> None:
         raise ValueError(
             "Plugin names in the Claude Code marketplace and manifest do not match"
         )
+    if (
+        qoder_manifest.get("name") != plugin_name
+        or qoder_entry.get("name") != plugin_name
+    ):
+        raise ValueError(
+            "Plugin names in the Qoder marketplace and manifest do not match"
+        )
 
     source = entry.get("source")
     if not isinstance(source, dict) or source.get("source") != "local":
@@ -157,10 +179,15 @@ def main() -> None:
         raise ValueError(
             "Claude Code marketplace plugin path is not the canonical repository path"
         )
+    if qoder_entry.get("source") != "./plugins/literature-translation":
+        raise ValueError(
+            "Qoder marketplace plugin path is not the canonical repository path"
+        )
 
     manifest_version = manifest.get("version")
     cursor_version = cursor_manifest.get("version")
     claude_version = claude_manifest.get("version")
+    qoder_version = qoder_manifest.get("version")
     project = pyproject.get("project")
     if not isinstance(project, dict):
         raise ValueError("pyproject.toml is missing [project]")
@@ -168,6 +195,7 @@ def main() -> None:
         manifest_version,
         cursor_version,
         claude_version,
+        qoder_version,
         project.get("version"),
         package_version(),
     }
@@ -190,6 +218,12 @@ def main() -> None:
     if "agents" in claude_manifest:
         raise ValueError(
             "Claude Code plugin manifest must rely on the default agents/ directory"
+        )
+    if qoder_manifest.get("skills") != "./skills/":
+        raise ValueError("Qoder plugin skills path is invalid")
+    if "agents" in qoder_manifest:
+        raise ValueError(
+            "Qoder plugin manifest must rely on the default agents/ directory"
         )
     skill_files = sorted((PLUGIN_ROOT / "skills").glob("*/SKILL.md"))
     if not skill_files:
@@ -259,7 +293,7 @@ def main() -> None:
             raise ValueError(f"Reviewer agent must be read-only: {agent_path.name}")
         if contract != "writer" and tools != {"Read", "Glob", "Grep"}:
             raise ValueError(
-                f"Reviewer agent must restrict Claude Code tools to Read, Glob, Grep: {agent_path.name}"
+                f"Reviewer agent must restrict its tools to Read, Glob, Grep: {agent_path.name}"
             )
         if readonly:
             if write_file_re.search(body):

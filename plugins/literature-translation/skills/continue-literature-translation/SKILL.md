@@ -1,6 +1,6 @@
 ---
 name: continue-literature-translation
-description: Coordinate the LitTrans fidelity-first workflow with translation and optional independent asset enhancement, separate asset review and three translation audit lenses. Use to resume or advance batches on Codex, Cursor or Claude Code.
+description: Coordinate the LitTrans fidelity-first workflow with translation and optional independent asset enhancement, separate asset review and three translation audit lenses. Use to resume or advance batches on Codex, Cursor, Claude Code or Qoder.
 ---
 
 # Continue Literature Translation

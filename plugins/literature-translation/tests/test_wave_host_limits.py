@@ -48,7 +48,7 @@ def test_detect_cursor_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_coordination_host("auto") == "cursor"
     assert resolve_coordination_host("codex") == "codex"
     assert resolve_coordination_host("claude") == "claude"
-    with pytest.raises(ValueError, match="workflow host must be auto, codex, cursor, or claude"):
+    with pytest.raises(ValueError, match="workflow host must be auto, codex, cursor, claude, or qoder"):
         resolve_coordination_host("antigravity")
 
 
@@ -69,6 +69,24 @@ def test_detect_claude_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert detect_coordination_host() == "codex"
 
 
+def test_qoder_wave_limits_default_three_max_six() -> None:
+    assert WAVE_LIMITS["qoder"].default == 3
+    assert WAVE_LIMITS["qoder"].maximum == 6
+    assert resolve_wave_limit("qoder", None) == 3
+    assert resolve_wave_limit("qoder", 6) == 6
+    with pytest.raises(ValueError, match="between 1 and 6 for host qoder"):
+        resolve_wave_limit("qoder", 7)
+
+
+def test_detect_qoder_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QODER_PRODUCT_ID", "qoder-cn")
+    assert detect_coordination_host() == "qoder"
+    assert resolve_coordination_host("auto") == "qoder"
+    assert resolve_coordination_host("qoder") == "qoder"
+    monkeypatch.setenv("CURSOR_TRACE_ID", "trace")
+    assert detect_coordination_host() == "codex"
+
+
 def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     defaults = host_model_defaults()
     assert defaults["codex"] == {"translate": "gpt-5.6-luna", "transcribe": "gpt-5.6-luna",
@@ -76,11 +94,12 @@ def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     assert defaults["claude"] == {"translate": "sonnet", "transcribe": "sonnet",
                                   "reasoning_effort": "high"}
     assert defaults["cursor"] == {}
+    assert defaults["qoder"] == {}
     assert ProjectConfig(project_id="p", title="t", source_path="s.pdf", source_sha256="0" * 64,
                          source_pages=1, profile="technical-book").agent_models == defaults
     custom = tmp_path / "host-models.yaml"
     custom.write_text("claude:\n  translate: opus\n", encoding="utf-8")
-    assert host_model_defaults(custom) == {"claude": {"translate": "opus"}, "codex": {}, "cursor": {}}
+    assert host_model_defaults(custom) == {"claude": {"translate": "opus"}, "codex": {}, "cursor": {}, "qoder": {}}
     custom.write_text("antigravity: {}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported host"):
         host_model_defaults(custom)
@@ -128,6 +147,14 @@ def test_workflow_next_selects_host_sized_waves(tmp_path: Path) -> None:
     assert len(workflow_next(root, limit=6, host="claude")["batch_ids"]) == 6
     with pytest.raises(ValueError, match="between 1 and 6 for host claude"):
         workflow_next(root, limit=7, host="claude")
+
+    qoder = workflow_next(root, host="qoder")
+    assert qoder["host"] == "qoder"
+    assert qoder["limit"] == 3
+    assert len(qoder["batch_ids"]) == 3
+    assert len(workflow_next(root, limit=6, host="qoder")["batch_ids"]) == 6
+    with pytest.raises(ValueError, match="between 1 and 6 for host qoder"):
+        workflow_next(root, limit=7, host="qoder")
 
     with pytest.raises(ValueError, match="between 1 and 3 for host codex"):
         workflow_next(root, limit=6, host="codex")

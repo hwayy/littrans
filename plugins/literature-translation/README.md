@@ -1,6 +1,6 @@
 # Literature Translation 0.6
 
-LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex, Cursor and Claude Code:
+LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex, Cursor, Claude Code and Qoder:
 
 **Probe document structure → preserve the source faithfully → translate with original images → audit translation → optionally enhance assets independently → render a reading edition.**
 
@@ -20,7 +20,7 @@ Initialize a new private project with `project init`, or rebuild an older projec
 4. **Review independently.** `--stage asset-audit` compares candidates and their renders with original images. Translation retains fidelity, technical/terminology and Chinese-expression lenses via `--stage audit --lens all`, followed by configured external review. Neither confidence nor compilation substitutes for visual review.
 5. **Read.** A reviewed translation can render while LaTeX remains unfinished. The shared asset resolver uses a verified, renderable candidate or the complete original image with an unfinished status. Offline MathJax and original-image fallback protect reading when typesetting is unavailable.
 
-Use `continue-literature-translation` to coordinate this workflow. Codex and Claude Code waves default to three batches (Claude Code maximum six); Cursor defaults to six, maximum nine. Actual simultaneous tasks obey host capacity. Batches target about 900 source words and a soft limit of 60 assets without splitting a logical derivation.
+Use `continue-literature-translation` to coordinate this workflow. Codex, Claude Code and Qoder waves default to three batches (Claude Code and Qoder maximum six); Cursor defaults to six, maximum nine. Actual simultaneous tasks obey host capacity. Batches target about 900 source words and a soft limit of 60 assets without splitting a logical derivation.
 
 ## Commands and evidence
 

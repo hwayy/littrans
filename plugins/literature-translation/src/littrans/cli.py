@@ -268,7 +268,7 @@ def assets_packet(
     asset_ids: str = typer.Option(..., help="Comma-separated stable asset IDs."),
     stage: str = typer.Option("transcribe"),
     revision_notes: str | None = typer.Option(None, help="Explicit correction request bound to existing candidate/review evidence."),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
 ) -> None:
     from littrans.context_packets import adjacent_source_units
     from littrans.fidelity_models import asset_reference_ids
@@ -465,13 +465,13 @@ def workflow_get_next(
     project: PathArg,
     limit: int | None = typer.Option(
         None,
-        help="Wave size. Defaults to 3 on Codex and Claude Code, 6 on Cursor.",
+        help="Wave size. Defaults to 3 on Codex, Claude Code and Qoder, 6 on Cursor.",
     ),
     start_at: str | None = typer.Option(None),
     through: str | None = typer.Option(None),
     host: str = typer.Option(
         "auto",
-        help="Coordination host: auto, codex, cursor, or claude.",
+        help="Coordination host: auto, codex, cursor, claude, or qoder.",
     ),
 ) -> None:
     emit(workflow_next(project, limit, start_at, through, host))
@@ -479,7 +479,7 @@ def workflow_get_next(
 
 @workflow_app.command("status")
 def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...),
-                        host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude.")) -> None:
+                        host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder.")) -> None:
     emit(
         workflow_status(
             project,
@@ -498,7 +498,7 @@ def workflow_create_packet(
     ),
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
 ) -> None:
     result = create_workflow_packet(
         project,

@@ -9,12 +9,13 @@ from typing import Literal, cast, get_args
 
 import yaml
 
-CoordinationHost = Literal["codex", "cursor", "claude"]
+CoordinationHost = Literal["codex", "cursor", "claude", "qoder"]
 COORDINATION_HOSTS: tuple[CoordinationHost, ...] = get_args(CoordinationHost)
 
 CURSOR_ENV_SIGNALS = ("CURSOR_TRACE_ID", "CURSOR_AGENT", "CURSOR_INVOKED_AS")
 CODEX_ENV_SIGNALS = ("CODEX_THREAD_ID", "CODEX_TASK_ID", "CODEX_CI")
 CLAUDE_ENV_SIGNALS = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID")
+QODER_ENV_SIGNALS = ("QODER_PRODUCT_ID", "QODER_CONFIG_DIR", "QODERCN_CLI")
 
 HOST_MODELS_FILE = "host-models.yaml"
 
@@ -29,6 +30,7 @@ WAVE_LIMITS: dict[CoordinationHost, WaveLimit] = {
     "codex": WaveLimit(default=3, maximum=3),
     "cursor": WaveLimit(default=6, maximum=9),
     "claude": WaveLimit(default=3, maximum=6),
+    "qoder": WaveLimit(default=3, maximum=6),
 }
 WAVE_BATCH_SET_MAX = max(spec.maximum for spec in WAVE_LIMITS.values())
 LENS_REVIEWER_BATCH_MAX = 3
@@ -40,9 +42,10 @@ def detect_coordination_host() -> CoordinationHost:
         "cursor": any(os.environ.get(name) for name in CURSOR_ENV_SIGNALS),
         "codex": any(os.environ.get(name) for name in CODEX_ENV_SIGNALS),
         "claude": any(os.environ.get(name) for name in CLAUDE_ENV_SIGNALS),
+        "qoder": any(os.environ.get(name) for name in QODER_ENV_SIGNALS),
     }
     detected = [host for host, present in signals.items() if present]
-    if len(detected) == 1 and detected[0] in ("cursor", "claude"):
+    if len(detected) == 1 and detected[0] in ("cursor", "claude", "qoder"):
         return cast(CoordinationHost, detected[0])
     return "codex"
 
@@ -53,7 +56,7 @@ def resolve_coordination_host(host: str | None) -> CoordinationHost:
     for candidate in COORDINATION_HOSTS:
         if host == candidate:
             return candidate
-    raise ValueError("workflow host must be auto, codex, cursor, or claude")
+    raise ValueError("workflow host must be auto, codex, cursor, claude, or qoder")
 
 
 def resolve_wave_limit(host: CoordinationHost, limit: int | None) -> int:

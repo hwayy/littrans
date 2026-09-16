@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.5`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.6`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -287,6 +287,10 @@ update` sees a change; the release drops the suffix.
 - Added Claude Code as a supported coordinator host: `.claude-plugin` manifests and marketplace,
   `CLAUDECODE` host detection with 3/6 waves, `--host claude`, tool-restricted read-only reviewer
   agents and host documentation. Claude-hosted external review remains a later revision.
+- Added Qoder as a supported coordinator host: `.qoder-plugin` manifest and marketplace, `QODER_*`
+  host detection with 3/6 waves, `--host qoder`, reused tool-restricted read-only reviewer agents
+  and host documentation. `agent_models.qoder` ships empty for explicit per-project configuration;
+  Qoder-hosted external review remains a later revision.
 - Made the isolated layout detector (MinerU 3.4.5, PP-DocLayoutV2) a required preparation
   component: `doctor` reports `layout_runtime`, `layout install` provisions it, and
   `source prepare` refuses to run without it unless `--allow-missing-layout` is given.

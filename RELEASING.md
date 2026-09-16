@@ -12,6 +12,7 @@ point; `main` remains the development branch.
    - `plugins/literature-translation/.claude-plugin/plugin.json`
    - `plugins/literature-translation/.codex-plugin/plugin.json`
    - `plugins/literature-translation/.cursor-plugin/plugin.json`
+   - `plugins/literature-translation/.qoder-plugin/plugin.json`
    - `plugins/literature-translation/pyproject.toml`
    - `plugins/literature-translation/src/littrans/__init__.py`
 4. Update `CHANGELOG.md` with the release date and user-visible changes.
@@ -33,7 +34,10 @@ point; `main` remains the development branch.
 14. On Cursor clients without active work, update the local plugin path under
     `~/.cursor/plugins/local/literature-translation`, reload the window, and confirm the skills
     and agents in Customize.
-15. Start a new agent session for the updated plugin on each host.
+15. On Qoder clients without active work, update the plugin under
+    `~/.qoder-cn/plugins/literature-translation`, confirm it is enabled in
+    `~/.qoder-cn/settings.json`, and verify the installed version.
+16. Start a new agent session for the updated plugin on each host.
 
 ## 0.6 acceptance evidence
 
@@ -43,7 +47,7 @@ Source PDFs and private results stay outside the tracked plugin. Report known om
 translation defects, reliable structured coverage, fallback proportion and unavailable usage
 honestly. A sample with zero known omissions is not a whole-book guarantee.
 
-Validate all seven skills, local role prompts, schema contracts, packaging and both host manifests.
+Validate all seven skills, local role prompts, schema contracts, packaging and all host manifests.
 Test rebuilding into a fresh directory without inheriting old approvals. Stable installation changes
 follow the release checklist, separately from implementing or testing the development branch.
 
@@ -94,7 +98,7 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Development versions
 
 Between releases the version is a semantic-versioning pre-release of the next release,
-`<next>-dev.N` (for example `0.6.0-dev.1`), set in the same five files as a release version.
+`<next>-dev.N` (for example `0.6.0-dev.1`), set in the same six files as a release version.
 Bump `N` in every commit that changes behaviour on the development branch, whether or not it
 is installed anywhere: the version string is the only signal `claude plugin update` compares,
 and it names the cache directory, so two builds under one version share a directory and

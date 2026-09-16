@@ -26,3 +26,4 @@ claude:
   transcribe: sonnet
   reasoning_effort: high
 cursor: {}  # Configure the host-available role models explicitly per project.
+qoder: {}  # Configure the host-available role models explicitly per project.
