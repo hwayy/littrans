@@ -2958,7 +2958,9 @@ def test_cursor_host_subagent_from_result_skips_cli(
     )
     assert reservation_path.is_file()
     assert len(dry_run["review_binding"]) == 64
-    packet_text = Path(dry_run["packet_path"]).read_text(encoding="utf-8")
+    # Recorded relative to the project so the record imports on any host.
+    assert not Path(dry_run["packet_path"]).is_absolute() and "\\" not in dry_run["packet_path"]
+    packet_text = (prepared_project / dry_run["packet_path"]).read_text(encoding="utf-8")
     assert dry_run["review_binding"] in packet_text
     assert dry_run["review_binding"] in dry_run["prompt"]
 

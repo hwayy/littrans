@@ -23,8 +23,14 @@ source/
 
 # Regenerable from the record.
 output/
-derived/fidelity-layout/
 derived/assets/fidelity/*/original.pdf
+
+# Layout detector results (derived/fidelity-layout/<fingerprint>.json) are evidence the
+# page ledgers name: a rerun on any host cuts each page on its recorded result, and no
+# other detector runtime reproduces the fingerprint. The request and log of a detection
+# run carry this host's paths and interpreter and stay out.
+derived/fidelity-layout/*.request.json
+derived/fidelity-layout/*.log
 
 # Source review packets duplicate tracked tables, except the ones page receipts name:
 # those are live dependencies of the review. `project tracked` lists them; re-include

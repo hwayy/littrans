@@ -28,7 +28,7 @@ def test_source_prepare_preserves_page_scope_without_a_mode_selector(tmp_path: P
     monkeypatch.setattr(fidelity, "prepare_source", prepare)
     result = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--pages", "2-3"])
     assert result.exit_code == 0, result.output
-    assert observed == [(tmp_path, "2-3", False, False, False)]
+    assert observed == [(tmp_path, "2-3", False, False, False, False)]
     assert json.loads(result.output)["prepared_pages"] == [2, 3]
     invalid = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--mode", "visual"])
     assert invalid.exit_code != 0

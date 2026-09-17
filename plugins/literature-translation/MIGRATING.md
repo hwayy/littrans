@@ -38,6 +38,58 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
   blocks that were absorbed into prose become units of their own kind on re-preparation.
 
+## Projects prepared with 0.6.0-dev.8 or earlier: page-scoped guidance and layout evidence (0.6.0-dev.9)
+
+- **Receipts that failed with `source structure guidance changed since review` because the
+  profile file was reformatted or checked out with other line endings verify again** without
+  any review: the comparison reads the profile's content, per page.
+- **A profile whose base `handling_rules` were extended for a later chapter.** Receipts of
+  the earlier chapter are bound to the shorter text, receipts of the later chapter to the
+  longer. Restore each base rule to the text the earlier packets embed (`git show
+  <commit>:context/source-structure.json`, or the `document_structure.profile.handling_rules`
+  of one of their `packets/source-*/packet.json`) and move the appended lines into one block
+  `page_rules: [{"label": "Chapter 2", "pages": "52-67", "handling_rules": {"lists":
+  "- Chapter 2 …", …}}]`. When the lines were appended after a line break, both chapters'
+  receipts verify: a base rule split at a line boundary into a scoped block reads the same.
+  `source verify --pages …` names any page and key that still differs. From now on, put a
+  new scope's rules in a `page_rules` block; editing a base rule voids every receipt.
+- **Older plugin builds refuse a profile with `page_rules`** (`extra` fields are forbidden);
+  upgrade every host that shares the project before adding one.
+- **A page re-prepared after the upgrade** records `structure.document_profile.guidance_sha256`
+  instead of `sha256` in its ledger, so the first `--replace` of a reviewed page under a
+  profile changes that page's fingerprint once and needs a fresh receipt; pages that are not
+  re-prepared keep theirs. On a page whose page number is detached from the running head, a
+  re-preparation also moves an unreferenced figure to its reading position (next to its
+  caption) and an omitted running-head rule to the top of the unit order, and a paragraph that
+  follows a list item's continuation line becomes a unit of its own; measured on a 16-page
+  chapter, every page's unit order changed for the rule alone while units, text and reading
+  output changed only on the two pages with those forms. Re-prepare a reviewed chapter only
+  for a page that needs the fix, and review it from a fresh packet.
+- **Layout results join the record.** In a project's `.gitignore` replace
+  `derived/fidelity-layout/` with `derived/fidelity-layout/*.request.json` and
+  `derived/fidelity-layout/*.log`, then commit the `derived/fidelity-layout/<fingerprint>.json`
+  files that exist (`project tracked` lists them until they are committed). A host that never
+  ran the detector can then re-prepare every recorded page, and a page re-prepared alone
+  (`--replace --pages 30`) keeps its layout fingerprint and receipt. A result that only ever
+  existed on another host stays missing there until that host commits it; until then a
+  `--replace` of such a page detects it afresh (with the layout runtime) and reports it in
+  `detected_layout_pages`.
+- **`source prepare --replace` reuses recorded results by default.** Pass `--redetect` for
+  the previous behaviour (a fresh detection of every page) when the detector was upgraded on
+  purpose.
+- **The scaffolded launcher.** `tools/lt.py` is user-owned and is not rewritten: to get the
+  cross-host resolution, delete `tools/lt.py` and run `project scaffold PROJECT` (with
+  `--repo-root DIR` for a nested layout), commit it, and give `tools/lt.sh` its executable
+  bit once (`git update-index --chmod=+x tools/lt.sh` from Windows, `chmod +x` on POSIX).
+  Likewise the generated `.gitattributes` is not rewritten; add `*.cmd text eol=crlf`,
+  `*.sh text eol=lf` and `*.py text eol=lf` by hand if the repository is checked out on both
+  platforms.
+- **`project.yaml` written by `project init` before this build** may hold an absolute
+  `source_path`. Edit it to the project-relative `source/<name>.pdf` (and copy the PDF there)
+  so a clone on another host finds the PDF.
+- **Rendered checkpoints** now link relatively: a `source render` or `finalize` output made
+  before the upgrade differs from a new one by its `file:` links only.
+
 ## Projects prepared with 0.6.0
 
 No rebuild is needed. Re-preparing pages with `source prepare --replace` (recommended after

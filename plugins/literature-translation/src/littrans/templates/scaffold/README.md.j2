@@ -41,7 +41,11 @@ tools/lt.cmd project tracked {{ project_rel }}         # does git track exactly 
 tools/lt.cmd project scaffold {{ project_rel }} --refresh   # after a plugin upgrade
 ```
 
-Record here the interpreter pin and any environment variable this machine needs.
+Record here the interpreter pin and any environment variable each machine needs. The
+launcher finds the plugin on any host it is installed on (`LITTRANS_PLUGIN_ROOT` overrides);
+on a fresh POSIX clone give `tools/lt.sh` its executable bit once. When several hosts share
+this repository through a git remote: pull before writing, one host writes at a time, copy
+the PDF to `source/` on each host, run `project tracked` before every commit.
 
 ## 4. Workflow
 

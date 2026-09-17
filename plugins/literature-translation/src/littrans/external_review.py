@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -1047,11 +1048,18 @@ def _load_cursor_host_dry_run(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
+def _record_relative_path(root: Path, value: str) -> Path:
+    """A path a record names: relative to the project root unless it was written absolute."""
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
 def _validate_cursor_host_dry_run(
     record: dict[str, Any],
     record_path: Path,
     reviewer: ExternalReviewerConfig,
     *,
+    root: Path,
     batch_id: str,
     second_opinion: bool,
     fingerprint: str,
@@ -1068,7 +1076,9 @@ def _validate_cursor_host_dry_run(
     packet_path_value = record.get("packet_path")
     if not isinstance(packet_path_value, str):
         raise ValueError("Cursor host dry-run packet_path must be a string")
-    if Path(packet_path_value).resolve() != expected_packet_path:
+    # Recorded relative to the project root so the record imports on any host; a record
+    # written with an absolute path still imports on the host that wrote it.
+    if _record_relative_path(root, packet_path_value).resolve() != expected_packet_path:
         raise ValueError("Cursor host dry-run packet_path does not belong to this record")
     page_sha256s = _page_evidence_hashes(expected_packet_path.parent, pages)
     if record.get("page_sha256s") != page_sha256s:
@@ -1216,7 +1226,7 @@ def _create_external_review_dry_run(
             "review_binding": dry_run_review_binding,
             "prompt_version": PROMPT_VERSION,
             "context_fingerprint": context_fingerprint,
-            "packet_path": str(packet_path.resolve()),
+            "packet_path": packet_path.resolve().relative_to(root.resolve()).as_posix(),
             "prompt": prompt,
             "command": command,
             "executed": False,
@@ -2066,7 +2076,8 @@ def _os_file_lock(
         while not acquired:
             try:
                 handle.seek(0)
-                if os.name == "nt":
+                # A platform check mypy narrows on, so the Windows-only module type-checks on POSIX.
+                if sys.platform == "win32":
                     import msvcrt
 
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
@@ -2082,7 +2093,7 @@ def _os_file_lock(
     finally:
         if acquired:
             handle.seek(0)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
@@ -3021,6 +3032,7 @@ def run_external_review(
                 dry_run_record,
                 dry_run_record_path,
                 reviewer,
+                root=root,
                 batch_id=batch_id,
                 second_opinion=second_opinion,
                 fingerprint=fingerprint,

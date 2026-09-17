@@ -16,7 +16,7 @@ point; `main` remains the development branch.
    - `plugins/literature-translation/pyproject.toml`
    - `plugins/literature-translation/src/littrans/__init__.py`
 4. Update `CHANGELOG.md` with the release date and user-visible changes.
-5. Run `./scripts/check.ps1` from the repository root.
+5. Run `./scripts/check.ps1` (Windows) or `bash scripts/check.sh` (Linux, macOS) from the repository root; the `release-checks` workflow runs both.
 6. Review `git diff` and confirm that no PDFs, workspaces, generated artifacts, credentials, or
    local environments are tracked.
 7. Open a pull request to `main`, pass the `release-checks` workflow and review, then merge it with
@@ -59,6 +59,9 @@ repository root, build outside the plugin source directory:
 ```powershell
 python scripts/build_distribution.py ..\littrans-build
 ```
+
+(`python3 scripts/build_distribution.py ../littrans-build` on Linux or macOS; the smoke commands
+below take the same forward-slash paths and `unzip` in place of `Expand-Archive`.)
 
 The command first validates the release, then writes the versioned wheel, plugin ZIP and
 `build-manifest.json`. The manifest records artifact SHA-256 values and the packaged plugin file

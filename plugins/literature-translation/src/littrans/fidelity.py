@@ -1335,10 +1335,14 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     items = layout_page_items(layout, image_path, image_sha256) or []
     structure = plan_structure(glyphs, blocks, items, page.rect.height,
                                display_glyph_ids=_display_line_glyph_ids(glyphs, items))
-    from littrans.structure_profile import structure_context
+    from littrans.structure_profile import guidance_digest, structure_context
     profile_context = structure_context(root)
     if profile_context:
-        structure["document_profile"] = {key: profile_context[key] for key in ("path", "sha256", "authority")}
+        # The guidance that applied to this page, not the profile file: extending the
+        # profile for other pages leaves the page's ledger reproducible.
+        structure["document_profile"] = {"path": profile_context["path"],
+                                         "guidance_sha256": guidance_digest(profile_context["profile"], number),
+                                         "authority": profile_context["authority"]}
     blocks = structure["blocks"]
     content_glyphs = [g for g in glyphs if g["id"] not in structure["markers"]]
     if override and "regions" in override:
@@ -1460,7 +1464,13 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     def order(unit: SourceUnit) -> float:
         if unit.unit_id in native_order:
             return float(native_order[unit.unit_id])
-        previous = [index for index, block in enumerate(blocks) if block["bbox"][3] <= unit.bbox[1]]
+        # A visual element sits after the last body chunk that ends above it. Running
+        # material never positions it: a detached page number is appended after the body
+        # with its page-top bbox, and would otherwise anchor every figure to the page end.
+        previous = [
+            index for index, block in enumerate(blocks)
+            if block["id"] not in structure["omitted"] and block["bbox"][3] <= unit.bbox[1]
+        ]
         return max(previous, default=-1) + 0.5
     units.sort(key=order)
     units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()})
@@ -1637,13 +1647,18 @@ def _settle_receipts(root: Path, pages: Iterable[int], before: dict[int, str | N
 
 
 def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
-                   allow_missing_layout: bool = False, discard_overrides: bool = False) -> dict[str, Any]:
+                   allow_missing_layout: bool = False, discard_overrides: bool = False,
+                   redetect: bool = False) -> dict[str, Any]:
     """Prepare pages from the source PDF.
 
     A page whose ledger records a reviewer's ``source_overrides`` is re-prepared by
     replaying that override (the human decision is reproduced, not re-derived) unless
-    ``discard_overrides`` is set. Receipts survive when the page content, and that of the
-    pages depending on it, did not change.
+    ``discard_overrides`` is set. A re-prepared page is cut on the detector result its
+    ledger records whenever ``derived/fidelity-layout/`` still holds it — the result is
+    evidence of the record, reproducible on no other runtime — so a rerun on another
+    build or host reproduces the page; ``redetect`` runs the detector afresh instead.
+    Receipts survive when the page content, and that of the pages depending on it, did
+    not change.
     """
     from contextlib import ExitStack
 
@@ -1659,6 +1674,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
     replayed: list[int] = []
     redetected: list[int] = []
     discarded: list[int] = []
+    reused: list[int] = []
     with ExitStack() as stack:
         stack.enter_context(project_write_lock(root))
         old = read_jsonl(root / "derived/units.jsonl", SourceUnit)
@@ -1671,33 +1687,52 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         stack.enter_context(_authority_transaction(root, [*pages, *dependents]))
         doc = stack.enter_context(fitz.open(source))
         before = {p: _page_fingerprint(root, p, old, registry) for p in [*needed, *dependents] if _receipt_path(root, p).is_file()}
-        images = []
+        images = {}
         for number in needed:
             image = root / f"evidence/pages/fidelity-p{number:04d}.png"
             image.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(image, doc[number - 1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes("png"))
-            images.append(image)
-        layout = detect_layout(images, root / "derived/fidelity-layout")
-        if layout["status"] != "ok" and not allow_missing_layout:
-            raise ValueError(
-                "Layout runtime unavailable: " + str(layout.get("reason")) + ". Run `littrans layout install` "
-                "or, only at the user's explicit request, rerun with --allow-missing-layout."
-            )
+            images[number] = image
+        # The recorded detector result is a correctness input of a rerun, not a cache: a
+        # page is detected again only when its ledger records no usable result (or on
+        # request), so a rerun without the runtime still reproduces the recorded pages.
+        recorded_layouts: dict[int, dict[str, Any]] = {}
+        if not redetect:
+            for number in needed:
+                recorded = old_ledgers.get(number)
+                if recorded and recorded.get("layout_status") == "ok":
+                    cached = _cached_layout(root, recorded)
+                    if cached["status"] == "ok":
+                        recorded_layouts[number] = cached
+        fresh = [number for number in needed if number not in recorded_layouts]
+        if fresh:
+            layout = detect_layout([images[number] for number in fresh], root / "derived/fidelity-layout")
+            if layout["status"] != "ok" and not allow_missing_layout:
+                raise ValueError(
+                    "Layout runtime unavailable: " + str(layout.get("reason")) + ". Run `littrans layout install` "
+                    "or, only at the user's explicit request, rerun with --allow-missing-layout."
+                )
+        else:
+            layout = {"status": "reused", "reason": None, "pages": {}}
         units = [u for u in old if u.page not in needed]
         registry = {aid: a for aid, a in registry.items() if not any(f.page in needed for f in a.fragments)}
         ledgers = []
         for number in needed:
             recorded = old_ledgers.get(number, {})
             override = recorded.get("source_overrides")
+            page_layout = recorded_layouts.get(number)
+            if page_layout is not None:
+                reused.append(number)
+            else:
+                page_layout = layout
             if override and not discard_overrides:
                 # The recorded detector result keeps the replay exact. When the ledger
-                # records one that is gone, the override is replayed on this run's fresh
-                # detection and the page is named in `redetected_override_pages`.
-                page_layout = _cached_layout(root, recorded)
-                if page_layout["status"] != "ok":
-                    if recorded.get("layout_status") == "ok":
-                        redetected.append(number)
-                    page_layout = layout
+                # records one that is gone (or `redetect` set it aside), the override is
+                # replayed on this run's fresh detection and the page is named in
+                # `redetected_override_pages`.
+                if (number not in recorded_layouts and recorded.get("layout_status") == "ok"
+                        and page_layout.get("fingerprint") != recorded.get("layout_fingerprint")):
+                    redetected.append(number)
                 try:
                     page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, override, recorded.get("source_overrides_origin"))
                 except ValueError as exc:
@@ -1705,7 +1740,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
                                      "re-import its review file or rerun with --discard-overrides") from exc
                 replayed.append(number)
             else:
-                page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, layout)
+                page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout)
                 if override:
                     discarded.append(number)
             units.extend(page_units)
@@ -1723,12 +1758,20 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         # A receipt outlives a rerun that reproduced the page byte for byte; a dependency
         # page whose fingerprint moved loses its receipt explicitly, not silently.
         retained, invalidated = _settle_receipts(root, [*needed, *dependents], before, units, registry)
+        # A page whose receipt outlived the rerun is still verified: its units say so, as
+        # they did before, instead of reading as fresh work until the next review import.
+        if any(unit.page in retained for unit in units):
+            for unit in units:
+                if unit.page in retained:
+                    unit.verification_status = SemanticStatus.VERIFIED
+            write_jsonl(root / "derived/units.jsonl", units)
     # Crops the replaced pages no longer refer to are reclaimed only once the new
     # authority is committed; the transaction snapshots files, not directories.
     pruned = prune_asset_directories(root, registry.values(), apply=True)
     packet = build_source_review_packet(root, ",".join(map(str, pages)))
     return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry),
             "replayed_override_pages": replayed, "redetected_override_pages": redetected, "discarded_override_pages": discarded,
+            "reused_layout_pages": reused, "detected_layout_pages": fresh,
             "retained_receipt_pages": retained, "invalidated_pages": [p for p in invalidated if p not in needed],
             "pruned_asset_directories": pruned["removed"], "layout_status": layout["status"], "requires_visual_review": True,
             "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context, "generator": build_identity()}
@@ -2023,9 +2066,10 @@ def _verify_source_receipt(root: Path, current: dict[str, Any], receipt: Any, so
     if receipt.get("receipt_sha256") != _hash(payload):
         raise ValueError("source review receipt digest missing or changed; import a fresh visual review")
     packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"])
-    from littrans.structure_profile import structure_context
-    if packet.get("document_structure") != structure_context(root):
-        raise ValueError("source structure guidance changed since review")
+    from littrans.structure_profile import guidance_difference, structure_context
+    difference = guidance_difference(packet.get("document_structure"), structure_context(root), current["page"])
+    if difference:
+        raise ValueError("source structure guidance changed since review " + difference)
     if receipt.get("visual_report_sha256") != packet["visual_report"]["sha256"]:
         raise ValueError("source receipt visual report mismatch")
     reviewer = receipt.get("reviewer")
@@ -2054,9 +2098,8 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         raise ValueError("source review must identify the visual report inspected")
     if not review.get("reviewer", "").strip():
         raise ValueError("source review requires reviewer identity")
-    from littrans.structure_profile import structure_context
-    if packet.get("document_structure") != structure_context(root):
-        raise ValueError("source structure guidance changed since packet creation; create a new packet")
+    from littrans.structure_profile import guidance_difference, structure_context
+    guidance = structure_context(root)
     config = load_project(root)
     if sha256_file(config.source(root)) != packet["source_sha256"]:
         raise ValueError("source PDF changed since packet creation")
@@ -2066,6 +2109,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         raise ValueError("duplicate page review")
     for decision in decisions:
         p = decision["page"]
+        difference = guidance_difference(packet.get("document_structure"), guidance, p)
+        if difference:
+            raise ValueError(f"source structure guidance changed since packet creation {difference}; create a new packet")
         if p not in by_page or decision["fingerprint"] != by_page[p]["fingerprint"] or _current_page(root, p)["fingerprint"] != decision["fingerprint"]:
             raise ValueError(f"stale or out-of-packet page review: {p}")
     changed, approved, deferred = [], [], []

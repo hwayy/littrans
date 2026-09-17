@@ -41,6 +41,9 @@ LIST_LABEL = re.compile(r"\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)]
 LIST_LABEL_START = re.compile(
     r"[*\s]*(?:\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)](?=\**\s))", re.I
 )
+# How far right of the margin a list item's text column may sit: a label such as
+# ``(iii)`` or ``12.`` and the gap after it. A row starting beyond it is a display.
+LIST_TEXT_COLUMN_EM = 4.5
 # A line closing a sentence: terminal punctuation, then any closing quotes or brackets.
 TERMINAL_PUNCTUATION = re.compile(r"[.!?:;。！？：；][”’\"')\]）】〕]*$")
 # Unit kinds that never join prose, nor prose them.
@@ -162,7 +165,7 @@ def _starts_statement(text: str) -> bool:
 def _mark_paragraph_breaks(
     split: list[dict[str, Any]], gm: dict[str, dict[str, Any]], omitted: dict[str, str],
     markers: dict[str, dict[str, Any]], display_blocks: set[str], margin: float, font_size: float,
-    gap_threshold: float,
+    gap_threshold: float, list_items: dict[str, dict[str, Any]],
 ) -> None:
     """Flag each chunk that opens after paragraph white space.
 
@@ -172,9 +175,13 @@ def _mark_paragraph_breaks(
     line above must also close — end in terminal punctuation or stop short of the running
     text's right edge — and be prose: a formula row (``∫ X dP``, a limit, a label) says
     nothing about where a paragraph ends, so a flush "provided ..." clause after a display
-    stays in its paragraph. The flag lives on the chunk, which the ledger never records, so
-    a page without a break keeps a ledger identical to one prepared before breaks were
-    recognised.
+    stays in its paragraph. A text line starts in a text column: the margin, a paragraph
+    indent or the text column of a list item (its label plus the gap after it, within about
+    four and a half ems), and a chunk the planner placed as a labelled item or its
+    continuation (``list_items``) is text wherever its column sits, so the paragraph that
+    follows a list opens after the item's last line. The flag lives on the chunk, which the
+    ledger never records, so a page without a break keeps a ledger identical to one prepared
+    before breaks were recognised.
     """
     def inked(line: list[str]) -> list[dict[str, Any]]:
         return [gm[gid] for gid in line if gid not in markers and inked_glyph(gm[gid])]
@@ -205,9 +212,13 @@ def _mark_paragraph_breaks(
         if opens and previous is not None and previous["id"] not in display_blocks:
             last = inked(previous["lines"][-1])
             tail = "".join(str(g["text"]) for g in last)
-            # A text line starts where text starts: at the margin, a label column or a
-            # paragraph indent. A row set further right is a display, whatever it says.
-            text_start = gm[previous["lines"][-1][0]]["origin"][0] < margin + font_size * 2.8
+            # A text line starts where text starts: at the margin, a paragraph indent or a
+            # list item's text column. A row set further right is a display, whatever it
+            # says, unless the planner already read the chunk as a list item.
+            text_start = (
+                gm[previous["lines"][-1][0]]["origin"][0] < margin + font_size * LIST_TEXT_COLUMN_EM
+                or previous["id"] in list_items
+            )
             closed = bool(last) and text_start and prose(last) and (
                 TERMINAL_PUNCTUATION.search(tail.rstrip()) is not None
                 or max(g["bbox"][2] for g in last) < text_right - font_size * 1.5
@@ -458,7 +469,7 @@ def plan_structure(
                 if gm[line[0]]["origin"][0] < margin + font_size * 2.8
             ]
             first_x[bid] = near[0] if near else gg[0]["origin"][0]
-    _mark_paragraph_breaks(split, gm, omitted, markers, display_blocks, margin, font_size, gap_threshold)
+    _mark_paragraph_breaks(split, gm, omitted, markers, display_blocks, margin, font_size, gap_threshold, list_items)
     return {
         "blocks": split,
         "margin": margin,

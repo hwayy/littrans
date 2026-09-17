@@ -58,11 +58,21 @@ reported with one of: {% for reason in stale_reasons %}`{{ reason }}`{% if not l
 - The packet's `model` is the dispatch value for the host, not a claim about the model that
   served the task; a served model may be recorded separately and is never gated.
 
+## Structure guidance
+
+`context/source-structure.json` binds review packets per page: the guidance of a page is the
+base `handling_rules` plus every `page_rules` block covering it (per key, joined by a line
+break), and a source receipt is refused only when *its* page's guidance changed. Extend the
+profile for a new chapter with a `page_rules` block; editing a base rule voids every receipt.
+Formatting and line endings of the file are not guidance.
+
 ## Record and repository
 
-The generated project `.gitignore` keeps out the source PDF, `output/`, the layout cache,
-per-asset `original.pdf` files and unreferenced source review packets, and keeps
-`.littrans/work/` (the packet payloads the audit ledger names) in while ignoring the lock:
+The generated project `.gitignore` keeps out the source PDF, `output/`, the layout runs'
+`*.request.json` and `*.log`, per-asset `original.pdf` files and unreferenced source review
+packets, and keeps `.littrans/work/` (the packet payloads the audit ledger names) and the
+layout results (`derived/fidelity-layout/<fingerprint>.json`, the evidence every rerun cuts
+pages on) in while ignoring the lock:
 
 ```text
 {% for line in ignore_lines %}
@@ -74,8 +84,13 @@ per-asset `original.pdf` files and unreferenced source review packets, and keeps
 ledgers) and asks git whether exactly that set is tracked; it fails on any gap. Source
 review packets named by page receipts are live dependencies and must be re-included by name.
 
-## Launcher
+## Launcher and hosts
 
 `tools/lt.py` resolves the plugin by `LITTRANS_PLUGIN_ROOT`, then the recorded plugin root,
-then the highest-versioned sibling of it; `tools/lt.cmd` and `tools/lt.sh` pick the
-interpreter (3.12+ for the CLI, 3.10–3.13 as the layout detector's base).
+then the same path under this user's home, then their highest-versioned siblings, then each
+client's plugin cache; `tools/lt.cmd` and `tools/lt.sh` pick the interpreter (3.12+ for the
+CLI, 3.10–3.13 as the layout detector's base). The record names no machine, so the project
+moves between hosts through a git remote: pull before writing, one host writes at a time,
+same plugin build everywhere (`doctor` → `build`), the PDF at `source/` on each host, and
+`source prepare --replace` reuses the recorded layout results (`--redetect` to detect again),
+so only a host that prepares new pages needs the layout runtime.

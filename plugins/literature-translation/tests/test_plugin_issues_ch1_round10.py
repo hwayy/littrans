@@ -300,13 +300,15 @@ def test_generated_gitignore_keeps_the_record_in_and_the_source_out(tmp_path: Pa
     ignored = subprocess.run(
         ["git", "-C", str(root), "check-ignore", "--stdin"],
         input=b"source/book.pdf\noutput/a.html\n.littrans/state.json\nderived/fidelity-layout/x.json\n"
+              b"derived/fidelity-layout/x.request.json\nderived/fidelity-layout/x.log\n"
               b"packets/source-abc/packet.json\n.littrans/work/p/shared.md\nderived/units.jsonl\n"
               b"derived/assets/fidelity/x/original.pdf\nderived/assets/fidelity/x/original.png\n",
         capture_output=True, check=False,
     ).stdout.decode("utf-8").split()
+    # A detector result is part of the record; the run's request and log are not.
     assert set(ignored) == {
-        "source/book.pdf", "output/a.html", ".littrans/state.json", "derived/fidelity-layout/x.json",
-        "packets/source-abc/packet.json", "derived/assets/fidelity/x/original.pdf",
+        "source/book.pdf", "output/a.html", ".littrans/state.json", "derived/fidelity-layout/x.request.json",
+        "derived/fidelity-layout/x.log", "packets/source-abc/packet.json", "derived/assets/fidelity/x/original.pdf",
     }
     # An existing .gitignore only gains the runtime-state pair, once.
     atomic_write_text(root / ".gitignore", "*.bak\n")

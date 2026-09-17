@@ -18,7 +18,7 @@ from littrans.extractor import parse_page_spec
 from littrans.fidelity_models import asset_reference_ids, load_assets
 from littrans.models import RenderPolicy, SourceUnit, UnitKind
 from littrans.rendering import _safe_name, _unit_html
-from littrans.representations import resolve_asset_html
+from littrans.representations import portable_href, resolve_asset_html
 from littrans.storage import atomic_write_text, load_project, read_json, read_jsonl
 from littrans.verification import verify_extraction
 
@@ -191,7 +191,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         if page != current_page:
             current_page = page
             page_png = root / f"evidence/pages/fidelity-p{page:04d}.png"
-            link = f' <a href="{html.escape(page_png.resolve().as_uri())}">original page image</a>' if page_png.is_file() else ""
+            link = f' <a href="{html.escape(portable_href(page_png, output, root))}">original page image</a>' if page_png.is_file() else ""
             sections.append(f'<div class="page-break" id="page-{page}">PDF page {page}{link}</div>')
             omitted = [u for u in all_units if u.page == page and u.render_policy is RenderPolicy.OMIT]
             if omitted:
@@ -240,7 +240,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{html.escape(config.title)} — source checkpoint</title><style>{STYLE}</style></head><body>"
         f"<header><h1>{html.escape(config.title)}</h1><p>Source checkpoint · PDF pages {html.escape(page_label)} · {status}"
-        f' · <a href="{html.escape(config.source(root).as_uri())}">PDF</a></p></header><main>'
+        f' · <a href="{html.escape(portable_href(config.source(root), output, root))}">PDF</a></p></header><main>'
         f'<div class="summary">{summary}</div>{attention_html}' + "".join(sections) + "</main></body></html>"
     )
     if standalone:

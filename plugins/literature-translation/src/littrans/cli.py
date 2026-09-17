@@ -248,10 +248,16 @@ def source_prepare(
         False, "--allow-missing-layout",
         help="Only at the user's explicit request: prepare without the layout detector; every region then needs full visual review.",
     ),
+    redetect: bool = typer.Option(
+        False, "--redetect",
+        help="With --replace, run the layout detector again instead of cutting each page on the result its ledger records.",
+    ),
 ) -> None:
     """Preserve original prose and complex visual assets without formula transcription."""
     from littrans.fidelity import prepare_source
-    emit(prepare_source(project, pages, replace, allow_missing_layout, discard_overrides))
+    if redetect and not replace:
+        raise typer.BadParameter("--redetect only applies with --replace")
+    emit(prepare_source(project, pages, replace, allow_missing_layout, discard_overrides, redetect))
 
 
 @source_app.command("gc")

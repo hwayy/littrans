@@ -6,9 +6,13 @@
 
 Resolution order:
   1. ``LITTRANS_PLUGIN_ROOT`` — an explicit plugin directory (one containing scripts/littrans.py);
-  2. the plugin root recorded when this file was generated;
-  3. if that directory is gone (a plugin upgrade moved the versioned cache directory), the
-     highest-versioned sibling of it that contains scripts/littrans.py.
+  2. the plugin root recorded when this file was generated, on the machine that generated it;
+  3. the same root under this user's home directory, for a clone on another host or account
+     (the record keeps the path relative to the home directory as well);
+  4. if either directory is gone (a plugin upgrade moved the versioned cache directory), the
+     highest-versioned sibling of it that contains scripts/littrans.py;
+  5. the plugin cache each supported client keeps under the home directory (Claude Code,
+     Codex, Cursor, Qoder), highest installed version first.
 
 Version order is numeric with pre-release awareness, so ``0.10.0`` beats ``0.6.0`` and
 ``0.6.0`` beats ``0.6.0-dev.7``; a plain lexical sort gets both wrong. Set
@@ -25,7 +29,18 @@ import sys
 from pathlib import Path
 
 RECORDED_PLUGIN_ROOT = r"{{ plugin_root }}"
+# The same directory relative to the home directory of the user who generated this file
+# (POSIX separators), or empty when the plugin lived outside a home directory.
+RECORDED_HOME_RELATIVE_ROOT = "{{ plugin_root_home_relative }}"
 LAUNCHER = ("scripts", "littrans.py")
+# Where each supported client installs the plugin, relative to the home directory. A
+# versioned cache holds one directory per installed version; a local install is the plugin.
+CACHE_ROOTS = (
+    (".claude", "plugins", "cache", "littrans", "literature-translation"),
+    (".codex", "plugins", "cache", "littrans", "literature-translation"),
+    (".cursor", "plugins", "local", "literature-translation"),
+    (".qoder-cn", "plugins", "literature-translation"),
+)
 
 _VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-([A-Za-z]+)\.?(\d+)?)?$")
 
@@ -45,6 +60,40 @@ def has_launcher(directory: Path) -> bool:
     return directory.joinpath(*LAUNCHER).is_file()
 
 
+def newest_child(parent: Path) -> Path | None:
+    """The highest-versioned directory under ``parent`` that contains the launcher."""
+    if not parent.is_dir():
+        return None
+    children = [child for child in parent.iterdir() if child.is_dir() and has_launcher(child)]
+    return max(children, key=lambda child: version_key(child.name)) if children else None
+
+
+def candidates() -> list[Path]:
+    """Every directory the launcher may live in, in resolution order."""
+    home = Path.home()
+    recorded = [Path(RECORDED_PLUGIN_ROOT)]
+    if RECORDED_HOME_RELATIVE_ROOT:
+        recorded.append(home.joinpath(*RECORDED_HOME_RELATIVE_ROOT.split("/")))
+    found: list[Path] = []
+    for root in recorded:
+        # A path recorded on another operating system is not absolute here (``C:\...`` is
+        # one relative component on POSIX) and must not be searched relative to the cwd.
+        if not root.is_absolute():
+            continue
+        found.append(root)
+        sibling = newest_child(root.parent)
+        if sibling is not None:
+            found.append(sibling)
+    for parts in CACHE_ROOTS:
+        cache = home.joinpath(*parts)
+        if has_launcher(cache):
+            found.append(cache)
+        newest = newest_child(cache)
+        if newest is not None:
+            found.append(newest)
+    return list(dict.fromkeys(found))
+
+
 def resolve_plugin_root() -> Path:
     explicit = os.environ.get("LITTRANS_PLUGIN_ROOT")
     if explicit:
@@ -52,16 +101,14 @@ def resolve_plugin_root() -> Path:
         if not has_launcher(root):
             raise SystemExit(f"[lt] LITTRANS_PLUGIN_ROOT has no scripts/littrans.py: {root}")
         return root
-    recorded = Path(RECORDED_PLUGIN_ROOT)
-    if has_launcher(recorded):
-        return recorded
-    parent = recorded.parent
-    siblings = [child for child in parent.iterdir() if child.is_dir() and has_launcher(child)] if parent.is_dir() else []
-    if siblings:
-        return max(siblings, key=lambda child: version_key(child.name))
+    tried = candidates()
+    for root in tried:
+        if has_launcher(root):
+            return root
+    listed = "\n".join(f"  - {root}" for root in tried) or "  (none)"
     raise SystemExit(
-        f"[lt] no literature-translation plugin found at {recorded} or beside it; "
-        "set LITTRANS_PLUGIN_ROOT to the installed plugin directory"
+        "[lt] no literature-translation plugin found; install it on this host or set "
+        f"LITTRANS_PLUGIN_ROOT to the installed plugin directory. Looked in:\n{listed}"
     )
 
 

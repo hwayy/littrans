@@ -43,8 +43,14 @@ def write_ready_marker(marker: Path, model: Path) -> None:
 
 
 def layout_cache_root() -> Path:
-    """Managed location of the isolated layout environment and its weights."""
-    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "littrans/layout"
+    """Managed location of the isolated layout environment and its weights.
+
+    ``%LOCALAPPDATA%/littrans/layout`` on Windows; ``$XDG_CACHE_HOME/littrans/layout``
+    (default ``~/.cache``) elsewhere — the same rule as the CLI's own environment.
+    """
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "littrans/layout"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "littrans/layout"
 
 
 def runtime_paths() -> tuple[Path | None, Path | None]:
@@ -192,7 +198,10 @@ def detect_layout(images: list[Path], store: Path) -> dict[str, Any]:
         pages = _content_keyed(payload.get("pages"), image_sha256) if payload.get("status") == "ok" and payload.get("fingerprint") == request["fingerprint"] else None
         if pages is None:
             raise ValueError("layout worker returned incomplete or stale output")
-        payload.update(pages=pages, images=image_sha256, elapsed_seconds=time.monotonic() - started)
+        # Image names, not paths: the result is part of the project record and must not
+        # carry the directory of the host that ran the detector.
+        payload.update(pages=pages, images={Path(name).name: digest for name, digest in image_sha256.items()},
+                       elapsed_seconds=time.monotonic() - started)
         write_json(output, payload)
         return {**payload, "path": str(output)}
     except (OSError, ValueError, subprocess.TimeoutExpired, RuntimeError) as exc:

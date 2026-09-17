@@ -18,6 +18,7 @@ from collections import Counter
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from littrans.models import SourceUnit
 from littrans.representation_models import AssetReviewSubmission, AssetSubmission
@@ -779,6 +780,19 @@ window.MathJax = {
  }}
 };
 })();</script><script defer src="BASE_PATH/tex-svg.js"></script>'''.replace("BASE_PATH", html.escape(base, quote=True)).replace("BASE", base_json)
+
+
+def portable_href(target: Path, output: Path, root: Path) -> str:
+    """A link from a page under ``output`` to ``target`` that survives moving the tree.
+
+    A file inside the project root is referenced relatively (percent-encoded, POSIX
+    separators), so the same tree renders the same bytes on every host; only a file kept
+    outside the project — a source PDF that was never copied in — still needs a file URI.
+    """
+    target, output, root = target.resolve(), output.resolve(), root.resolve()
+    if target.is_relative_to(root):
+        return quote(Path(os.path.relpath(target, output)).as_posix(), safe="/")
+    return target.as_uri()
 
 
 def _href(root: Path, name: str, output: Path) -> str:

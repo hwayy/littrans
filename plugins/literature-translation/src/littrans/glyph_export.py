@@ -16,6 +16,8 @@ from typing import Any
 
 import pymupdf as fitz
 
+from littrans.storage import atomic_write_text
+
 SVG = "http://www.w3.org/2000/svg"
 XLINK = "http://www.w3.org/1999/xlink"
 NUMBER = r"[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?"
@@ -282,7 +284,7 @@ def export_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                           svg_path: Path, png_path: Path, dpi: int,
                           bbox: list[float] | None = None) -> dict[str, Any]:
     svg, metadata = build_owned_fragment(page, owned, bbox)
-    svg_path.write_text(svg, encoding="utf-8")
+    atomic_write_text(svg_path, svg)
     with fitz.open("svg", svg.encode()) as document:
         document[0].get_pixmap(dpi=dpi, alpha=False).save(png_path)
     return {**metadata, "dpi": dpi}

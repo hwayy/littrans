@@ -35,6 +35,10 @@ plugin upgrade run `tools/lt.cmd project scaffold {{ project_rel }} --refresh` s
   `tools/lt.cmd project tracked {{ project_rel }}` is the authority — it asks git.
 - **Write LF, never CRLF.** Pass `newline="\n"` from Python; pin `eol=lf` in `.gitattributes`.
 - **Always pass `--pages`.** It defaults to the whole document.
+- **One host writes at a time.** Pull before writing, run `project tracked` before
+  committing, push after; a conflict in a record file means both hosts wrote — take one side
+  whole, never merge JSON or JSONL by hand. Every host runs the same plugin build (`doctor`
+  → `build`); the PDF sits at `source/` on each host and never in git.
 
 ## Workflow
 

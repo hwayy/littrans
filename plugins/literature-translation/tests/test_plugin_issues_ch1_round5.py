@@ -173,7 +173,7 @@ def test_preserved_math_asset_is_declared_automatically_and_keeps_its_identity(p
 # --- LT-035: a rerun never overwrites the result a ledger records --------------------------
 
 def test_whole_chapter_rerun_on_a_new_runtime_keeps_recorded_results_and_override_receipts(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The real store: one file per fingerprint, so override pages replay on the old result."""
+    """The real store: one file per fingerprint; a rerun cuts every page on its recorded result."""
     python = tmp_path / "python.exe"
     python.touch()
     model = tmp_path / "model"
@@ -196,11 +196,23 @@ def test_whole_chapter_rerun_on_a_new_runtime_keeps_recorded_results_and_overrid
     _override_page_one(project, {"id": "kept-rule", "kind": "mixed-region", "bbox": [95, 95, 155, 105], "grouping_pending": False})
     assert approve(project, "1,2")["approved_pages"] == [1, 2]
     identity["python"] = "runtime-b"
+    # A rerun on another runtime cuts every page on its recorded result, without the
+    # detector: both receipts survive and the new runtime leaves no file behind.
     result = prepare_source(project, replace=True)
     ledgers = {p: read_json(project / f"derived/fidelity-pages/p{p:04d}.json") for p in (1, 2)}
-    # The recorded result survives the rerun beside the new one; the override page replays on it.
-    assert (store / f"{first}.json").is_file() and ledgers[1]["layout_fingerprint"] == first
-    assert ledgers[2]["layout_fingerprint"] != first and (store / f"{ledgers[2]['layout_fingerprint']}.json").is_file()
+    assert ledgers[1]["layout_fingerprint"] == first and ledgers[2]["layout_fingerprint"] == first
+    assert result["reused_layout_pages"] == [1, 2] and result["detected_layout_pages"] == [] and result["layout_status"] == "reused"
     assert result["replayed_override_pages"] == [1] and result["redetected_override_pages"] == []
-    assert result["retained_receipt_pages"] == [1] and 2 not in result["retained_receipt_pages"]
+    assert result["retained_receipt_pages"] == [1, 2]
+    assert sorted(store.glob("*.json")) == [store / f"{first}.json", store / f"{first}.request.json"]
+    # Asked to detect again, the run writes the new runtime's result beside the recorded
+    # one; the override page replays on the fresh detection and says so.
+    result = prepare_source(project, replace=True, redetect=True)
+    ledgers = {p: read_json(project / f"derived/fidelity-pages/p{p:04d}.json") for p in (1, 2)}
+    assert (store / f"{first}.json").is_file()
+    assert ledgers[2]["layout_fingerprint"] != first and (store / f"{ledgers[2]['layout_fingerprint']}.json").is_file()
+    assert ledgers[1]["layout_fingerprint"] == ledgers[2]["layout_fingerprint"]
+    assert result["reused_layout_pages"] == [] and result["detected_layout_pages"] == [1, 2] and result["layout_status"] == "ok"
+    assert result["replayed_override_pages"] == [1] and result["redetected_override_pages"] == [1]
+    assert result["retained_receipt_pages"] == []
     assert "kept-rule" in load_assets(project)

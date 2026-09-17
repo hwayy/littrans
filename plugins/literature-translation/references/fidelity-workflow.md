@@ -57,36 +57,52 @@ Fully external interpreter and model configurations (`LITTRANS_LAYOUT_PYTHON`,
 Layout cache identities bind the worker SHA-256, configured/resolved interpreter, interpreter
 SHA-256, Python identity and installed distribution versions as well as the image contents and
 weights — never a path of the project. A result under `derived/fidelity-layout/` keys its
-`pages` by page-image SHA-256 (`images` maps the paths of the detection run to those keys), so
-the same tree detects, finds and replays the same result under any root: a worktree, a clone
-or a restored backup keeps its layout evidence without editing the cache. The store is
+`pages` by page-image SHA-256 (`images` maps the page-image file names of the detection run to
+those keys), so the same tree detects, finds and replays the same result under any root: a
+worktree, a clone or a restored backup keeps its layout evidence. The store is
 content-addressed: each result lives in `<fingerprint>.json` (with its `.request.json` and
 `.log`), so a rerun on the same runtime reuses its file, a rerun on another runtime (an
 upgraded detector or worker) writes a new file beside it, and a result some page ledger
-records is never overwritten — a whole-chapter `--replace` after an upgrade re-detects the
-pages without an override while every override page still replays on its recorded result.
-Results written by earlier builds were named by source and page set and keyed pages by
-absolute image path; they are still found by fingerprint and read by that path or, once the
-tree has moved, by the page image's file name. An unsuccessful runtime metadata probe
-cannot reuse cached layout evidence. Worker results are published atomically; unreadable or
-incomplete cached JSON triggers recomputation, and malformed worker results (a page without a
-list-valued prediction) report unavailable rather than being accepted.
+records is never overwritten. Results written by earlier builds were named by source and page
+set and keyed pages by absolute image path; they are still found by fingerprint and read by
+that path or, once the tree has moved, by the page image's file name. An unsuccessful runtime
+metadata probe cannot reuse cached layout evidence. Worker results are published atomically;
+unreadable or incomplete cached JSON triggers recomputation, and malformed worker results (a
+page without a list-valued prediction) report unavailable rather than being accepted.
 
-The recorded result is a correctness input of every override replay, not a performance cache:
-the page ledger names it (`layout_fingerprint`, `page_image_sha256`) and a replay cuts the
-page with exactly that result. When the ledger records a result that the directory no longer
-holds, the reason names the missing fingerprint and the two paths differ deliberately: an
-override import stops with an error (re-cutting the reviewed page by the fallback rules would
-silently change what the reviewer approved), while `source prepare --replace` replays the
-override on the fresh detection of that run and lists the page in
+The recorded result is a correctness input of every rerun, not a performance cache: the page
+ledger names it (`layout_fingerprint`, `page_image_sha256`), no other detector runtime
+reproduces its fingerprint, and the fingerprint also binds the set of pages detected together,
+so even the same runtime would give `--replace --pages 30` a new fingerprint. Result files
+(`<fingerprint>.json`) are therefore part of the record and travel with it (the generated
+`.gitignore` keeps only the run's `.request.json` and `.log` out, which carry the host's paths
+and interpreter); `project tracked` reports a result that is not committed. `source prepare
+--replace` cuts every page whose ledger records a result the directory still holds on that
+result — override page or not — and calls the detector only for the pages without one, so a
+rerun on another build or host reproduces the recorded pages (and their receipts) without a
+layout runtime: the result lists `reused_layout_pages` and `detected_layout_pages`, and
+`layout_status` is `reused` when nothing was detected. `--redetect` runs the detector for
+every page instead (a deliberately upgraded detector); a page prepared without a usable result
+(`layout_status` not `ok`) is always detected.
+
+When the ledger records a result that the directory no longer holds, the reason names the
+missing fingerprint and the two paths differ deliberately: an override import stops with an
+error (re-cutting the reviewed page by the fallback rules would silently change what the
+reviewer approved), while `source prepare --replace` replays the override on the fresh
+detection of that run and, when that detection has another fingerprint, lists the page in
 `redetected_override_pages` — review it again from a new packet.
 
 ### Document-specific preparation
 
 Run `source probe PROJECT --pages PAGES` before a new scope's extraction. Complete the
 source-bound profile using [document-structure.md](document-structure.md). Source preparation
-records its hash in new page ledgers; review packets include the profile and reject imports after
-its contents change. Batch context includes the same document-specific handling rules. The
+records the digest of the guidance that applies to each page (`structure.document_profile.
+guidance_sha256`: the base `handling_rules` plus the `page_rules` blocks covering the page)
+in new page ledgers; review packets embed the profile, and a receipt or an import is refused
+only when the guidance of that page changed since the packet was built — the message names the
+page and the keys. Probing further pages, scoped blocks for other pages, notes, status and the
+file's formatting change no page's guidance; editing a base rule changes every page's. Batch
+context includes the base handling rules and the blocks covering the batch's pages. The
 generic extractor remains a proposal generator: agents apply document-specific decisions using
 the supported source overrides below, then inspect fresh coverage evidence. A profile does not
 establish source fidelity or silently re-extract already reviewed pages.
@@ -275,8 +291,10 @@ page (continuation or container closure), loses its receipt explicitly and is li
 A page ledger records the reviewer's `source_overrides` and, since it was imported, their
 `source_overrides_origin` (`packet_id`, `reviewer`). `source prepare --replace` on such a page
 replays the recorded override: the human decision is reproduced exactly (the recorded detector
-result is reused; a page whose recorded result is gone is replayed on the fresh detection and
-also listed in `redetected_override_pages`), never silently replaced by a fresh derivation. The
+result is reused, as for every re-prepared page; a page whose recorded result is gone, or set
+aside by `--redetect`, is replayed on the fresh detection and also listed in
+`redetected_override_pages` when that detection differs), never silently replaced by a fresh
+derivation. The
 result lists these pages in `replayed_override_pages`. Pass `--discard-overrides` to re-derive
 them from the current extraction rules instead (`discarded_override_pages`); a replay that no
 longer applies (a pinned asset gone, glyph IDs changed) fails the whole transaction with the
@@ -294,9 +312,11 @@ under a new packet identity and cannot silently restore prior approval.
 Source-review receipts bind the decision, reviewer, source, page fingerprint and original packet
 identity/hash with `receipt_sha256`. Submissions must echo `visual_report_sha256` after
 inspection, and receipts retain it. Approval consumers (`source verify`, batch creation,
-workflow coordination) verify the receipt and packet, then recheck the visual decision
-conditions. Legacy receipts without these bindings require a fresh visual review import; no
-automatic approval migration is performed.
+workflow coordination) verify the receipt and packet, compare the structure guidance of the
+page in the packet's embedded profile with the current profile (`fidelity-source-unverified`:
+`source structure guidance changed since review for page N (handling_rules: …)`), then recheck
+the visual decision conditions. Legacy receipts without these bindings require a fresh visual
+review import; no automatic approval migration is performed.
 
 The packet directory a receipt names (`packets/source-<hash>/packet.json`, `coverage.html`
 and the page images its manifest lists) is a live dependency of that review however many newer
@@ -739,6 +759,11 @@ companions from every fragment, using each fragment's original source context fo
 footnote scope. Code/math literals remain literal, including dollar and backslash inline/display
 delimiters and multiline backtick/tilde fences.
 
+Rendered pages under `output/` link the original page images, the source PDF (`#page=N`) and
+the copied original assets by relative, percent-encoded paths, so the same tree renders the
+same bytes on every host and a rendered checkpoint can be compared across machines; only a
+source PDF kept outside the project root is still linked by a `file:` URI.
+
 Edition publication snapshots all shared MathJax files, including absent incoming paths, so a
 later failure restores prior bytes and removes newly created runtime files; individual runtime
 copies are atomic. Pydantic >=2.12 is required for conditional identity-field serialization.
@@ -756,21 +781,57 @@ for nested layouts (`repo/workspace`); the default is the project root.
 | --- | --- | --- |
 | `context/document-brief.md`, `context/style-guide.md` | user | rules only; each opens with the boundary note (whole file hashed → records go to `glossary/reference.yaml`) |
 | `glossary/approved.yaml`, `candidates.yaml`, `reference.yaml` | user | the three terminology stores, each headed by its effect |
-| `.gitignore` (project root) | user | keeps the source PDF, `output/`, the layout cache, per-asset `original.pdf` and unreferenced source packets out; keeps `.littrans/work/` in and the lock out; an existing file only gains the `.littrans/*` / `!.littrans/work/` pair |
-| `.gitattributes`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `PLUGIN-ISSUES.md`, `docs/{HISTORY,DECISIONS,TERMINOLOGY,REVIEWS}.md` | user | LF policy, handbook, operating manual (`CLAUDE.md` imports `AGENTS.md`), defect ledger and the four records — headings plus one line each on what belongs there, nothing document-specific |
-| `tools/lt.py`, `tools/lt.cmd`, `tools/lt.sh` | user | launcher: `LITTRANS_PLUGIN_ROOT`, else the recorded plugin root, else its highest-versioned sibling (numeric, pre-release aware) |
+| `.gitignore` (project root) | user | keeps the source PDF, `output/`, the layout runs' `*.request.json` and `*.log`, per-asset `original.pdf` and unreferenced source packets out; keeps `.littrans/work/` and the layout results in and the lock out; an existing file only gains the `.littrans/*` / `!.littrans/work/` pair |
+| `.gitattributes`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `PLUGIN-ISSUES.md`, `docs/{HISTORY,DECISIONS,TERMINOLOGY,REVIEWS}.md` | user | LF policy for the record (`*.cmd` CRLF, `*.sh` LF), handbook, operating manual (`CLAUDE.md` imports `AGENTS.md`), defect ledger and the four records — headings plus one line each on what belongs there, nothing document-specific |
+| `tools/lt.py`, `tools/lt.cmd`, `tools/lt.sh` | user | launcher: `LITTRANS_PLUGIN_ROOT`, else the recorded plugin root, else the same path under this user's home, else their highest-versioned siblings (numeric, pre-release aware), else each client's plugin cache; executable on POSIX |
 | `docs/LITTRANS.md` | **plugin** | what the installed build guarantees — version, build digest, term semantics, audit context parts, stale reasons, stages, wave limits, status order, QA version — rendered from the package constants; regenerated by `--refresh`, never hand-edited |
 
 `project tracked PROJECT` derives the record from the data — `project.yaml`, context and
 glossary files, `derived/units.jsonl`, `fidelity-assets.jsonl`, `provenance.json`, the page
-ledgers, every asset crop and its `evidence.json`, review templates, the source packets page
-receipts name (live dependencies), reviews, page evidence, audit ledgers, batch files,
+ledgers, the layout results (`derived/fidelity-layout/<fingerprint>.json`), every asset crop
+and its `evidence.json`, review templates, the source packets page receipts name (live
+dependencies), reviews, external dry-run records, page evidence, audit ledgers, batch files,
 translations, QA reports and `.littrans/work/` payloads — and the excluded set (source PDFs,
-`output/*.html`, the layout cache, per-asset `original.pdf`, unreferenced packets,
-`.littrans/state.json`), then asks git (`ls-files`, `check-ignore`) whether exactly that is
-tracked. It reports a record file that is ignored or uncommitted, an excluded file that is
-tracked, and any file in neither state; the exit code is 1 on any problem. `project rebuild`
+`output/*.html`, the layout runs' requests and logs, per-asset `original.pdf`, unreferenced
+packets, `.littrans/state.json`), then asks git (`ls-files`, `check-ignore`) whether exactly
+that is tracked. It reports a record file that is ignored or uncommitted, an excluded file that
+is tracked, and any file in neither state; the exit code is 1 on any problem. `project rebuild`
 copies `docs/` alongside `context/` and `glossary/` and refreshes `docs/LITTRANS.md`.
+
+### Several hosts, one record
+
+The record names no machine: `project.yaml` records a PDF inside the project relatively
+(`source/<name>.pdf`), page ledgers and packets carry project-relative paths and content
+digests, layout results key pages by image content, dry-run records name their packet
+relatively, rendered pages link relatively, and every file the plugin writes is UTF-8 with LF.
+A project therefore moves between a Windows and a Linux host through an ordinary git remote
+without a shared file system. What the hosts must agree on:
+
+1. **Pull before writing, push after.** The write lock (`.littrans-write-lock/`) protects one
+   tree, not the remote: one host writes the project at a time; the other pulls before its
+   turn. A conflict in a record file is a sign that both wrote — resolve it by taking one
+   side whole, never by merging JSON or JSONL by hand, then rerun `source verify` and
+   `workflow status`.
+2. **The same plugin build.** `doctor` reports `build.plugin_version` and
+   `build.build_digest`; ledgers, packets and results record the `generator` that wrote them.
+   Upgrade every host to the same build (or accept that pages re-prepared on the newer build
+   may cut differently, as `MIGRATING.md` describes) and refresh `docs/LITTRANS.md` once.
+3. **The PDF on every host, never in git.** Copy the source PDF to `source/<name>.pdf`
+   (the path `project.yaml` records) on each host; `source verify` checks its hash.
+4. **The layout runtime only where pages are first prepared.** Re-preparing, override
+   replay and verification run on the recorded results, which the record carries; a host
+   without MinerU can `--replace` every recorded page and only fails on a page that has no
+   result (or with `--redetect`).
+5. **`project tracked` before every commit.** It names a record file that is uncommitted or
+   ignored (a new layout result, a live packet to re-include by name) and an excluded file
+   that slipped in (`output/`, a PDF).
+6. **Windows checkouts:** `git config core.longpaths true` (packet payloads nest deep) and
+   keep `core.autocrlf` irrelevant by relying on the generated `.gitattributes`; a project's
+   `tools/lt.sh` needs its executable bit once (`git update-index --chmod=+x tools/lt.sh`).
+7. **The launcher resolves the plugin per host**: `tools/lt.py` tries `LITTRANS_PLUGIN_ROOT`,
+   the recorded root, the same path under this user's home, their newest siblings and each
+   client's plugin cache, so a project scaffolded on one host runs on the other once the
+   plugin is installed there.
 
 ## Resume and recovery
 

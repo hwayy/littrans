@@ -30,6 +30,7 @@ RECORD_GLOBS = (
     "packets/*/review-template.json",
     "reviews/*.json",
     "reviews/*.jsonl",
+    "reviews/external-dry-run/**/*.json",
     "evidence/pages/*",
     "evidence/audits/*.json",
     "evidence/audits/*.jsonl",
@@ -104,9 +105,17 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
         must_ignore.add(".littrans/state.json")
     must_ignore.update(path.relative_to(root).as_posix() for path in (root / "source").glob("*.pdf"))
     must_ignore.update(path.relative_to(root).as_posix() for path in (root / "output").glob("*.html"))
-    must_ignore.update(
-        path.relative_to(root).as_posix() for path in (root / "derived" / "fidelity-layout").glob("*") if path.is_file()
-    )
+    # A detector result is evidence a page ledger names and no other runtime reproduces,
+    # so every rerun (on any host) cuts the page on it; the request and log of the run
+    # carry the paths and interpreter of the host that ran it and stay out.
+    for path in (root / "derived" / "fidelity-layout").glob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if path.name.endswith(".json") and not path.name.endswith(".request.json"):
+            must_track.add(relative)
+        else:
+            must_ignore.add(relative)
     return must_track, must_ignore, list(liveness.get("live_source_packets", []))
 
 

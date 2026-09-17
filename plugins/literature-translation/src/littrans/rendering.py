@@ -49,6 +49,7 @@ from littrans.representations import (
     install_mathjax,
     mathjax_bootstrap,
     mathjax_publication_paths,
+    portable_href,
     resolve_asset_html,
     resolve_asset_markdown,
 )
@@ -1467,7 +1468,7 @@ def render_project(
         status=rendered_status,
         rows=rows,
         pages=(f"{min(pages)}–{max(pages)}" if len(set(pages)) == max(pages) - min(pages) + 1 else "、".join(map(str, sorted(set(pages))))),
-        pdf_uri=config.source(root).as_uri(),
+        pdf_uri=portable_href(config.source(root), output, root),
         allow_draft=allow_draft,
         mathjax_bootstrap="" if originals_only else mathjax_bootstrap(),
     )

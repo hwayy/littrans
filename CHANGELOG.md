@@ -6,11 +6,66 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.8`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.9`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
+
+- Source receipts bind the structure guidance of their own page, not the profile file
+  (0.6.0-dev.9). `context/source-structure.json` gains `page_rules`: blocks of
+  `handling_rules` scoped to a page spec (`{"label": "Chapter 2", "pages": "52-67",
+  "handling_rules": {...}}`) beside the base rules. The guidance of a page is, per key, the
+  base text followed by the covering blocks joined by a line break; `source verify` and
+  `source import-review` compare that between the packet's embedded profile and the current
+  one and refuse only a page whose guidance changed (`source structure guidance changed since
+  review for page N (handling_rules: lists, headings)`). Probing further pages, notes, status,
+  block labels and the file's formatting or line endings change nothing; a CRLF checkout, a
+  reformatted file or a new chapter's probe no longer voids every receipt. The `sha256` in
+  `document_structure` is a content digest, new page ledgers record
+  `structure.document_profile.guidance_sha256` (the page's guidance) instead of the file
+  hash, batch context carries the blocks covering the batch's pages, and `source probe` tells
+  the agent where a new scope's rules go.
+- Rendered checkpoints and editions link the page images, the source PDF and the original
+  assets by relative, percent-encoded paths, so the same tree renders the same bytes on every
+  host; only a PDF outside the project root keeps a `file:` URI.
+- The paragraph after a list item opens after the item's continuation line: a line starting
+  within 4.5 ems of the margin, or in a chunk the planner placed as a list item or its
+  continuation, is a text line for the paragraph-white-space rule (it used to count as a
+  display beyond 2.8 ems, so the paragraph following `b) …` was merged into the item).
+- An unreferenced figure keeps its reading position on a page whose page number was detached
+  from the running head: running material no longer anchors visual elements, so the figure
+  sorts between the paragraph above it and its caption and owns the caption again. The same
+  rule moves an omitted decorative rule (a running-head line) that the detached page number
+  pinned to the page end back to the top, where a page whose number is its own block already
+  had it; the reading output is unchanged, but such a page's unit order — and fingerprint —
+  changes when it is re-prepared.
+- Layout detector results are part of the record. `derived/fidelity-layout/<fingerprint>.json`
+  is tracked (the generated `.gitignore` and `project tracked` keep only the run's
+  `*.request.json` and `*.log` out); a result's `images` map names page images by file name.
+  `source prepare --replace` cuts every page whose ledger records a result the directory
+  still holds on that result — override page or not — and calls the detector only for the
+  pages without one, so a rerun on another build or host reproduces the recorded pages and
+  keeps their receipts without a layout runtime (`reused_layout_pages`,
+  `detected_layout_pages`, `layout_status: reused`); `--redetect` runs the detector for every
+  page. `redetected_override_pages` names an override page only when the fresh detection
+  differs from the recorded one, and the units of a page whose receipt survived the rerun
+  stay `verified` instead of reading as fresh work.
+- The record names no machine: `project init` records a PDF inside the project relatively
+  (`source/<name>.pdf`, also in `provenance.json`); the Cursor dry-run record's `packet_path`
+  is project-relative (absolute values written earlier still import on their host) and
+  `reviews/external-dry-run/**/*.json` belongs to the record; the scaffolded `tools/lt.py`
+  also records the plugin root relative to the home directory and resolves the plugin through
+  `LITTRANS_PLUGIN_ROOT`, the recorded root, the same path under this user's home, their
+  newest siblings and each client's plugin cache (a foreign-OS path is never searched
+  relative to the working directory); `tools/lt.sh` and `lt.py` are executable on POSIX;
+  the scaffolded `.gitattributes` keeps `*.cmd` CRLF and `*.sh` / `*.py` LF. The layout
+  cache root follows the platform (`%LOCALAPPDATA%` on Windows, `$XDG_CACHE_HOME` or
+  `~/.cache` elsewhere), as the CLI environment already did. `fidelity-workflow.md` gains
+  "Several hosts, one record" — the protocol for sharing a project through a git remote —
+  and `runtime.md` the cache locations and environment variables per platform.
+- `scripts/check.sh` runs the release checks on Linux and macOS, and the `release-checks`
+  workflow runs them on `ubuntu-latest` beside `windows-latest`.
 
 - Reference terminology is a channel of its own: `glossary/reference.yaml` (a `terms` list with
   the approved-term schema plus `kind` and `aliases`; `status` defaults to `reference-only`,

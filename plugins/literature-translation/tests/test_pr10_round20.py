@@ -169,7 +169,7 @@ def test_detector_checks_prediction_lists(tmp_path, monkeypatch, invalid, where)
     else:
         # Published results are keyed by image content, not by the request's paths.
         key = hashlib.sha256(image.read_bytes()).hexdigest()
-        assert set(read_json(output)["pages"]) == {key} and read_json(output)["images"] == {str(image.resolve()): key}
+        assert set(read_json(output)["pages"]) == {key} and read_json(output)["images"] == {image.name: key}
         damaged = read_json(output)
         damaged["pages"][key] = invalid
         write_json(output, damaged)

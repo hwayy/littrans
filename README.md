@@ -130,6 +130,16 @@ if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
+On Linux or macOS:
+
+```bash
+git clone --branch stable https://github.com/hwayy/littrans.git
+dest="$HOME/.cursor/plugins/local/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  littrans/plugins/literature-translation/ "$dest/"
+```
+
 Contributors with GitHub authentication may use the SSH repository URL instead.
 Start a new Cursor agent session after installation.
 
@@ -143,6 +153,13 @@ $dest = Join-Path $env:USERPROFILE ".cursor\plugins\local\literature-translation
 New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
 if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
+```
+
+```bash
+dest="$HOME/.cursor/plugins/local/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  plugins/literature-translation/ "$dest/"
 ```
 
 A Teams or Enterprise plan may also import this repository as a Cursor team marketplace from
@@ -189,7 +206,9 @@ claude --plugin-dir plugins/literature-translation
 Skills are invoked as `/literature-translation:<skill-name>`; the plugin subagents appear as
 `literature-translation:<agent-name>`. Run `python plugins/literature-translation/scripts/littrans.py doctor`
 and `... layout install` once so the CLI runtime and the required layout detector are available.
-Keep source PDFs and translation workspaces on the local machine.
+The commands are the same on Windows, Linux and macOS; the installed plugin lives under
+`~/.claude/plugins/cache/littrans/literature-translation/<version>` on every platform. Keep
+source PDFs and translation workspaces on the local machine.
 
 ### Update a Claude Code client
 
@@ -217,6 +236,16 @@ if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
+On Linux or macOS:
+
+```bash
+git clone --branch stable https://github.com/hwayy/littrans.git
+dest="$HOME/.qoder-cn/plugins/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  littrans/plugins/literature-translation/ "$dest/"
+```
+
 Contributors with GitHub authentication may use the SSH repository URL instead.
 
 ### Primary development client
@@ -229,6 +258,13 @@ $dest = Join-Path $env:USERPROFILE ".qoder-cn\plugins\literature-translation"
 New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
 if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
+```
+
+```bash
+dest="$HOME/.qoder-cn/plugins/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  plugins/literature-translation/ "$dest/"
 ```
 
 Enable `literature-translation` under `enabledPlugins` in `~/.qoder-cn/settings.json` and confirm it
@@ -253,10 +289,16 @@ Development happens on `main` or topic branches. The `stable` branch advances on
 tagged release commits. Every distributed release increments the version in all host plugin manifests,
 Python package metadata, and `littrans.__version__` together.
 
-Run the local release checks from the repository root:
+Run the local release checks from the repository root — the two scripts perform the same steps
+(repository `.venv`, release metadata, ruff, mypy, the test suite, `doctor`) and the
+`release-checks` workflow runs both on Windows and Linux:
 
 ```powershell
 ./scripts/check.ps1
+```
+
+```bash
+bash scripts/check.sh
 ```
 
 See [`RELEASING.md`](RELEASING.md) for the manual release procedure and

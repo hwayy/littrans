@@ -83,11 +83,15 @@ def initialize_project(
         raise ValueError(f"Project already exists: {root}")
     load_profile(profile)
     initialize_project_dirs(root)
+    # A PDF inside the project is recorded relative to it, so a clone on another host
+    # finds it under the same name; one kept elsewhere can only be named absolutely.
+    project_root = root.resolve()
+    recorded_source = source.relative_to(project_root).as_posix() if source.is_relative_to(project_root) else str(source)
     document = fitz.open(source)
     config = ProjectConfig(
         project_id=slugify(title or source.stem),
         title=title or source.stem,
-        source_path=str(source),
+        source_path=recorded_source,
         source_sha256=sha256_file(source),
         source_pages=document.page_count,
         profile=profile,
@@ -100,7 +104,7 @@ def initialize_project(
     write_json(
         root / "derived" / "provenance.json",
         {
-            "source_path": str(source),
+            "source_path": recorded_source,
             "source_sha256": config.source_sha256,
             "rights_status": config.rights_status,
             "source_is_copied": False,

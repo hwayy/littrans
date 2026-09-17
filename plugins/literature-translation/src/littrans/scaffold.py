@@ -11,6 +11,8 @@ the user-owned files exactly once and regenerates the one plugin-owned file
 
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -113,11 +115,16 @@ def scaffold_context(root: Path, repo_root: Path) -> dict[str, Any]:
     except ValueError as exc:
         raise ValueError(f"The project root {root} must lie inside the record root {repo_root}") from exc
     project_rel = project_rel or "."
+    root_dir = plugin_root()
+    home = Path.home()
     return {
         **plugin_facts(),
         "project_rel": project_rel,
         "project_prefix": "" if project_rel == "." else project_rel + "/",
-        "plugin_root": str(plugin_root()),
+        "plugin_root": str(root_dir),
+        # The same root relative to the home directory, so a clone on another host or
+        # account finds the plugin where this user's client installed it.
+        "plugin_root_home_relative": root_dir.relative_to(home).as_posix() if root_dir.is_relative_to(home) else "",
         "plugin_owned_file": PLUGIN_OWNED_FILE,
     }
 
@@ -172,6 +179,9 @@ def scaffold_project(root: Path, *, repo_root: Path | None = None, refresh: bool
             created.append(label)
         else:
             kept.append(label)
+        if spec.relative.startswith("tools/") and os.name != "nt":
+            # A POSIX host runs the launcher directly; git carries the bit once committed.
+            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return {
         "project_root": str(root),
         "repo_root": str(repo_root),

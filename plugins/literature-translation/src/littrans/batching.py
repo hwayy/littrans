@@ -122,7 +122,14 @@ def _context_text(
     from littrans.structure_profile import structure_context
     structure = structure_context(root)
     if structure:
-        brief += "\n\n# Document structure rules\n\n" + yaml.safe_dump({"profile_sha256": structure["sha256"], "pages": structure["profile"]["pages"], "handling_rules": structure["profile"]["handling_rules"]}, allow_unicode=True, sort_keys=False)
+        profile = structure["profile"]
+        pages = {unit.page for unit in units}
+        # Scoped blocks reach a batch only when they cover one of its pages.
+        blocks = [block for block in profile.get("page_rules", [])
+                  if pages & set(parse_page_spec(block["pages"], max(profile["pages"])))]
+        rules = {"profile_sha256": structure["sha256"], "pages": profile["pages"], "handling_rules": profile["handling_rules"],
+                 **({"page_rules": blocks} if blocks else {})}
+        brief += "\n\n# Document structure rules\n\n" + yaml.safe_dump(rules, allow_unicode=True, sort_keys=False)
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
     terms = relevant_terms(root, units)
     adjacent = []
