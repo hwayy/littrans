@@ -8,6 +8,8 @@ import yaml
 from littrans.evidence import (
     continuation_neighbors,
     record_audit_invalidation,
+    reference_terms_yaml,
+    relevant_reference_terms,
     relevant_terms,
     translation_memory,
 )
@@ -129,6 +131,9 @@ def _context_text(
     if after:
         adjacent.append(f"Next unit ({after.unit_id}):\n{after.source_text}")
     term_text = yaml.safe_dump({"approved_terms": terms}, allow_unicode=True, sort_keys=False)
+    reference_text = reference_terms_yaml(relevant_reference_terms(root, units))
+    if reference_text:
+        term_text += f"```\n\n# Reference terminology (not gated)\n\n```yaml\n{reference_text}"
     approved_memory = translation_memory(
         root, (unit.unit_id for unit in units), limit=6
     )

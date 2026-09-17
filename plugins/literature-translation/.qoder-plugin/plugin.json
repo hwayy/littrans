@@ -1,7 +1,7 @@
 {
   "name": "literature-translation",
   "displayName": "Literature Translation",
-  "version": "0.6.0-dev.6",
+  "version": "0.6.0-dev.7",
   "description": "A controlled, resumable workflow for high-quality literature translation.",
   "author": {
     "name": "Hwa",

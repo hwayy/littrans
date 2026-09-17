@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""LitTrans launcher for this project: find the installed plugin and run its CLI.
+
+    tools/lt.cmd doctor            (Windows)     tools/lt.sh doctor            (POSIX)
+    tools/lt.cmd <group> --help
+
+Resolution order:
+  1. ``LITTRANS_PLUGIN_ROOT`` — an explicit plugin directory (one containing scripts/littrans.py);
+  2. the plugin root recorded when this file was generated;
+  3. if that directory is gone (a plugin upgrade moved the versioned cache directory), the
+     highest-versioned sibling of it that contains scripts/littrans.py.
+
+Version order is numeric with pre-release awareness, so ``0.10.0`` beats ``0.6.0`` and
+``0.6.0`` beats ``0.6.0-dev.7``; a plain lexical sort gets both wrong. Set
+``LITTRANS_LAUNCHER_VERBOSE=1`` to print the resolved root. Standard library only, so it runs
+on whatever Python the wrapper picks; the plugin's own launcher then manages its environment.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+RECORDED_PLUGIN_ROOT = r"{{ plugin_root }}"
+LAUNCHER = ("scripts", "littrans.py")
+
+_VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-([A-Za-z]+)\.?(\d+)?)?$")
+
+
+def version_key(name: str) -> tuple[int, tuple[int, ...], int, int]:
+    """Sort key: versioned names first, releases above pre-releases of the same number."""
+    match = _VERSION_RE.match(name)
+    if not match:
+        return (0, (), 0, 0)
+    numbers = tuple(int(part) for part in match.group(1).split("."))
+    if match.group(2) is None:
+        return (1, numbers, 1, 0)
+    return (1, numbers, 0, int(match.group(3) or 0))
+
+
+def has_launcher(directory: Path) -> bool:
+    return directory.joinpath(*LAUNCHER).is_file()
+
+
+def resolve_plugin_root() -> Path:
+    explicit = os.environ.get("LITTRANS_PLUGIN_ROOT")
+    if explicit:
+        root = Path(explicit)
+        if not has_launcher(root):
+            raise SystemExit(f"[lt] LITTRANS_PLUGIN_ROOT has no scripts/littrans.py: {root}")
+        return root
+    recorded = Path(RECORDED_PLUGIN_ROOT)
+    if has_launcher(recorded):
+        return recorded
+    parent = recorded.parent
+    siblings = [child for child in parent.iterdir() if child.is_dir() and has_launcher(child)] if parent.is_dir() else []
+    if siblings:
+        return max(siblings, key=lambda child: version_key(child.name))
+    raise SystemExit(
+        f"[lt] no literature-translation plugin found at {recorded} or beside it; "
+        "set LITTRANS_PLUGIN_ROOT to the installed plugin directory"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    root = resolve_plugin_root()
+    if os.environ.get("LITTRANS_LAUNCHER_VERBOSE"):
+        print(f"[lt] plugin root: {root}", file=sys.stderr)
+    command = [sys.executable, str(root.joinpath(*LAUNCHER)), *(sys.argv[1:] if argv is None else argv)]
+    return subprocess.run(command, check=False).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -2,7 +2,7 @@
 
 Preserve claims, qualifications, negation, causality, comparison, scope, uncertainty and author stance. Translate meaningful prose exactly once under the same source unit. Check “A if B” direction explicitly; do not move modifiers between the original matrix and its dilation because the resulting sentence sounds fluent.
 
-Write natural contemporary Simplified Chinese with explicit logical relationships. Approved glossary entries govern prose terminology; proposed terms remain proposals. Preserve citation anchors, numbers, identifiers and every original asset occurrence. Reorder references only within their owning target block, never across units.
+Write natural contemporary Simplified Chinese with explicit logical relationships. Approved glossary entries govern prose terminology and are gated by QA; the packet's reference entries (`# Relevant reference terminology (not gated)`, grouped by kind such as proper names and senses) are binding too — follow the recorded form or rule — but are not gated; proposed terms remain proposals. Preserve citation anchors, numbers, identifiers and every original asset occurrence. Reorder references only within their owning target block, never across units.
 
 Read original formulas in their full paragraph context. Preserve them through `{{asset:ID}}` rather than reproducing LaTeX in target text. Separate display assets remain in the source structure. Translate natural-language figure labels alongside the intact diagram and table language as cells or clearly corresponding region explanations. Preserve code bodies unless the project expressly requests translated comments or strings.
 

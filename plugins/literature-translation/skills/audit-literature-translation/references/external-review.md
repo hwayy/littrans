@@ -42,7 +42,7 @@ first-party quota failures (including Grok, Composer, and Auto) and third-party 
 model chain before selecting a replacement reviewer.
 
 Each call receives only the current source, translation, checklist, style guide, approved terms,
-and relevant PDF page images. Prior review issues and translator rationale are excluded. The
+the reference entries matching the batch, and relevant PDF page images. Prior review issues and translator rationale are excluded. The
 CLI runs read-only in a temporary directory. Preserve the normalized result, raw response,
 actual-model evidence, CLI version, prompt version, and translation fingerprint; remove temporary
 provider logs after extracting model evidence.

@@ -1,0 +1,29 @@
+# Reference terminology: binding for translators and auditors, never a QA gate.
+#
+# Packets receive the entries whose `source` (or one of its `aliases`) occurs in their own
+# units, exactly as approved terms are filtered, so appending entries for a new chapter
+# changes only the audit context of the batches that mention them. Correcting an existing
+# entry likewise resets only the batches it matches.
+#
+# Every entry is a `terms:` item with the same matching fields as approved.yaml:
+#   source     the form to locate in the source text
+#   aliases    other attested forms that also select the entry (e.g. derived compounds)
+#   match      substring (default) | word | regex
+#   scope      document (default) | page:N | a parent unit id
+#   kind       a project-defined category shown as its own group in packets; default
+#              `{{ default_reference_kind }}`. Suggested kinds:
+#              proper-name  a name kept in source form (no target; note the generic noun rule)
+#              sense        one word, several senses: list `targets` and the `rule` that decides
+#   status     `reference-only` (default). `proposed` is inert; `approved` is refused here.
+# Any other key (target, targets, rule, note, first_seen, ...) is passed to packets verbatim.
+#
+# Examples (delete when adding real entries):
+#   - kind: proper-name
+#     source: Hölder
+#     aliases: [Hölder inequality, Hölder continuous]
+#     note: keep the name in source form; translate the generic noun
+#   - kind: sense
+#     source: partition
+#     targets: [划分, 配分函数]
+#     rule: a partition of a set is 划分; `partition function` is 配分函数
+terms: []

@@ -16,6 +16,20 @@ For QASC, keep the existing project as history and prepare an independent v6 pro
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
 
+## Projects prepared with a 0.6.0 development build
+
+- `context/chapters/` is no longer created; nothing ever read it, and an existing directory is
+  harmless.
+- Run `project scaffold PROJECT` (with `--repo-root DIR` for a nested layout) to add the record
+  files a project created earlier lacks — `glossary/reference.yaml`, the handbook, records,
+  ledger, launcher and `docs/LITTRANS.md`. Existing files are never overwritten; an existing
+  `.gitignore` only gains `.littrans/*` and `!.littrans/work/`. Run it again with `--refresh`
+  after every upgrade so `docs/LITTRANS.md` describes the installed build.
+- `glossary/reference.yaml` is now read: it must hold a `terms` list (the same entry schema as
+  `approved.yaml`, plus `kind` and `aliases`). A file in another shape fails to load with a
+  clear error; convert it before creating packets. Adding reference entries changes the audit
+  context of the batches whose units mention them, once.
+
 ## Projects prepared with 0.6.0
 
 No rebuild is needed. Re-preparing pages with `source prepare --replace` (recommended after

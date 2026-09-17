@@ -1,0 +1,16 @@
+@echo off
+REM LitTrans launcher for this project. Forwards every argument to tools\lt.py, which
+REM resolves the installed literature-translation plugin (see its docstring).
+REM
+REM   tools\lt.cmd doctor
+REM   tools\lt.cmd <group> --help
+REM
+REM Python 3.13 is preferred deliberately: the CLI needs 3.12 or later and the isolated
+REM MinerU layout detector needs a 3.10-3.13 base interpreter. Falls back to python on PATH.
+py -3.13 -c "pass" >nul 2>&1
+if errorlevel 1 (
+  python "%~dp0lt.py" %*
+) else (
+  py -3.13 "%~dp0lt.py" %*
+)
+exit /b %ERRORLEVEL%

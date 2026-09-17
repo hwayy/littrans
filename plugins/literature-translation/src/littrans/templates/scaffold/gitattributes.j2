@@ -1,0 +1,12 @@
+# Every text file in the record is committed with LF: a CRLF checkout makes every later
+# tool write look like a modification and changes the bytes that fingerprints are computed
+# from. Binary evidence is never normalized.
+* text=auto eol=lf
+*.png binary
+*.pdf binary
+*.svg text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.cmd text eol=lf

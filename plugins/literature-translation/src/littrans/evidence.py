@@ -20,7 +20,12 @@ from littrans.models import (
     UnitKind,
     utc_now,
 )
-from littrans.project import load_terms, translation_map
+from littrans.project import (
+    DEFAULT_REFERENCE_KIND,
+    load_reference_terms,
+    load_terms,
+    translation_map,
+)
 from littrans.semantics import normalize_zh_caption
 from littrans.storage import (
     load_project,
@@ -485,27 +490,38 @@ def term_source_text(unit: SourceUnit) -> str:
     return fold_term_text(without_quoted_titles(source_representation_text(unit)))
 
 
+def term_source_forms(term: dict[str, Any]) -> list[str]:
+    """The source forms an entry is located by: ``source`` plus any ``aliases``."""
+    forms = [str(term.get("source", "")).strip()]
+    forms.extend(str(alias).strip() for alias in (term.get("aliases") or []))
+    return [form for form in forms if form]
+
+
 def term_matches(term: dict[str, Any], folded_source: str) -> bool:
-    """Whether a glossary entry's source occurs in already folded source text."""
-    source_term = str(term.get("source", "")).strip()
-    if not source_term:
-        return False
+    """Whether a glossary entry's source (or one of its aliases) occurs in folded source text."""
     mode = str(term.get("match", "substring"))
-    if mode == "regex":
-        return re.search(fold_regex_pattern(source_term), folded_source, re.I) is not None
-    folded_term = fold_term_text(source_term)
-    if mode == "word":
-        return re.search(r"(?<!\w)" + re.escape(folded_term) + r"(?!\w)", folded_source) is not None
-    return folded_term in folded_source
+    for source_term in term_source_forms(term):
+        if mode == "regex":
+            if re.search(fold_regex_pattern(source_term), folded_source, re.I) is not None:
+                return True
+            continue
+        folded_term = fold_term_text(source_term)
+        if mode == "word":
+            if re.search(r"(?<!\w)" + re.escape(folded_term) + r"(?!\w)", folded_source) is not None:
+                return True
+        elif folded_term in folded_source:
+            return True
+    return False
 
 
-def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+def select_relevant(terms: Iterable[dict[str, Any]], units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+    """The entries whose scope covers the units and whose source occurs in them, in order."""
     selected = list(units)
     source = "\n".join(term_source_text(unit) for unit in selected)
     pages = {unit.page for unit in selected}
     parents = {unit.parent_id for unit in selected if unit.parent_id}
     matches: list[dict[str, Any]] = []
-    for term in load_terms(root):
+    for term in terms:
         scope = str(term.get("scope", "document"))
         in_scope = (
             scope == "document"
@@ -517,8 +533,38 @@ def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, An
     return matches
 
 
-def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
-    """Return the exact shared instructions and terminology shown to auditors."""
+def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+    """The gated (approved) entries a set of units needs."""
+    return select_relevant(load_terms(root), units)
+
+
+def relevant_reference_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+    """The binding-but-not-gated entries a set of units needs, filtered like approved terms."""
+    return select_relevant(load_reference_terms(root), units)
+
+
+def reference_terms_by_kind(terms: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group reference entries by ``kind`` in first-seen order, dropping the key from each entry."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for term in terms:
+        kind = str(term.get("kind") or DEFAULT_REFERENCE_KIND)
+        grouped.setdefault(kind, []).append({k: v for k, v in term.items() if k != "kind"})
+    return grouped
+
+
+def reference_terms_yaml(terms: Iterable[dict[str, Any]]) -> str:
+    """The YAML block packets show for reference entries; empty when nothing is relevant."""
+    grouped = reference_terms_by_kind(terms)
+    if not grouped:
+        return ""
+    return str(yaml.safe_dump({"reference_terms": grouped}, allow_unicode=True, sort_keys=False))
+
+
+AUDIT_CONTEXT_PARTS = ("document-brief", "style-guide", "approved-terms", "reference-terms")
+
+
+def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str, str]:
+    """The shared context by part: the two context files whole, the terms filtered per unit."""
     selected = list(units)
     brief = (root / "context" / "document-brief.md").read_text(
         encoding="utf-8"
@@ -531,10 +577,32 @@ def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
         allow_unicode=True,
         sort_keys=False,
     ).strip()
-    return (
-        f"# Document brief\n\n{brief}\n\n# Translation style\n\n{style}\n\n"
-        f"# Relevant approved terminology\n\n```yaml\n{terms}\n```\n"
+    reference = reference_terms_yaml(relevant_reference_terms(root, selected)).strip()
+    return {"document-brief": brief, "style-guide": style, "approved-terms": terms, "reference-terms": reference}
+
+
+def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
+    """Return the exact shared instructions and terminology shown to auditors.
+
+    The reference section is present only when an entry matches the units, so a project
+    without reference entries keeps the audit context it had before the channel existed.
+    """
+    parts = audit_context_sections(root, units)
+    text = (
+        f"# Document brief\n\n{parts['document-brief']}\n\n# Translation style\n\n{parts['style-guide']}\n\n"
+        f"# Relevant approved terminology\n\n```yaml\n{parts['approved-terms']}\n```\n"
     )
+    if parts["reference-terms"]:
+        text += f"\n# Relevant reference terminology (not gated)\n\n```yaml\n{parts['reference-terms']}\n```\n"
+    return text
+
+
+def audit_context_parts(root: Path, units: Iterable[SourceUnit]) -> dict[str, dict[str, Any]]:
+    """Per-part hash and size of the shared context, so staleness can name what grew."""
+    return {
+        part: {"sha256": sha256_text(text), "lines": len(text.splitlines()) if text else 0}
+        for part, text in audit_context_sections(root, units).items()
+    }
 
 
 def audit_context_fingerprint(root: Path, units: Iterable[SourceUnit]) -> str:

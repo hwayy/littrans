@@ -6,12 +6,46 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.6`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.7`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- Reference terminology is a channel of its own: `glossary/reference.yaml` (a `terms` list with
+  the approved-term schema plus `kind` and `aliases`; `status` defaults to `reference-only`,
+  `approved` is refused there) and `status: reference-only` entries in `approved.yaml` reach
+  translate, audit and external-review packets under `# Relevant reference terminology (not
+  gated)` grouped by `kind`, filtered per unit exactly like gated terms and never enforced by
+  QA. The section is emitted only when an entry matches, so projects without reference entries
+  keep their audit context; with them, editing an entry resets only the batches that mention
+  it instead of every finished audit (the whole-file cost that `context/*.md` edits still carry).
+  `aliases` select an entry under every match mode. The finalize unresolved report lists only
+  undecided candidates (no `status` or `proposed`) and counts the decided ones. New read-only
+  `glossary lookup` (by batch, pages, unit ids or a text file; `--kind`, `--jsonl`) and
+  `glossary check` (schema errors and entries matching no prepared unit) commands.
+- Audit runs record the shared context by part (`shared_context_parts`: brief, style guide,
+  approved terms, reference terms with sha256 and line count); a `context-changed` stale entry
+  lists `context_changes` — which part changed and its lines before and after — in
+  `audit_coverage`, `workflow status` and `review status`.
+- `project init` grows the record structure, not only the directories: the two context files
+  open with the rule/record boundary note, `glossary/reference.yaml` joins `approved.yaml` and
+  `candidates.yaml` (each headed by its effect), and the project gets a `.gitignore` that
+  keeps the source PDF, `output/`, the layout cache, per-asset `original.pdf` and unreferenced
+  source packets out while tracking `.littrans/work/` and ignoring the lock, plus
+  `.gitattributes` (LF), `README.md`, `AGENTS.md` (`CLAUDE.md` imports it), `PLUGIN-ISSUES.md`,
+  `docs/{HISTORY,DECISIONS,TERMINOLOGY,REVIEWS}.md`, a host-agnostic launcher (`tools/lt.py`
+  with `lt.cmd` / `lt.sh`; resolves `LITTRANS_PLUGIN_ROOT`, the recorded plugin root or its
+  highest-versioned sibling) and the plugin-owned `docs/LITTRANS.md` rendered from the package
+  constants. `--repo-root DIR` places the repository-level files at an ancestor for nested
+  layouts. New `project scaffold PROJECT [--refresh]` adds missing files to an existing project
+  (user-owned files are never overwritten; an existing `.gitignore` only gains the
+  `.littrans/*` / `!.littrans/work/` pair) and regenerates `docs/LITTRANS.md`. New
+  `project tracked PROJECT` derives the record from the data (assets, receipts and the source
+  packets they name, batches, ledgers, packet payloads) and asks git whether exactly that set is
+  tracked, exit 1 on any gap. `project rebuild` also copies `docs/` and reports what it copied.
+  `context/chapters/` is no longer created (nothing read it). `WORKFLOW_PACKET_STAGES`,
+  `AUDIT_STALE_REASONS` and `DETERMINISTIC_QA_VERSION` are named constants.
 - Inline notation keeps a text-face operator name set flush against its argument's bracket
   (`Cov(`, `mean(`, `area(`) like a known operator; `MATH_OPERATORS` gains `limsup`, `liminf`,
   `cov`, `var`, `corr`, `prob`, `vol` and the hyperbolic/inverse trigonometric names, so

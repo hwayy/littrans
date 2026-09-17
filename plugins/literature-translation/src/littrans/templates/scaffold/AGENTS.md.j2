@@ -1,0 +1,74 @@
+# AGENTS.md
+
+Operating manual for coding agents working in this repository: rules and traps, not history.
+What was done when, and the measurements behind each decision, live in `docs/`. If you are
+about to add a dated narrative here, it belongs in `docs/HISTORY.md`.
+
+## What this repository is
+
+Not a software project: no build, lint or test suite. It is a LitTrans translation
+workspace — the project state, decisions and evidence for translating one document. Every
+tracked file is a decision that later batch runs and audits depend on; changing one can
+invalidate work that already passed review.
+
+| File | What it is |
+| --- | --- |
+| `README.md` | Handbook: the document, page table, how to run it, current status |
+| `docs/LITTRANS.md` | What the installed plugin guarantees (generated; never hand-edited) |
+| `docs/HISTORY.md` | Dated record of what was done |
+| `docs/DECISIONS.md` | Rulings, rejected alternatives, lessons |
+| `docs/TERMINOLOGY.md` | Gate design rules, per-chapter promotion procedure, measured rejections |
+| `docs/REVIEWS.md` | Persistent copy of each chapter's review ledger |
+| `PLUGIN-ISSUES.md` | Cumulative plugin defect ledger with a status index |
+
+## Running anything: use the launcher
+
+`tools/lt.cmd <command>` (Windows) or `tools/lt.sh <command>` (POSIX) — never invoke the
+plugin's `littrans.py` directly. `tools/lt.cmd doctor` is the runtime self-check. After a
+plugin upgrade run `tools/lt.cmd project scaffold {{ project_rel }} --refresh` so
+`docs/LITTRANS.md` describes the installed build.
+
+## Hard constraints
+
+- **Never add a public remote.** The record embeds excerpts of a copyrighted source.
+- **The source PDF never enters git; the extraction and its decision trace do.**
+  `tools/lt.cmd project tracked {{ project_rel }}` is the authority — it asks git.
+- **Write LF, never CRLF.** Pass `newline="\n"` from Python; pin `eol=lf` in `.gitattributes`.
+- **Always pass `--pages`.** It defaults to the whole document.
+
+## Workflow
+
+Stages are sequential and each has its own review state; source coverage, translation
+approval and structured-asset correctness are independent. The stage names, wave limits
+and reviewer batch limits are in `docs/LITTRANS.md`. Record here the project-specific
+traps (where chapters end, what the extractor gets wrong for this document).
+
+## Dispatching writers and reviewers
+
+The packet's `model` is a dispatch category, not a claim about the served model. Reviewer
+lenses run as fresh, mutually blind tasks and are read-only; the parent imports their
+findings. Record here the host-specific dispatch rules this project uses.
+
+## Editing terminology
+
+Three stores, and the difference is what the audit hash can see:
+
+| Store | Effect | In the audit hash |
+| --- | --- | --- |
+| `{{ project_prefix }}glossary/approved.yaml` | hard gate, per unit | only entries matching the packet's units |
+| `{{ project_prefix }}glossary/reference.yaml` | binding, not a gate (`kind` groups: proper names, senses, ...) | only entries matching the packet's units |
+| `{{ project_prefix }}context/*.md` (brief, style guide) | injected verbatim | whole file |
+
+Before editing a context file ask whether a rule changed or a record was added — a record
+goes to `reference.yaml`. `candidates.yaml` gates nothing; it records promotion decisions.
+
+## Audit staleness and revision cost
+
+Editing a context file marks every existing audit `context-changed`; editing a term resets
+only the batches that mention it. `workflow status` names the changed part and its growth.
+Freeze the brief and style guide before a chapter's audit wave.
+
+## Logging plugin defects
+
+Append to `PLUGIN-ISSUES.md`: symbol name plus reproduction plus observed result, never a
+bare line number (line numbers move between builds).

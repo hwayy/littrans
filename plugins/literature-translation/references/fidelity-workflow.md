@@ -19,7 +19,8 @@ Contents:
 10. [Audit coverage](#audit-coverage)
 11. [Workflow coordination](#workflow-coordination)
 12. [Rendering](#rendering)
-13. [Resume and recovery](#resume-and-recovery)
+13. [Project record and scaffold](#project-record-and-scaffold)
+14. [Resume and recovery](#resume-and-recovery)
 
 ## Independent states
 
@@ -596,14 +597,42 @@ Rules worth knowing when reading a report:
   approval (`asset-semantic-uncertainty`); damaged images remain routable to source repair.
 - Structured target tables render once, including when `target_text` is explicitly empty.
 
-### Approved terminology
+### Terminology
 
-`glossary/approved.yaml` holds a `terms` list. Each entry has `source`, `target`, and optionally
-`scope` (`document`, `page:N` or a parent unit ID), `status`, `match` and `forbidden`.
+Three glossary files share one entry schema — a `terms` list whose entries carry `source` and
+optionally `aliases` (other attested source forms), `match`, `scope` (`document`, `page:N` or a
+parent unit ID), `status`, `target`, `forbidden` and any project-defined key — and differ only
+in effect:
 
-- Only entries whose `status` is absent or `approved` are enforced or injected into packets;
-  `proposed`, `reference-only` and any other status are inert even inside `approved.yaml`.
-  `glossary/candidates.yaml` is never enforced; it is listed in the finalize unresolved report.
+| File | Effect | Reaches packets | In the audit hash |
+| --- | --- | --- | --- |
+| `approved.yaml`, `status` absent or `approved` | hard per-unit QA gate | entries matching the packet's units | those entries |
+| `approved.yaml`, `status: reference-only` | binding, never gated | same filter | same |
+| `reference.yaml` (`status` defaults to `reference-only`) | binding, never gated; grouped by `kind` | same filter | same |
+| `status: proposed` in either file | inert | no | no |
+| `candidates.yaml` | none: the record of promotion decisions | no | no |
+
+- Reference entries are the channel for data that grows with the chapters but must not gate:
+  proper names kept in source form, one-word-two-senses registers, chapter usage notes.
+  `kind` (default `reference`, e.g. `proper-name`, `sense`) groups them in packets; every other
+  key (`targets`, `rule`, `note`, `first_seen`, ...) is shown verbatim. `status: approved` inside
+  `reference.yaml` is refused: that file never gates. Because reference entries are filtered per
+  unit like approved terms, appending a chapter's names changes only the audit context of the
+  batches that mention them, and correcting an entry resets only the batches it matches — the
+  two context files, by contrast, are hashed whole.
+- Packets show the gated entries under `# Relevant approved terminology` (`approved_terms`)
+  and, only when at least one matches, the reference entries under
+  `# Relevant reference terminology (not gated)` (`reference_terms`, one list per `kind`); the
+  batch `context.md` and external-review packets carry the same two sections. A project without
+  reference entries keeps the audit context it had before the channel existed.
+- `candidates.yaml` entries without `status` (or `status: proposed`) are undecided and are
+  listed in the finalize unresolved report; entries whose status records a decision
+  (`reference-only`, `rejected`, ...) are only counted there.
+- `glossary lookup PROJECT --batch-id ID | --pages SPEC | --unit-ids IDS | --text FILE`
+  lists the approved and reference entries a selection receives, with the packet's own scope
+  and folding rules (`--kind` narrows the reference groups, `--jsonl` emits one entry per
+  line); `glossary check PROJECT` loads every file and reports entries matching no prepared
+  unit. Both are read-only.
 - The unit's source representations (text, Markdown, table cells, figure labels) minus quoted
   titles are folded before matching, and so is `source`: precomposed, combining and TeX spacing
   accents (`Hölder` ≡ `H¨older`, `Lévy` ≡ `L´evy`), ligatures, curly quotes and apostrophes
@@ -622,18 +651,23 @@ Rules worth knowing when reading a report:
 - `forbidden` wording is checked in **every** translated unit and asset companion, whether or
   not that unit contains `source`. List only wording that is wrong in every context (a wrong
   transliteration), never a rendering that is merely wrong for this term (`mean` → 意味着).
-- Editing the glossary changes the QA context of every batch and the audit context of batches
-  whose relevant terms change (existing audits become `audit_stale`); finish the terminology
-  baseline before `source prepare`, or at the latest before the audit wave. Drafts belong in
-  `glossary/candidates.yaml`, which has no effect until an entry is moved into `approved.yaml`.
+- Editing a gated entry changes the QA context of every batch and the audit context of batches
+  whose relevant terms change (existing audits become `audit_stale`); finish the gate baseline
+  before `source prepare`, or at the latest before the audit wave. Drafts belong in
+  `glossary/candidates.yaml`, which has no effect until an entry is moved into `approved.yaml`
+  or `reference.yaml`.
 
 ## Audit coverage
 
-Audit coverage is bound to the brief, the style guide, the relevant approved terms and the
-dependency-closure units of each run. `audit_coverage` (and `workflow status`, `review status`)
-reports why a run no longer counts: `context-changed`, `dependency-changed`, `unit-changed`,
-`invalidated`, `closure-incomplete` or `context-units-removed`. Finish context edits before the
-audit wave.
+Audit coverage is bound to the brief, the style guide, the relevant approved and reference
+terms and the dependency-closure units of each run (`audit_context_text` is exactly those four
+parts; `project.yaml` is not among them). `audit_coverage` (and `workflow status`,
+`review status`) reports why a run no longer counts: `context-changed`, `dependency-changed`,
+`unit-changed`, `invalidated`, `closure-incomplete` or `context-units-removed`. A
+`context-changed` run recorded after this version also lists `context_changes` — which part
+(`document-brief`, `style-guide`, `approved-terms`, `reference-terms`) changed and its line
+count before and after — so the cost of growing a whole-file context is visible where it is
+paid. Finish context edits before the audit wave.
 
 `review import-set` rewrites reviewer issue ids to canonical `audit-<hash>` ids and keeps the
 reviewer id as `source_issue_id`; `review resolve` accepts either. Review issues against
@@ -690,6 +724,35 @@ delimiters and multiline backtick/tilde fences.
 Edition publication snapshots all shared MathJax files, including absent incoming paths, so a
 later failure restores prior bytes and removes newly created runtime files; individual runtime
 copies are atomic. Pydantic >=2.12 is required for conditional identity-field serialization.
+
+## Project record and scaffold
+
+`project init` creates the schema-6 directories and grows the record structure a project needs
+before its first page is prepared; `project scaffold PROJECT` adds whatever is missing to an
+existing project and `--refresh` regenerates the plugin-owned file after an upgrade. User-owned
+files are written once and never overwritten, so both calls are idempotent on a project in
+progress. `--repo-root DIR` places the repository-level files at an ancestor of the project root
+for nested layouts (`repo/workspace`); the default is the project root.
+
+| File | Owner | Purpose |
+| --- | --- | --- |
+| `context/document-brief.md`, `context/style-guide.md` | user | rules only; each opens with the boundary note (whole file hashed → records go to `glossary/reference.yaml`) |
+| `glossary/approved.yaml`, `candidates.yaml`, `reference.yaml` | user | the three terminology stores, each headed by its effect |
+| `.gitignore` (project root) | user | keeps the source PDF, `output/`, the layout cache, per-asset `original.pdf` and unreferenced source packets out; keeps `.littrans/work/` in and the lock out; an existing file only gains the `.littrans/*` / `!.littrans/work/` pair |
+| `.gitattributes`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `PLUGIN-ISSUES.md`, `docs/{HISTORY,DECISIONS,TERMINOLOGY,REVIEWS}.md` | user | LF policy, handbook, operating manual (`CLAUDE.md` imports `AGENTS.md`), defect ledger and the four records — headings plus one line each on what belongs there, nothing document-specific |
+| `tools/lt.py`, `tools/lt.cmd`, `tools/lt.sh` | user | launcher: `LITTRANS_PLUGIN_ROOT`, else the recorded plugin root, else its highest-versioned sibling (numeric, pre-release aware) |
+| `docs/LITTRANS.md` | **plugin** | what the installed build guarantees — version, build digest, term semantics, audit context parts, stale reasons, stages, wave limits, status order, QA version — rendered from the package constants; regenerated by `--refresh`, never hand-edited |
+
+`project tracked PROJECT` derives the record from the data — `project.yaml`, context and
+glossary files, `derived/units.jsonl`, `fidelity-assets.jsonl`, `provenance.json`, the page
+ledgers, every asset crop and its `evidence.json`, review templates, the source packets page
+receipts name (live dependencies), reviews, page evidence, audit ledgers, batch files,
+translations, QA reports and `.littrans/work/` payloads — and the excluded set (source PDFs,
+`output/*.html`, the layout cache, per-asset `original.pdf`, unreferenced packets,
+`.littrans/state.json`), then asks git (`ls-files`, `check-ignore`) whether exactly that is
+tracked. It reports a record file that is ignored or uncommitted, an excluded file that is
+tracked, and any file in neither state; the exit code is 1 on any problem. `project rebuild`
+copies `docs/` alongside `context/` and `glossary/` and refreshes `docs/LITTRANS.md`.
 
 ## Resume and recovery
 

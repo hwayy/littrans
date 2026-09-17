@@ -1,0 +1,21 @@
+# Terminology
+
+How this project designs its gates and its reference entries, and the measured reasons behind
+each promotion or rejection. The stores themselves are `{{ project_prefix }}glossary/approved.yaml`
+(hard gates), `{{ project_prefix }}glossary/reference.yaml` (binding, not gated; `kind` groups such
+as proper names and one-word-two-senses) and `{{ project_prefix }}glossary/candidates.yaml`
+(promotion decisions). The matching rules are in `docs/LITTRANS.md`.
+
+## Gate design rules
+
+What makes a `source` safe to gate here (discriminative, actually occurring in the source
+text, correct orthography, nesting checked in both languages).
+
+## Per-chapter promotion procedure
+
+How candidates are measured before promotion (`tools/lt.cmd glossary check {{ project_rel }}`,
+`glossary lookup --pages`), and when a chapter's terms are frozen.
+
+## Measured rejections
+
+Terms considered and not promoted, with the count or example that decided it.

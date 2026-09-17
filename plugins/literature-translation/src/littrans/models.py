@@ -907,9 +907,12 @@ class AuditRun(StrictModel):
     packet_id: str | None = None
     unit_fingerprints: dict[str, str]
     context_fingerprint: str | None = None
-    # Brief, style guide and relevant-term hash alone, so staleness can tell a
-    # context edit apart from a changed dependency unit.
+    # Brief, style guide and relevant approved/reference term hash alone, so staleness
+    # can tell a context edit apart from a changed dependency unit.
     shared_context_fingerprint: str | None = None
+    # The same context by part ({part: {sha256, lines}}), so a stale run can name which
+    # whole-file context grew and by how much.
+    shared_context_parts: dict[str, dict[str, Any]] | None = None
     context_unit_ids: list[str] = Field(default_factory=list)
     issue_ids: list[str] = Field(default_factory=list)
     reviewed_at: str = Field(default_factory=utc_now)
@@ -920,6 +923,21 @@ class AuditRun(StrictModel):
         if value not in {"fidelity", "technical", "chinese-style"}:
             raise ValueError("unsupported audit lens")
         return value
+
+
+# Stages `workflow packet --stage` accepts; source-review packets are review material
+# without a manifest of their own.
+WORKFLOW_PACKET_STAGES = ("source-review", "translate", "revise", "audit", "transcribe", "asset-audit")
+WORKFLOW_MANIFEST_STAGES = frozenset(WORKFLOW_PACKET_STAGES) - {"source-review"}
+# Why an audit run no longer counts, as `audit_coverage` reports it.
+AUDIT_STALE_REASONS = (
+    "context-changed",
+    "dependency-changed",
+    "unit-changed",
+    "invalidated",
+    "closure-incomplete",
+    "context-units-removed",
+)
 
 
 class WorkflowPacketManifest(StrictModel):
@@ -957,7 +975,7 @@ class WorkflowPacketManifest(StrictModel):
     @field_validator("stage")
     @classmethod
     def require_supported_packet_stage(cls, value: str) -> str:
-        if value not in {"translate", "revise", "audit", "transcribe", "asset-audit"}:
+        if value not in WORKFLOW_MANIFEST_STAGES:
             raise ValueError(
                 "workflow packet stage must be translate, revise, transcribe, asset-audit or audit"
             )

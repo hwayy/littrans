@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import Counter
 from functools import partial
 from importlib.resources import files
 from pathlib import Path
@@ -39,7 +40,7 @@ from littrans.models import (
     TranslationRecord,
     UnitKind,
 )
-from littrans.project import load_terms, translation_map
+from littrans.project import PROPOSED_STATUS, load_terms, translation_map
 from littrans.quality import STATUS_ORDER, audit_coverage, qa_report_is_current
 from littrans.representations import (
     ASSET_RE,
@@ -1698,7 +1699,16 @@ def _write_quality_summary(
 
 
 def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
-    candidate_terms = load_terms(root, "candidates.yaml", enforced_only=False)
+    # A candidate is unresolved only while nobody has decided on it: entries whose
+    # status records a decision (reference-only, rejected, promoted) are counted, not listed.
+    decided: Counter[str] = Counter()
+    candidate_terms = []
+    for term in load_terms(root, "candidates.yaml", enforced_only=False):
+        status = str(term.get("status") or PROPOSED_STATUS)
+        if status == PROPOSED_STATUS:
+            candidate_terms.append(term)
+        else:
+            decided[status] += 1
     translations = translation_map(root)
     issues: list[ReviewIssue] = []
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):
@@ -1714,6 +1724,9 @@ def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
     )
     if not candidate_terms:
         lines.append("None.")
+    if decided:
+        summary = ", ".join(f"{status}: {count}" for status, count in sorted(decided.items()))
+        lines.extend(["", f"{sum(decided.values())} decided candidate(s) omitted ({summary})."])
     lines.extend(["", "## Translator uncertainties", ""])
     uncertainty_lines = [
         f"- `{unit_id}`: {uncertainty}"

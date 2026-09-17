@@ -77,9 +77,10 @@ def test_wave_status_is_compact_and_packet_is_content_addressed(tmp_path: Path) 
     assert first.packet_id == second.packet_id
     assert first.storage_root == ".littrans/work"
     assert all(path.name.startswith("source-") for path in (root / "packets").iterdir())
-    assert (root / ".gitignore").read_text(encoding="utf-8").splitlines().count(
-        "/.littrans/"
-    ) == 1
+    ignore_lines = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    # The lock stays out; the packet payloads the audit ledger names stay in.
+    assert ignore_lines.count(".littrans/*") == 1
+    assert ignore_lines.count("!.littrans/work/") == 1
 
 
 def test_wave_status_rejects_stale_or_unbatched_layout_results(tmp_path: Path) -> None:

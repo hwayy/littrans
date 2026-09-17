@@ -28,6 +28,8 @@ from littrans.evidence import (
     dependency_closure,
     effective_figure_labels,
     equation_markdown,
+    reference_terms_yaml,
+    relevant_reference_terms,
     relevant_terms,
     translation_unit_fingerprint,
 )
@@ -51,7 +53,7 @@ from littrans.models import (
     UnitKind,
     utc_now,
 )
-from littrans.project import load_terms, translation_map
+from littrans.project import load_reference_terms, load_terms, translation_map
 from littrans.quality import (
     _apply_review_import_locked,
     _prepare_review_import_locked,
@@ -589,6 +591,12 @@ def _packet_text(
         allow_unicode=True,
         sort_keys=False,
     )
+    if not _legacy_v3:
+        reference = reference_terms_yaml(
+            relevant_reference_terms(root, selected_units) if compact else load_reference_terms(root)
+        )
+        if reference:
+            terms += f"```\n\n# Reference terminology (not gated)\n\n```yaml\n{reference}"
     text = (
         f"# External review packet: {batch_id}\n\n"
         "This packet is deliberately isolated. It contains no prior review findings.\n\n"

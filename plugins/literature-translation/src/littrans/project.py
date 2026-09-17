@@ -35,7 +35,6 @@ from littrans.storage import (
     save_project,
     sha256_file,
     write_json,
-    write_yaml,
 )
 
 
@@ -65,21 +64,25 @@ def initialize_project(
     title: str | None = None,
     source_language: str = "en",
     target_language: str = "zh-CN",
+    repo_root: Path | None = None,
+    scaffold: bool = True,
 ) -> ProjectConfig:
+    """Create a schema-6 project and grow its record structure.
+
+    Besides the directories and ``project.yaml``, the project receives the context and
+    glossary skeletons, a ``.gitignore`` that keeps the source out and the record in, and
+    the handbook, records, ledger, launcher and plugin-facts files under ``repo_root``
+    (the project root unless the project is nested in a larger repository).
+    """
+    from littrans.scaffold import scaffold_project
+
     source = source.resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
     if root.joinpath("project.yaml").exists():
-        raise FileExistsError(f"Project already exists: {root}")
+        raise ValueError(f"Project already exists: {root}")
     load_profile(profile)
     initialize_project_dirs(root)
-    ignore_path = root / ".gitignore"
-    existing_ignore = (
-        ignore_path.read_text(encoding="utf-8") if ignore_path.is_file() else ""
-    )
-    if not any(line.strip() == "/.littrans/" for line in existing_ignore.splitlines()):
-        separator = "" if not existing_ignore or existing_ignore.endswith("\n") else "\n"
-        atomic_write_text(ignore_path, existing_ignore + separator + "/.littrans/\n")
     document = fitz.open(source)
     config = ProjectConfig(
         project_id=slugify(title or source.stem),
@@ -92,21 +95,8 @@ def initialize_project(
         target_language=target_language,
     )
     save_project(root, config)
-    write_yaml(root / "glossary" / "approved.yaml", {"terms": []})
-    write_yaml(root / "glossary" / "candidates.yaml", {"terms": []})
-    atomic_write_text(
-        root / "context" / "document-brief.md",
-        "# Document brief\n\nComplete this brief before translating: subject, argument, audience, "
-        "terminology, and source style.\n",
-    )
-    atomic_write_text(
-        root / "context" / "style-guide.md",
-        "# Translation style\n\n- Translate faithfully into clear Simplified Chinese.\n"
-        "- Preserve every {{asset:ID}} reference in its corresponding source block.\n"
-        "- Read original formula and table images in context; do not assume candidates verified.\n"
-        "- Preserve code indentation, citations, numbers, and protected identifiers.\n"
-        "- Keep reader notes separate from translated text.\n",
-    )
+    if scaffold:
+        scaffold_project(root, repo_root=repo_root, refresh=True)
     write_json(
         root / "derived" / "provenance.json",
         {
@@ -122,6 +112,8 @@ def initialize_project(
 
 def rebuild_project(old: Path, new: Path) -> ProjectConfig:
     """Create a v6 workspace from source/context only, without inheriting approvals."""
+    from littrans.scaffold import scaffold_project
+
     old, new = old.resolve(), new.resolve()
     if new == old or new.exists():
         raise ValueError("Rebuild requires a new, non-existing directory distinct from OLD")
@@ -147,9 +139,13 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         )
         config.source_path = copied_source.relative_to(staging).as_posix()
         config.rights_status = payload.get("rights_status", config.rights_status)
-        for directory in ("context", "glossary"):
+        copied = ["source"]
+        # The decision trace travels with the context it explains; approvals do not.
+        for directory in ("context", "glossary", "docs"):
             if (old / directory).is_dir():
                 shutil.copytree(old / directory, staging / directory, dirs_exist_ok=True)
+                copied.append(directory)
+        scaffold_project(staging, refresh=True)
         if payload.get("external_review") is not None:
             from littrans.models import ExternalReviewConfig
             config.external_review = ExternalReviewConfig.model_validate(payload["external_review"])
@@ -161,7 +157,7 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         })
         write_json(staging / "derived" / "rebuild-provenance.json", {
             "historical_project": str(old), "source_sha256": config.source_sha256,
-            "copied": ["source", "context", "glossary"], "inherited_approvals": False,
+            "copied": copied, "inherited_approvals": False,
             "context_policy": "Historical style text is context; the v6 asset-reference contract takes precedence.",
         })
         if new.exists():
@@ -179,16 +175,35 @@ def translation_map(root: Path) -> dict[str, TranslationRecord]:
 
 
 TERM_MATCH_MODES = ("substring", "word", "regex")
+APPROVED_STATUS = "approved"
+REFERENCE_STATUS = "reference-only"
+PROPOSED_STATUS = "proposed"
+REFERENCE_FILE = "reference.yaml"
+DEFAULT_REFERENCE_KIND = "reference"
 
 
-def load_terms(root: Path, filename: str = "approved.yaml", *, enforced_only: bool = True) -> list[dict[str, Any]]:
-    """Load glossary entries; by default only those whose ``status`` is enforced.
+def _validate_term(path: Path, term: dict[str, Any]) -> None:
+    """Refuse an entry whose source forms could never be matched as written."""
+    source = str(term.get("source", ""))
+    mode = str(term.get("match", "substring"))
+    if mode not in TERM_MATCH_MODES:
+        raise ValueError(f"{path}: term {source!r} has unknown match mode {mode!r}; use one of {TERM_MATCH_MODES}")
+    aliases = term.get("aliases", [])
+    if aliases is None:
+        aliases = []
+    if not isinstance(aliases, list) or not all(isinstance(alias, str) for alias in aliases):
+        raise ValueError(f"{path}: term {source!r} must list its aliases as strings")
+    if mode == "regex":
+        from littrans.evidence import fold_regex_pattern
 
-    An entry without ``status`` counts as ``approved``. Any other status (``proposed``,
-    ``reference-only``, ...) is inert even inside ``approved.yaml`` unless the caller asks
-    for every entry, e.g. to list candidates.
-    """
-    path = root / "glossary" / filename
+        for pattern in (source, *aliases):
+            try:
+                re.compile(fold_regex_pattern(pattern), re.I)
+            except re.error as exc:
+                raise ValueError(f"{path}: term {pattern!r} is not a valid regular expression: {exc}") from exc
+
+
+def _read_term_file(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -198,21 +213,58 @@ def load_terms(root: Path, filename: str = "approved.yaml", *, enforced_only: bo
     for term in data.get("terms", []):
         if not isinstance(term, dict):
             continue
-        source = str(term.get("source", ""))
-        mode = str(term.get("match", "substring"))
-        if mode not in TERM_MATCH_MODES:
-            raise ValueError(f"{path}: term {source!r} has unknown match mode {mode!r}; use one of {TERM_MATCH_MODES}")
-        if mode == "regex":
-            from littrans.evidence import fold_regex_pattern
+        _validate_term(path, term)
+        terms.append(term)
+    return terms
 
-            try:
-                re.compile(fold_regex_pattern(source), re.I)
-            except re.error as exc:
-                raise ValueError(f"{path}: term {source!r} is not a valid regular expression: {exc}") from exc
-        if enforced_only and str(term.get("status", "approved")) != "approved":
+
+def load_terms(root: Path, filename: str = "approved.yaml", *, enforced_only: bool = True) -> list[dict[str, Any]]:
+    """Load glossary entries; by default only those whose ``status`` is enforced.
+
+    An entry without ``status`` counts as ``approved``. ``status: reference-only`` entries
+    are never enforced: they travel to packets through ``load_reference_terms``. Any other
+    status (``proposed``, ...) is inert unless the caller asks for every entry, e.g. to
+    list candidates.
+    """
+    path = root / "glossary" / filename
+    terms = []
+    for term in _read_term_file(path):
+        if enforced_only and str(term.get("status", APPROVED_STATUS)) != APPROVED_STATUS:
             continue
         terms.append(term)
     return terms
+
+
+def load_reference_terms(root: Path) -> list[dict[str, Any]]:
+    """Load the binding-but-not-gated entries shown to translators and auditors.
+
+    They come from ``approved.yaml`` entries with ``status: reference-only`` and from every
+    entry of ``glossary/reference.yaml``, whose ``status`` defaults to ``reference-only``;
+    ``proposed`` entries stay inert in both files and ``approved`` is refused in
+    ``reference.yaml`` because that file never gates. Each entry carries a ``kind``
+    (``reference`` when absent) so proper names, one-word-two-senses registers and other
+    project-defined categories stay distinguishable in packets. Every other key is passed
+    through verbatim.
+    """
+    reference: list[dict[str, Any]] = []
+    for term in _read_term_file(root / "glossary" / "approved.yaml"):
+        if str(term.get("status", APPROVED_STATUS)) == REFERENCE_STATUS:
+            reference.append(term)
+    path = root / "glossary" / REFERENCE_FILE
+    for term in _read_term_file(path):
+        status = str(term.get("status", REFERENCE_STATUS))
+        if status == PROPOSED_STATUS:
+            continue
+        if status != REFERENCE_STATUS:
+            raise ValueError(
+                f"{path}: term {term.get('source', '')!r} has status {status!r}; reference.yaml never gates, "
+                f"move a gated entry to approved.yaml"
+            )
+        reference.append(term)
+    return [
+        {"kind": str(term.get("kind") or DEFAULT_REFERENCE_KIND), **{k: v for k, v in term.items() if k != "kind"}}
+        for term in reference
+    ]
 
 
 def project_status(root: Path) -> dict[str, Any]:

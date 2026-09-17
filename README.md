@@ -23,7 +23,10 @@ Role models are configured per host in each project's `agent_models`, seeded fro
 `profiles/host-models.yaml` (recommended: Codex `gpt-5.6-luna` at `max` effort, Claude Code `sonnet`
 at `high` effort; Cursor and Qoder use their explicit host role configuration). Source preparation requires the
 isolated layout detector installed by `littrans layout install`. Existing projects rebuild into a new schema-6 directory
-with source/context/glossary only. See the [plugin workflow](plugins/literature-translation/README.md)
+with source/context/glossary/docs only. `project init` also grows the project's record structure (handbook,
+records, defect ledger, launcher, `.gitignore`, and a plugin-owned `docs/LITTRANS.md` stating what the installed
+build guarantees); `project scaffold --refresh` regenerates it after an upgrade and `project tracked` asks git
+whether exactly the record is tracked. See the [plugin workflow](plugins/literature-translation/README.md)
 and [rebuild guide](plugins/literature-translation/MIGRATING.md).
 
 The 0.6 development branch does not change the installed stable plugin. Stable installations move

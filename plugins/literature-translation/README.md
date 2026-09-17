@@ -10,7 +10,7 @@ Formula recognition is deferred until faithful text and original-image assets ar
 
 Requires Python 3.12 or later. Run `python <plugin-root>/scripts/littrans.py doctor`; the launcher manages a private environment outside the plugin and project. Source preparation also requires the isolated layout detector; `doctor` reports it under `layout_runtime`, and `layout install` sets it up. See [runtime.md](references/runtime.md) and [host-runtimes.md](references/host-runtimes.md).
 
-Initialize a new private project with `project init`, or rebuild an older project with `project rebuild OLD NEW`. Schema 6 does not write into older project schemas. Rebuild copies the PDF, project context and glossary, leaving historical outputs and reviews in the old project. See [MIGRATING.md](MIGRATING.md).
+Initialize a new private project with `project init` (`--repo-root DIR` for a project nested in a larger repository), or rebuild an older project with `project rebuild OLD NEW`. Both grow the record structure a project needs before its first page — handbook, records, defect ledger, launcher (`tools/lt.cmd` / `lt.sh`), `.gitignore`, `.gitattributes` and the plugin-owned `docs/LITTRANS.md` that states what the installed build guarantees. `project scaffold PROJECT` adds what an existing project lacks and `--refresh` regenerates `docs/LITTRANS.md` after an upgrade; `project tracked PROJECT` asks git whether exactly the record is tracked. Schema 6 does not write into older project schemas. Rebuild copies the PDF, project context, glossary and `docs/`, leaving historical outputs and reviews in the old project. See [MIGRATING.md](MIGRATING.md).
 
 ## The workflow
 
@@ -25,6 +25,9 @@ Use `continue-literature-translation` to coordinate this workflow. Codex, Claude
 ## Commands and evidence
 
 ```text
+littrans project init SOURCE.pdf PROJECT [--repo-root DIR]
+littrans project scaffold PROJECT [--repo-root DIR] [--refresh]
+littrans project tracked PROJECT
 littrans project rebuild OLD NEW
 littrans source probe PROJECT --pages 1-3
 littrans source prepare PROJECT --pages 1-3
@@ -44,12 +47,14 @@ littrans assets status PROJECT
 littrans workflow packet PROJECT --stage audit --lens all --batch-ids ID1
 littrans review import-set PROJECT PACKET/manifest.json ISSUES.jsonl
 littrans review issues PROJECT ID1 [--all] [--jsonl]
+littrans glossary lookup PROJECT (--batch-id ID1 | --pages 1-3 | --unit-ids U1,U2 | --text FILE) [--kind KIND] [--jsonl]
+littrans glossary check PROJECT
 littrans workflow packet PROJECT --stage revise --batch-ids ID1
 littrans review resolve PROJECT ID1 ISSUE_ID[,ISSUE_ID...] --resolution "..."
 littrans render PROJECT --batch-id ID1
 ```
 
-`batch create` cuts verified pages into batches at logical boundaries (about 900 source words, a soft limit of 60 assets, complete `parent_id` groups); `workflow next` requires at least one batch. `review import-set` canonicalizes reviewer issue ids to `audit-<hash>` and keeps the reviewer id as `source_issue_id`; `review resolve` accepts either. `workflow status` reports `audit_stale` reasons when brief/style-guide/glossary edits or changed units reset audit coverage. A `revise` packet carries the current translation and open issues for one fresh revision. Batch sets may mix series when their units do not overlap. A project with no transcription candidate renders originals-only automatically.
+`batch create` cuts verified pages into batches at logical boundaries (about 900 source words, a soft limit of 60 assets, complete `parent_id` groups); `workflow next` requires at least one batch. `review import-set` canonicalizes reviewer issue ids to `audit-<hash>` and keeps the reviewer id as `source_issue_id`; `review resolve` accepts either. `workflow status` reports `audit_stale` reasons when brief/style-guide/glossary edits or changed units reset audit coverage, naming the context part that changed and its growth. Terminology has three stores: `glossary/approved.yaml` gates per unit, `glossary/reference.yaml` (proper names, senses and other `kind`s) is binding but never gated and reaches packets filtered per unit like gates, `glossary/candidates.yaml` records promotion decisions; `glossary lookup` shows what a batch, page range or text receives. A `revise` packet carries the current translation and open issues for one fresh revision. Batch sets may mix series when their units do not overlap. A project with no transcription candidate renders originals-only automatically.
 
 Use command help and the emitted packet schemas for exact import fields. [fidelity-workflow.md](references/fidelity-workflow.md) describes bindings and recovery. Save successful responses before import; identical imports are idempotent. Report source fidelity, translation approval, reliable structured coverage and fallback proportion separately. Unknown tokens or fees stay unknown.
 

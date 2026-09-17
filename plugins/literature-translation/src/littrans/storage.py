@@ -21,7 +21,7 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 PROJECT_DIRS = (
     "source",
     "derived/assets",
-    "context/chapters",
+    "context",
     "glossary",
     "batches",
     "translations",
@@ -69,6 +69,15 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def write_text_if_missing(path: Path, text: str) -> bool:
+    """Create a user-owned file once; an existing file is never touched. Returns whether it was written."""
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, text)
+    return True
 
 
 def snapshot_files(paths: Iterable[Path]) -> dict[Path, bytes | None]:

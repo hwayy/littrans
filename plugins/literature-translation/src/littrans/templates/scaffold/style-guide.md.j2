@@ -1,0 +1,16 @@
+{% raw %}# Translation style
+
+> **Rules only.** This file is injected verbatim into every translate and audit packet and
+> hashed **whole** into the audit context: one changed line marks every finished audit
+> `context-changed`. Lists that grow with the chapters (proper names to keep in source form,
+> one-word-two-senses registers, chapter-specific usage) belong in `glossary/reference.yaml`,
+> where each entry reaches only the packets whose units mention it. Hard, per-unit gates
+> belong in `glossary/approved.yaml`. Before editing, ask: did a rule change, or was a record
+> added?
+
+- Translate faithfully into clear Simplified Chinese.
+- Preserve every {{asset:ID}} reference in its corresponding source block.
+- Read original formula and table images in context; do not assume candidates verified.
+- Preserve code indentation, citations, numbers, and protected identifiers.
+- Keep reader notes separate from translated text.
+{% endraw %}

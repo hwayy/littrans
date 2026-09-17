@@ -74,6 +74,7 @@ review_app = typer.Typer(no_args_is_help=True)
 workflow_app = typer.Typer(no_args_is_help=True)
 assets_app = typer.Typer(no_args_is_help=True)
 layout_app = typer.Typer(no_args_is_help=True)
+glossary_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(source_app, name="source")
 app.add_typer(batch_app, name="batch")
@@ -83,6 +84,7 @@ app.add_typer(review_app, name="review")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(assets_app, name="assets")
 app.add_typer(layout_app, name="layout")
+app.add_typer(glossary_app, name="glossary")
 
 
 def _configure_console_stream(stream: Any) -> None:
@@ -168,8 +170,41 @@ def project_init(
     title: str | None = typer.Option(None),
     source_language: str = typer.Option("en"),
     target_language: str = typer.Option("zh-CN"),
+    repo_root: Path | None = typer.Option(
+        None, resolve_path=True,
+        help="Where the handbook, records, ledger and launcher go when the project is nested in a larger repository (default: PROJECT).",
+    ),
 ) -> None:
-    emit(initialize_project(source, project, profile, title, source_language, target_language))
+    """Create a private schema-6 project with its record structure scaffolded."""
+    from littrans.scaffold import scaffold_project
+
+    config = initialize_project(
+        source, project, profile, title, source_language, target_language, repo_root=repo_root, scaffold=False
+    )
+    emit({**config.model_dump(mode="json"), "scaffold": scaffold_project(project, repo_root=repo_root, refresh=True)})
+
+
+@project_app.command("scaffold")
+def project_scaffold(
+    project: PathArg,
+    repo_root: Path | None = typer.Option(None, resolve_path=True, help="Record root for a nested layout (default: PROJECT)."),
+    refresh: bool = typer.Option(False, help="Regenerate the plugin-owned docs/LITTRANS.md from the installed build."),
+) -> None:
+    """Create the missing record files of an existing project; never overwrites user-owned files."""
+    from littrans.scaffold import scaffold_project
+
+    emit(scaffold_project(project, repo_root=repo_root, refresh=refresh))
+
+
+@project_app.command("tracked")
+def project_tracked(project: PathArg) -> None:
+    """Ask git whether exactly the project record is tracked; exit 1 on any gap. Read-only."""
+    from littrans.record import record_tracking
+
+    result = record_tracking(project)
+    emit(result)
+    if result["problems"]:
+        raise typer.Exit(code=1)
 
 
 @source_app.command("inspect")
@@ -396,6 +431,45 @@ def review_list_issues(
 @review_app.command("status")
 def review_get_status(project: PathArg, batch_id: str) -> None:
     emit(review_status(project, batch_id))
+
+
+@glossary_app.command("lookup")
+def glossary_lookup_command(
+    project: PathArg,
+    batch_id: str | None = typer.Option(None, help="The batch whose units to match."),
+    pages: str | None = typer.Option(None, help="PDF page spec, e.g. 26-51 or 3,5-7."),
+    unit_ids: str | None = typer.Option(None, help="Comma-separated source unit IDs."),
+    text: Path | None = typer.Option(None, help="Any UTF-8 file to match without page scope."),
+    kind: str | None = typer.Option(None, help="Only reference entries of this kind."),
+    jsonl: bool = typer.Option(False, help="One entry per line with its channel."),
+) -> None:
+    """List the approved (gated) and reference (not gated) entries a selection needs; read-only."""
+    from littrans.glossary import glossary_lookup
+
+    result = glossary_lookup(
+        project,
+        batch_id=batch_id,
+        pages=pages,
+        unit_ids=[value.strip() for value in unit_ids.split(",") if value.strip()] if unit_ids else None,
+        text=text,
+        kind=kind,
+    )
+    if jsonl:
+        for term in result["approved"]:
+            typer.echo(json.dumps({"channel": "approved", **term}, ensure_ascii=False))
+        for group, terms in result["reference"].items():
+            for term in terms:
+                typer.echo(json.dumps({"channel": "reference", "kind": group, **term}, ensure_ascii=False))
+        return
+    emit(result)
+
+
+@glossary_app.command("check")
+def glossary_check_command(project: PathArg) -> None:
+    """Load every glossary file and report entries matching no prepared unit; read-only."""
+    from littrans.glossary import glossary_check
+
+    emit(glossary_check(project))
 
 
 @review_app.command("external")

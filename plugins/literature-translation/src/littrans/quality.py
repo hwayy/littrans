@@ -11,7 +11,9 @@ from typing import Any
 
 from littrans.batching import load_manifest
 from littrans.evidence import (
+    AUDIT_CONTEXT_PARTS,
     audit_context_fingerprint,
+    audit_context_parts,
     batch_unit_fingerprints,
     dependency_closure,
     effective_figure_labels,
@@ -129,9 +131,13 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
     )
 
 
+# Bump when a deterministic QA rule changes, or cached qa/<batch>.json reports stay current.
+DETERMINISTIC_QA_VERSION = "deterministic-qa-v6.16-folded-regex"
+
+
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.16-folded-regex|"
+        DETERMINISTIC_QA_VERSION + "|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -862,19 +868,38 @@ def audit_coverage(
     stale: dict[str, list[dict[str, Any]]] = {lens: [] for lens in REQUIRED_AUDIT_LENSES}
 
     def _mark_stale(
-        run: AuditRun, reason: str | None, unit_reasons: dict[str, str] | None = None
+        run: AuditRun,
+        reason: str | None,
+        unit_reasons: dict[str, str] | None = None,
+        context_changes: list[dict[str, Any]] | None = None,
     ) -> None:
         reasons = sorted(set((unit_reasons or {}).values())) if reason is None else [reason]
-        stale[run.lens].append(
-            {
-                "run_id": run.run_id,
-                "packet_id": run.packet_id,
-                "reviewed_at": run.reviewed_at,
-                "reasons": reasons,
-                "unit_ids": sorted(run.unit_fingerprints),
-                "unit_reasons": dict(sorted((unit_reasons or {}).items())),
-            }
-        )
+        entry: dict[str, Any] = {
+            "run_id": run.run_id,
+            "packet_id": run.packet_id,
+            "reviewed_at": run.reviewed_at,
+            "reasons": reasons,
+            "unit_ids": sorted(run.unit_fingerprints),
+            "unit_reasons": dict(sorted((unit_reasons or {}).items())),
+        }
+        if context_changes is not None:
+            # Which whole-file context grew (or which term list moved) since the run,
+            # so a coordinator sees the cost of a context edit without diffing files.
+            entry["context_changes"] = context_changes
+        stale[run.lens].append(entry)
+
+    def _context_changes(run: AuditRun, context_ids: tuple[str, ...]) -> list[dict[str, Any]] | None:
+        if not run.shared_context_parts:
+            return None
+        current_parts = audit_context_parts(root, [all_units[unit_id] for unit_id in context_ids])
+        changes = []
+        for part in AUDIT_CONTEXT_PARTS:
+            before = run.shared_context_parts.get(part)
+            after = current_parts.get(part)
+            if before is None or after is None or before.get("sha256") == after.get("sha256"):
+                continue
+            changes.append({"part": part, "lines_before": before.get("lines", 0), "lines_after": after.get("lines", 0)})
+        return changes
 
     for run in runs if runs is not None else _audit_runs(root, batch_id):
         if run.lens not in coverage:
@@ -932,7 +957,7 @@ def audit_coverage(
             if run.shared_context_fingerprint is None:
                 _mark_stale(run, "context-changed")
             elif run.shared_context_fingerprint != shared_fingerprint:
-                _mark_stale(run, "context-changed")
+                _mark_stale(run, "context-changed", context_changes=_context_changes(run, context_ids))
             else:
                 _mark_stale(run, "dependency-changed")
             continue
@@ -1013,6 +1038,7 @@ class _ReviewImportPlan:
     fingerprints: dict[str, str]
     context_fingerprint: str | None
     shared_context_fingerprint: str | None
+    shared_context_parts: dict[str, dict[str, Any]] | None
     context_unit_ids: list[str]
     preserve_status: bool
     reviewer: str | None
@@ -1077,6 +1103,7 @@ def _prepare_review_import_locked(
     run_context_ids: list[str] = []
     run_context_fingerprint: str | None = None
     run_shared_fingerprint: str | None = None
+    run_shared_parts: dict[str, dict[str, Any]] | None = None
     if internal_lenses:
         run_context_ids = list(
             manifest.unit_ids if context_unit_ids is None else context_unit_ids
@@ -1101,6 +1128,9 @@ def _prepare_review_import_locked(
             for unit_id in run_context_ids
         }
         run_shared_fingerprint = audit_context_fingerprint(
+            root, [all_units[unit_id] for unit_id in run_context_ids]
+        )
+        run_shared_parts = audit_context_parts(
             root, [all_units[unit_id] for unit_id in run_context_ids]
         )
         run_context_fingerprint = audit_evidence_context_fingerprint(
@@ -1144,6 +1174,7 @@ def _prepare_review_import_locked(
         fingerprints=fingerprints,
         context_fingerprint=run_context_fingerprint,
         shared_context_fingerprint=run_shared_fingerprint,
+        shared_context_parts=run_shared_parts,
         context_unit_ids=run_context_ids,
         preserve_status=preserve_status,
         reviewer=reviewer,
@@ -1182,6 +1213,7 @@ def _apply_review_import_locked(root: Path, plan: _ReviewImportPlan) -> list[Rev
             },
             context_fingerprint=plan.context_fingerprint,
             shared_context_fingerprint=plan.shared_context_fingerprint,
+            shared_context_parts=plan.shared_context_parts,
             context_unit_ids=plan.context_unit_ids,
             issue_ids=[issue.issue_id for issue in plan.issues],
         )

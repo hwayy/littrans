@@ -1,0 +1,39 @@
+# LitTrans plugin issues
+
+Defects and design traps of the `literature-translation` plugin found while translating this
+document, for later plugin iteration.
+
+> **Maintenance.** This file is a cumulative ledger. Append every behaviour that is wrong,
+> contradicts the documentation or is easy to misuse to the "Ledger" section; do not open a
+> second file. Each entry gives reproducible evidence — the symbol name (line numbers move
+> between builds), the reproduction command and the observed result — not only a conclusion.
+
+## Environment
+
+| Item | Value |
+| --- | --- |
+| Plugin (current) | `literature-translation` `{{ version }}`, build digest `{{ build_digest }}` |
+| Verified with | `tools/lt.cmd doctor` |
+
+Severity: `high` = silently wrong result; `medium` = false positive or false negative, visible;
+`low` = design trap, easy to misuse; `suggestion` = enhancement, not a defect.
+
+## Status index
+
+| ID | Severity | Issue | Status | Plugin side |
+| --- | --- | --- | --- | --- |
+
+Status: `fixed` = plugin code changed; `by-design` = judged intended, documentation added;
+`worked-around` = project-side workaround (see the entry); `partial` = instance fixed, cause open.
+
+## Ledger
+
+### LT-001  <one-line title>  `severity`
+
+**Observed.** What happened, on which pages or batches.
+
+**Evidence.** `module.symbol`, the command run, the actual output.
+
+**Expected.** What the documentation or the workflow promises.
+
+**Workaround.** What this project did meanwhile, and what it costs.
