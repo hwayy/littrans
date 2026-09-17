@@ -41,6 +41,10 @@ LIST_LABEL = re.compile(r"\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)]
 LIST_LABEL_START = re.compile(
     r"[*\s]*(?:\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)](?=\**\s))", re.I
 )
+# A line closing a sentence: terminal punctuation, then any closing quotes or brackets.
+TERMINAL_PUNCTUATION = re.compile(r"[.!?:;。！？：；][”’\"')\]）】〕]*$")
+# Unit kinds that never join prose, nor prose them.
+NOTE_KINDS = {"footnote", "bibliography"}
 
 
 def language_words(text: str) -> list[str]:
@@ -153,6 +157,65 @@ RUN_IN_LABEL = re.compile(r"\*{2,3}[^*]*[A-Za-z]{3,}[^*]*\*{2,3}")
 
 def _starts_statement(text: str) -> bool:
     return bool(STATEMENT_START.match(text) or STATEMENT_RUN_IN.match(text) or STATEMENT_CAPS.match(text))
+
+
+def _mark_paragraph_breaks(
+    split: list[dict[str, Any]], gm: dict[str, dict[str, Any]], omitted: dict[str, str],
+    markers: dict[str, dict[str, Any]], display_blocks: set[str], margin: float, font_size: float,
+    gap_threshold: float,
+) -> None:
+    """Flag each chunk that opens after paragraph white space.
+
+    A document that spaces its paragraphs instead of indenting them shows a paragraph only
+    as vertical white space, inside a PDF block or between two blocks. White space alone is
+    not a break: a line a tall inline formula pushed down keeps its paragraph together. The
+    line above must also close — end in terminal punctuation or stop short of the running
+    text's right edge — and be prose: a formula row (``∫ X dP``, a limit, a label) says
+    nothing about where a paragraph ends, so a flush "provided ..." clause after a display
+    stays in its paragraph. The flag lives on the chunk, which the ledger never records, so
+    a page without a break keeps a ledger identical to one prepared before breaks were
+    recognised.
+    """
+    def inked(line: list[str]) -> list[dict[str, Any]]:
+        return [gm[gid] for gid in line if gid not in markers and inked_glyph(gm[gid])]
+
+    def prose(glyphs: list[dict[str, Any]]) -> bool:
+        # Mostly letters of language words in a text face; ``dP`` in a math face, an
+        # operator name or a lone variable is notation.
+        text = "".join(
+            str(g["text"]) if str(g["text"]).isalpha() and not MATH_FONT.search(str(g.get("font", ""))) else " "
+            for g in glyphs
+        )
+        return sum(len(word) for word in language_words(text)) >= 0.5 * len(glyphs)
+
+    body = [chunk for chunk in split if chunk["id"] not in omitted]
+    ends = [
+        (gm[line[0]]["origin"][0], max(g["bbox"][2] for g in glyphs))
+        for chunk in body
+        for line in chunk["lines"]
+        if (glyphs := inked(line))
+    ]
+    flush = [right for x, right in ends if abs(x - margin) <= font_size * 0.15]
+    text_right = max(flush or [right for _, right in ends], default=margin)
+    previous: dict[str, Any] | None = None
+    for chunk in body:
+        # Only text opens a paragraph: a tombstone, a label or a formula fragment set beside
+        # a display stands between the prose and the display it belongs to.
+        opens = bool(language_words("".join(str(g["text"]) for g in inked(chunk["lines"][0]))))
+        if opens and previous is not None and previous["id"] not in display_blocks:
+            last = inked(previous["lines"][-1])
+            tail = "".join(str(g["text"]) for g in last)
+            # A text line starts where text starts: at the margin, a label column or a
+            # paragraph indent. A row set further right is a display, whatever it says.
+            text_start = gm[previous["lines"][-1][0]]["origin"][0] < margin + font_size * 2.8
+            closed = bool(last) and text_start and prose(last) and (
+                TERMINAL_PUNCTUATION.search(tail.rstrip()) is not None
+                or max(g["bbox"][2] for g in last) < text_right - font_size * 1.5
+            )
+            gap = gm[chunk["lines"][0][0]]["origin"][1] - gm[previous["lines"][-1][0]]["origin"][1]
+            if closed and gap > gap_threshold:
+                chunk["paragraph_break"] = True
+        previous = chunk
 
 
 def plan_structure(
@@ -395,6 +458,7 @@ def plan_structure(
                 if gm[line[0]]["origin"][0] < margin + font_size * 2.8
             ]
             first_x[bid] = near[0] if near else gg[0]["origin"][0]
+    _mark_paragraph_breaks(split, gm, omitted, markers, display_blocks, margin, font_size, gap_threshold)
     return {
         "blocks": split,
         "margin": margin,
@@ -424,7 +488,9 @@ def assemble_structure(
     """Use parent_id for a paragraph containing independently numbered displays.
 
     ``rejoin`` resolves a word hyphenated across the seam of two merged fragments
-    (``"condi-\\ntioning"``); without it the halves are always joined.
+    (``"condi-\\ntioning"``); without it the halves are always joined. A chunk the plan
+    flags as opening after paragraph white space (``paragraph_break``) is treated like
+    an indented paragraph: it starts a group and is never merged into the unit before it.
     """
     from littrans.fidelity_models import asset_reference_ids
     from littrans.models import RenderPolicy
@@ -435,6 +501,7 @@ def assemble_structure(
     statement = None
     display_blocks = set(plan.get("display_blocks", ()))
     list_items: dict[str, dict[str, Any]] = plan.get("list_items", {})
+    breaks = {chunk["id"] for chunk in plan.get("blocks", ()) if chunk.get("paragraph_break")}
 
     def rebuild(u: SourceUnit, text: str | None = None, **changes: Any) -> SourceUnit:
         extra = {
@@ -465,6 +532,7 @@ def assemble_structure(
     for u in units:
         bid = u.unit_id.split("-", 1)[1]
         refs = asset_reference_ids(u.source_text)
+        display = any(assets[aid].display for aid in refs) or bid in display_blocks
         if bid in plan["omitted"] or (
             u.bbox[1] < plan["note_top"]
             and u.bbox[3] >= plan["note_top"] - 20
@@ -503,16 +571,28 @@ def assemble_structure(
             proof = bool(re.match(r"[*\s]*Proof\b", u.source_text))
             # A bold run-in label ("2.1.4. Stochastic processes.") opens a paragraph.
             run_in = bool(RUN_IN_LABEL.match(u.source_text))
-            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption"} or starts_statement or proof or run_in or numbered
+            # Paragraph white space above a closed line is the indent of a document that
+            # spaces its paragraphs; a displayed element after it stays a child of its paragraph.
+            paragraph_break = bid in breaks and not display
+            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption", *NOTE_KINDS} or starts_statement or proof or run_in or numbered
+            previous_body = next((r for r in reversed(result) if r.render_policy != RenderPolicy.OMIT), None)
+            # Prose resuming after a statement's enumerated clauses is the statement's
+            # conclusion, even across the white space that closes the list.
+            concludes = (
+                paragraph_break
+                and statement is not None
+                and previous_body is not None
+                and previous_body.parent_id == statement
+                and LIST_LABEL_START.match(previous_body.source_text) is not None
+            )
             if starts_statement:
                 statement = u.unit_id
             elif (
                 u.kind.value == "heading"
                 or proof
-                or (indented and label is None and u.kind.value != "equation")
+                or ((indented or (paragraph_break and not concludes)) and label is None and u.kind.value != "equation")
             ):
                 statement = None
-            previous_body = next((r for r in reversed(result) if r.render_policy != RenderPolicy.OMIT), None)
             # Headings, list items and figure/table elements close their group;
             # the prose that follows starts a new logical paragraph.
             after_heading = previous_body is not None and (
@@ -538,14 +618,13 @@ def assemble_structure(
                 # List items belong to the paragraph that introduces them and to
                 # each other; the list is one structure, not scattered elements.
                 group = previous_body.parent_id or previous_body.unit_id
-            elif statement and (starts_statement or label is not None or u.kind.value == "equation"):
+            elif statement and (starts_statement or label is not None or u.kind.value == "equation" or concludes):
                 group = statement
-            elif group is None or after_heading or (u.kind.value != "equation" and (indented or boundary)):
+            elif group is None or after_heading or (u.kind.value != "equation" and (indented or paragraph_break or boundary)):
                 group = u.unit_id
             u = rebuild(u, parent_id=group)
         # Merge prose fragments within one paragraph, retaining display children.
         previous = result[-1] if result else None
-        display = any(assets[aid].display for aid in refs) or bid in display_blocks
         previous_display = previous and (
             any(assets[aid].display for aid in asset_reference_ids(previous.source_text))
             or previous.unit_id.split("-", 1)[1] in display_blocks
@@ -580,10 +659,15 @@ def assemble_structure(
         if previous is not None and (same_line or (
             previous.render_policy != RenderPolicy.OMIT
             and previous.parent_id == u.parent_id
+            # Paragraph white space is a hard seam, whatever the group says.
+            and bid not in breaks
             and not display
             and not previous_display
             and previous.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
             and u.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
+            # A note or reference entry never joins prose, nor prose it; the fragments
+            # of one wrapped footnote still do.
+            and (previous.kind.value == u.kind.value or not {previous.kind.value, u.kind.value} & NOTE_KINDS)
             and not LIST_LABEL_START.match(u.source_text)
             # A printed equation label preparation could not bind stays its own unit.
             and not re.match(r"[*\s]*" + EQUATION_LABEL, u.source_text)

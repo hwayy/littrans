@@ -29,6 +29,14 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   `approved.yaml`, plus `kind` and `aliases`). A file in another shape fails to load with a
   clear error; convert it before creating packets. Adding reference entries changes the audit
   context of the batches whose units mention them, once.
+- Paragraph white space now ends a paragraph (0.6.0-dev.8). A document that spaces its
+  paragraphs instead of indenting them — reports, papers, anything whose flush blocks were
+  merged into one unit per page — must be re-prepared with `source prepare --replace` and its
+  pages reviewed again; the new units carry new IDs and no translation of the merged unit is
+  reused. An indented book changes only on a page where prose opens after real paragraph
+  white space (a theorem's conclusion after its enumerated clauses, say); every other page
+  keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
+  blocks that were absorbed into prose become units of their own kind on re-preparation.
 
 ## Projects prepared with 0.6.0
 

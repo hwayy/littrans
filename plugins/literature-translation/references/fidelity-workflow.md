@@ -139,6 +139,18 @@ column after a nested list starts its own chunk. The ledger's `structure.list_it
 chunk; the key is absent on pages without labels. Bullet items keep their own rule (a bullet
 always hangs, so prose returning left of the bullet column ends the item).
 
+Paragraph white space is a structure boundary too, inside a PDF block or between two blocks,
+for documents that space their paragraphs instead of indenting them. A chunk opens a paragraph
+when the baseline gap above it exceeds the page's paragraph gap (`max(1.75 × font size, 1.45 ×
+median line pitch)`) **and** the text line above it closes: it starts where text starts (the
+margin, a label column or a paragraph indent), is mostly letters of language words in a text
+face, and ends in terminal punctuation or stops short of the running text's right edge. Neither
+condition alone counts: a full line a tall inline formula pushed down keeps its paragraph, and a
+formula row (`∫ X dP`, a limit, a printed label), a tombstone beside a display or a detector
+display row says nothing about where a paragraph ends, so a flush "provided …" clause after a
+display stays in its paragraph's group. The flag is not recorded in the ledger; a page without
+such a break keeps the fingerprint it had before the rule existed.
+
 An `equation` unit without asset placeholders whose text shows no notation (an upright `Prob`
 operator, a lone `otherwise.`) is native text: packets, Markdown and HTML render it — and its
 translation — as text, not as a symbol sequence. Text with LaTeX commands, relations, digits or
@@ -450,11 +462,17 @@ links to the original footnote unit anchors and displays its recorded number.
 Reviewed `parent_id` groups retain a theorem, lemma, proposition, definition, corollary or claim
 together with enumerated clauses and display equations. Preparation recognizes explicit statement
 labels and enumerated children conservatively; a heading, proof or new indented prose ends the
-inferred statement. A numbered label unit (`1.11. Let …`, an exercise or numbered item) opens a
+inferred statement, and so does prose opening after paragraph white space — unless it resumes
+after the statement's enumerated clauses, when it is the statement's conclusion and keeps its
+group. A numbered label unit (`1.11. Let …`, an exercise or numbered item) opens a
 parent group of its own unless a statement is open, in which case it joins the statement like a
 bracketed clause; bracketed clauses (`(a)`, `(ii)`) join the paragraph or statement that
 introduces them, and the item's displays and continuation chunks join its group. A label unit
-is never merged into the unit before it; a word hyphenated across the seam of two merged
+is never merged into the unit before it, nor is a chunk opening after paragraph white space
+(it starts a group like an indented paragraph; a display after the white space stays a child
+of its paragraph); `footnote` and `bibliography` units open their own group and never merge
+with prose in either direction, while the wrapped fragments of one recognised footnote still
+merge. A word hyphenated across the seam of two merged
 fragments is rejoined by the same document evidence as a line end inside a block
 (`well-`/`known` stays `well-known`). Source review must confirm ambiguous and cross-page boundaries. Children
 retain stable IDs, equation numbers and markup. Batching keeps a whole parent group together and

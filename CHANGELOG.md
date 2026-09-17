@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.7`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.8`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -437,6 +437,18 @@ update` sees a change; the release drops the suffix.
   the original-image reading content as an omission.
 - Kept inline formulas that fell back to a raw mixed region inline in the reading edition instead
   of forcing block display and breaking the sentence.
+- Paragraph white space is a structure boundary. A document that spaces its paragraphs instead
+  of indenting them had every flush block of a page merged into one unit (the whole body of a
+  page as one `paragraph`, with its detector-labelled reference lines absorbed) because the
+  planner's gap rule never crossed PDF blocks and assembly re-merged every flush chunk of one
+  group. Preparation now flags a chunk that opens after white space wider than the page's
+  paragraph gap when the text line above it closes (ends in terminal punctuation or stops
+  short of the running text's right edge); assembly treats the flag like a paragraph indent —
+  a new group, never merged into the unit before it, closing an inferred statement unless the
+  prose resumes after the statement's enumerated clauses. A line a tall inline formula pushed
+  down, a formula row, a label or a tombstone beside a display never counts, so indented books
+  keep their units and page fingerprints. `footnote` and `bibliography` units open their own
+  group and never merge with prose (wrapped fragments of one footnote still merge).
 
 ## Historical changes before 0.6
 
