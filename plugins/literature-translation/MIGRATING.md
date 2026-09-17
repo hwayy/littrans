@@ -45,14 +45,22 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   any review: the comparison reads the profile's content, per page.
 - **A profile whose base `handling_rules` were extended for a later chapter.** Receipts of
   the earlier chapter are bound to the shorter text, receipts of the later chapter to the
-  longer. Restore each base rule to the text the earlier packets embed (`git show
-  <commit>:context/source-structure.json`, or the `document_structure.profile.handling_rules`
-  of one of their `packets/source-*/packet.json`) and move the appended lines into one block
-  `page_rules: [{"label": "Chapter 2", "pages": "52-67", "handling_rules": {"lists":
-  "- Chapter 2 …", …}}]`. When the lines were appended after a line break, both chapters'
-  receipts verify: a base rule split at a line boundary into a scoped block reads the same.
-  `source verify --pages …` names any page and key that still differs. From now on, put a
-  new scope's rules in a `page_rules` block; editing a base rule voids every receipt.
+  longer. Run
+
+  ```text
+  littrans source rescope PROJECT --packet source-<id> --pages 52-67 --label "Chapter 2" [--dry-run]
+  ```
+
+  with a packet the earlier chapter's receipts name (`source verify` lists them in
+  `receipt_packets`; `evidence/pages/fidelity-pNNNN.review.json` holds each page's
+  `packet_id`). It restores every base rule to the text that packet embeds and moves the
+  lines appended after it into one `page_rules` block for the given pages (`scoped_rules`
+  lists the keys that grew, `unchanged_rules` the ones that did not); it refuses a rule that
+  was rewritten rather than extended after a line break, or that the packet does not know,
+  and leaves those to be edited by hand. Both chapters' receipts then verify: a base rule
+  split at a line boundary into a scoped block reads the same, and `source verify --pages …`
+  names any page and key that still differs. From now on, put a new scope's rules in a
+  `page_rules` block; editing a base rule voids every receipt.
 - **Older plugin builds refuse a profile with `page_rules`** (`extra` fields are forbidden);
   upgrade every host that shares the project before adding one.
 - **A page re-prepared after the upgrade** records `structure.document_profile.guidance_sha256`

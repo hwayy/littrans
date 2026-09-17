@@ -235,6 +235,19 @@ def source_probe(project: PathArg, pages: str = typer.Option("all")) -> None:
     emit(probe_structure(project, pages))
 
 
+@source_app.command("rescope")
+def source_rescope(
+    project: PathArg,
+    packet: str = typer.Option(..., "--packet", help="A source packet whose embedded base rules the earlier receipts are bound to."),
+    pages: str = typer.Option(..., "--pages", help="The pages the appended rule text holds for (a spec such as 52-67)."),
+    label: str = typer.Option("", "--label", help="Descriptive name of the block, e.g. 'Chapter 2'."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would move without writing the profile."),
+) -> None:
+    """Move rule text appended since a packet into a page_rules block so its receipts verify again."""
+    from littrans.structure_profile import rescope_rules
+    emit(rescope_rules(project, packet, pages, label, apply=not dry_run))
+
+
 @source_app.command("prepare")
 def source_prepare(
     project: PathArg,

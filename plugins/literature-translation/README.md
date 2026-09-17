@@ -30,6 +30,7 @@ littrans project scaffold PROJECT [--repo-root DIR] [--refresh]
 littrans project tracked PROJECT
 littrans project rebuild OLD NEW
 littrans source probe PROJECT --pages 1-3
+littrans source rescope PROJECT --packet source-<id> --pages 4-6 [--label TEXT] [--dry-run]
 littrans source prepare PROJECT --pages 1-3
 littrans source review-packets PROJECT --pages 1-3
 littrans source verify PROJECT --pages 1-3

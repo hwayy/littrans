@@ -143,6 +143,62 @@ def structure_context(root: Path) -> dict[str, Any] | None:
     return {'path': PROFILE_PATH.as_posix(), 'sha256': profile_digest(dump), 'profile': dump, 'authority': AUTHORITY}
 
 
+def rescope_rules(root: Path, packet_id: str, page_spec: str, label: str = '', *, apply: bool = True) -> dict[str, Any]:
+    """Move what was appended to the base rules since ``packet_id`` into a block for ``page_spec``.
+
+    A profile whose base rules were extended for a later scope binds the earlier pages'
+    receipts to the shorter text and the later pages' receipts to the longer. Restoring
+    each base rule to the text the packet embeds and scoping the appended lines to the
+    later pages reads the same for every page: the earlier receipts verify against the
+    base text, the later ones against base plus block. A rule the packet does not know,
+    or whose current text is not the packet's text extended after a line break, is
+    refused rather than guessed at; a rule that did not grow needs no block entry.
+    """
+    from littrans.fidelity import _load_source_packet
+
+    root = root.resolve()
+    config = load_project(root)
+    packet_path = root / 'packets' / packet_id / 'packet.json'
+    packet = _load_source_packet(root, packet_id, sha256_file(packet_path))
+    embedded = packet.get('document_structure')
+    if not embedded:
+        raise ValueError(f'source packet {packet_id} embeds no structure profile')
+    target = root / PROFILE_PATH
+    profile = StructureProfile.model_validate(read_json(target))
+    if profile.source_sha256 != embedded['profile'].get('source_sha256'):
+        raise ValueError('the packet belongs to another source PDF')
+    pages = parse_page_spec(page_spec, config.source_pages)
+    if page_spec.strip().lower() == 'all' or not set(pages) <= set(profile.pages):
+        raise ValueError('page_rules block pages must be a page spec inside the profile scope')
+    if set(pages) & {int(p['page']) for p in packet.get('pages', [])}:
+        raise ValueError('the block pages must not include pages the packet reviews')
+    base: dict[str, str] = dict(embedded['profile'].get('handling_rules', {}))
+    block: dict[str, str] = {}
+    unchanged: list[str] = []
+    for key, text in profile.handling_rules.items():
+        if key not in base:
+            raise ValueError(f'handling rule {key!r} is not in the packet; add it as a page_rules block by hand')
+        if text == base[key]:
+            unchanged.append(key)
+            continue
+        if not text.startswith(base[key] + '\n'):
+            raise ValueError(f'handling rule {key!r} was rewritten, not extended after a line break; restore it by hand')
+        block[key] = text[len(base[key]) + 1:]
+    missing = sorted(set(base) - set(profile.handling_rules))
+    if missing:
+        raise ValueError(f'handling rules the packet knows are gone from the profile: {", ".join(missing)}')
+    if not block:
+        raise ValueError('no base rule was extended since the packet; nothing to scope')
+    entry = PageRules(label=label, pages=page_spec.strip(), handling_rules=block)
+    updated = profile.model_copy(update={'handling_rules': base, 'page_rules': [*profile.page_rules, entry]})
+    result = {'profile': str(target), 'packet_id': packet_id, 'pages': pages, 'scoped_rules': sorted(block),
+              'unchanged_rules': unchanged, 'page_rules': len(updated.page_rules), 'applied': apply}
+    if apply:
+        with project_write_lock(root):
+            write_json(target, updated.model_dump(mode='json'))
+    return result
+
+
 def _observe(page: fitz.Page, number: int) -> dict[str, Any]:
     fonts: Counter[str] = Counter()
     sizes: Counter[float] = Counter()

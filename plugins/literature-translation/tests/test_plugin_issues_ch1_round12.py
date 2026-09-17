@@ -243,6 +243,55 @@ def test_a_base_rule_split_into_a_scoped_block_reads_the_same(reviewed_page: Pat
     assert "guidance changed since review for page 1 (handling_rules: lists)" in result["errors"][0]["message"]
 
 
+def test_rescope_moves_rule_text_appended_in_place_into_a_block(reviewed_page: Path) -> None:
+    """The pilot's situation: base rules extended for chapter 2, both chapters reviewed."""
+    from typer.testing import CliRunner
+
+    from littrans import cli
+    from littrans.structure_profile import rescope_rules
+
+    root = reviewed_page
+    first_packet = read_json(root / "evidence/pages/fidelity-p0001.review.json")["packet_id"]
+    probe_structure(root, "2")
+    profile = _profile(root)
+    profile["handling_rules"]["lists"] += "\n- Chapter 2 adds a) labels."
+    profile["handling_rules"]["headings"] += "\n- Chapter 2 repeats the opener form."
+    profile["review_notes"] += " Inspected page 2."
+    profile["inspected_pages"] = [1, 2]
+    profile["status"] = "reviewed"
+    _write_profile(root, profile)
+    prepare_source(root, "2", allow_missing_layout=True)
+    _approve(root, "2")
+    result = verify_fidelity(root, "1-2")
+    assert sorted({e["page"] for e in result["errors"]}) == [1]
+    # A dry run reports the move without writing; the block pages may not include the packet's own.
+    preview = rescope_rules(root, first_packet, "2", "Chapter 2", apply=False)
+    assert preview["scoped_rules"] == ["headings", "lists"] and preview["unchanged_rules"] == [] and not preview["applied"]
+    assert _profile(root)["page_rules"] == []
+    with pytest.raises(ValueError, match="must not include pages the packet reviews"):
+        rescope_rules(root, first_packet, "1-2")
+    runner = CliRunner()
+    run = runner.invoke(cli.app, ["source", "rescope", str(root), "--packet", first_packet, "--pages", "2", "--label", "Chapter 2"])
+    assert run.exit_code == 0, run.output
+    profile = _profile(root)
+    assert profile["handling_rules"]["lists"] == "Labels are printed (a), (b)."
+    assert profile["page_rules"] == [{"label": "Chapter 2", "pages": "2", "handling_rules": {
+        "lists": "- Chapter 2 adds a) labels.", "headings": "- Chapter 2 repeats the opener form."}}]
+    assert verify_fidelity(root, "1-2")["passed"]
+    # Refusals: nothing appended, a rewritten rule, a rule the packet does not know.
+    with pytest.raises(ValueError, match="nothing to scope"):
+        rescope_rules(root, first_packet, "2")
+    profile["handling_rules"]["lists"] = "Labels are printed 1., 2."
+    _write_profile(root, profile)
+    with pytest.raises(ValueError, match="rewritten, not extended"):
+        rescope_rules(root, first_packet, "2")
+    profile["handling_rules"]["lists"] = "Labels are printed (a), (b).\nmore"
+    profile["handling_rules"]["figures"] = "Captions below."
+    _write_profile(root, profile)
+    with pytest.raises(ValueError, match="not in the packet"):
+        rescope_rules(root, first_packet, "2")
+
+
 def test_editing_a_base_rule_names_the_page_and_the_keys(reviewed_page: Path) -> None:
     root = reviewed_page
     packet = build_source_review_packet(root, "1")

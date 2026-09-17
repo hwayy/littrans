@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.9`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.10`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -25,7 +25,10 @@ update` sees a change; the release drops the suffix.
   `document_structure` is a content digest, new page ledgers record
   `structure.document_profile.guidance_sha256` (the page's guidance) instead of the file
   hash, batch context carries the blocks covering the batch's pages, and `source probe` tells
-  the agent where a new scope's rules go.
+  the agent where a new scope's rules go. New `source rescope PROJECT --packet ID --pages SPEC`
+  restores the base rules to the text a packet embeds and moves the lines appended since into
+  a `page_rules` block, so a profile extended in place for a later chapter verifies both
+  chapters' receipts again.
 - Rendered checkpoints and editions link the page images, the source PDF and the original
   assets by relative, percent-encoded paths, so the same tree renders the same bytes on every
   host; only a PDF outside the project root keeps a `file:` URI.
