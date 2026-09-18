@@ -230,12 +230,21 @@ def _bold_variable_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
     return ids
 
 
-def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
+                      balance: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Drop quotation marks, sentence punctuation, unbalanced prose brackets and hyphens
     joining prose words from the ends of a mathematical run; those glyphs belong to the
-    surrounding prose."""
+    surrounding prose.
+
+    ``balance`` is the whole expression the run is part of when the run is only the part
+    of it on one native line (a superscript MuPDF put in the next block splits ``O(n^{-1/2})``
+    into two lines): brackets are balanced over the expression, neighbours are found on
+    the line.
+    """
     positions = {g["id"]: index for index, g in enumerate(line)}
     last_inked = next((g["id"] for g in reversed(line) if inked_glyph(g)), None)
+    expression = balance if balance is not None else run
+    trimmed: set[str] = set()
 
     def neighbour(glyph: dict[str, Any], step: int) -> dict[str, Any] | None:
         index = positions.get(glyph["id"])
@@ -262,8 +271,8 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]]) -> 
         # the run tells a prose bracket ("(the space L^p(Ω))") from a formula's own.
         # Intervals count all bracket kinds together; a bracket of an expression that
         # continues from or onto another line is legitimately unbalanced.
-        openers = sum(g["text"] in OPENING_BRACKETS for g in run)
-        closers = sum(g["text"] in CLOSING_BRACKETS for g in run)
+        openers = sum(g["text"] in OPENING_BRACKETS for g in expression if g["id"] not in trimmed)
+        closers = sum(g["text"] in CLOSING_BRACKETS for g in expression if g["id"] not in trimmed)
         if step == 1 and text in CLOSING_BRACKETS:
             return closers > openers and prose_side(neighbour(glyph, 1))
         if step == -1 and text in OPENING_BRACKETS:
@@ -277,14 +286,50 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]]) -> 
     while changed and run:
         changed = False
         if prose_edge(run[0], -1):
+            trimmed.add(run[0]["id"])
             run = run[1:]
             changed = True
         if run and prose_edge(run[-1], 1):
+            trimmed.add(run[-1]["id"])
             run = run[:-1]
             changed = True
     # Delimiters stay: intervals, function arguments and expressions continuing
     # on the next line are legitimately unbalanced within one crop.
     return run
+def _operator_name(text: str) -> bool:
+    """Whether a text-face prefix is a known operator name (``log``, ``limsup``, ``dim``)."""
+    match = re.fullmatch(r"([A-Za-z]{2,})([0-9([{}.*+/-]*)", text)
+    return match is not None and match[1].lower() in MATH_OPERATORS
+
+
+def _operator_word_ids(lines: dict[str, list[dict[str, Any]]], mathematical: Any) -> set[str]:
+    """Glyphs of text-face operator names that are applied to notation on their line.
+
+    ``lim`` before ``ε → 0``, ``log`` before ``c_ε`` or ``max`` before ``{`` is part of the
+    formula around it; ``the log of`` is prose. The name must be a known operator of two
+    or more letters, and the next inked glyph after it (a TeX word space between them is
+    allowed) must be notation or an opening bracket.
+    """
+    ids: set[str] = set()
+    for line in lines.values():
+        index = 0
+        while index < len(line):
+            glyph = line[index]
+            if not (glyph["text"].isalpha() and not MATH_FONT.search(glyph["font"])):
+                index += 1
+                continue
+            end = index
+            while end < len(line) and line[end]["text"].isalpha() and not MATH_FONT.search(line[end]["font"]):
+                end += 1
+            word = line[index:end]
+            following = next((g for g in line[end:] if not g["text"].isspace()), None)
+            if (_operator_name("".join(g["text"] for g in word)) and following is not None
+                    and (mathematical(following) or following["text"] in OPENING_BRACKETS)):
+                ids.update(g["id"] for g in word)
+            index = end
+    return ids
+
+
 def _operator_prefix(text: str) -> bool:
     """Whether a text-face prefix belongs to the notation that follows it.
 
@@ -622,13 +667,34 @@ def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str,
 # delimiter halves and extenders; CMEX has no digits, so a "digit" in it is a piece.
 _DELIMITER_PIECE = re.compile(r"[⎛-⎭⎰⎱]")
 _CMEX_PIECE_SLOTS = set("0123456789:;<=>?@ABCDEFG")
+# A delimiter or one of its pieces is tall and narrow; a big operator (∑, ∏, ∫) is not.
+_DELIMITER_ASPECT = 1.5
+# A delimiter whose ink spans at least this many font sizes brackets rows of its own
+# (a cases block, a matrix), not just the line it stands on.
+_ROW_DELIMITER_HEIGHT_EM = 2.0
+# A horizontal gap this wide ends a bracketed row: what follows is an equation number or
+# running text, not the row's condition.
+_ROW_GAP_EM = 3.0
 
 
 def _delimiter_piece(glyph: dict[str, Any]) -> bool:
+    """A stretched delimiter or a piece of one.
+
+    A subset font re-encoded by the PDF producer maps CMEX glyphs to arbitrary codes, so a
+    piece may decode to a control character rather than a known slot; then only its shape
+    (tall and narrow) tells it from a big operator in the same font.
+    """
     text = str(glyph["text"])
     if len(text) != 1:
         return False
-    return bool(_DELIMITER_PIECE.fullmatch(text)) or (text in _CMEX_PIECE_SLOTS and "cmex" in glyph["font"].lower())
+    if _DELIMITER_PIECE.fullmatch(text):
+        return True
+    if "cmex" not in glyph["font"].lower():
+        return False
+    if text in _CMEX_PIECE_SLOTS:
+        return True
+    x0, y0, x1, y1 = glyph["bbox"]
+    return not text.isprintable() and (y1 - y0) >= _DELIMITER_ASPECT * max(x1 - x0, 1e-6)
 
 
 def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -639,13 +705,17 @@ def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str
     land in the display box and the extenders in their own runs; the export then
     draws the brace in two crops and the reading order splits its cases.
     """
-    pieces = sorted((g for g in glyphs if _delimiter_piece(g)), key=lambda g: (round(g["bbox"][0]), g["bbox"][1]))
+    # A column is stacked pieces at one x: each piece starts where the previous one ends
+    # (within a small gap or overlap). Two integral signs on consecutive display lines at
+    # the same x are not a column, whatever the sort order puts next to them.
+    pieces = sorted((g for g in glyphs if _delimiter_piece(g)), key=lambda g: (g["bbox"][1], g["bbox"][0]))
     columns: list[list[dict[str, Any]]] = []
     for glyph in pieces:
-        previous = columns[-1][-1] if columns else None
-        if (previous is not None and abs(glyph["bbox"][0] - previous["bbox"][0]) <= 1.5
-                and glyph["bbox"][1] - previous["bbox"][3] <= max(glyph.get("size", 10), previous.get("size", 10)) * 0.6):
-            columns[-1].append(glyph)
+        size = glyph.get("size", 10)
+        column = next((c for c in columns if abs(glyph["bbox"][0] - c[-1]["bbox"][0]) <= 1.5
+                       and -0.2 * size <= glyph["bbox"][1] - c[-1]["bbox"][3] <= max(size, c[-1].get("size", 10)) * 0.6), None)
+        if column is not None:
+            column.append(glyph)
         else:
             columns.append([glyph])
     for column in columns:
@@ -768,6 +838,13 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     bold_variables = _bold_variable_ids(lines)
     bullets = _line_bullet_ids(lines)
     continuation = "0123456789()[]{}+-*/.,: "
+
+    def mathematical_glyph(glyph: dict[str, Any]) -> bool:
+        return bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
+
+    # A text-face operator name applied to notation ("log c_ε", "max{...}") continues an open
+    # run: TeX sets it in the text face between the operands it belongs to.
+    operator_words = _operator_word_ids(lines, mathematical_glyph)
     # The native run that closed the previous line after a relation or operator: TeX
     # breaks an inline formula only there, so the next line's opening run continues it.
     carry: str | None = None
@@ -778,12 +855,14 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         last_inked = line_inked[-1]["id"] if line_inked else None
         closing: str | None = None
         for position, glyph in enumerate([*line, {"text": "\u0000", "font": "", "bbox": [0, 0, 0, 0]}]):
-            mathematical = bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
+            mathematical = mathematical_glyph(glyph)
             # A digit or bracket opening the line after a break operator ("f(λ) >" / "0") is
             # the continued expression, not prose.
             seeded = carry is not None and not run and glyph.get("id") == first_inked and glyph["text"] in continuation and not glyph["text"].isspace()
-            if glyph.get("id") not in protected_prose and glyph.get("id") not in bullets and glyph["text"] not in QED_MARKERS and (mathematical or seeded or (run and glyph["text"] in continuation)):
-                if mathematical and not run and not glyph["text"].isspace():
+            if glyph.get("id") not in protected_prose and glyph.get("id") not in bullets and glyph["text"] not in QED_MARKERS and (mathematical or seeded or (run and (glyph["text"] in continuation or glyph.get("id") in operator_words))):
+                # A run opened by a space glyph of the mathematical face ("log ␣c") holds no
+                # notation yet: its prefix is still the text before the space.
+                if mathematical and not any(inked_glyph(g) for g in run) and not glyph["text"].isspace():
                     # Normal-font prefixes are common in U(N), diag(...), 2π.
                     prefix: list[dict[str, Any]] = []
                     for previous in reversed(line[:position]):
@@ -795,12 +874,13 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                             break
                         prefix.insert(0, previous)
                     prefix_text = "".join(g["text"] for g in prefix)
-                    # A preceding prose article is not a mathematical prefix.
-                    if prefix and line[position - 1]["text"].isspace() and glyph["text"] not in "=<>±×÷":
+                    # A preceding prose article is not a mathematical prefix; an operator name
+                    # ("log x", "dim V") is, whatever the space TeX set after it.
+                    if prefix and line[position - 1]["text"].isspace() and glyph["text"] not in "=<>±×÷" and not _operator_name(prefix_text):
                         prefix = []
                         prefix_text = ""
                     if _operator_prefix(prefix_text):
-                        run.extend(prefix)
+                        run = [*prefix, *run]
                 run.append(glyph)
             elif run:
                 run = _trim_prose_edges(run, line)
@@ -866,10 +946,12 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         if region["kind"] == "math" and region.get("glyph_ids"):
             owned = [glyph_by_id[gid] for gid in region["glyph_ids"] if gid in glyph_by_id]
             if not region["display"]:
+                # Neighbours are looked up per native line; brackets balance over the region,
+                # since a superscript in the next block splits one expression across lines.
                 by_line: dict[str, list[dict[str, Any]]] = {}
                 for g in owned:
                     by_line.setdefault(g["line"], []).append(g)
-                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group))]
+                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group), balance=owned)]
             if not owned:
                 continue
             region["glyph_ids"] = [g["id"] for g in owned]
@@ -916,6 +998,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             if changed:
                 break
     regions = _join_line_break_runs(regions)
+    regions = _absorb_delimited_rows(regions, glyphs, margin)
     for region in regions:
         region.pop("_runs", None)
         region.pop("_continues", None)
@@ -928,6 +1011,137 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         if unmeasured.intersection(region.get("glyph_ids", [])) and "ink-bounds-unmeasured" not in region["provenance"]:
             region["provenance"] = [*region["provenance"], "ink-bounds-unmeasured"]
     return sorted(regions, key=lambda r: (r["bbox"][1], r["bbox"][0]))
+
+
+def _absorb_delimited_rows(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]],
+                           margin: float) -> list[dict[str, Any]]:
+    """Give an inline formula the rows a stretched delimiter it owns brackets.
+
+    A cases block or a matrix set inline (``G(x) = {`` with its rows to the right of a tall
+    CMEX brace) is scanned per native line, so the brace lands in the first row's run and
+    every other row becomes an asset of its own, strung together by the commas the runs
+    trimmed. A display box owns such rows through ``_display_box_owned``; here the delimiter's
+    own ink is the box: every visual line whose baseline lies inside it, on the side the
+    delimiter opens towards, up to a wide gap or a second tall delimiter of the same region,
+    belongs to the formula, condition words included (they are declared afterwards). The
+    result is one region with one crop, provenance ``stretched-delimiter-rows``; only the
+    sentence punctuation closing the last row is left to the prose.
+    """
+    by_id = {g["id"]: g for g in glyphs}
+    order = {g["id"]: index for index, g in enumerate(glyphs)}
+    inked = [g for g in glyphs if inked_glyph(g)]
+    rows = _visual_lines(inked)
+    prose_ids = _prose_word_ids(glyphs)
+    result = list(regions)
+    index = 0
+    while index < len(result):
+        region = result[index]
+        index += 1
+        if region["kind"] != "math" or region["display"] or not region.get("glyph_ids"):
+            continue
+        owned = [by_id[gid] for gid in region["glyph_ids"] if gid in by_id]
+        size = max((g.get("size", 10) for g in owned if inked_glyph(g)), default=10.0)
+        # Tall delimiter columns: pieces merged earlier share an x, a single big brace is one.
+        columns: list[list[dict[str, Any]]] = []
+        for g in sorted((g for g in owned if inked_glyph(g) and (_delimiter_piece(g) or "cmex" in g["font"].lower())), key=lambda g: (g["bbox"][0], g["bbox"][1])):
+            if columns and abs(g["bbox"][0] - columns[-1][0]["bbox"][0]) <= 1.5:
+                columns[-1].append(g)
+            else:
+                columns.append([g])
+        spans = [_union([g["bbox"] for g in column]) for column in columns]
+        spans = [span for span in spans if span[3] - span[1] >= _ROW_DELIMITER_HEIGHT_EM * size]
+        if not spans:
+            continue
+        opening = spans[0]
+        # A second tall delimiter to the right closes the rows (\left( ... \right)).
+        closing = next((span for span in spans[1:] if span[0] > opening[2]), None)
+        owner: dict[str, dict[str, Any]] = {gid: r for r in result for gid in r.get("glyph_ids", [])}
+        bracketed: list[list[dict[str, Any]]] = []
+        for row in rows:
+            baselines = sorted(g.get("baseline", g["bbox"][3]) for g in row)
+            baseline = baselines[len(baselines) // 2]
+            if not opening[1] <= baseline <= opening[3]:
+                continue
+            candidates = [g for g in row if g["bbox"][0] >= opening[2] - 0.5 and (closing is None or g["bbox"][2] <= closing[0] + 0.5)]
+            if not candidates:
+                continue
+            # A paragraph line the delimiter's ink happens to reach is not a row of it.
+            prose = [g for g in candidates if g["id"] in prose_ids]
+            if min(g["bbox"][0] for g in candidates) <= margin + size * 2.8 and len(prose) > DISPLAY_PROSE_SHARE * len(candidates):
+                continue
+            bracketed.append(candidates)
+        absorbed: list[dict[str, Any]] = []
+        for candidates in bracketed:
+            kept: list[dict[str, Any]] = []
+            for previous, g in zip([None, *candidates], candidates, strict=False):
+                if g["text"] in QED_MARKERS:
+                    break
+                # A wide gap no other row bridges separates the block from what follows it
+                # (an equation number); the aligned condition column of a cases block is
+                # bridged by the rows whose first column is longer.
+                if (previous is not None and g["bbox"][0] - previous["bbox"][2] >= _ROW_GAP_EM * size
+                        and not any(o["bbox"][2] > previous["bbox"][2] + 0.5 and o["bbox"][0] < g["bbox"][0] - 0.5
+                                    for other in bracketed if other is not candidates for o in other)):
+                    break
+                holder = owner.get(g["id"])
+                if holder is not None and holder is not region and (holder["kind"] != "math" or holder["display"]):
+                    break
+                kept.append(g)
+            absorbed.extend(kept)
+        new_ids = {g["id"] for g in absorbed} - set(region["glyph_ids"])
+        if not new_ids:
+            continue
+        # The sentence punctuation closing the last row belongs to the prose, as it does
+        # after any inline run; punctuation inside the block is the block's own.
+        last_row = max((row for row in rows if any(g["id"] in new_ids for g in row)), key=lambda row: row[0].get("baseline", row[0]["bbox"][3]))
+        block = [g for g in last_row if g["id"] in new_ids or g["id"] in region["glyph_ids"]]
+        trimmed = _trim_prose_edges(block, last_row, balance=owned + [g for g in absorbed if g["id"] in new_ids])
+        new_ids -= {g["id"] for g in block} - {g["id"] for g in trimmed}
+        if not new_ids:
+            continue
+        # Space glyphs between absorbed glyphs of one native line travel with them.
+        lines_touched: dict[str, list[dict[str, Any]]] = {}
+        for g in glyphs:
+            if g["id"] in new_ids:
+                lines_touched.setdefault(g["line"], []).append(g)
+        for key, members in lines_touched.items():
+            first, last = order[members[0]["id"]], order[members[-1]["id"]]
+            for g in glyphs[first:last + 1]:
+                if g["line"] == key and g["text"].isspace():
+                    new_ids.add(g["id"])
+        ids = set(region["glyph_ids"]) | new_ids
+        merged: list[dict[str, Any]] = []
+        for other in result:
+            if other is region or not (set(other.get("glyph_ids", [])) & ids):
+                continue
+            if other["kind"] != "math" or other["display"]:
+                ids -= set(other.get("glyph_ids", []))
+                continue
+            merged.append(other)
+            ids |= set(other["glyph_ids"])
+        span_rows = [g["id"] for g in glyphs if g["id"] in ids and opening[1] <= g.get("baseline", g["bbox"][3]) <= opening[3]]
+        fragments = [dict(f) for f in region.get("fragments", [])] + [f for other in merged for f in other.get("fragments") or [{"bbox": other["bbox"], "glyph_ids": other["glyph_ids"]}]]
+        outside = [f for f in fragments if not all(gid in span_rows for gid in f["glyph_ids"])]
+        inside_ids = ids - {gid for f in outside for gid in f["glyph_ids"]}
+        inside_box = _union([by_id[gid]["bbox"] for gid in inside_ids if inked_glyph(by_id[gid])])
+        region["glyph_ids"] = [g["id"] for g in glyphs if g["id"] in ids]
+        region["bbox"] = _union([inside_box, *(f["bbox"] for f in outside)])
+        if outside:
+            inside = {"bbox": inside_box, "glyph_ids": [gid for gid in region["glyph_ids"] if gid in inside_ids]}
+            region["fragments"] = sorted([*outside, inside], key=lambda f: order[f["glyph_ids"][0]])
+        else:
+            region.pop("fragments", None)
+        for other in merged:
+            region["provenance"] = sorted(set(region["provenance"] + other["provenance"]))
+            region["grouping_pending"] = region["grouping_pending"] or other["grouping_pending"]
+            for key in ("_runs", "_continues"):
+                if key in region or key in other:
+                    region[key] = [*region.get(key, []), *other.get(key, [])]
+        if "stretched-delimiter-rows" not in region["provenance"]:
+            region["provenance"] = [*region["provenance"], "stretched-delimiter-rows"]
+        result = [r for r in result if r is region or not any(r is other for other in merged)]
+        index = next(i for i, r in enumerate(result) if r is region) + 1
+    return result
 
 
 def _join_line_break_runs(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1075,7 +1289,9 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
     # The declared box is the target box; only owned glyph ink is padded. An exported
     # fragment box fed back through a region override therefore reproduces itself.
     rect = fitz.Rect(_union([list(rect), *[list(fitz.Rect(g["bbox"]) + (-0.5, -0.5, 0.5, 0.5)) for g in owned]])) & page.rect
-    export_method: Literal["raw-region", "explicit-glyph-paths-v2"] = "explicit-glyph-paths-v2" if "glyph_ids" in region else "raw-region"
+    # A region that names glyphs exports their paths; one that names none ("glyph_ids": []
+    # on a rule or a figure frame) owns nothing and is a raw crop of its box.
+    export_method: Literal["raw-region", "explicit-glyph-paths-v2"] = "explicit-glyph-paths-v2" if region.get("glyph_ids") else "raw-region"
     owned_svg = None
     if export_method != "raw-region":
         from littrans.glyph_export import build_owned_fragment
@@ -1084,10 +1300,13 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
             rect = fitz.Rect(geometry["bbox"])
         except ValueError as exc:
             # Keep original evidence available, but require boundary correction.
-            # Do not claim a raw crop is an isolated mathematical expression.
+            # Do not claim a raw crop is an isolated mathematical expression; a figure
+            # or table the reviewer declared stays what they said it is.
             export_method = "raw-region"
-            region = {**{k: v for k, v in region.items() if k != "formula_conditions"}, "kind": "mixed-region", "grouping_pending": True,
+            region = {**{k: v for k, v in region.items() if k != "formula_conditions"}, "grouping_pending": True,
                       "provenance": [*(p for p in region.get("provenance", []) if p != "auto-formula-conditions"), "precise-export-unavailable:" + str(exc)]}
+            if region["kind"] == "math":
+                region["kind"] = "mixed-region"
     identity = {"source_sha256": source_hash, "page": page_number, "bbox": _box(rect), "glyph_ids": [g["id"] for g in owned]}
     if export_method != "raw-region":
         identity["export_method"] = export_method
@@ -1444,9 +1663,12 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     for asset in assets:
         if asset.id not in emitted:
             fragment = asset.fragments[0]
+            # A rule is recognised by what it is (a glyph-free mixed region, thin and wide),
+            # not by who proposed it: a reviewer's region qualifies like a native drawing,
+            # a detector-labelled element or an embedded image never does.
             decorative = (
                 asset.kind == "mixed-region"
-                and asset.provenance == ["native-vector"]
+                and not any(p.startswith("PP-DocLayoutV2:") or p == "native-image" for p in asset.provenance)
                 and not fragment.glyph_ids
                 and fragment.height <= DECORATIVE_RULE_MAX_HEIGHT
                 and fragment.width >= DECORATIVE_RULE_MIN_ASPECT * fragment.height
@@ -2010,6 +2232,20 @@ def _undeclared_formula_language(page: dict[str, Any]) -> dict[str, list[str]]:
     return result
 
 
+def _accepted_grouping_items(decision: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``accepted_grouping_pending`` entries of a decision, each ``{asset_id, reason}``.
+
+    An entry in another shape (a bare asset ID string, say) is refused rather than
+    skipped: silently ignoring it leaves the page rejected for ``grouping-pending`` with
+    no hint that the acceptance never counted.
+    """
+    items = decision.get("accepted_grouping_pending") or []
+    if not isinstance(items, list) or any(not isinstance(item, dict) or not isinstance(item.get("asset_id"), str) for item in items):
+        raise ValueError('accepted_grouping_pending must be a list of objects {"asset_id": ..., "reason": ...}; got '
+                         + json.dumps(items, ensure_ascii=False)[:200])
+    return items
+
+
 def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """What the ledger already knows still needs a reviewer's decision on a packet page.
 
@@ -2019,7 +2255,7 @@ def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None =
     """
     decision = decision or {}
     findings: list[dict[str, Any]] = []
-    accepted = {item.get("asset_id"): str(item.get("reason", "")).strip() for item in decision.get("accepted_grouping_pending", []) if isinstance(item, dict)}
+    accepted = {item["asset_id"]: str(item.get("reason", "")).strip() for item in _accepted_grouping_items(decision)}
     pending = [asset["id"] for asset in page["assets"] if asset.get("grouping_pending")]
     unaccepted = [aid for aid in pending if not accepted.get(aid)]
     if unaccepted:
@@ -2085,6 +2321,35 @@ def _verify_source_receipt(root: Path, current: dict[str, Any], receipt: Any, so
         raise ValueError("page requires current visual coverage and boundary review")
 
 
+OVERRIDE_BLOCKS = ("regions", "units", "page_canvas_bbox")
+
+
+def _complete_override(root: Path, page: int, override: dict[str, Any]) -> dict[str, Any]:
+    """An override replaces the page's recorded override as a whole; say so when it would not.
+
+    A decision that corrects one formula with ``regions`` while the ledger holds a
+    ``units`` block from an earlier review would silently retire that block (the units
+    would be re-derived from the regions). Such a block must be carried forward or dropped
+    on purpose with ``"units": null``; the ledger then records the override without it.
+    """
+    if not isinstance(override, dict):
+        raise ValueError(f"page {page}: override must be an object")
+    recorded: dict[str, Any] = {}
+    path = _page_path(root, page)
+    if path.is_file():
+        recorded = read_json(path).get("source_overrides") or {}
+    for block in OVERRIDE_BLOCKS:
+        if recorded.get(block) is not None and block not in override:
+            count = len(recorded[block]) if isinstance(recorded[block], list) else 1
+            raise ValueError(f"page {page}: the recorded override carries {block} ({count} entries) that this override omits; "
+                             f"carry it forward or set \"{block}\": null to drop it")
+    complete = {key: value for key, value in override.items() if value is not None}
+    if not complete:
+        raise ValueError(f"page {page}: the override drops every block; to re-derive the page from the current rules run "
+                         f"`source prepare --pages {page} --replace --discard-overrides` and review a new packet")
+    return complete
+
+
 def import_source_review(root: Path, input_file: Path, confirm_visual_review: bool = False) -> dict[str, Any]:
     from contextlib import ExitStack
 
@@ -2114,6 +2379,12 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             raise ValueError(f"source structure guidance changed since packet creation {difference}; create a new packet")
         if p not in by_page or decision["fingerprint"] != by_page[p]["fingerprint"] or _current_page(root, p)["fingerprint"] != decision["fingerprint"]:
             raise ValueError(f"stale or out-of-packet page review: {p}")
+        try:
+            _accepted_grouping_items(decision)
+        except ValueError as exc:
+            raise ValueError(f"page {p}: {exc}") from None
+        if decision.get("override"):
+            decision["override"] = _complete_override(root, p, decision["override"])
     changed, approved, deferred = [], [], []
     rejected: dict[int, list[str]] = {}
     with ExitStack() as stack:
