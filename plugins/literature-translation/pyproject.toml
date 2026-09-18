@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "littrans"
-version = "0.6.0-dev.10"
+version = "0.6.0-dev.11"
 description = "Deterministic project tooling for agent-assisted literature translation"
 requires-python = ">=3.12"
 dependencies = [

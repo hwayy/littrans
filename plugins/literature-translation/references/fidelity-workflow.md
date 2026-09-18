@@ -124,6 +124,15 @@ formula conditions, kind, display and grouping state. Legacy version 1 remains r
 preparation or semantic overrides create version 2 identities and require current
 source/translation evidence.
 
+An asset no text block references becomes a `visual` unit of its own (`p<page>-visual-<asset>`),
+a `figure` unit for a figure and a paragraph otherwise, placed after the last body chunk that
+ends above it. A bare rule — a glyph-free `mixed-region` at most 10 pt tall and at least three
+times as wide as tall, whatever proposed it: a native drawing, a reviewer's region with
+`visual-region-correction` provenance — is layout, not content: its unit is a `note` with
+`render_policy: omit`, not translatable, kept in the ledger and never read. A region a
+detector labelled (`PP-DocLayoutV2:*`) or an embedded image (`native-image`) is never treated
+as a rule.
+
 A printed equation label such as `(1.6)` beside a display is bound to the unit's
 `equation_number` and removed from `source_text`; the checkpoint HTML shows it in the unit meta
 line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
@@ -176,7 +185,12 @@ Glyphs of a mathematical face (CMMI, CMSY, CMEX, MSAM/MSBM, STIX, ...) that deco
 characters are ink: CMEX encodes the integral sign as CR and big parentheses as LF, and a
 display region owns them like any other glyph. A stretched delimiter assembled from pieces on
 several baselines (⎧ ⎪ ⎨ ⎪ ⎩) is kept in one region; regions that had split it are merged and
-record `stretched-delimiter-merged`. The review packet's `boundary_diagnostics` report
+record `stretched-delimiter-merged`. A piece is known by its Unicode value, by its CMEX slot,
+or — in a subset font the PDF producer re-encoded, where a brace piece may decode to any
+control character — by its shape (tall and narrow), which also keeps a big operator such as
+`∑` or `∫` from counting as one; stacked pieces form a column only when each starts where the
+previous one ends, so two integral signs at one x on consecutive display lines never merge
+their lines. The review packet's `boundary_diagnostics` report
 `math-ink-outside-ownership` when a symbol-face glyph inside a displayed crop is owned by
 another asset, since the explicit export draws owned paths only and would leave a hole.
 
@@ -201,12 +215,34 @@ returned to the paragraph as set-off prose only when it sits beside the whole fo
 it lies within the horizontal extent of the formula's other rows (a fraction denominator such as
 `vol(B)`).
 
+An inline region owns such rows too. A cases block or a matrix set in running text (`G(x) = {`
+in a list item, which the detector may label `inline_formula` or miss) is scanned per native
+line, so the brace lands in the first row's run and every other row would become an asset of
+its own, strung together by the commas the runs trimmed. When an inline math region owns a
+stretched delimiter whose ink spans at least two font sizes, every visual line whose baseline
+lies inside that ink, on the side the delimiter opens towards, belongs to the region: up to a
+second tall delimiter of the same region (`\left( … \right)`), a tombstone, or a horizontal
+gap of three ems that no other row bridges (the aligned condition column of a cases block is
+bridged by the rows whose first column is longer; an equation number is not). A row that starts
+at the paragraph margin and is mostly prose is a paragraph line the ink happens to reach and
+stays outside. The rows' punctuation is the block's own; only sentence punctuation closing the
+last row is left to the prose. The region becomes one crop (a `line-break-continued` head such
+as `G(x) =` on the same rows joins it as one fragment), records `stretched-delimiter-rows`,
+and its condition words are declared as `formula_conditions` like a display's.
+
 Inline notation is collected per native line, and a text-face operator name set flush against
 its argument's bracket (`Cov(`, `mean(`, `area(`) joins the run like a single letter or a known
-operator does. A closing bracket in the text face is trimmed from the run's end only when the
-run's closers outnumber its openers and prose follows it (`(the space L^p(Ω))`); intervals
-count every bracket kind together, and a bracket at a line edge is never trimmed, since it may
-belong to an expression continuing on the next line.
+operator does. A known operator name (`log`, `lim`, `dim`, `max`; the `MATH_OPERATORS` set)
+also continues an open run when notation or an opening bracket follows it (`lim_{ε→0} log c_ε /
+log d_ε` is one run; `the log of` is prose), and opens one across the word space TeX sets after
+it (`log x`, `−log P(D)`), whether that space is a text-face glyph or a math-face one — a
+single letter after a space (`a x`) remains the article it is. A closing bracket in the text
+face is trimmed from the run's end only when the closers outnumber the openers and prose
+follows it (`(the space L^p(Ω))`); intervals count every bracket kind together, a bracket at a
+line edge is never trimmed, since it may belong to an expression continuing on the next line,
+and inside a detector region the brackets are balanced over the whole region while neighbours
+are looked up on the glyph's own native line, so a superscript MuPDF places in the next block
+(`O(n^{-1/2})`, its `2` and `)` on a line of their own) keeps its closing bracket.
 
 TeX breaks an inline formula only after a relation or operator. A native run that closes its
 line with one (`f(λ) >`, a summation sign) continues in the run that opens the next line, even
@@ -342,7 +378,9 @@ The approval gate and the checkpoint's attention list share one predicate
 (`page_review_findings`): an approved page is a page that needs no attention. A page passes
 only when every required flag is `true`, `issues` is empty, no `override` is present and no
 finding remains: `grouping-pending` (an asset with `grouping_pending` that the decision does
-not list in `accepted_grouping_pending: [{"asset_id", "reason"}]` with a non-empty reason),
+not list in `accepted_grouping_pending: [{"asset_id", "reason"}]` with a non-empty reason; an
+entry in another shape, such as a bare asset ID string, is an error that names the page rather
+than a silently ignored acceptance),
 `undeclared-formula-language` (language inside a `math` crop that no formula condition
 declares) and `recoverable-prose-in-image` (a `math`/`mixed-region` asset owning six or more
 undeclared words). A receipt that does not pass records the reasons in `failures`, and the
@@ -393,6 +431,16 @@ transaction rolls back on any violation.
 
 - `page_canvas_bbox: [0, 0, width, height]` expands an unrotated origin-zero page in memory
   (see [Formula-contained language and page overflow](#formula-contained-language-and-original-page-overflow)).
+- The override is the page's whole correction. It replaces the override the page's ledger
+  already records (`source_overrides`), block by block, and it is what `source prepare
+  --replace` replays afterwards. A decision whose `override` omits a block the ledger records
+  (`regions`, `units` or `page_canvas_bbox`) is refused — `page 64: the recorded override
+  carries units (21 entries) that this override omits; carry it forward or set "units": null
+  to drop it` — because correcting one formula with `regions` alone would otherwise retire the
+  page's pinned `units` without a word. Carry the block forward, or state the drop with `null`
+  (the ledger then records the override without it). An override of nothing but `null`
+  blocks is not a correction: re-derive such a page with `source prepare --pages N --replace
+  --discard-overrides` and review a new packet.
 - `regions` replaces the detector/native proposals for the page. Each region names `kind`
   (`math`, `table`, `code`, `figure` or `mixed-region`) and either a single `bbox` in PDF points
   or `fragments: [{bbox, glyph_ids?}, ...]` for one logical asset with several ordered fragments
@@ -400,7 +448,13 @@ transaction rolls back on any violation.
   `id` (`[A-Za-z0-9][A-Za-z0-9._-]*`, default `a-p<page>-<content hash>`), `glyph_ids` (explicit
   native glyph ownership; see the glyph corrections section), `display`, `grouping_pending`,
   `provenance` and `formula_conditions` (any `math` asset, inline or displayed; a `math` region
-  that omits the key is declared automatically, an explicit list is kept as written).
+  that omits the key is declared automatically, an explicit list is kept as written). A region
+  that names glyphs is exported from their paths; one that names none — `"glyph_ids": []` on a
+  rule, a figure frame or a page number box, or no key at all — owns nothing and is a raw crop
+  of its box, and keeps the `kind` it declares. Only when named glyphs cannot be isolated does
+  the export fall back to a raw crop with `precise-export-unavailable:…` in its provenance and
+  `grouping_pending` set; a `math` region then becomes a `mixed-region` (a raw crop is not an
+  isolated expression), a `figure` or `table` stays what the reviewer said it is.
   `preserve_asset_id` reuses an unchanged existing asset of the same page and may only change
   `kind`, `display`, `grouping_pending` or `formula_conditions`. A preserved `math` asset that
   carries no declaration is declared automatically from its own glyphs, exactly as a region

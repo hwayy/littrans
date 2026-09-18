@@ -6,12 +6,43 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.10`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.11`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- Inline notation keeps its right half (0.6.0-dev.11). Inside a detector region, brackets
+  are balanced over the whole region while neighbours are still looked up on the glyph's own
+  native line, so a superscript MuPDF places in the next block (`O(n^{-1/2})`, its `2` and `)`
+  on a line of their own) no longer loses its closing bracket. A known operator name in the
+  text face (`log`, `lim`, `dim`, `max`, …) continues an open run when notation or an opening
+  bracket follows it (`lim_{ε→0} log c_ε / log d_ε` is one asset) and opens one across the
+  word space TeX sets after it, whether that space is a text-face or a math-face glyph
+  (`log c_ε`, `−log P(D)`); `the log of` and `a x` stay prose. Assets that gain such a name,
+  or the space glyphs a now-continuous run carries into a display region, change identity on
+  re-preparation.
+- An inline math region owns the rows a stretched delimiter it holds brackets
+  (`stretched-delimiter-rows`): a cases block or a matrix set in running text, which was one
+  asset per row strung together by trimmed commas, is one crop with its `G(x) =` head, its
+  row punctuation and its condition words declared. Rows are the visual lines whose baseline
+  lies inside the delimiter's ink, up to a closing delimiter, a tombstone or a wide gap no
+  other row bridges; a paragraph line at the margin stays outside. A CMEX delimiter piece is
+  also recognised by shape when a re-encoded subset font maps it to a control character, and
+  stacked pieces form a column only when each starts where the previous ends (two integral
+  signs at one x on consecutive display lines no longer risk merging their lines).
+- The region-override channel changes only what the reviewer said. `"glyph_ids": []` on a
+  region (a rule, a figure frame) is a raw crop that keeps the declared `kind`, not a failed
+  explicit export that rewrote it to `mixed-region` and left it `grouping_pending`; the
+  genuine fallback keeps a declared `figure`/`table` and downgrades `math` only. A bare rule
+  is recognised by what it is (glyph-free `mixed-region`, thin and wide, not detector-labelled
+  or an embedded image), so a reviewer's region with `visual-region-correction` provenance is
+  omitted from reading like a native drawing instead of becoming a translatable paragraph
+  that steals the page's first `parent_id`. `accepted_grouping_pending` entries that are not
+  `{"asset_id", "reason"}` objects are refused with the page named instead of silently
+  ignored. An override that omits a block the page's ledger records (`regions`, `units`,
+  `page_canvas_bbox`) is refused with the block and its size named — carry it forward or
+  state `"units": null` to drop it — instead of retiring it without a word.
 - Source receipts bind the structure guidance of their own page, not the profile file
   (0.6.0-dev.9). `context/source-structure.json` gains `page_rules`: blocks of
   `handling_rules` scoped to a page spec (`{"label": "Chapter 2", "pages": "52-67",

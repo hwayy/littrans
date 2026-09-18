@@ -38,6 +38,33 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
   blocks that were absorbed into prose become units of their own kind on re-preparation.
 
+## Projects prepared with 0.6.0-dev.10 or earlier: inline notation and the override channel (0.6.0-dev.11)
+
+- **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and
+  overrides stay valid; `source verify` reads as before.
+- **On re-preparation (`source prepare --replace`, or an override import) these forms cut
+  differently and change the page's units and fingerprint:** an inline formula whose closing
+  bracket sat on a second native line (`O(n^{-1/2})`), an operator name in the text face next
+  to notation inside an inline run (`log c_ε`, `−log P(D)`), a cases block or matrix set in
+  running text (now one asset with its rows), and — the churn to expect — a display formula
+  that contains such an operator name beside a word space: its crop is unchanged but its glyph
+  list gains the space glyphs, so its asset ID moves. Measured on the pilot's 16-page chapter
+  with the detector's recorded results, seven pages cut differently (the five defect pages,
+  an inline `log n` and a `0 ∈ F, inf_{x∈F} I(x) = 0` that the operator name now joins) and
+  seven display pages changed only by the operator-name spaces. A page whose recorded `units`
+  override references an asset whose ID moves fails its replay (`unit overrides must reference
+  each page asset exactly once`): re-import the review with the new IDs or `--discard-overrides`
+  for that page. Re-prepare a reviewed chapter only for the pages that need the fix.
+- **Override documents:** a decision that carries `regions` for a page whose ledger already
+  records `units` (or the other way round) is now refused; carry the recorded block forward or
+  write `"units": null` to drop it. `accepted_grouping_pending` must be a list of
+  `{"asset_id", "reason"}` objects; a review file with bare strings fails at import (and a
+  legacy receipt carrying one fails verification — re-import that review). Regions written
+  with `"glyph_ids": []` for a rule or a figure frame now keep their `kind` and are not
+  `grouping_pending`; a page that was accepted with such regions and their forced
+  `mixed-region` fallback keeps its receipt until it is re-prepared, after which the rule is
+  omitted from reading and the figure is a figure again.
+
 ## Projects prepared with 0.6.0-dev.8 or earlier: page-scoped guidance and layout evidence (0.6.0-dev.9)
 
 - **Receipts that failed with `source structure guidance changed since review` because the
