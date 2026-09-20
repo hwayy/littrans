@@ -595,6 +595,10 @@ def assemble_structure(
     group: str | None = None
     active_note: str | None = None
     statement = None
+    # The open enumeration: the label x and the parent of its last bracketed item that
+    # hangs from an introducing paragraph, so a later sibling returns to that parent
+    # whatever group an item's own continuation paragraph opened in between.
+    enumeration: tuple[float, str] | None = None
     # A unit merged into the one before it keeps no id of its own; a parent set to that
     # id before the merge is redirected to the survivor at the end.
     merged_into: dict[str, str] = {}
@@ -692,6 +696,15 @@ def assemble_structure(
                 or ((indented or (paragraph_break and not concludes)) and label is None and u.kind.value != "equation")
             ):
                 statement = None
+            # What closes the list closes its enumeration: a heading, a statement, a proof, a
+            # run-in or numbered label, or prose back at the margin after white space. An
+            # item's own indented continuation paragraph does not.
+            at_margin = x < plan["margin"] + plan["font_size"] * 0.8
+            if (
+                u.kind.value == "heading" or starts_statement or proof or run_in or numbered
+                or (paragraph_break and not enumerated and at_margin and u.kind.value != "equation")
+            ):
+                enumeration = None
             # Headings, list items and figure/table elements close their group;
             # the prose that follows starts a new logical paragraph.
             after_heading = previous_body is not None and (
@@ -719,12 +732,26 @@ def assemble_structure(
                 group = previous_body.parent_id or previous_body.unit_id
             elif statement and (starts_statement or label is not None or u.kind.value == "equation" or concludes):
                 group = statement
+            elif (
+                enumerated
+                and enumeration is not None
+                and not after_heading
+                and abs(u.bbox[0] - enumeration[0]) <= plan["font_size"] * 0.5
+            ):
+                # A sibling clause returns to the parent its enumeration opened with.
+                group = enumeration[1]
             elif group is None or after_heading or (
                 u.kind.value != "equation" and (indented or (paragraph_break and not enumerated) or boundary)
             ):
                 # A bracketed clause ((a), (ii)) set off by white space is still a clause
                 # of the paragraph that introduces it, never a group of its own.
                 group = u.unit_id
+            if enumerated and group is not None and group != u.unit_id:
+                # Only an enumeration that hangs from an introducing paragraph or statement
+                # binds its siblings; items set as indented paragraphs of their own stay so.
+                enumeration = (u.bbox[0], group)
+            elif enumerated or after_heading:
+                enumeration = None
             u = rebuild(u, parent_id=group)
         # Merge prose fragments within one paragraph, retaining display children.
         previous = result[-1] if result else None

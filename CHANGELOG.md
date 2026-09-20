@@ -6,12 +6,29 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.12`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.13`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- A recorded `units` override whose asset moved is refused, not crashed on (0.6.0-dev.13).
+  The check that every page asset is referenced exactly once now runs before any unit is
+  built, so an override that names an asset the page no longer cuts (a display that gained a
+  space glyph on re-preparation) fails with the page and both IDs — `page 70: the recorded
+  source override cannot be replayed (unit overrides must reference each page asset exactly
+  once; not cut on this page any more: a-p0070-789080e39dd4; cut but unreferenced:
+  a-p0070-d3f4ee3efed5); re-import its review file or rerun with --discard-overrides` —
+  instead of a bare `KeyError` from inside the unit builder that named neither. The
+  transaction still rolls back whole. A review file imported with such a reference is refused
+  with its page number too.
+- Enumerated siblings share the parent their enumeration opened with. A `(2)` item that
+  follows the `(1)` item's own indented continuation paragraph hung from that paragraph (the
+  group the indent opened) and rendered in its row; it now returns to the paragraph that
+  introduced the list, as `(1)` did. Only an enumeration that hangs from an introducing
+  paragraph or statement binds its siblings — items set as indented paragraphs of their own
+  stay so — and a heading, statement, proof, run-in or numbered label, or prose back at the
+  margin after white space closes it.
 - Asset boundaries are spaced by the printed ink, not by the text layer (0.6.0-dev.12).
   TeX sets the glue around notation, and MuPDF reports it as a space glyph or not by its own
   threshold — and reports the kern before a period as a space. At every boundary between an
