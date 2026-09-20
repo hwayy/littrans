@@ -131,7 +131,11 @@ placeholders (a stray label glyph inside the figure) takes the union of its asse
 boxes as its `bbox`, as a `visual` unit does. When structure assembly merges a chunk into the
 one before it, every later chunk whose parent it was follows the survivor, so no `parent_id`
 names a unit that does not exist; an enumerated item that opens after paragraph white space
-hangs from the paragraph that introduces the list, never from a sibling item.
+hangs from the paragraph that introduces the list, never from a sibling item, and its later
+siblings return to that same parent whatever group an item's own indented continuation
+paragraph opened in between (an enumeration whose first item opened a group of its own leaves
+each item its own group; a heading, statement, proof, run-in or numbered label, or prose back
+at the margin after white space closes the enumeration).
 
 A bare rule — a glyph-free `mixed-region` at most 10 pt tall and at least three times as
 wide as tall, whatever proposed it: a native drawing, a reviewer's region with
@@ -398,8 +402,10 @@ aside by `--redetect`, is replayed on the fresh detection and also listed in
 derivation. The
 result lists these pages in `replayed_override_pages`. Pass `--discard-overrides` to re-derive
 them from the current extraction rules instead (`discarded_override_pages`); a replay that no
-longer applies (a pinned asset gone, glyph IDs changed) fails the whole transaction with the
-page number and that hint, so re-import the review file or discard deliberately.
+longer applies (a pinned asset gone, glyph IDs changed, a `units` block naming an asset the page
+no longer cuts) fails the whole transaction with the page number, the asset IDs that are missing
+or unreferenced (`not cut on this page any more: …; cut but unreferenced: …` — the new ID of a
+moved asset) and that hint, so re-import the review file with the new IDs or discard deliberately.
 
 ## Source review packets, decisions and overrides
 

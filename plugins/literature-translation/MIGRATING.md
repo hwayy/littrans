@@ -38,6 +38,25 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
   blocks that were absorbed into prose become units of their own kind on re-preparation.
 
+## Projects prepared with 0.6.0-dev.12 or earlier: override refusal and enumerated siblings (0.6.0-dev.13)
+
+- **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and
+  overrides stay valid; `source verify` reads as before.
+- **A recorded `units` override whose asset ID moved is now refused, not crashed on.** A
+  `source prepare --replace` over a range that includes such a page used to stop with a bare
+  `KeyError` naming neither the page nor the asset; it now stops with `page N: the recorded
+  source override cannot be replayed (unit overrides must reference each page asset exactly
+  once; not cut on this page any more: <old id>; cut but unreferenced: <new id>); re-import its
+  review file or rerun with --discard-overrides`. The transaction still rolls back whole, as
+  documented: re-prepare a reviewed page only when its reading changes, and for a page whose
+  override no longer applies either re-import the review with the new ID (the `cut but
+  unreferenced` one) or pass `--discard-overrides` for that page alone. `source import-review`
+  refuses a review file with a stale reference the same way, with the page named.
+- **On re-preparation, an enumerated list whose first item is followed by its own indented
+  continuation paragraph changes the later items' `parent_id`** (they now name the paragraph
+  that introduces the list, as the first item does); nothing else on the page moves. A page
+  corrected by hand for this (an `override.units` that re-parents the item) replays as recorded.
+
 ## Projects prepared with 0.6.0-dev.11 or earlier: boundary spaces, labels and the two unit channels (0.6.0-dev.12)
 
 - **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and

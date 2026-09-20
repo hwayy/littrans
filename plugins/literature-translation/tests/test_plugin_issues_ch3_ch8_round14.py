@@ -559,3 +559,70 @@ def test_bold_citation_keys_are_not_bold_variables() -> None:
     glyphs = _line(text, fonts, line="b1-l0")
     ids = _bold_variable_ids({"b1-l0": glyphs})
     assert {glyphs[i]["text"] for i in range(len(text)) if glyphs[i]["id"] in ids} == {"v"}
+
+
+# --- LT-075 ------------------------------------------------------------------------------
+
+def test_an_override_naming_a_moved_asset_is_refused_with_the_page_and_both_ids(project: Path) -> None:
+    from littrans.models import ProjectConfig
+    from littrans.storage import save_project, sha256_file
+
+    pdf = project / "source/book.pdf"
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((60, 80), "Let a = 1 hold here.")
+        doc.save(pdf)
+    save_project(project, ProjectConfig(project_id="test", title="test", source_path="source/book.pdf", source_sha256=sha256_file(pdf), source_pages=1, profile="technical-book"))
+    prepare_source(project, "1", allow_missing_layout=True)
+    assets = load_assets(project)
+    (real,) = [a.id for a in assets.values()]
+    stale = "a-p0001-000000000000"
+    units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit) if u.page == 1]
+    pinned = [{"unit_id": u.unit_id, "kind": u.kind.value, "bbox": list(u.bbox),
+               "source_markdown": (u.source_markdown or u.source_text).replace(real, stale)} for u in units]
+    packet = build_source_review_packet(project, "1")
+    review = read_json(Path(packet["review_template"]))
+    review["reviewer"] = "corrector"
+    review["pages"] = [p for p in review["pages"] if p["page"] == 1]
+    review["pages"][0]["override"] = {"units": pinned}
+    write_json(project / "override.json", review)
+    with pytest.raises(ValueError) as refused:
+        import_source_review(project, project / "override.json", True)
+    message = str(refused.value)
+    assert message.startswith("page 1: unit overrides must reference each page asset exactly once")
+    assert f"not cut on this page any more: {stale}" in message and f"cut but unreferenced: {real}" in message
+    # The same override recorded in the ledger is refused on replay, not lost in a KeyError.
+    ledger_path = project / "derived/fidelity-pages/p0001.json"
+    ledger = read_json(ledger_path)
+    ledger["source_overrides"] = {"units": pinned}
+    write_json(ledger_path, ledger)
+    before = (project / "derived/units.jsonl").read_bytes()
+    with pytest.raises(ValueError, match="page 1: the recorded source override cannot be replayed .*exactly once.*--discard-overrides"):
+        prepare_source(project, "1", replace=True, allow_missing_layout=True)
+    assert (project / "derived/units.jsonl").read_bytes() == before
+
+
+# --- LT-076 ------------------------------------------------------------------------------
+
+def test_an_enumerated_sibling_returns_to_the_parent_its_enumeration_opened_with() -> None:
+    intro = _unit("p0124-b2", "There are two ways to think about stochastic processes:", [58.7, 268, 417, 322])
+    first = _unit("p0124-b4", "(1) As random functions of one variable.", [82.1, 354, 417, 405])
+    extension = _unit("p0124-b5", "The natural extension would be random fields.", [101.0, 408, 417, 446])
+    second = _unit("p0124-b6", "(2) As a probability distribution on the path spaces.", [82.1, 462, 417, 541])
+    closing = _unit("p0124-b8", "If we observe a stochastic process at finitely many points.", [101.0, 543, 417, 621])
+    plan = _plan(margin=101.0, first_x={"b2": 58.7, "b4": 82.1, "b5": 119.0, "b6": 82.1, "b8": 119.0},
+                 blocks=[{"id": "b2", "paragraph_break": True}, {"id": "b4", "paragraph_break": True}, {"id": "b6", "paragraph_break": True}])
+    result = assemble_structure([intro, first, extension, second, closing], {}, plan, _make_unit)
+    assert [u.parent_id for u in result] == ["p0124-b2", "p0124-b2", "p0124-b5", "p0124-b2", "p0124-b8"]
+
+
+def test_a_heading_closes_an_enumeration_so_the_next_list_hangs_from_its_own_intro() -> None:
+    intro = _unit("p0003-b1", "Sampling can be used to:", [58.7, 100, 400, 110])
+    first = _unit("p0003-b2", "(i) Compute expectations.", [82.1, 120, 400, 130])
+    heading = _unit("p0003-b3", "3.2 Variance reduction", [58.7, 150, 300, 162], kind="heading")
+    intro2 = _unit("p0003-b4", "Two devices are common:", [58.7, 170, 400, 180])
+    item = _unit("p0003-b5", "(i) Importance sampling.", [82.1, 190, 400, 200])
+    plan = _plan(margin=101.0, first_x={"b1": 58.7, "b2": 82.1, "b3": 58.7, "b4": 58.7, "b5": 82.1},
+                 blocks=[{"id": "b2", "paragraph_break": True}, {"id": "b5", "paragraph_break": True}])
+    result = assemble_structure([intro, first, heading, intro2, item], {}, plan, _make_unit)
+    assert [u.parent_id for u in result] == ["p0003-b1", "p0003-b1", "p0003-b3", "p0003-b4", "p0003-b4"]

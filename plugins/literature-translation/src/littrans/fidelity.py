@@ -2124,6 +2124,20 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     assets = list(by_id.values())
     owners = {gid:a.id for a in assets for f in a.fragments for gid in f.glyph_ids}
     if override and "units" in override:
+        # Every page asset exactly once, checked before any unit is built: a recorded
+        # override whose asset moved (a display that gained a space glyph) is refused
+        # with both IDs named, not lost in a lookup error inside `_make_unit`.
+        counts = Counter(aid for item in override["units"] for aid in asset_reference_ids(item["source_markdown"]))
+        missing = sorted(aid for aid in counts if aid not in by_id)
+        unreferenced = sorted(aid for aid in by_id if aid not in counts)
+        repeated = sorted(aid for aid, n in counts.items() if n > 1)
+        if missing or unreferenced or repeated:
+            raise ValueError(
+                "unit overrides must reference each page asset exactly once"
+                + (f"; not cut on this page any more: {', '.join(missing)}" if missing else "")
+                + (f"; cut but unreferenced: {', '.join(unreferenced)}" if unreferenced else "")
+                + (f"; referenced more than once: {', '.join(repeated)}" if repeated else "")
+            )
         units = []
         for item in override["units"]:
             if item.get("latex") is not None:
@@ -2132,9 +2146,6 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             # carried over as recorded keeps the hash the pipeline gave it.
             extra = {k: item.get(k, default) for k, default in OVERRIDE_UNIT_DEFAULTS.items()}
             units.append(_make_unit(number, item["unit_id"], item["source_markdown"], item["bbox"], by_id, item.get("kind", "paragraph"), **extra))
-        refs = Counter(aid for unit in units for aid in asset_reference_ids(unit.source_text))
-        if refs != Counter({aid: 1 for aid in by_id}):
-            raise ValueError("unit overrides must reference each page asset exactly once")
     # Structure assembly can change grouping or create coalesced assets after export.
     # Bind the final semantics before publishing either assets or their source units.
     for asset in assets:
@@ -2858,8 +2869,11 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                                      f"`source prepare --pages {p} --replace` (the override is replayed on the fresh "
                                      "detection and reported in redetected_override_pages) and review a new packet")
                 with fitz.open(config.source(root)) as doc:
-                    new_units, new_assets, ledger = _page_prepare(root, doc, p, config.source_sha256, layout, decision["override"],
-                                                                  {"packet_id": packet_id, "reviewer": review["reviewer"]})
+                    try:
+                        new_units, new_assets, ledger = _page_prepare(root, doc, p, config.source_sha256, layout, decision["override"],
+                                                                      {"packet_id": packet_id, "reviewer": review["reviewer"]})
+                    except ValueError as exc:
+                        raise ValueError(f"page {p}: {exc}") from exc
                 new_unit_ids = [unit.unit_id for unit in new_units]
                 retained_unit_ids = {unit.unit_id for unit in units if unit.page != p}
                 if len(new_unit_ids) != len(set(new_unit_ids)) or retained_unit_ids.intersection(new_unit_ids):
