@@ -109,7 +109,8 @@ def test_rejoin_line_breaks_uses_document_evidence() -> None:
     assert _rejoin_line_breaks("a non-\nlinear map", evidence) == "a nonlinear map"
     # Only a line end is a soft break; a suspended hyphen mid-line stays.
     assert _rejoin_line_breaks("pre- and post-processing", evidence) == "pre- and post-processing"
-    assert _rejoin_line_breaks("Borel-\nCantelli", evidence) == "Borel-\nCantelli"
+    # A capitalised second half is a name compound: the hyphen stays and the seam closes.
+    assert _rejoin_line_breaks("Borel-\nCantelli", evidence) == "Borel-Cantelli"
     assert _rejoin_line_breaks("*well-\nknown*", evidence) == "*well-known*"
 
 

@@ -126,26 +126,46 @@ source/translation evidence.
 
 An asset no text block references becomes a `visual` unit of its own (`p<page>-visual-<asset>`),
 a `figure` unit for a figure and a paragraph otherwise, placed after the last body chunk that
-ends above it. A bare rule — a glyph-free `mixed-region` at most 10 pt tall and at least three
-times as wide as tall, whatever proposed it: a native drawing, a reviewer's region with
+ends above it. A `figure` or `table` unit made from a native block that holds only
+placeholders (a stray label glyph inside the figure) takes the union of its assets' fragment
+boxes as its `bbox`, as a `visual` unit does. When structure assembly merges a chunk into the
+one before it, every later chunk whose parent it was follows the survivor, so no `parent_id`
+names a unit that does not exist; an enumerated item that opens after paragraph white space
+hangs from the paragraph that introduces the list, never from a sibling item.
+
+A bare rule — a glyph-free `mixed-region` at most 10 pt tall and at least three times as
+wide as tall, whatever proposed it: a native drawing, a reviewer's region with
 `visual-region-correction` provenance — is layout, not content: its unit is a `note` with
 `render_policy: omit`, not translatable, kept in the ledger and never read. A region a
 detector labelled (`PP-DocLayoutV2:*`) or an embedded image (`native-image`) is never treated
-as a rule.
+as a rule. Overlapping native drawings (the segments of a diagram) are clustered into one
+region before regions are merged pairwise — the same result the pairwise merge reaches one
+drawing at a time — so a page with hundreds of vector segments is prepared in seconds.
 
 A printed equation label such as `(1.6)` beside a display is bound to the unit's
 `equation_number` and removed from `source_text`; the checkpoint HTML shows it in the unit meta
 line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
 label that shares its PDF block with the tombstone closing a proof (`□ (1.50)`) binds too; the
 tombstone stays in the reading order and structure assembly attaches it to the paragraph the
-proof ends in. A label that stays in prose belongs to a block that preparation could not bind
-to a display asset; structure assembly never merges such a label into the preceding paragraph.
+proof ends in. A native line that is a label and nothing else is text wherever it sits: it is
+never notation (seeded by a detector box or not), never carries a formula across the line
+end, and no display box owns its ink, so a crop never holds a label and a label cut into
+`(6.` + `14)` cannot happen. A label the paragraph is still left holding at its start or end
+binds to the neighbouring unnumbered display when the display's fragment covers the label's
+line. A detector box whose rows carry two labels is cut through the widest ink-free gap
+between the label rows, one display per label, and no stretched-delimiter column is chained
+across the cut; a box whose ink spans both labels (one tall matrix) stays whole. A block that
+holds several labels beside one formula keeps them in its text. A label that stays in prose
+belongs to a block that preparation could not bind to a display asset; structure assembly
+never merges such a label into the preceding paragraph.
 
 A displayed block whose lines carry native prose (a cases formula with condition words) keeps
 its rows: `source_text` separates them with `\n`, the Markdown edition emits hard breaks and the
 HTML editions stack them as `display-row` spans; when the first row opens with an asset
 placeholder followed by text (a stretched brace, an `X = {` head) that asset becomes the
-`display-lead` column beside the rows. Translators keep one target row per source row
+`display-lead` column beside the rows. A row is a printed row: a native line break inside the
+block whose next line continues the same baseline (a formula MuPDF split at a gap) is a space,
+not a row. Translators keep one target row per source row
 (`display-rows-mismatch` warning otherwise). Inline fragments are coalesced along a row only.
 
 A printed list label opening a line is a structure boundary: a closed number (`1.`, `1.11.`,
@@ -163,6 +183,19 @@ column after a nested list starts its own chunk. The ledger's `structure.list_it
 `{"label", "body_x"}` for each label chunk and `{"continues": <chunk>}` for each continuation
 chunk; the key is absent on pages without labels. Bullet items keep their own rule (a bullet
 always hangs, so prose returning left of the bullet column ends the item).
+
+A line of prose that starts mid-row continues its printed row. MuPDF opens a new block after
+a tall operator (`∑` with limits, a big radical) and after the limits of an inline sum, and
+the text that follows starts an em or two in — where a paragraph indent would be — or far to
+the right. The planner finds the row's start by walking left through ink that shares the
+line's vertical extent (a subscript joins through the operator it hangs from; the measured
+ink decides, since MuPDF puts a radical's origin a text baseline away from its row) and,
+where the row starts at the margin or at an open item's text column, reads the line as the
+row's continuation: its x is the row's start where its own x would read as an indent, it
+continues the item whose column the row starts at (recorded in `structure.list_items`), and
+it never closes the item the row's first line opened. A line without a language word (the
+limits themselves, a piece of a display) keeps its own x. Structure assembly's same-line
+merge then keeps the sentence around the operator in one unit.
 
 Paragraph white space is a structure boundary too, inside a PDF block or between two blocks,
 for documents that space their paragraphs instead of indenting them. A chunk opens a paragraph
@@ -191,8 +224,11 @@ control character — by its shape (tall and narrow), which also keeps a big ope
 `∑` or `∫` from counting as one; stacked pieces form a column only when each starts where the
 previous one ends, so two integral signs at one x on consecutive display lines never merge
 their lines. The review packet's `boundary_diagnostics` report
-`math-ink-outside-ownership` when a symbol-face glyph inside a displayed crop is owned by
-another asset, since the explicit export draws owned paths only and would leave a hole.
+`math-ink-outside-ownership` when a symbol-face glyph on one of a displayed crop's rows (its
+baseline within 0.6 × size of an owned inked glyph's, its centre inside the padded fragment
+box) is owned by another asset, since the explicit export draws owned paths only and would
+leave a hole; the descenders of the line above the crop are not a hole. `prose-boundary-in-math`
+skips a bracketed phrase whose words are all declared `formula_conditions` of the asset.
 
 Words that stay inside a math crop, displayed or inline (`if`, `otherwise.`, `for all`,
 `is even`, `i.o.`, `a.s.`), are declared automatically as `formula_conditions` (provenance
@@ -232,7 +268,10 @@ and its condition words are declared as `formula_conditions` like a display's.
 
 Inline notation is collected per native line, and a text-face operator name set flush against
 its argument's bracket (`Cov(`, `mean(`, `area(`) joins the run like a single letter or a known
-operator does. A known operator name (`log`, `lim`, `dim`, `max`; the `MATH_OPERATORS` set)
+operator does. A text-face accent (`ˆ`, `¯`) set over a mathematical base joins the base's run.
+Bold letters flush against bold digits of the same baseline and size (`KP92`), or a bold phrase
+enclosed in `[` `]`, are a citation key and stay prose; a bold single letter elsewhere is a
+variable. A known operator name (`log`, `lim`, `dim`, `max`, `mod`; the `MATH_OPERATORS` set)
 also continues an open run when notation or an opening bracket follows it (`lim_{ε→0} log c_ε /
 log d_ε` is one run; `the log of` is prose), and opens one across the word space TeX sets after
 it (`log x`, `−log P(D)`), whether that space is a text-face glyph or a math-face one — a
@@ -242,13 +281,33 @@ follows it (`(the space L^p(Ω))`); intervals count every bracket kind together,
 line edge is never trimmed, since it may belong to an expression continuing on the next line,
 and inside a detector region the brackets are balanced over the whole region while neighbours
 are looked up on the glyph's own native line, so a superscript MuPDF places in the next block
-(`O(n^{-1/2})`, its `2` and `)` on a line of their own) keeps its closing bracket.
+(`O(n^{-1/2})`, its `2` and `)` on a line of their own) keeps its closing bracket. Sentence
+punctuation at a run's edge (`.`, `,`, `;`, `:`, `?`, quotes) is prose — `!` is not, since a
+factorial is set in the same face — except a math-face `,` `;` `:` closing a line whose next
+line opens with notation on the same row (the comma of `x_1,` `x_2` across a line break stays
+in the run); a text-face `-` closing a line before a lowercase text-face letter is prose.
 
 TeX breaks an inline formula only after a relation or operator. A native run that closes its
 line with one (`f(λ) >`, a summation sign) continues in the run that opens the next line, even
 when that run starts with a digit or bracket (`0`), and the two halves become one asset with
 one fragment per line (provenance `line-break-continued`). A half that a display region
 absorbed stays where it is; text-adjacent placeholders are still coalesced afterwards.
+
+The space at an inline-asset boundary is the printed one. TeX sets the glue around notation,
+which MuPDF reports as a space glyph or not by its own threshold — and reports the kern before
+a period as a space — so at every boundary between an asset and its native neighbour on one
+native line (same baseline, comparable size, measured ink) the gap between the asset's
+outermost inked glyph and the neighbour decides: 0.15 em or more is a word space, less is none
+(`{{Φ}} the`, `{{F}}.`); punctuation, a closing bracket or quote after the asset and an opening
+one before it never take a space. A subscript, another baseline or an unmeasured glyph leaves
+the text layer authoritative. Prose-to-prose spacing is the text layer's.
+
+The explicit export keeps a horizontal rule (a fraction bar, a table rule, an overline)
+whenever it lies inside the fragment's box (± 2 pt) and overlaps the owned glyphs' horizontal
+extent, wherever the nearest glyph box lies; a degenerate path (empty `d`, move-to only)
+prints nothing and is skipped rather than failing the page's precise export. Crops are
+exported once per export identity, so a rule an earlier build dropped reappears only when
+the fragment's identity moves or its crop directory is removed.
 
 Original glyph paths are measured from the page SVG to size assets, including pages MuPDF
 wraps in a page-sized clip group (CropBox differs from MediaBox). Glyphs that still cannot be
@@ -265,7 +324,13 @@ precisely instead of falling back to a raw `mixed-region` crop.
 Words hyphenated across a line end are rejoined only when the rest of the document does not
 print that compound more often than the joined word: `well-` / `known` stays `well-known` in
 a book that prints `well-known` mid-line, while `proba-` / `bility` becomes `probability`.
-A suspended hyphen inside a line (`pre- and post-processing`) is never altered.
+When the document prints neither, the hyphen stays only if both halves (three or more
+letters) are words the document prints on their own (`finite-state`, not `pas-sion`); a
+capitalised second half is a name compound (`Fokker-Planck`, `Borel-Cantelli`); `and`, `or`
+or `nor` after the hyphen is a suspended hyphen (`left- and`); an asset placeholder before the
+hyphen makes a compound with the word after it (`{{σ}}-algebra`). Attestation counts whole
+words only, never a hyphen-adjacent half. A suspended hyphen inside a line (`pre- and
+post-processing`) is never altered. Block seams inside a paragraph follow the same rules.
 
 Source authority transactions snapshot the unit and asset registries, translations, page
 canvases, ledgers and receipts, and restore them on any error or user interruption. Source page
@@ -472,7 +537,14 @@ transaction rolls back on any violation.
   `continues_from_previous`, `continued_to_next`, `render_policy` (`include`/`omit`) and
   `translatable`. Across the page's units every page asset must be referenced exactly once. When
   `units` is omitted the units are re-derived from the regions with the normal structure
-  assembly and inline-fragment coalescing.
+  assembly and inline-fragment coalescing. Inline fragments along a row are coalesced in this
+  channel too: a `units` block may reference the coalesced asset (one ID, as the packet lists
+  it) or its constituents; a coalesced asset the block does not reference is restored to the
+  assets it was made of before the reference check. A recorded unit is filled with the same
+  optional keys structure assembly passes before its `source_hash` is computed, so identical
+  content hashes identically whichever channel wrote it: the final hash is
+  `hash({prepared_source_hash, asset_content_hashes})` over the unit payload's hash and its
+  assets' `content_sha256`, deterministic for the same content.
 - A region `bbox` (or fragment `bbox`) is the target box: only owned glyph ink is padded by
   0.5pt, so a `fragment.bbox` copied from the packet reproduces the same fragment, `width`,
   `height`, `baseline` and `content_sha256`. Fragment dimensions derive from the 4-decimal
@@ -804,6 +876,12 @@ bootstrap is omitted. The edition header, `*.quality.md` and `render-qa.json` (`
 reflect the lowest record status among the rendered units, not the project-wide status. Formal
 dependency cover selection considers only current QA/audit/external evidence.
 
+A paragraph continues across a page edge when the sender's `continued_to_next` is set (its
+last line ends mid-sentence), or when the receiver's `continues_from_previous` is set and the
+sender's text does not end in terminal punctuation; the receiver's flag is never set on a unit
+that opens with a bold run-in label, a theorem statement, `Proof` or a list label. Batching
+and audit closure read the same pair of flags.
+
 Reading output appends image-language companions after a complete continuation chain; footnote
 companions remain inside their Markdown definitions. Markdown footnote calls and definitions use
 unique labels derived from the referenced source unit ID, so repeated numbers on different pages
@@ -835,7 +913,7 @@ for nested layouts (`repo/workspace`); the default is the project root.
 | --- | --- | --- |
 | `context/document-brief.md`, `context/style-guide.md` | user | rules only; each opens with the boundary note (whole file hashed → records go to `glossary/reference.yaml`) |
 | `glossary/approved.yaml`, `candidates.yaml`, `reference.yaml` | user | the three terminology stores, each headed by its effect |
-| `.gitignore` (project root) | user | keeps the source PDF, `output/`, the layout runs' `*.request.json` and `*.log`, per-asset `original.pdf` and unreferenced source packets out; keeps `.littrans/work/` and the layout results in and the lock out; an existing file only gains the `.littrans/*` / `!.littrans/work/` pair |
+| `.gitignore` (project root) | user | keeps the source PDF, `output/`, the layout runs' `*.request.json` and `*.log`, per-asset `original.pdf` and unreferenced source packets out; keeps `.littrans/work/` and the layout results in and the lock out; an existing file only gains the `.littrans/*` / `!.littrans/work/` pair, and a file that spells it `/.littrans/*` already has it |
 | `.gitattributes`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `PLUGIN-ISSUES.md`, `docs/{HISTORY,DECISIONS,TERMINOLOGY,REVIEWS}.md` | user | LF policy for the record (`*.cmd` CRLF, `*.sh` LF), handbook, operating manual (`CLAUDE.md` imports `AGENTS.md`), defect ledger and the four records — headings plus one line each on what belongs there, nothing document-specific |
 | `tools/lt.py`, `tools/lt.cmd`, `tools/lt.sh` | user | launcher: `LITTRANS_PLUGIN_ROOT`, else the recorded plugin root, else the same path under this user's home, else their highest-versioned siblings (numeric, pre-release aware), else each client's plugin cache; executable on POSIX |
 | `docs/LITTRANS.md` | **plugin** | what the installed build guarantees — version, build digest, term semantics, audit context parts, stale reasons, stages, wave limits, status order, QA version — rendered from the package constants; regenerated by `--refresh`, never hand-edited |

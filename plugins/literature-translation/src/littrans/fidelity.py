@@ -195,7 +195,8 @@ def _line_bullet_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
             ids.add(inked[0]["id"])
     return ids
 # Prose punctuation that a detector rectangle or font-metric overlap can drag into a formula.
-EDGE_PROSE_PUNCTUATION = set("\u201c\u201d\u2018\u2019\"',;:. ")
+# The exclamation mark is absent on purpose: TeX sets the factorial in the same text face.
+EDGE_PROSE_PUNCTUATION = set("\u201c\u201d\u2018\u2019\"',;:.? ")
 
 
 def _bold_variable_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
@@ -209,29 +210,44 @@ def _bold_variable_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
         # Bold phrases: bold letter runs separated only by spaces or punctuation
         # in the bold font ("modeling problems:"). A phrase containing a bold word
         # is emphasis or a heading; a phrase of isolated letters is notation.
-        phrases: list[list[list[dict[str, Any]]]] = []
+        phrases: list[tuple[list[list[dict[str, Any]]], bool]] = []
         phrase: list[list[dict[str, Any]]] = []
         run: list[dict[str, Any]] = []
+        key_like = False
+        inked = [g for g in line if not g["text"].isspace()]
         for glyph in [*line, {"text": "\u0000", "font": ""}]:
             bold = bool(BOLD_FONT.search(glyph["font"]))
             if glyph["text"].isalpha() and bold:
                 run.append(glyph)
                 continue
             if run:
+                # Bold letters flush against bold digits on the same baseline are a
+                # citation key ("KP92", "E11"), not a vector with an index.
+                if (glyph["text"].isdigit() and bold and abs(glyph.get("baseline", 0) - run[-1].get("baseline", 0)) < 1
+                        and abs(glyph.get("size", 10) - run[-1].get("size", 10)) < 0.5):
+                    key_like = True
                 phrase.append(run)
                 run = []
             if not (bold or glyph["text"].isspace()) or glyph["text"] == "\u0000":
                 if phrase:
-                    phrases.append(phrase)
+                    # A bold phrase inside square brackets is a citation list.
+                    first, last = phrase[0][0], phrase[-1][-1]
+                    position = {g["id"]: index for index, g in enumerate(inked)}
+                    before = inked[position[first["id"]] - 1]["text"] if position.get(first["id"], 0) > 0 else ""
+                    after = [g["text"] for g in inked[position[last["id"]] + 1:]]
+                    closing = next((t for t in after if not (t.isdigit() or t in ",;")), "")
+                    phrases.append((phrase, key_like or (before == "[" and closing == "]")))
                 phrase = []
-        for phrase in phrases:
-            if all(len(word) <= 2 for word in phrase):
+                key_like = False
+        for phrase, key in phrases:
+            if not key and all(len(word) <= 2 for word in phrase):
                 ids.update(g["id"] for word in phrase for g in word)
     return ids
 
 
 def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
-                      balance: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                      balance: list[dict[str, Any]] | None = None,
+                      following: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Drop quotation marks, sentence punctuation, unbalanced prose brackets and hyphens
     joining prose words from the ends of a mathematical run; those glyphs belong to the
     surrounding prose.
@@ -239,7 +255,11 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
     ``balance`` is the whole expression the run is part of when the run is only the part
     of it on one native line (a superscript MuPDF put in the next block splits ``O(n^{-1/2})``
     into two lines): brackets are balanced over the expression, neighbours are found on
-    the line.
+    the line. ``following`` is the first inked glyph of the next native line of the same
+    block: a comma closing the line stays in a formula that continues on that line when
+    the two lines are one printed row, and a text-face hyphen closing the line before a
+    lowercase word joins that word (a prose compound such as ``σ-algebra``), so it is
+    trimmed to the prose.
     """
     positions = {g["id"]: index for index, g in enumerate(line)}
     last_inked = next((g["id"] for g in reversed(line) if inked_glyph(g)), None)
@@ -256,13 +276,23 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
         # A bracket at the line edge may close or open an expression on the next line.
         return other is not None and (other["text"].isspace() or other["text"].isalpha() or other["text"] in ".,;:")
 
+    def notation(glyph: dict[str, Any] | None) -> bool:
+        return glyph is not None and bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]))
+
     def prose_edge(glyph: dict[str, Any], step: int) -> bool:
         text = glyph["text"]
         if step == 1 and text in ".,;:":
             # Sentence punctuation closing the run belongs to the prose even when
-            # the PDF sets it in the mathematical font.
-            following = neighbour(glyph, 1)
-            return following is None or following["text"].isspace() or following["text"].isalpha()
+            # the PDF sets it in the mathematical font. A comma or colon in the math
+            # face closing a native line inside an expression that continues on the
+            # next native line of the same printed row (MuPDF splits a row at a tall
+            # glyph) is the expression's own; at a real line break it is a list comma.
+            after = neighbour(glyph, 1)
+            if (after is None and following is not None and text != "." and MATH_FONT.search(glyph["font"])
+                    and notation(following)
+                    and abs(following.get("baseline", 0) - glyph.get("baseline", 0)) < 0.5 * glyph.get("size", 10)):
+                return False
+            return after is None or after["text"].isspace() or after["text"].isalpha()
         if MATH_FONT.search(glyph["font"]) and not text.isspace():
             return False
         if text in EDGE_PROSE_PUNCTUATION:
@@ -279,6 +309,8 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
             return openers > closers and run[-1]["id"] != last_inked and prose_side(neighbour(glyph, -1))
         if text == "-":
             other = neighbour(glyph, step)
+            if other is None and step == 1 and following is not None:
+                return bool(following["text"].isalpha() and following["text"].islower() and not MATH_FONT.search(following["font"]))
             return bool(other and other["text"].isalpha() and not MATH_FONT.search(other["font"]))
         return False
 
@@ -426,7 +458,13 @@ def _prose_boundary_ids(glyphs: list[dict[str, Any]]) -> set[str]:
     sufficient evidence alone: mathematical intervals and continued expressions
     commonly use the same font as prose.
     """
+    return _prose_boundaries(glyphs)[0]
+
+
+def _prose_boundaries(glyphs: list[dict[str, Any]]) -> tuple[set[str], list[tuple[set[str], set[str]]]]:
+    """The protected glyph ids, and each protected bracket pair with the language glyphs it encloses."""
     protected: set[str] = set()
+    pairs: list[tuple[set[str], set[str]]] = []
     separate_roman_math = sum(g["font"].upper().startswith("SF") for g in glyphs) > len(glyphs) * 0.2
 
     def math_font(glyph: dict[str, Any]) -> bool:
@@ -466,28 +504,39 @@ def _prose_boundary_ids(glyphs: list[dict[str, Any]]) -> set[str]:
                 inside = "".join(g["text"] if not math_font(g) else " " for g in block[start + 1:index])
                 if language_words(inside):
                     protected.update((opening["id"], glyph["id"]))
-    return protected
+                    pairs.append(({opening["id"], glyph["id"]},
+                                  {g["id"] for g in block[start + 1:index] if g["text"].isalpha() and not math_font(g)}))
+    return protected, pairs
 
 
 def _boundary_diagnostics(glyphs: list[dict[str, Any]], assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    protected = _prose_boundary_ids(glyphs)
+    protected, pairs = _prose_boundaries(glyphs)
     diagnostics = []
     owners = {gid: asset["id"] for asset in assets for fragment in asset["fragments"] for gid in fragment["glyph_ids"]}
     for asset in assets:
         if asset["kind"] != "math":
             continue
         ids = {gid for fragment in asset["fragments"] for gid in fragment["glyph_ids"]}
-        contaminated = [g["id"] for g in glyphs if g["id"] in ids & protected]
+        # A bracket pair whose words the asset declares as formula conditions ("(mod m)",
+        # "(a.s.)") is language the record already accounts for, not a prose boundary.
+        declared = {gid for condition in asset.get("formula_conditions") or [] for gid in condition["glyph_ids"]}
+        accounted = {gid for delimiters, inner in pairs if inner and inner <= declared for gid in delimiters}
+        contaminated = [g["id"] for g in glyphs if g["id"] in (ids & protected) - accounted]
         if contaminated:
             diagnostics.append({"code": "prose-boundary-in-math", "asset_id": asset["id"], "glyph_ids": contaminated,
                                 "action": "Inspect original prose/citation context and correct glyph ownership before approval."})
         if not asset.get("display"):
             continue
         # A symbol-face glyph inside a displayed formula's crop but owned elsewhere leaves a
-        # hole in the export (the explicit export draws owned paths only).
+        # hole in the export (the explicit export draws owned paths only). The crop box is
+        # padded ink; a glyph counts only inside the ink and on one of the asset's own rows
+        # (its baseline near an owned glyph's), so the descender of the line above, whose
+        # padding meets the padding of this crop, is not a hole.
+        rows = [g.get("baseline", g["bbox"][3]) for g in glyphs if g["id"] in ids and inked_glyph(g)]
         holes = [g["id"] for g in glyphs
                  if g["id"] not in ids and owners.get(g["id"]) and inked_glyph(g) and MATH_FONT.search(g["font"])
-                 and any(_inside(g, fragment["bbox"]) for fragment in asset["fragments"])]
+                 and any(_inside(g, [b[0] + 0.5, b[1] + 0.5, b[2] - 0.5, b[3] - 0.5]) for b in (f["bbox"] for f in asset["fragments"]))
+                 and any(abs(g.get("baseline", g["bbox"][3]) - row) <= 0.6 * g.get("size", 10) for row in rows)]
         if holes:
             diagnostics.append({"code": "math-ink-outside-ownership", "asset_id": asset["id"], "glyph_ids": holes,
                                 "action": "Notation inside this display crop belongs to another asset; merge the regions or correct ownership before approval."})
@@ -528,6 +577,13 @@ def _strip_display_prose(owned: list[dict[str, Any]], prose_ids: set[str],
             phrase = [g for g in owned if g not in kept]
             x0, x1 = min(g["bbox"][0] for g in phrase), max(g["bbox"][2] for g in phrase)
             if any(o["bbox"][0] < x1 and o["bbox"][2] > x0 for o in others or []):
+                return owned
+            # Notation on the far side of the words, set off from them by its own gap
+            # ("= νQ,   or equivalently   ..."), makes the words a connective between two
+            # formulas of one display, not a phrase beside it.
+            beyond = [g for g in phrase if g["id"] in mathematical
+                      and (g["bbox"][2] <= left_edge - gap if side == "tail" else g["bbox"][0] >= right_edge + gap)]
+            if beyond:
                 return owned
             return kept
     return owned
@@ -641,6 +697,104 @@ def _prose_word_ids(glyphs: list[dict[str, Any]]) -> set[str]:
     return ids
 
 
+def _tag_glyph_ids(glyphs: list[dict[str, Any]]) -> set[str]:
+    """Glyphs of native lines that are a printed equation label and nothing else.
+
+    A label set beside a display (``(3.11)``, at either margin) is neither notation nor
+    a continuation of the formula on the line above: its ink is owned by no asset and
+    its number binds to the display as ``equation_number``.
+    """
+    lines: dict[str, list[dict[str, Any]]] = {}
+    for glyph in glyphs:
+        lines.setdefault(glyph["line"], []).append(glyph)
+    ids: set[str] = set()
+    for line in lines.values():
+        text = "".join(g["text"] for g in line if not g["text"].isspace())
+        if re.fullmatch(EQUATION_LABEL, text) and all(not MATH_FONT.search(g["font"]) for g in line if inked_glyph(g)):
+            ids.update(g["id"] for g in line)
+    return ids
+
+
+def _accent_glyph_ids(lines: dict[str, list[dict[str, Any]]], mathematical: Any) -> set[str]:
+    """Text-face accent glyphs (``ˆ``, ``¯``) set over a mathematical base on their line.
+
+    TeX draws a math accent as a separate glyph before or after its base in the text
+    layer; the base joins the run, so the accent must too, or the record keeps a stray
+    ``ˆ`` in the prose next to a crop of the bare base.
+    """
+    ids: set[str] = set()
+    for line in lines.values():
+        for index, glyph in enumerate(line):
+            if glyph["text"] not in SPACING_ACCENTS or MATH_FONT.search(glyph["font"]):
+                continue
+            x0, _, x1, _ = glyph["bbox"]
+            for step in (1, -1):
+                position = index + step
+                while 0 <= position < len(line) and line[position]["text"].isspace():
+                    position += step
+                if not 0 <= position < len(line):
+                    continue
+                base = line[position]
+                if mathematical(base) and base["bbox"][0] - 0.5 <= (x0 + x1) / 2 <= base["bbox"][2] + 0.5:
+                    ids.add(glyph["id"])
+                    break
+    return ids
+
+
+def _next_line_openers(lines: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """The first inked glyph of the native line after each line of the same block."""
+    openers: dict[str, dict[str, Any]] = {}
+    for key in lines:
+        match = re.fullmatch(r"(.*)-l(\d+)", key)
+        if match is None:
+            continue
+        following = lines.get(f"{match[1]}-l{int(match[2]) + 1}")
+        opener = next((g for g in following or [] if inked_glyph(g)), None)
+        if opener is not None:
+            openers[key] = opener
+    return openers
+
+
+def _split_display_at_tags(region: dict[str, Any], owned: list[dict[str, Any]],
+                           tag_rows: list[float]) -> tuple[list[list[dict[str, Any]]], list[float]]:
+    """Cut a display box that spans several labelled displays into one part per label.
+
+    The detector may box two stacked displays, each with its own printed label, as one
+    formula. Between two label rows the cut goes through the widest horizontal gap no
+    owned ink crosses; a box whose ink spans both labels (one tall matrix) stays whole.
+    Returns the parts and the y of each cut (no delimiter column is chained across one).
+    """
+    rows = sorted(t for t in tag_rows if region["bbox"][1] - 2 <= t <= region["bbox"][3] + 2)
+    if len(rows) < 2:
+        return [owned], []
+    inked = sorted((g for g in owned if inked_glyph(g)), key=lambda g: g["bbox"][1])
+    parts: list[list[dict[str, Any]]] = []
+    cuts: list[float] = []
+    remaining = list(owned)
+    for upper, lower in zip(rows, rows[1:], strict=False):
+        best: tuple[float, float] | None = None
+        boxes = [g["bbox"] for g in inked if g["bbox"][3] > upper and g["bbox"][1] < lower]
+        edges = sorted({b[3] for b in boxes} | {b[1] for b in boxes})
+        for bottom, top in zip(edges, edges[1:], strict=False):
+            if top - bottom <= 0.5 or not upper < (bottom + top) / 2 < lower:
+                continue
+            if any(b[1] < top and b[3] > bottom for b in boxes):
+                continue
+            if best is None or top - bottom > best[0]:
+                best = (top - bottom, (bottom + top) / 2)
+        if best is None:
+            continue
+        cut = best[1]
+        above = [g for g in remaining if (g["bbox"][1] + g["bbox"][3]) / 2 < cut]
+        remaining = [g for g in remaining if (g["bbox"][1] + g["bbox"][3]) / 2 >= cut]
+        if above:
+            parts.append(above)
+            cuts.append(cut)
+    if remaining:
+        parts.append(remaining)
+    return (parts, cuts) if len(parts) > 1 else ([owned], [])
+
+
 def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> set[str]:
     """Glyphs of detector display formulas that also contain prose words.
 
@@ -652,12 +806,13 @@ def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str,
     """
     prose = _prose_word_ids(glyphs)
     margin = _left_margin(glyphs)
+    tags = _tag_glyph_ids(glyphs)
     ids: set[str] = set()
     for item in layout:
         if item.get("label") != "display_formula":
             continue
         box = [float(v) / 2 for v in item["bbox"]]
-        owned = [g for g in glyphs if inked_glyph(g) and _inside(g, box)]
+        owned = [g for g in glyphs if inked_glyph(g) and _inside(g, box) and g["id"] not in tags]
         if owned and any(g["id"] in prose for g in owned):
             ids.update(_display_box_owned(owned, prose, margin)[2])
     return ids
@@ -697,13 +852,16 @@ def _delimiter_piece(glyph: dict[str, Any]) -> bool:
     return not text.isprintable() and (y1 - y0) >= _DELIMITER_ASPECT * max(x1 - x0, 1e-6)
 
 
-def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]],
+                            cuts: list[float] | None = None) -> list[dict[str, Any]]:
     """Keep every piece of one stretched delimiter in one region.
 
     TeX builds a tall brace or bracket from a top, extenders and a bottom on
     separate baselines. Native runs are scanned per PDF line, so the corner pieces
     land in the display box and the extenders in their own runs; the export then
-    draws the brace in two crops and the reading order splits its cases.
+    draws the brace in two crops and the reading order splits its cases. ``cuts``
+    are the y values where a detector box was cut into separate labelled displays:
+    the whole braces of two stacked cases blocks are not one column.
     """
     # A column is stacked pieces at one x: each piece starts where the previous one ends
     # (within a small gap or overlap). Two integral signs on consecutive display lines at
@@ -713,7 +871,8 @@ def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str
     for glyph in pieces:
         size = glyph.get("size", 10)
         column = next((c for c in columns if abs(glyph["bbox"][0] - c[-1]["bbox"][0]) <= 1.5
-                       and -0.2 * size <= glyph["bbox"][1] - c[-1]["bbox"][3] <= max(size, c[-1].get("size", 10)) * 0.6), None)
+                       and -0.2 * size <= glyph["bbox"][1] - c[-1]["bbox"][3] <= max(size, c[-1].get("size", 10)) * 0.6
+                       and not any(c[-1]["bbox"][3] <= cut <= glyph["bbox"][1] for cut in cuts or [])), None)
         if column is not None:
             column.append(glyph)
         else:
@@ -805,13 +964,16 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     return conditions
 
 
-def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]],
+             ink: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     # Use original visible paths when available: TeX accents and radicals often
-    # have misleading native metric rectangles on an adjacent line.
+    # have misleading native metric rectangles on an adjacent line. ``ink`` is the
+    # page's measured glyph ink when the caller already has it.
     unmeasured: set[str] = set()
-    if hasattr(page, "get_svg_image"):
+    if ink is None and hasattr(page, "get_svg_image"):
         from littrans.glyph_export import glyph_ink_boxes
         ink = glyph_ink_boxes(page, glyphs)
+    if ink is not None:
         # A glyph without a measured path keeps its metric box; the region records
         # that so a truncating crop is traceable instead of a silent fallback.
         unmeasured = {g["id"] for g in glyphs if inked_glyph(g) and g["id"] not in ink}
@@ -833,22 +995,29 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     separate_roman_math = sum(g["font"].upper().startswith("SF") for g in glyphs) > len(glyphs) * 0.2
     for glyph in glyphs:
         lines.setdefault(glyph["line"], []).append(glyph)
-    protected_prose = _prose_boundary_ids(glyphs)
+    # A printed equation label is never notation: it is owned by no asset and binds to
+    # its display as equation_number.
+    tags = _tag_glyph_ids(glyphs)
+    protected_prose = _prose_boundary_ids(glyphs) | tags
+    tag_rows = sorted({g.get("baseline", g["bbox"][3]) for g in glyphs if g["id"] in tags})
     margin = _left_margin(glyphs)
     bold_variables = _bold_variable_ids(lines)
     bullets = _line_bullet_ids(lines)
     continuation = "0123456789()[]{}+-*/.,: "
 
     def mathematical_glyph(glyph: dict[str, Any]) -> bool:
-        return bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
+        return bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or glyph.get("id") in accents or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
 
+    accents: set[str] = set()
+    accents = _accent_glyph_ids(lines, mathematical_glyph)
     # A text-face operator name applied to notation ("log c_ε", "max{...}") continues an open
     # run: TeX sets it in the text face between the operands it belongs to.
     operator_words = _operator_word_ids(lines, mathematical_glyph)
+    openers = _next_line_openers(lines)
     # The native run that closed the previous line after a relation or operator: TeX
     # breaks an inline formula only there, so the next line's opening run continues it.
     carry: str | None = None
-    for line in lines.values():
+    for key, line in lines.items():
         run: list[dict[str, Any]] = []
         line_inked = [g for g in line if inked_glyph(g)]
         first_inked = line_inked[0]["id"] if line_inked else None
@@ -883,7 +1052,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                         run = [*prefix, *run]
                 run.append(glyph)
             elif run:
-                run = _trim_prose_edges(run, line)
+                run = _trim_prose_edges(run, line, following=openers.get(key))
                 if run:
                     run_id = f"run:{run[0]['id']}"
                     native: dict[str, Any] = {"kind": "math", "bbox": _union([g["bbox"] for g in run]), "glyph_ids": [g["id"] for g in run], "provenance": ["native-math-glyphs"], "display": False, "grouping_pending": False, "_runs": [run_id]}
@@ -916,9 +1085,13 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                 word = []
     clean = []
     glyph_by_id = {g["id"]: g for g in glyphs}
-    for region in regions:
+    pending = list(regions)
+    regions = []
+    cuts: list[float] = []
+    while pending:
+        region = pending.pop(0)
         if "glyph_ids" not in region:
-            owned = [g for g in glyphs if inked_glyph(g) and _inside(g, region["bbox"])]
+            owned = [g for g in glyphs if inked_glyph(g) and _inside(g, region["bbox"]) and g["id"] not in tags]
             whole_display = False
             if region["kind"] == "math" and region["display"] and owned and any(g["id"] in prose_ids for g in owned):
                 owned = _display_box_owned(owned, prose_ids, margin)[0]
@@ -935,6 +1108,13 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                 # _display_line_glyph_ids for the structural handling of such lines.
                 continue
             if region["kind"] == "math" and region["display"]:
+                parts, part_cuts = _split_display_at_tags(region, owned, tag_rows)
+                cuts.extend(part_cuts)
+                if len(parts) > 1:
+                    # One detector box over several labelled displays: one region each.
+                    for part in reversed(parts):
+                        pending.insert(0, {**region, "bbox": _union([g["bbox"] for g in part]), "glyph_ids": [g["id"] for g in part]})
+                    continue
                 region["bbox"] = _union([g["bbox"] for g in owned])
             if region["kind"] in {"math", "mixed-region"} and owned:
                 region["glyph_ids"] = [g["id"] for g in owned if whole_display or g["id"] not in prose_ids]
@@ -951,7 +1131,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                 by_line: dict[str, list[dict[str, Any]]] = {}
                 for g in owned:
                     by_line.setdefault(g["line"], []).append(g)
-                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group), balance=owned)]
+                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group), balance=owned, following=openers.get(key))]
             if not owned:
                 continue
             region["glyph_ids"] = [g["id"] for g in owned]
@@ -959,21 +1139,25 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             # owned glyph ink is the region. Rules and accents merge back below.
             region["bbox"] = _union([g["bbox"] for g in owned if inked_glyph(g)] or [g["bbox"] for g in owned])
         clean.append(region)
-    regions = _merge_delimiter_pieces(clean, glyphs)
+    regions = _merge_delimiter_pieces(clean, glyphs, cuts)
+    regions = _cluster_drawings(regions)
     # Merge formula components and their rules, but never expand to a PDF text
     # block. Explicit ownership prevents overlapping font boxes stealing prose.
+    # Each pair test reads the region's cached inked baselines and id set (kept on
+    # the region under private keys and updated on merge): a page with hundreds of
+    # vector drawings otherwise rescans every glyph for every pair.
+    for region in regions:
+        _cache_region_ink(region, glyph_by_id)
     changed = True
     while changed:
         changed = False
         for i, left in enumerate(regions):
             for j in range(i + 1, len(regions)):
                 right = regions[j]
-                shared = set(left.get("glyph_ids", [])) & set(right.get("glyph_ids", []))
+                shared = left["_ids"] & right["_ids"]
                 overlap = _intersects(left["bbox"], right["bbox"])
                 detector_math = left["kind"] == right["kind"] == "math" and any(p.startswith("PP-DocLayoutV2:") for p in left["provenance"] + right["provenance"])
-                left_g = [g for g in glyphs if g["id"] in left.get("glyph_ids", []) and inked_glyph(g)]
-                right_g = [g for g in glyphs if g["id"] in right.get("glyph_ids", []) and inked_glyph(g)]
-                near_baseline = not left_g or not right_g or min(abs(a.get("baseline", 0) - b.get("baseline", 0)) for a in left_g for b in right_g) < max(g.get("size", 10) for g in left_g + right_g) * .7
+                near_baseline = not left["_baselines"] or not right["_baselines"] or _nearest_gap(left["_baselines"], right["_baselines"]) < max(left["_size"], right["_size"]) * .7
                 if shared or (overlap and not detector_math and near_baseline):
                     display = any(r["display"] and any(p != "native-vector" for p in r["provenance"]) for r in (left, right))
                     left["bbox"] = _union([left["bbox"], right["bbox"]])
@@ -992,11 +1176,15 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                     left["grouping_pending"] = left["kind"] == "mixed-region"
                     # A fraction bar/accent alone does not turn inline math into display math.
                     left["display"] = display
+                    _cache_region_ink(left, glyph_by_id)
                     regions.pop(j)
                     changed = True
                     break
             if changed:
                 break
+    for region in regions:
+        for key in ("_ids", "_baselines", "_size"):
+            region.pop(key, None)
     regions = _join_line_break_runs(regions)
     regions = _absorb_delimited_rows(regions, glyphs, margin)
     for region in regions:
@@ -1011,6 +1199,79 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         if unmeasured.intersection(region.get("glyph_ids", [])) and "ink-bounds-unmeasured" not in region["provenance"]:
             region["provenance"] = [*region["provenance"], "ink-bounds-unmeasured"]
     return sorted(regions, key=lambda r: (r["bbox"][1], r["bbox"][0]))
+
+
+def _cache_region_ink(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]]) -> None:
+    """Cache what the merge loop asks of a region: its id set, inked baselines, font size."""
+    inked = [glyph_by_id[gid] for gid in region.get("glyph_ids", []) if gid in glyph_by_id and inked_glyph(glyph_by_id[gid])]
+    region["_ids"] = frozenset(region.get("glyph_ids", []))
+    region["_baselines"] = sorted(g.get("baseline", 0) for g in inked)
+    region["_size"] = max((g.get("size", 10) for g in inked), default=10)
+
+
+def _nearest_gap(left: list[float], right: list[float]) -> float:
+    """The smallest distance between a value of ``left`` and one of ``right`` (both sorted)."""
+    from bisect import bisect_left
+
+    best = float("inf")
+    for value in left:
+        index = bisect_left(right, value)
+        for candidate in (right[index - 1] if index else None, right[index] if index < len(right) else None):
+            if candidate is not None:
+                best = min(best, abs(value - candidate))
+    return best
+
+
+def _cluster_drawings(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge overlapping glyph-free vector regions ahead of the pairwise loop.
+
+    Two ``native-vector`` regions that overlap always merge in the loop below (no glyph
+    baseline separates them), and every region overlapping their union merges the same
+    way whether the drawings were joined first or one at a time. Joining them here is
+    the same result; a diagram of hundreds of segments no longer costs one restart of
+    the quadratic scan per segment.
+    """
+    def bare(region: dict[str, Any]) -> bool:
+        return region["kind"] == "mixed-region" and region["provenance"] == ["native-vector"] and "glyph_ids" not in region
+
+    members = [index for index, region in enumerate(regions) if bare(region)]
+    parent = {index: index for index in members}
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    changed = True
+    clusters: dict[int, list[float]] = {index: list(regions[index]["bbox"]) for index in members}
+    while changed:
+        changed = False
+        roots = sorted(set(find(index) for index in members))
+        for a in range(len(roots)):
+            for b in range(a + 1, len(roots)):
+                ra, rb = roots[a], roots[b]
+                if find(ra) != find(rb) and _intersects(clusters[find(ra)], clusters[find(rb)]):
+                    root, other = sorted((find(ra), find(rb)))
+                    parent[other] = root
+                    clusters[root] = _union([clusters[root], clusters[other]])
+                    changed = True
+    result: list[dict[str, Any]] = []
+    for index, region in enumerate(regions):
+        if index not in parent:
+            result.append(region)
+            continue
+        root = find(index)
+        if root != index:
+            continue
+        size = sum(1 for member in members if find(member) == root)
+        if size == 1:
+            result.append(region)
+            continue
+        # What the pairwise merge of glyph-free drawings produces: the union box, the
+        # single provenance, and a display flag no vector region can assert on its own.
+        result.append({**region, "bbox": clusters[root], "display": False, "grouping_pending": True})
+    return result
 
 
 def _absorb_delimited_rows(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]],
@@ -1434,6 +1695,29 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         else:
             result.append(unit)
     removed = set()
+    # A label MuPDF put in the text block before or after the display ("... given by
+    # (8.50)", "(8.32) (i) ...") binds to the adjacent unnumbered display beside it and
+    # leaves the paragraph.
+    for index, unit in enumerate(result):
+        if unit.kind is not UnitKind.PARAGRAPH or unit.equation_number:
+            continue
+        text = unit.source_text
+        leading = re.match(r"\s*" + number_pattern + r"(?=\s|$)", text)
+        trailing = re.search(r"(?<=\s)" + number_pattern + r"\s*$", text)
+        for match, neighbour_index in ((leading, index - 1), (trailing, index + 1)):
+            if match is None or not 0 <= neighbour_index < len(result):
+                continue
+            neighbour = result[neighbour_index]
+            fragments = [f for aid in asset_reference_ids(neighbour.source_text) if assets[aid].display for f in assets[aid].fragments]
+            if (neighbour.kind is not UnitKind.EQUATION or neighbour.equation_number or neighbour.page != unit.page
+                    or not fragments or not any(min(f.bbox[3], unit.bbox[3]) - max(f.bbox[1], unit.bbox[1]) >= 3 for f in fragments)):
+                continue
+            body = (text[:match.start()] + " " + text[match.end():]).strip()
+            if not body:
+                break
+            result[neighbour_index] = _make_unit(neighbour.page, neighbour.unit_id, neighbour.source_text, neighbour.bbox, assets, kind=neighbour.kind.value, equation_number=match[1], footnote_refs=neighbour.footnote_refs)
+            result[index] = _make_unit(unit.page, unit.unit_id, body, unit.bbox, assets, kind=unit.kind.value, footnote_refs=unit.footnote_refs)
+            break
     for index, unit in enumerate(result):
         label = re.fullmatch(tombstones + number_pattern + tombstones, unit.source_text.strip())
         if not label:
@@ -1501,22 +1785,80 @@ def _hyphenation_evidence(doc: fitz.Document, source_hash: str) -> tuple[Counter
         for page in doc:
             text = page.get_text()
             compounds.update(m.lower() for m in re.findall(r"[A-Za-z]+-[A-Za-z]+", text))
-            words.update(w.lower() for w in re.findall(r"[A-Za-z]+", text))
+            # A word printed on its own: not a half of a hyphenated or line-broken word.
+            words.update(w.lower() for w in re.findall(r"(?<![A-Za-z-])[A-Za-z]+(?![A-Za-z-])", text))
         _HYPHENATION_EVIDENCE[source_hash] = (compounds, words)
     return _HYPHENATION_EVIDENCE[source_hash]
 
 
+# Conjunctions after a suspended hyphen ("left- and right-continuous").
+SUSPENDED_HYPHEN_TAILS = {"and", "or", "nor"}
+
+
 def _rejoin_line_breaks(text: str, evidence: tuple[Counter[str], Counter[str]]) -> str:
-    """Join words hyphenated across a line end unless the document prints the compound."""
+    """Join words hyphenated across a line end unless the document prints the compound.
+
+    The hyphen stays when the document prints the compound more often than the joined
+    word; when neither is printed elsewhere, it stays only if both halves are words the
+    document prints on their own (``finite-state``, not ``pas-sion``). A capitalised
+    second half is a name compound (``Fokker-Planck``), a conjunction is a suspended
+    hyphen (``left- and``), and notation before the hyphen (an asset placeholder) makes
+    a compound with the word after it (``σ-algebra``).
+    """
     compounds, words = evidence
 
     def rejoin(match: re.Match[str]) -> str:
         head, tail = match[1], match[2]
-        if compounds[f"{head}-{tail}".lower()] > words[f"{head}{tail}".lower()]:
+        if head == "}}":
+            return f"{head}-{tail}"
+        if tail[0].isupper():
+            return f"{head}-{tail}"
+        if tail.lower() in SUSPENDED_HYPHEN_TAILS:
+            return f"{head}- {tail}"
+        printed = compounds[f"{head}-{tail}".lower()]
+        joined = words[f"{head}{tail}".lower()]
+        if printed > joined:
+            return f"{head}-{tail}"
+        if joined > printed:
+            return head + tail
+        if len(head) >= 3 and len(tail) >= 3 and words[head.lower()] and words[tail.lower()]:
             return f"{head}-{tail}"
         return head + tail
 
-    return re.sub(r"([A-Za-z]*[a-z])-[ \t]*\n[ \t]*([a-z][A-Za-z]*)", rejoin, text)
+    return re.sub(r"(\}\}|[A-Za-z]*[a-z])-[ \t]*\n[ \t]*([A-Za-z][A-Za-z]*)", rejoin, text)
+
+
+# Ink gaps at an asset boundary: at least this many ems is a printed word space.
+BOUNDARY_SPACE_EM = 0.15
+NO_SPACE_BEFORE = set(".,;:?!)]}\u201d\u2019")
+NO_SPACE_AFTER = set("([{\u201c\u2018")
+
+
+def _boundary_space(left: dict[str, Any] | None, right: dict[str, Any] | None,
+                    ink: dict[str, Any]) -> bool | None:
+    """Whether the page prints a space between two inked glyphs on one native line.
+
+    The text layer is not evidence here: TeX sets the gap around notation with glue,
+    which MuPDF reports as a space glyph or not by its own threshold, and reports a kern
+    before a period as a space. The printed ink decides: a gap of ``BOUNDARY_SPACE_EM``
+    is a word space, less is none. None when the pair is not comparable (a subscript,
+    another baseline, no measured ink) and the text layer stays authoritative.
+    """
+    if left is None or right is None:
+        return None
+    if right["text"] in NO_SPACE_BEFORE or left["text"] in NO_SPACE_AFTER:
+        # TeX never spaces punctuation or a closing bracket from what precedes it, nor
+        # an opening bracket or quote from what follows it.
+        return False
+    lb, rb = ink.get(left["id"]), ink.get(right["id"])
+    if lb is None or rb is None:
+        return None
+    size = max(left.get("size", 10), right.get("size", 10))
+    if abs(left.get("baseline", 0) - right.get("baseline", 0)) > size * 0.25:
+        return None
+    if min(left.get("size", 10), right.get("size", 10)) < size * 0.8:
+        return None
+    return bool(rb[0] - lb[2] >= size * BOUNDARY_SPACE_EM)
 
 
 def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str, layout: dict[str, Any], override: dict[str, Any] | None = None,
@@ -1552,8 +1894,13 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     )
     image_sha256 = sha256_file(image_path)
     items = layout_page_items(layout, image_path, image_sha256) or []
+    # The measured glyph ink serves the planner, the regions and the boundary spaces.
+    ink: dict[str, Any] = {}
+    if hasattr(page, "get_svg_image"):
+        from littrans.glyph_export import glyph_ink_boxes
+        ink = glyph_ink_boxes(page, glyphs)
     structure = plan_structure(glyphs, blocks, items, page.rect.height,
-                               display_glyph_ids=_display_line_glyph_ids(glyphs, items))
+                               display_glyph_ids=_display_line_glyph_ids(glyphs, items), ink=ink)
     from littrans.structure_profile import guidance_digest, structure_context
     profile_context = structure_context(root)
     if profile_context:
@@ -1568,7 +1915,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         preserved = load_assets(root) if any("preserve_asset_id" in r for r in override["regions"]) else {}
         regions = [_declare_override_conditions(page, r, content_glyphs, preserved) for r in override["regions"]]
     else:
-        regions = _regions(page, content_glyphs, items)
+        regions = _regions(page, content_glyphs, items, ink=ink if hasattr(page, "get_svg_image") else None)
     if not glyphs and not regions and page.get_images():
         regions = [{"kind": "mixed-region", "bbox": list(page.rect), "grouping_pending": True, "display": True, "provenance": ["no-text-layer"]}]
     assets = [_asset(root, doc, number, source_hash, r, glyphs) for r in regions]
@@ -1594,15 +1941,43 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         # Style the block as a whole: emphasis and hyphenated words cross line breaks.
         tokens: list[tuple[str, str]] = []
         footnote_refs = []
+        last_inked: dict[str, Any] | None = None
         for line in block["lines"]:
+            line_inked = [glyph_by_id[gid] for gid in line if inked_glyph(glyph_by_id[gid])]
             if tokens:
+                same_row = (block["id"] in structure["display_blocks"] and last_inked is not None and line_inked
+                            and abs(line_inked[0].get("baseline", 0) - last_inked.get("baseline", 0)) < 0.5 * last_inked.get("size", 10))
                 # A line end is kept distinct from an in-line space until hyphens are resolved.
-                tokens.append(("\n", ""))
+                # Two native lines of a displayed block on one baseline are one printed row.
+                tokens.append((" " if same_row else "\n", ""))
+            # The ink gap at each asset boundary on this line decides its space (LT-060/066):
+            # the glyphs an asset owns on the line, and the unowned inked neighbours.
+            boundary: dict[str, bool | None] = {}
+            for position, gid in enumerate(line):
+                aid = owners.get(gid)
+                if not aid or (position and owners.get(line[position - 1]) == aid):
+                    continue
+                owned_here = [glyph_by_id[g] for g in line[position:] if owners.get(g) == aid and inked_glyph(glyph_by_id[g]) and g in ink]
+                if not owned_here:
+                    continue
+                previous = next((glyph_by_id[g] for g in reversed(line[:position]) if owners.get(g) != aid and inked_glyph(glyph_by_id[g]) and g not in structure["markers"]), None)
+                following = next((glyph_by_id[g] for g in line[position + 1:] if owners.get(g) != aid and inked_glyph(glyph_by_id[g]) and g not in structure["markers"]), None)
+                # The asset's outermost ink on the line, not its first or last glyph in
+                # native order (a superscript may be emitted last).
+                leftmost = min(owned_here, key=lambda g: ink[g["id"]][0])
+                rightmost = max(owned_here, key=lambda g: ink[g["id"]][2])
+                boundary[f"before:{aid}"] = _boundary_space(previous, leftmost, ink)
+                boundary[f"after:{aid}"] = _boundary_space(rightmost, following, ink)
+            pending_space: tuple[str, str] | None = None
+            after_asset: str | None = None
             for gid in line:
                 aid = owners.get(gid)
                 marker = structure["markers"].get(gid)
                 style = font_style(glyph_by_id[gid]["font"])
                 if marker:
+                    if pending_space:
+                        tokens.append(pending_space)
+                    pending_space = after_asset = None
                     if not marker["definition"] and marker.get("emit", True):
                         tokens.append(("[^" + marker["number"] + "]", ""))
                         reference = f"p{number:04d}-" + marker["note_block"]
@@ -1611,14 +1986,44 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                 elif aid:
                     if aid not in emitted:
                         before, after = edge_spaces[aid]
-                        tokens.append(((" " if before else "") + "{{asset:" + aid + "}}" + (" " if after else ""), ""))
+                        decided = boundary.get(f"before:{aid}")
+                        if decided is not None:
+                            before, pending_space = decided, None
+                        elif pending_space:
+                            tokens.append(pending_space)
+                            pending_space = None
+                        tokens.append(((" " if before else "") + "{{asset:" + aid + "}}", ""))
+                        decided = boundary.get(f"after:{aid}")
+                        if decided is None:
+                            if after:
+                                tokens.append((" ", ""))
+                            after_asset = None
+                        else:
+                            after_asset = aid
+                            if decided:
+                                tokens.append((" ", ""))
                         emitted.add(aid)
                 else:
                     glyph = glyph_by_id[gid]
-                    if glyph["text"].isspace() and glyph["bbox"][2] - glyph["bbox"][0] < glyph["size"] * KERN_SPACE_EM:
-                        # A kern the PDF reports as a space glyph is not a word space.
+                    if glyph["text"].isspace():
+                        if after_asset is not None:
+                            # The ink gap decided this boundary; the text layer's space is void.
+                            continue
+                        if glyph["bbox"][2] - glyph["bbox"][0] < glyph["size"] * KERN_SPACE_EM:
+                            # A kern the PDF reports as a space glyph is not a word space.
+                            continue
+                        # A space before an asset waits for the ink decision at that boundary.
+                        pending_space = (glyph["text"], style)
                         continue
+                    if pending_space:
+                        tokens.append(pending_space)
+                        pending_space = None
+                    after_asset = None
                     tokens.append((glyph["text"], style))
+            if pending_space:
+                tokens.append(pending_space)
+            if line_inked:
+                last_inked = line_inked[-1]
         text = _rejoin_line_breaks(styled_text(tokens).strip(), hyphenation)
         if block["id"] in structure["display_blocks"]:
             # A displayed block keeps its rows (a cases formula with native condition
@@ -1651,15 +2056,19 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                 # carries prose ("... for all times t > 0.") stays one display unit.
                 kind = "equation"
             block_refs = asset_reference_ids(text)
+            box = block["bbox"]
             if block_refs and not re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip():
                 # A block that only carries a whole figure/table (its internal labels are
-                # native glyphs) is that element, not a prose paragraph.
+                # native glyphs) is that element, not a prose paragraph, and its box is the
+                # element's, not the labels' line.
                 kinds = {by_id[aid].kind for aid in block_refs}
                 if kinds == {"figure"}:
                     kind = "figure"
                 elif kinds == {"table"}:
                     kind = "table"
-            units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, block["bbox"], by_id, kind=kind, footnote_refs=list(dict.fromkeys(footnote_refs))))
+                if kind in {"figure", "table"}:
+                    box = _union([f.bbox for aid in block_refs for f in by_id[aid].fragments])
+            units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, box, by_id, kind=kind, footnote_refs=list(dict.fromkeys(footnote_refs))))
     for asset in assets:
         if asset.id not in emitted:
             fragment = asset.fragments[0]
@@ -1697,8 +2106,21 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     units.sort(key=order)
     units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()})
     units = assemble_structure(units, by_id, structure, _make_unit, rejoin=lambda text: _rejoin_line_breaks(text, hyphenation))
-    if not (override and "units" in override):
-        units = coalesce_inline_assets(units, by_id, _make_unit, _hash)
+    # Adjacent inline fragments coalesce in both channels: a reviewer's units may name
+    # the coalesced asset the record shows, or its constituents; each merge is kept
+    # only when the units reference it.
+    constituents = dict(by_id)
+    units = coalesce_inline_assets(units, by_id, _make_unit, _hash)
+    if override and "units" in override:
+        referenced = {aid for item in override["units"] for aid in asset_reference_ids(item["source_markdown"])}
+        for aid in [aid for aid in by_id if aid not in constituents]:
+            if aid in referenced:
+                continue
+            merged = by_id.pop(aid)
+            parts = {tuple(f.glyph_ids) for f in merged.fragments}
+            for old, asset in constituents.items():
+                if old not in by_id and all(tuple(f.glyph_ids) in parts for f in asset.fragments):
+                    by_id[old] = asset
     assets = list(by_id.values())
     owners = {gid:a.id for a in assets for f in a.fragments for gid in f.glyph_ids}
     if override and "units" in override:
@@ -1706,7 +2128,9 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         for item in override["units"]:
             if item.get("latex") is not None:
                 raise ValueError("source preservation cannot import LaTeX")
-            extra = {k: item[k] for k in ("equation_number", "footnote_number", "footnote_refs", "parent_id", "continues_from_previous", "continued_to_next", "render_policy", "translatable") if k in item}
+            # The same optional keys the pipeline's structure assembly passes, so a unit
+            # carried over as recorded keeps the hash the pipeline gave it.
+            extra = {k: item.get(k, default) for k, default in OVERRIDE_UNIT_DEFAULTS.items()}
             units.append(_make_unit(number, item["unit_id"], item["source_markdown"], item["bbox"], by_id, item.get("kind", "paragraph"), **extra))
         refs = Counter(aid for unit in units for aid in asset_reference_ids(unit.source_text))
         if refs != Counter({aid: 1 for aid in by_id}):
@@ -2322,6 +2746,12 @@ def _verify_source_receipt(root: Path, current: dict[str, Any], receipt: Any, so
 
 
 OVERRIDE_BLOCKS = ("regions", "units", "page_canvas_bbox")
+# The optional unit fields the pipeline's structure assembly always passes to _make_unit,
+# with the model defaults an override item may leave out.
+OVERRIDE_UNIT_DEFAULTS: dict[str, Any] = {
+    "equation_number": None, "footnote_number": None, "footnote_refs": [], "parent_id": None,
+    "continues_from_previous": False, "continued_to_next": False, "render_policy": "include", "translatable": True,
+}
 
 
 def _complete_override(root: Path, page: int, override: dict[str, Any]) -> dict[str, Any]:

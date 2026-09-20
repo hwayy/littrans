@@ -129,12 +129,26 @@ def scaffold_context(root: Path, repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _ignore_key(line: str) -> tuple[bool, str]:
+    """A gitignore pattern's identity: its negation and its path without the leading slash.
+
+    ``/.littrans/*`` and ``.littrans/*`` anchor the same path in a file that lives in the
+    directory they name (a pattern with a slash inside is anchored either way).
+    """
+    line = line.strip()
+    negated = line.startswith("!")
+    return negated, line[1:].lstrip("/") if negated else line.lstrip("/")
+
+
 def ensure_project_ignore(root: Path) -> bool:
-    """Add the runtime-state ignore pair to an existing project ``.gitignore`` once."""
+    """Add the runtime-state ignore pair to an existing project ``.gitignore`` once.
+
+    A pair the file already carries in an equivalent spelling (a leading slash) is present.
+    """
     ignore_path = root / ".gitignore"
     existing = ignore_path.read_text(encoding="utf-8") if ignore_path.is_file() else ""
-    present = {line.strip() for line in existing.splitlines()}
-    missing = [line for line in PROJECT_IGNORE_LINES if line not in present]
+    present = {_ignore_key(line) for line in existing.splitlines()}
+    missing = [line for line in PROJECT_IGNORE_LINES if _ignore_key(line) not in present]
     if not missing:
         return False
     separator = "" if not existing or existing.endswith("\n") else "\n"

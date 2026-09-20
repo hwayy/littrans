@@ -161,6 +161,12 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
     return result
 
 
+def _degenerate_path(node: ET.Element) -> bool:
+    """A path that draws nothing: no data, or move-to commands only (no segment, no close)."""
+    data = (node.get("d") or "").strip()
+    return not data or re.fullmatch(r"(?:[Mm][^A-LN-Za-ln-z]*)+", data) is not None
+
+
 def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                          bbox: list[float] | None = None) -> tuple[str, dict[str, Any]]:
     source = ET.fromstring(page.get_svg_image(text_as_path=True))
@@ -208,6 +214,10 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
             used.add(href[1:])
             target.append(copy.deepcopy(node))
         elif tag == "path":
+            if _degenerate_path(node):
+                # An empty or move-only path prints nothing anywhere on the page; it is
+                # no reason to give up the precise export of every fragment on the page.
+                continue
             matrix = _matrix(node)
             rule = _horizontal_rule(node, matrix)
             if rule is None:
@@ -222,9 +232,11 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                     continue
                 raise ValueError("Unsupported PDF vector primitive; retain raw region")
             x0, x1, y = rule
-            nearby = any(g["bbox"][0] < x1 + 1 and g["bbox"][2] > x0 - 1
-                         and g["bbox"][1] - 2 <= y <= g["bbox"][3] + 2 for g in glyphs)
-            if nearby and box.x0 - 2 <= x0 <= x1 <= box.x1 + 2 and box.y0 - 2 <= y <= box.y1 + 2:
+            # A rule inside the fragment's box (a fraction bar, a table rule, an overline)
+            # is part of the fragment wherever the nearest glyph box lies: the glyphs it
+            # belongs to are in the box; it must only share their horizontal extent.
+            beside = any(g["bbox"][0] < x1 + 1 and g["bbox"][2] > x0 - 1 for g in glyphs)
+            if beside and box.x0 - 2 <= x0 <= x1 <= box.x1 + 2 and box.y0 - 2 <= y <= box.y1 + 2:
                 target.append(copy.deepcopy(node))
                 paths += 1
         elif tag == "g":
