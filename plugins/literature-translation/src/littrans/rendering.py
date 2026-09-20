@@ -64,6 +64,7 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
+from littrans.source_structure import TERMINAL_PUNCTUATION
 from littrans.storage import (
     atomic_write_text,
     load_project,
@@ -752,6 +753,27 @@ def _asset_companions(record: Any, unit: SourceUnit | None = None, unit_map: dic
     return "\n\n".join(markdown), "".join(markup)
 
 
+def _continues_paragraph(previous: SourceUnit, unit: SourceUnit) -> bool:
+    """Whether ``unit`` continues the paragraph ``previous`` ended a page with.
+
+    The two page-edge flags are read together, as batching and audit closure read
+    them: the sender's ``continued_to_next`` (its last line ends mid-sentence) carries
+    the continuation even when the receiver's flag is unset, and a receiver's flag set
+    on geometry alone does not glue a paragraph to a sentence the sender closed with
+    terminal punctuation.
+    """
+    if previous.kind is not UnitKind.PARAGRAPH or unit.kind is not UnitKind.PARAGRAPH:
+        return False
+    if not 0 <= unit.page - previous.page <= 1:
+        return False
+    if previous.continued_to_next:
+        return True
+    if not unit.continues_from_previous:
+        return False
+    tail = re.sub(r"[*\s]+$", "", previous.source_text)
+    return TERMINAL_PUNCTUATION.search(tail) is None
+
+
 def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep a source paragraph or statement's prose and displays in one row.
 
@@ -1226,10 +1248,8 @@ def render_project(
             markdown[-1] += f"{separator}{anchor}{continued_body}"
             markdown.append("")
         elif (
-            unit.continues_from_previous
-            and previous_unit is not None
-            and 0 <= unit.page - previous_unit.page <= 1
-            and previous_unit.kind is UnitKind.PARAGRAPH
+            previous_unit is not None
+            and _continues_paragraph(previous_unit, unit)
             and markdown
         ):
             while markdown and markdown[-1] == "":

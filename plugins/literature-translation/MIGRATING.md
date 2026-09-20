@@ -38,6 +38,66 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
   blocks that were absorbed into prose become units of their own kind on re-preparation.
 
+## Projects prepared with 0.6.0-dev.11 or earlier: boundary spaces, labels and the two unit channels (0.6.0-dev.12)
+
+- **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and
+  overrides stay valid; `source verify` reads as before. The renderer and the scaffold change
+  without re-preparation (below).
+- **On re-preparation (`source prepare --replace`, or an override import) these forms change
+  the page's units and fingerprint:** a space at an inline-asset boundary that the printed ink
+  contradicts (`{{F}} .` becomes `{{F}}.`, `{{Φ}}the` becomes `{{Φ}} the`; the text changes,
+  the asset IDs do not); a printed equation label that was cut into a formula or left in a
+  paragraph (`(3.11)` binds as `equation_number`, the crop loses the label's ink, so that
+  asset's ID moves); one detector box over two labelled displays (now two `equation` units
+  with `-displaypartN` IDs of their own); a sentence split at a tall operator or at the
+  limits of an inline sum (the pieces are one unit again, and a mid-row line inside a list
+  item is recorded as the item's continuation in `structure.list_items`); a hyphenated line
+  end whose halves the document prints on their own (`finite-state`), a capitalised second
+  half (`Fokker-Planck`), a suspended hyphen or a `{{σ}}-algebra`; a
+  math-face comma before a line break, a text-face accent over a mathematical base
+  (`{{θ̄}}`, one asset instead of `¯{{θ}}`), bold citation keys that were cut as variables
+  (`[**KP92**, …]` stays prose), `mod` joining its operands, a connective between two formulas
+  of one display kept in the display; a display block MuPDF split on one baseline (its `\n`
+  becomes a space); a `figure`/`table` unit from a placeholder-only block (its `bbox` grows to
+  the figure); a first body unit opening with a run-in label, statement, `Proof` or list label
+  (`continues_from_previous` cleared); an item after paragraph white space (its `parent_id`
+  now names the introducing paragraph); a chunk whose parent was merged away (`parent_id`
+  remapped to the survivor). Measured on the pilot's pages 52–110 (chapters 2–4) with the
+  recorded detector results: 18 of 58 pages keep every unit and hash, asset IDs move on 22
+  (a label's ink leaving a crop, an accent or a comma joining one, a display MuPDF had split
+  that is one asset again), unit IDs change on 8 (seams merged, displays cut apart), and the
+  rest change text or a flag only.
+  A page whose recorded `units` override references an asset whose ID moves fails its replay
+  (`unit overrides must reference each page asset exactly once`): re-import the review with
+  the new IDs or `--discard-overrides` for that page. Re-prepare a reviewed chapter only for
+  the pages that need the fix, and review those from fresh packets.
+- **Override `units` now hash like the pipeline's.** A page re-prepared from a recorded
+  `units` override records the hash the pipeline would record for the same content, so such a
+  page changes its fingerprint once (and needs a fresh receipt) even when its text is
+  unchanged. Inline fragments are coalesced in the override channel too: an override written
+  against the coalesced asset (one ID for `(8.50)`) replays, and one written against its
+  constituents replays as well — a coalesced asset the override does not reference is
+  restored to its constituents, so neither recording style is refused.
+- **Crops:** the explicit export now keeps a rule inside the fragment's box whatever its
+  distance from a glyph box, and no longer fails a page's precise export on a degenerate
+  path. A crop is exported once per export identity, so an asset whose glyphs and box are
+  unchanged keeps the crop it has (a table whose lower rule was missing keeps missing it);
+  only a fragment whose identity moves — or a project whose crop directories were removed
+  (`source gc` never removes live ones; delete the directory by hand and re-prepare) — is
+  re-exported.
+- **Rendering changes without re-preparation:** a paragraph whose sender page recorded
+  `continued_to_next` is merged across the page edge in Markdown and HTML even when the
+  receiver's `continues_from_previous` is unset, and a receiver whose sender ends in terminal
+  punctuation is no longer glued to it. Re-render an edition to pick this up; no record
+  changes.
+- **`project scaffold`** no longer appends a second `.littrans/*` pair to a `.gitignore` that
+  already carries it as `/.littrans/*`; a file that received the duplicate can drop either
+  copy.
+- **Not changed (documented limitations):** a sentence-ending `!` in a text face stays in
+  the inline run (a factorial is set in the same face); a display block that holds several
+  labels beside one formula keeps them in its text; the review packet still reports every
+  page's `boundary_diagnostics` (now only for ink the export would actually lose).
+
 ## Projects prepared with 0.6.0-dev.10 or earlier: inline notation and the override channel (0.6.0-dev.11)
 
 - **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and

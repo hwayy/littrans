@@ -6,12 +6,99 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.11`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.12`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- Asset boundaries are spaced by the printed ink, not by the text layer (0.6.0-dev.12).
+  TeX sets the glue around notation, and MuPDF reports it as a space glyph or not by its own
+  threshold — and reports the kern before a period as a space. At every boundary between an
+  inline asset and its native neighbour on one native line (same baseline, comparable size,
+  measured ink), a gap of at least 0.15 em is a word space and less is none; punctuation, a
+  closing bracket or quote after the asset and an opening one before it never take a space.
+  `{{F}}.` and `{{Φ}} the` come out right; a subscript, another baseline or an unmeasured
+  glyph leaves the text layer authoritative. A native line break inside a display block
+  whose next line continues the same baseline (a formula MuPDF split into two lines) is a
+  space, not a row break.
+- Printed equation labels are text, and a display that holds two of them is two displays. A
+  native line that is a label and nothing else (`(3.11)`, at either margin) is never
+  notation, seeded or not, never carries a formula across the line and is never owned by a
+  detector box: its ink stays out of every crop, and a label the paragraph is left holding at
+  its start or end binds to the neighbouring unnumbered display's `equation_number` when the
+  display's fragment covers its line. A detector box whose rows carry two labels is cut
+  through the widest ink-free gap between the label rows, one part per label, and no
+  stretched-delimiter column is chained across such a cut, so `(3.23)`/`(3.24)` stacked in
+  one box are two `equation` units; a box whose ink spans both labels (one tall matrix) stays
+  whole. A block that holds several labels beside one formula keeps them in its text.
+- A line of prose that starts mid-row continues its printed row. MuPDF opens a new block
+  after a tall operator (`∑` with limits, a big radical) and after the limits of an inline
+  sum, and the text that follows starts an em or two in — where an indent would be — or far
+  to the right. The planner now finds the row's start by walking left through ink that shares
+  the line's vertical extent (a subscript joins through the operator it hangs from; the ink
+  decides, since MuPDF puts a radical's origin a text baseline away from its row) and, where
+  that row starts at the margin or at an open list item's column, reads the line as the
+  row's continuation: its x is the row's start where its own x would read as an indent, it
+  continues the item whose column the row starts at, and it never closes the item the row's
+  first line opened. The sentence around the operator stays one unit (`… and ∑_{|j−i|=1}
+  p_ij = 1, where i, j ∈ S` is one item), and a `(b)` item after a row MuPDF split at a
+  radical still opens. A line without a language word (the limits themselves, a piece of a
+  display) keeps its own x.
+- Structure assembly keeps parents and groups coherent. When a chunk is merged into the one
+  before it, any later chunk whose parent it was follows the survivor (no `parent_id` names a
+  unit that no longer exists), and the group an item hangs from is still the introducing
+  paragraph's when the item opens after paragraph white space (an enumerated item after a
+  spaced paragraph no longer opens a group of its own, siblings never hang from a sibling).
+- Page-edge continuation is read from both flags, as batching already does. A first body
+  unit that opens with a bold run-in label, a theorem statement, `Proof` or a list label
+  does not continue the previous page; the renderer merges a paragraph across the page edge
+  when the sender's `continued_to_next` is set (its last line ends mid-sentence) even if the
+  receiver's flag is not, and does not merge on the receiver's geometry alone when the
+  sender's text ends in terminal punctuation.
+- Hyphenated line ends: when the document prints neither the compound nor the joined word,
+  the hyphen stays only if both halves (three or more letters) are words the document prints
+  on their own (`finite-state`, not `pas-sion` or `Lorent-zian`); a capitalised second half is
+  a name compound (`Fokker-Planck`, `Borel-Cantelli`); `and`/`or`/`nor` after the hyphen is a
+  suspended hyphen (`left- and`); an asset placeholder before the hyphen makes a compound with
+  the word after it (`{{σ}}-algebra`). Attestation counts whole words only, never a
+  hyphen-adjacent half.
+- Inline run edges: a math-face `,` `;` `:` at the end of a native line stays in the run when
+  the next line opens with notation on the same row (the comma of `x_1, x_2,` before a line
+  break); a text-face `-` at a line end before a lowercase text-face letter is prose; `?` is
+  sentence punctuation like `.` (`!` is not, since `n!` is notation in the same face); a
+  text-face accent (`ˆ`, `¯`) set over a mathematical base joins the base's run instead of
+  staying in the prose beside a crop of the bare letter. Bold letters flush against bold
+  digits of the same baseline and size, or a bold phrase enclosed in `[` `]`, are a citation
+  key (`[**KP92**, Theorem 2]`), not bold variables; `mod` is a known operator name. A
+  connective set off between two formulas of one display (`= νQ,   or equivalently   …`) stays
+  in the display as a declared condition instead of being cut out as prose. A `figure` or
+  `table` unit made from a block that holds only placeholders takes the union of its assets'
+  fragment boxes as its `bbox`, as `visual` units do.
+- Boundary diagnostics report what the export would actually lose. `math-ink-outside-ownership`
+  needs a foreign glyph on one of the asset's rows (its baseline within 0.6 × size of an owned
+  inked glyph's, its centre inside the padded fragment box) — the descenders of the line above
+  no longer fire it — and `prose-boundary-in-math` skips a bracket pair whose words are all
+  declared `formula_conditions` of that asset.
+- The explicit glyph export keeps a horizontal rule inside the fragment's box (± 2 pt) whenever
+  it overlaps the owned glyphs' extent, wherever the nearest glyph box lies (the lower rule of
+  a double rule, a table rule two lines below its header), and skips a degenerate path (empty
+  `d`, move-to only) instead of failing the whole page's precise export. Note the crop cache:
+  an asset whose export identity is unchanged keeps its earlier crop.
+- The override `units` channel hashes like the pipeline: a recorded unit is filled with the
+  same eight optional keys structure assembly passes before its `source_hash` is computed, so
+  identical content has one hash in both channels and a page's fingerprint no longer depends
+  on which channel wrote its units. Inline fragments are coalesced along a row in the override
+  channel too: a recorded override that references the coalesced asset (the pipeline's
+  `(8.50)` as one ID) replays, and one that references its constituents replays as well —
+  each coalesced asset the override does not name is restored to the assets it was made of.
+- `project scaffold` reads a project `.gitignore` pattern by its path: `/.littrans/*` already
+  present means the pair is present, no duplicate is appended.
+- Region merging on a page with hundreds of vector drawings finishes in seconds: overlapping
+  glyph-free `native-vector` regions are clustered first (union-find, the same result the
+  pairwise loop reaches one merge at a time) and the loop caches each region's inked glyphs
+  and sorted baselines instead of recomputing them per pair. A 710-drawing page went from a
+  timeout to under six seconds with identical regions.
 - Inline notation keeps its right half (0.6.0-dev.11). Inside a detector region, brackets
   are balanced over the whole region while neighbours are still looked up on the glyph's own
   native line, so a superscript MuPDF places in the next block (`O(n^{-1/2})`, its `2` and `)`

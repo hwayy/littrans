@@ -25,7 +25,7 @@ MATH_OPERATORS = {
     "sin", "cos", "tan", "cot", "sec", "csc", "sinh", "cosh", "tanh", "arcsin", "arccos", "arctan",
     "log", "ln", "lg", "exp", "lim", "limsup", "liminf", "sup", "inf", "max", "min", "argmax", "argmin",
     "det", "rank", "diag", "span", "arg", "dim", "ker", "poly", "tr", "cov", "var", "corr", "prob",
-    "sgn", "gcd", "lcm", "supp", "ess", "vol",
+    "sgn", "gcd", "lcm", "supp", "ess", "vol", "mod",
 }
 # A token of native language: a word of two or more letters, or a letter-dot abbreviation
 # (i.o., a.s., i.e.) that a word pattern would split into single letters.
@@ -229,9 +229,70 @@ def _mark_paragraph_breaks(
         previous = chunk
 
 
+def _line_starts(
+    glyphs: list[dict[str, Any]], blocks: list[dict[str, Any]], margin: float, font_size: float,
+    ink: dict[str, Any] | None,
+) -> dict[str, float]:
+    """Where the printed row of a native line that starts mid-row begins, by first glyph id.
+
+    A tall operator (a sum with limits, a big union) at the start of a printed line is a
+    block of its own, and the text after it opens another block whose first glyph sits an
+    em or two right of the margin — where a paragraph indent would be; the limits of an
+    inline sum open a block of their own the same way, far to the right. Such a line
+    continues its printed row, and the row starts at the leftmost ink before the line: a
+    glyph whose ink shares the vertical extent of the line's first glyph (a word on the
+    same baseline, a tall operator spanning it), walking left while the row is unbroken
+    (no gap wider than 1.5 ems: a label or a column far to the left is another row's
+    business). The ink decides the row, not the origins: MuPDF puts a radical's origin
+    at its top, a text baseline away from the row it is set on. A line that opens its own
+    row is not listed; the planner reads a listed start only where it is a text start (the
+    margin or an open item's column), since a row that starts an em or two in may itself
+    be indented. Metric boxes of CMEX glyphs sit near their top, so the measured ink
+    (``ink``) is used when available.
+    """
+    gm = {g["id"]: g for g in glyphs}
+
+    def measured(g: dict[str, Any]) -> list[float]:
+        return list(ink.get(g["id"], g["bbox"]) if ink else g["bbox"])
+
+    inked = [(g, measured(g)) for g in glyphs if inked_glyph(g) and g["bbox"][0] >= margin - 1]
+    starts: dict[str, float] = {}
+    for block in blocks:
+        for line in block["lines"]:
+            first = gm.get(line[0]) if line else None
+            if first is None:
+                continue
+            x = first["origin"][0]
+            own_box = measured(first)
+            if own_box[3] - own_box[1] > font_size * 1.5:
+                continue
+            own = set(line)
+            left = sorted(
+                ((g, box) for g, box in inked
+                 if g["id"] not in own and box[2] <= x + 0.5 and box[0] < x - font_size * 0.3),
+                key=lambda pair: pair[1][2], reverse=True,
+            )
+            # The row grows leftwards from the line's first glyph: a glyph joins it when
+            # its ink shares most of the shorter height with the row so far (a subscript
+            # opening the line joins through the operator it hangs from, a period through
+            # the word before it); a glyph on another row is passed over. The start is
+            # the row's first glyph origin, as every other line start is measured.
+            start, top, bottom = x, own_box[1], own_box[3]
+            for g, box in left:
+                if start - box[2] > font_size * 1.5:
+                    break
+                shared = min(box[3], bottom) - max(box[1], top)
+                if shared <= 0.5 * max(0.5, min(box[3] - box[1], bottom - top)):
+                    continue
+                start, top, bottom = min(start, g["origin"][0]), min(top, box[1]), max(bottom, box[3])
+            if start < x:
+                starts[line[0]] = start
+    return starts
+
+
 def plan_structure(
     glyphs: list[dict[str, Any]], blocks: list[dict[str, Any]], layout: list[dict[str, Any]], height: float,
-    display_glyph_ids: set[str] | None = None,
+    display_glyph_ids: set[str] | None = None, ink: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     gm = {g["id"]: g for g in glyphs}
     usable = [g for g in glyphs if math.isfinite(g["size"]) and round(g["size"], 1) > 0]
@@ -242,6 +303,7 @@ def plan_structure(
         round(gm[line[0]]["origin"][0], 1) for b in blocks for line in b["lines"] if line
     )
     margin = starts.most_common(1)[0][0] if starts else 0
+    line_starts = _line_starts(glyphs, blocks, margin, font_size, ink)
     labels = [(item["label"], [v / 2 for v in item["bbox"]]) for item in layout]
     notes, omitted = {}, {}
     display_glyph_ids = display_glyph_ids or set()
@@ -339,6 +401,7 @@ def plan_structure(
     # on the same visual line. PDF blocks may span multiple author paragraphs.
     split, first_x, display_blocks = [], {}, set()
     title_boxes = [box for label, box in labels if label in TITLE_LABELS]
+    display_boxes = [box for label, box in labels if label == "display_formula"]
     # The page's usual baseline pitch; a gap well beyond it is paragraph white space.
     pitches = sorted(
         gm[b["lines"][i + 1][0]]["origin"][1] - gm[b["lines"][i][0]]["origin"][1]
@@ -354,6 +417,8 @@ def plan_structure(
     items: list[tuple[str, float, float]] = []
     list_items: dict[str, dict[str, Any]] = {}
     align = font_size * 0.15
+    # Where each line starts for the planner: its own x, or its printed row's start.
+    line_x: dict[str, float] = {}
     for b in blocks:
         gs = [gm[gid] for line in b["lines"] for gid in line]
         # A wrapped heading keeps its continuation line even though the wrap is indented.
@@ -369,9 +434,28 @@ def plan_structure(
         for line in b["lines"]:
             g = gm[line[0]]
             x, y = g["origin"]
-            indent = margin + font_size * 0.8 < x < margin + font_size * 2.8
             inked = [gid for gid in line if inked_glyph(gm[gid])]
             display_line = bool(inked) and sum(gid in display_glyph_ids for gid in inked) >= len(inked) * 0.8
+            # A line of prose that starts mid-row on a row that starts where text starts
+            # (the margin, an open item's column) continues that row: the row's first line
+            # has already opened or closed the items it opens or closes, and where the
+            # line's own x could be read as a text start (an indent after a tall operator)
+            # the row's start is its x. A line without a language word (the limits of a
+            # sum, a piece of a display) keeps its own x: it is notation the regions own,
+            # not a sentence the planner could break; so does a line that starts far to
+            # the right, which reads as the formula suffix it is.
+            row_start = line_starts.get(line[0])
+            mid_row = (
+                row_start is not None
+                and not display_line
+                and not any(_contains(g, box) for box in display_boxes)
+                and bool(language_words("".join(gm[gid]["text"] for gid in line if not MATH_FONT.search(gm[gid]["font"]))))
+                and (row_start < margin + font_size * 0.8 or any(abs(row_start - column) <= align for _, _, column in items))
+            )
+            if mid_row and row_start is not None and x < margin + font_size * 2.8 and abs(x - row_start) > align:
+                x = row_start
+            line_x[line[0]] = x
+            indent = margin + font_size * 0.8 < x < margin + font_size * 2.8
             bullet_line = is_bullet_line([gm[gid] for gid in inked])
             # Prose returning left of the bullet column ends the list item.
             list_end = bullet_x is not None and not bullet_line and x < bullet_x - font_size * 0.5
@@ -385,8 +469,9 @@ def plan_structure(
             label = None
             if not (heading_block or display_line or bullet_line or b["id"] in omitted):
                 label = list_label([gm[gid] for gid in line], font_size)
-            # The innermost open item whose text column this line starts at.
-            owner = next((i for i in range(len(items) - 1, -1, -1) if abs(x - items[i][2]) <= align), None)
+            # The innermost open item whose text column this line (or its printed row) starts at.
+            column_x = row_start if mid_row and row_start is not None else x
+            owner = next((i for i in range(len(items) - 1, -1, -1) if abs(column_x - items[i][2]) <= align), None)
             # A label opens an item only where the geometry shows one: its text column is an
             # open item's (a sibling returning to the label column), or it starts its block,
             # follows another label, or opens right of the running text or of the open
@@ -411,7 +496,7 @@ def plan_structure(
                     continues = items[owner][0]
                     resumes = owner < len(items) - 1
                     del items[owner + 1:]
-                elif not display_line:
+                elif not display_line and not mid_row:
                     # Text back at or left of the label column closes the item; whether it
                     # is a new paragraph or the item's own wrap is left to the rules above.
                     while items and x <= items[-1][1] + font_size * 0.3:
@@ -464,11 +549,11 @@ def plan_structure(
                 display_blocks.add(bid)
             # Ignore a formula suffix far to the right when finding the prose indent.
             near = [
-                gm[line[0]]["origin"][0]
+                line_x.get(line[0], gm[line[0]]["origin"][0])
                 for line in lines
-                if gm[line[0]]["origin"][0] < margin + font_size * 2.8
+                if line_x.get(line[0], gm[line[0]]["origin"][0]) < margin + font_size * 2.8
             ]
-            first_x[bid] = near[0] if near else gg[0]["origin"][0]
+            first_x[bid] = near[0] if near else line_x.get(lines[0][0], gg[0]["origin"][0])
     _mark_paragraph_breaks(split, gm, omitted, markers, display_blocks, margin, font_size, gap_threshold, list_items)
     return {
         "blocks": split,
@@ -510,6 +595,9 @@ def assemble_structure(
     group: str | None = None
     active_note: str | None = None
     statement = None
+    # A unit merged into the one before it keeps no id of its own; a parent set to that
+    # id before the merge is redirected to the survivor at the end.
+    merged_into: dict[str, str] = {}
     display_blocks = set(plan.get("display_blocks", ()))
     list_items: dict[str, dict[str, Any]] = plan.get("list_items", {})
     breaks = {chunk["id"] for chunk in plan.get("blocks", ()) if chunk.get("paragraph_break")}
@@ -631,7 +719,11 @@ def assemble_structure(
                 group = previous_body.parent_id or previous_body.unit_id
             elif statement and (starts_statement or label is not None or u.kind.value == "equation" or concludes):
                 group = statement
-            elif group is None or after_heading or (u.kind.value != "equation" and (indented or paragraph_break or boundary)):
+            elif group is None or after_heading or (
+                u.kind.value != "equation" and (indented or (paragraph_break and not enumerated) or boundary)
+            ):
+                # A bracketed clause ((a), (ii)) set off by white space is still a clause
+                # of the paragraph that introduces it, never a group of its own.
                 group = u.unit_id
             u = rebuild(u, parent_id=group)
         # Merge prose fragments within one paragraph, retaining display children.
@@ -702,8 +794,26 @@ def assemble_structure(
             ]
             merged = rebuild(merged, bbox=box)
             result[-1] = merged
+            merged_into[u.unit_id] = previous.unit_id
+            # The group the merged text opened now lives in the surviving unit's group.
+            if group == u.unit_id:
+                group = merged.parent_id or merged.unit_id
+            if statement == u.unit_id:
+                statement = merged.unit_id
         else:
             result.append(u)
+    by_id = {u.unit_id: u for u in result}
+    for index, u in enumerate(result):
+        if u.parent_id is None or u.parent_id in by_id:
+            continue
+        # A parent that never became a unit was merged into another one: the group is
+        # the survivor's group. Anything else resolves to the unit itself.
+        parent, seen = u.parent_id, set()
+        while parent in merged_into and parent not in seen:
+            seen.add(parent)
+            parent = merged_into[parent]
+        survivor = by_id.get(parent)
+        result[index] = rebuild(u, parent_id=(survivor.parent_id or survivor.unit_id) if survivor else u.unit_id)
     body = [
         i
         for i, u in enumerate(result)
@@ -712,11 +822,21 @@ def assemble_structure(
     if body:
         first, last = body[0], body[-1]
         bid = result[first].unit_id.split("-", 1)[1]
+        opening = result[first].source_text
+        # A flush first line continues the paragraph the previous page ended in, unless
+        # its text opens something of its own: a run-in label, a statement, a proof, a
+        # list item. Whether the previous page's last sentence closed is judged where
+        # both pages are in hand (rendering), from the sender's continued_to_next.
+        opens_own = bool(
+            RUN_IN_LABEL.match(opening) or _starts_statement(opening)
+            or re.match(r"[*\s]*Proof\b", opening) or LIST_LABEL_START.match(opening)
+        )
         if (
             plan.get("indent_style")
             and result[first].page > 1
             and result[first].kind.value == "paragraph"
             and abs(plan["first_x"].get(bid, 0) - plan["margin"]) < 2
+            and not opens_own
         ):
             result[first] = rebuild(result[first], continues_from_previous=True)
         tail = re.sub(r"[*\s]+$", "", result[last].source_text)
