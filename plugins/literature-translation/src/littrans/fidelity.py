@@ -1033,7 +1033,8 @@ def _spaced_text(glyphs: list[dict[str, Any]]) -> str:
     return "".join(parts)
 
 
-def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]],
+                             *, measured_ink: bool = True) -> list[dict[str, Any]]:
     """Declare the words a displayed formula keeps inside its crop as formula conditions.
 
     Case labels ("if x < 0,", "otherwise.", "for any fixed k") are language the
@@ -1042,6 +1043,12 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     every remaining segment with a word becomes one condition in native order, the
     contract ``_formula_condition_glyphs`` verifies. An upright operator name set
     flush against its argument (``Prob(``, ``Var``) is notation, not a condition.
+
+    Preparation passes measured glyph ink. ``measured_ink=False`` says the boxes are PDF
+    font metrics, as a ledger records them: a stretched delimiter's metric rectangle then
+    sits on an adjacent line, so an operator's argument can be invisible to the lookup
+    below. A reader of the ledger must not turn that into language preparation failed to
+    declare, so a bare operator name stays notation there too.
     """
     owned = [glyph_by_id[gid] for gid in region.get("glyph_ids", []) if gid in glyph_by_id]
     order = {gid: i for i, gid in enumerate(glyph_by_id)}
@@ -1072,9 +1079,12 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
                 applied = after is not None and (flush or after["text"] in OPENING_BRACKETS or "cmex" in after["font"].lower())
                 # A name flush against its argument's bracket is an operator whatever its
                 # case ("vol(B)", "mean("); a condition word keeps its text-mode space ("if (").
-                operator = after is not None and applied and len(words) == 1 and text == words[0] and (
+                name_only = len(words) == 1 and text == words[0]
+                operator = after is not None and applied and name_only and (
                     words[0][0].isupper() or words[0].lower() in MATH_OPERATORS
                     or (flush and after["text"] in OPENING_BRACKETS))
+                if not measured_ink and after is None and name_only:
+                    operator = words[0][0].isupper() or words[0].lower() in MATH_OPERATORS
                 if not operator:
                     # The validator compares against native page order, not visual order.
                     segment.sort(key=lambda g: order[g["id"]])
@@ -1571,7 +1581,8 @@ def _join_line_break_runs(regions: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _declare_override_conditions(page: fitz.Page, region: dict[str, Any], glyphs: list[dict[str, Any]],
-                                 assets: dict[str, FidelityAsset] | None = None) -> dict[str, Any]:
+                                 assets: dict[str, FidelityAsset] | None = None,
+                                 ink: dict[str, Any] | None = None) -> dict[str, Any]:
     """Declare the language inside a reviewer's math region as preparation would.
 
     A region that names its glyphs but says nothing about ``formula_conditions`` gets the
@@ -1579,6 +1590,9 @@ def _declare_override_conditions(page: fitz.Page, region: dict[str, Any], glyphs
     A ``preserve_asset_id`` region owns the preserved asset's glyphs: it is declared the
     same way when that asset carries no declaration yet, so the gate that requires one
     is never asking a path that cannot answer.
+
+    ``ink`` is the page's measured glyph ink when the caller already has it; a page of
+    corrections would otherwise render and parse the same page SVG once per region.
     """
     if "formula_conditions" in region:
         return region
@@ -1597,9 +1611,10 @@ def _declare_override_conditions(page: fitz.Page, region: dict[str, Any], glyphs
                 ids.extend(g["id"] for g in glyphs if _inside(g, fragment["bbox"]))
     if not ids:
         return region
-    if hasattr(page, "get_svg_image"):
+    if ink is None and hasattr(page, "get_svg_image"):
         from littrans.glyph_export import glyph_ink_boxes
         ink = glyph_ink_boxes(page, glyphs)
+    if ink is not None:
         glyphs = [{**g, "bbox": ink.get(g["id"], g["bbox"])} for g in glyphs]
     conditions = _auto_formula_conditions({**region, "glyph_ids": ids}, {g["id"]: g for g in glyphs})
     if not conditions:
@@ -2048,7 +2063,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     content_glyphs = [g for g in glyphs if g["id"] not in structure["markers"]]
     if override and "regions" in override:
         preserved = load_assets(root) if any("preserve_asset_id" in r for r in override["regions"]) else {}
-        regions = [_declare_override_conditions(page, r, content_glyphs, preserved) for r in override["regions"]]
+        measured = ink if hasattr(page, "get_svg_image") else None
+        regions = [_declare_override_conditions(page, r, content_glyphs, preserved, measured) for r in override["regions"]]
     else:
         regions = _regions(page, content_glyphs, items, ink=ink if hasattr(page, "get_svg_image") else None)
     if not glyphs and not regions and page.get_images():
@@ -2479,6 +2495,10 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
     reused: list[int] = []
     with ExitStack() as stack:
         stack.enter_context(project_write_lock(root))
+        # Authority transactions live on their own stack inside the lock: closing it
+        # commits them while the lock is still held, so the crops of the replaced pages
+        # are reclaimed without a concurrent run writing new ones in between.
+        authority = stack.enter_context(ExitStack())
         old = read_jsonl(root / "derived/units.jsonl", SourceUnit)
         registry = load_assets(root)
         needed = [p for p in pages if replace or not _page_path(root, p).is_file()]
@@ -2487,7 +2507,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         old_ledgers = {p: read_json(_page_path(root, p)) for p in needed if _page_path(root, p).is_file()}
         old_registry = registry
         dependents = _dependent_pages(root, needed, old)
-        stack.enter_context(_authority_transaction(root, [*pages, *dependents]))
+        authority.enter_context(_authority_transaction(root, [*pages, *dependents]))
         doc = stack.enter_context(fitz.open(source))
         before = {p: _page_fingerprint(root, p, old, registry) for p in [*needed, *dependents] if _receipt_path(root, p).is_file()}
         images = {}
@@ -2564,19 +2584,24 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         # on the page before) is a dependant too, so it is settled by name as well.
         late = _late_dependents(root, needed, units, [*pages, *dependents])
         if late:
-            stack.enter_context(_authority_transaction(root, late))
+            authority.enter_context(_authority_transaction(root, late))
             before.update({p: _page_fingerprint(root, p, old, old_registry) for p in late if _receipt_path(root, p).is_file()})
         retained, invalidated = _settle_receipts(root, [*needed, *dependents, *late], before, units, registry)
         # A page whose receipt outlived the rerun is still verified: its units say so, as
         # they did before, instead of reading as fresh work until the next review import.
-        if any(unit.page in retained for unit in units):
+        # Only a receipt that passed says that: a retained rejection leaves its page
+        # unverified, exactly as the review import left it.
+        approved = [p for p in retained if read_json(_receipt_path(root, p)).get("passed") is True]
+        if any(unit.page in approved for unit in units):
             for unit in units:
-                if unit.page in retained:
+                if unit.page in approved:
                     unit.verification_status = SemanticStatus.VERIFIED
             write_jsonl(root / "derived/units.jsonl", units)
-    # Crops the replaced pages no longer refer to are reclaimed only once the new
-    # authority is committed; the transaction snapshots files, not directories.
-    pruned = prune_asset_directories(root, registry.values(), apply=True)
+        # Crops the replaced pages no longer refer to are reclaimed once the new authority
+        # is committed (the transaction snapshots files, not directories) and before the
+        # write lock is released, so a concurrent run cannot lose crops it has just written.
+        authority.close()
+        pruned = prune_asset_directories(root, registry.values(), apply=True)
     packet = build_source_review_packet(root, ",".join(map(str, pages)))
     return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry),
             "replayed_override_pages": replayed, "redetected_override_pages": redetected, "discarded_override_pages": discarded,
@@ -2804,7 +2829,12 @@ def _declared_conditions(page: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _undeclared_formula_language(page: dict[str, Any]) -> dict[str, list[str]]:
-    """Language inside a math crop that no formula condition declares, per asset."""
+    """Language inside a math crop that no formula condition declares, per asset.
+
+    The ledger records font-metric boxes, not the ink preparation measured, so the
+    declaration pass is re-run in its metric-box reading: the gate must not report a
+    condition that preparation, reading the same page, would never have declared.
+    """
     glyph_by_id = {g["id"]: g for g in page["ledger"]["glyphs"]}
     result: dict[str, list[str]] = {}
     for asset in page["assets"]:
@@ -2812,7 +2842,8 @@ def _undeclared_formula_language(page: dict[str, Any]) -> dict[str, list[str]]:
             continue
         owned = [gid for fragment in asset["fragments"] for gid in fragment["glyph_ids"]]
         declared = {gid for condition in asset.get("formula_conditions", []) for gid in condition["glyph_ids"]}
-        missing = [condition["source_text"] for condition in _auto_formula_conditions({"glyph_ids": owned}, glyph_by_id)
+        missing = [condition["source_text"]
+                   for condition in _auto_formula_conditions({"glyph_ids": owned}, glyph_by_id, measured_ink=False)
                    if not set(condition["glyph_ids"]) <= declared]
         if missing:
             result[asset["id"]] = missing
@@ -2982,6 +3013,10 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
     rejected: dict[int, list[str]] = {}
     with ExitStack() as stack:
         stack.enter_context(project_write_lock(root))
+        # Authority transactions live on their own stack inside the lock, so closing it
+        # commits them while the lock is still held and the crops a correction retired
+        # are reclaimed before a concurrent run can write new ones.
+        authority = stack.enter_context(ExitStack())
         for decision in decisions:
             if _current_page(root, decision["page"])["fingerprint"] != decision["fingerprint"]:
                 raise ValueError("source page changed while waiting for project write lock")
@@ -2993,7 +3028,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         # Pages outside this review whose receipt depends on a corrected page.
         dependents = _dependent_pages(root, override_pages, units)
         dependents = [p for p in dependents if p not in decision_pages]
-        stack.enter_context(_authority_transaction(root, [*decision_pages, *dependents]))
+        authority.enter_context(_authority_transaction(root, [*decision_pages, *dependents]))
         before = {p: _page_fingerprint(root, p, units, assets) for p in dependents if _receipt_path(root, p).is_file()}
         claimed: set[str] = set()
         claimed_units: set[str] = set()
@@ -3076,7 +3111,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         # container on the page before), which the graph before the correction did not name.
         late = _late_dependents(root, override_pages, units, [*decision_pages, *dependents])
         if late:
-            stack.enter_context(_authority_transaction(root, late))
+            authority.enter_context(_authority_transaction(root, late))
             before.update({p: _page_fingerprint(root, p, initial_units, initial_assets) for p in late if _receipt_path(root, p).is_file()})
         _, invalidated = _settle_receipts(root, [*dependents, *late], before, units, assets)
         for unit in units:
@@ -3084,7 +3119,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
         units.sort(key=lambda u: u.page)
         write_jsonl(root / "derived/units.jsonl", units)
-    pruned = prune_asset_directories(root, assets.values(), apply=True) if changed else {"removed": []}
+        # Reclaimed once the corrections are committed and while the lock is still held.
+        authority.close()
+        pruned = prune_asset_directories(root, assets.values(), apply=True) if changed else {"removed": []}
     return {"approved_pages": approved, "rejected_pages": rejected, "changed_pages": changed, "deferred_pages": sorted(deferred),
             "invalidated_pages": invalidated, "requires_new_packet": bool(changed or deferred or invalidated),
             "pruned_asset_directories": pruned["removed"]}

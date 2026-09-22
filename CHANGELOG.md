@@ -6,7 +6,7 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.16`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.17`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
@@ -757,6 +757,38 @@ update` sees a change; the release drops the suffix.
   down, a formula row, a label or a tombstone beside a display never counts, so indented books
   keep their units and page fingerprints. `footnote` and `bibliography` units open their own
   group and never merge with prose (wrapped fragments of one footnote still merge).
+- A rejected page no longer reads as verified after a rerun (0.6.0-dev.17). `source prepare
+  --replace` keeps the receipt of a page it reproduced byte for byte, and marked that page's
+  units verified whatever the receipt decided, so re-preparing a page whose visual review had
+  *failed* flipped its units to `verified` in `derived/units.jsonl` and in the source packet a
+  translator reads. Only a receipt that passed now says the page is verified; a retained
+  rejection leaves it unverified, as the review import left it. `verify_fidelity` always
+  refused such a page, so no page was ever approved on this — the record simply disagreed
+  with the gate.
+- Declared language is judged on the same geometry that declared it (0.6.0-dev.17). The
+  approval gate re-derived a math crop's formula conditions from the ledger, which records PDF
+  font-metric boxes, while preparation derives them from measured glyph ink. A stretched CMEX
+  delimiter's metric rectangle sits on an adjacent line, so an upright operator name applied to
+  a `\left(` argument (`Prob(`, `vol(`) read as notation when it was declared and as undeclared
+  language when it was checked, and the page could not be approved or re-prepared out of it.
+  The check now reads the ledger in its own metric-box terms and keeps a bare operator name
+  notation there too; what preparation declares is unchanged, so no page fingerprint moves.
+- Reclaimed crop directories while the project write lock is still held (0.6.0-dev.17).
+  `source prepare` and `source import-review` pruned the asset directories no fragment refers
+  to after releasing the lock, using their own in-memory registry: a second run that acquired
+  the lock in that window and exported new crops could have them deleted, leaving its
+  `derived/fidelity-assets.jsonl` pointing at missing files. The authority transactions now
+  commit on a nested stack inside the lock, so the prune still runs after the new record is
+  durable but before another run can start.
+- `.gitignore` upgrades no longer leave the packet payloads outside the record
+  (0.6.0-dev.17). Adding the `.littrans/*` / `!.littrans/work/` pair to a project created
+  before it left the older `/.littrans/` line in place; git never descends into an excluded
+  directory, so the re-include could not take effect and `project tracked` reported every
+  packet payload as excluded from the record. The whole-directory line is now removed when the
+  pair is added.
+- Replaying a page of corrections renders the page once (0.6.0-dev.17). Declaring the language
+  of a reviewer's math regions re-rendered and re-parsed the whole page SVG for each region;
+  it now reuses the ink the page already measured.
 
 ## Historical changes before 0.6
 
