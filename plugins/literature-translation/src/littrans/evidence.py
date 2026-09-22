@@ -460,24 +460,109 @@ def fold_term_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).casefold()
 
 
-def fold_regex_pattern(pattern: str) -> str:
-    r"""Fold the literal characters of a glossary regex like ``fold_term_text``.
+_REGEX_ESCAPE = re.compile(r"\\(?:N\{[^}]*\}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|[0-9]{1,3}|.)", re.S)
+_REGEX_GROUP_HEADER = re.compile(r"\(\?(?:P<[^>]+>|P=[^)]+\)|\([^)]+\)|[aiLmsux]*(?:-[imsx]+)?[:)])")
+_REGEX_FLAGS = re.compile(r"\(\?([aiLmsux]*)(?:-([imsx]+))?([:)])")
 
-    Escape sequences (``\b``, ``\B``, ``\s`` ...) are copied verbatim so that folding
-    never rewrites the pattern's meaning; only the text between them is folded, so
-    ``Hölder`` or ``Chebyshev’s`` inside a pattern still finds the folded source.
+
+@lru_cache(maxsize=512)
+def fold_regex_pattern(pattern: str) -> str:
+    r"""Fold literals while preserving Python regex syntax and group identifiers.
+
+    Escapes are opaque, including complete Unicode escapes. Group headers and
+    comments are syntax, not terminology. Verbose mode is tracked per group so a
+    comment's terminating newline cannot disappear during whitespace folding.
+    Validate first: normalization must never repair an invalid user pattern.
     """
-    parts = []
-    for piece in re.split(r"(\\.)", pattern, flags=re.S):
-        if piece.startswith("\\") and len(piece) == 2:
-            parts.append(piece)
-        elif piece:
-            folded = piece.translate(_SPACING_ACCENTS)
-            folded = unicodedata.normalize("NFKD", folded)
-            folded = "".join(c for c in folded if unicodedata.category(c) != "Mn")
-            folded = folded.translate(_PUNCTUATION_FOLD)
-            parts.append(re.sub(r"\s+", " ", folded).casefold())
-    return "".join(parts)
+    re.compile(pattern, re.I)
+    parts: list[str] = []
+    verbose = [False]
+    in_class = False
+    class_start = 0
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\":
+            escape = _REGEX_ESCAPE.match(pattern, index)
+            assert escape is not None  # the original pattern compiled above
+            parts.append(escape[0])
+            index = escape.end()
+            continue
+        if in_class:
+            if char == "]" and index != class_start:
+                in_class = False
+                parts.append(char)
+            elif char == "^" and index == class_start - 1:
+                # Only an original leading caret negates the class. Dropping an
+                # accent before a literal caret must not turn it into negation.
+                parts.append(char)
+            elif char == "-" and index != class_start and pattern[index + 1:index + 2] != "]":
+                parts.append(char)  # an original range operator
+            else:
+                # Folding a fullwidth bracket or a dash must not introduce syntax.
+                parts.append(re.escape(fold_term_text(char)))
+            index += 1
+            continue
+        if verbose[-1] and char == "#":
+            end = pattern.find("\n", index)
+            end = len(pattern) if end < 0 else end + 1
+            parts.append(pattern[index:end])
+            index = end
+            continue
+        if pattern.startswith("(?#", index):
+            comment = re.match(r"\(\?\#(?:\\.|[^\\)])*\)", pattern[index:], re.S)
+            assert comment is not None
+            parts.append(comment[0])
+            index += comment.end()
+            continue
+        if char == "(":
+            header = _REGEX_GROUP_HEADER.match(pattern, index)
+            if header:
+                token = header[0]
+                flags = _REGEX_FLAGS.fullmatch(token)
+                if flags:
+                    enabled = (verbose[-1] or "x" in flags[1]) and "x" not in (flags[2] or "")
+                    if flags[3] == ")":
+                        verbose[-1] = enabled
+                    else:
+                        verbose.append(enabled)
+                elif not token.startswith("(?P="):
+                    verbose.append(verbose[-1])
+                parts.append(token)
+                index = header.end()
+                continue
+            verbose.append(verbose[-1])
+        elif char == ")":
+            verbose.pop()
+        elif char == "[":
+            in_class = True
+            class_start = index + 1
+            if pattern[class_start:class_start + 1] == "^":
+                class_start += 1
+        elif char == "{":
+            repeat = re.match(r"\{[0-9]*(?:,[0-9]*)?\}", pattern[index:])
+            if repeat:
+                parts.append(repeat[0])
+                index += repeat.end()
+                continue
+        if char in ".^$*+?[]()|":
+            parts.append(char)
+        elif char.isspace():
+            end = index + 1
+            while end < len(pattern) and pattern[end].isspace():
+                end += 1
+            parts.append(pattern[index:end] if verbose[-1] else " ")
+            index = end
+            continue
+        else:
+            folded = fold_term_text(char)
+            # Keep ordinary spaces readable; re.escape protects any new operators
+            # and a normalized '#' when the group uses verbose mode.
+            parts.append(re.escape(folded).replace(r"\ ", " " if not verbose[-1] else r"\ "))
+        index += 1
+    result = "".join(parts)
+    re.compile(result, re.I)
+    return result
 
 
 def without_quoted_titles(text: str) -> str:

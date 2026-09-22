@@ -124,7 +124,10 @@ def layout_page_items(layout: dict[str, Any], image: Path, image_sha256: str | N
     for key in (image_sha256, str(image.resolve())):
         if key in pages and isinstance(pages[key], list):
             return list(pages[key])
-    legacy = [items for key, items in pages.items() if Path(key).name == image.name and isinstance(items, list)]
+    # Legacy keys may come from a different OS; native Path parsing cannot split
+    # Windows backslashes on POSIX.
+    legacy = [items for key, items in pages.items()
+              if key.replace("\\", "/").rsplit("/", 1)[-1] == image.name and isinstance(items, list)]
     return list(legacy[0]) if len(legacy) == 1 else None
 
 

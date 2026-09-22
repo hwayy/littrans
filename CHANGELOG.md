@@ -3,10 +3,30 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.1] - 2026-09-23
+
+### Fixed
+
+- Kept Markdown asset translations and reader notes after the complete continued paragraph,
+  including sender-only page continuations; closed sentences and gaps now flush their notes
+  at the actual paragraph boundary.
+- Preserved regex group names, backreferences, flags, escapes and comments while folding
+  glossary literals. Normalized punctuation cannot become character-class syntax, invalid
+  patterns still fail validation, and the QA fingerprint invalidates older terminology checks.
+- Included representation evidence in required review records and detected tracked source
+  PDFs anywhere inside the project repository without reaching outside it.
+- Normalized legacy Windows layout paths across platforms while preserving hash precedence
+  and rejecting ambiguous basename matches.
+- Kept the first formula beside its own condition unless source asset geometry verifies a
+  delimiter spanning all display rows; source and translation use the same geometry.
+- Restricted row absorption to recognized delimiters instead of all CMEX glyphs, keeping
+  large sums, products and integrals from absorbing adjacent prose. Tall, narrow CMEX
+  bracket glyphs remain supported alongside delimiter slots and control-character pieces.
+
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.17`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, through `0.6.0-dev.17`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 

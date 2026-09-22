@@ -15,7 +15,7 @@ import pytest
 
 from littrans.evidence import fold_regex_pattern, fold_term_text, term_matches
 from littrans.fidelity import prepare_source
-from littrans.models import ProjectConfig, SourceUnit, UnitKind
+from littrans.models import AssetRef, ProjectConfig, SourceUnit, UnitKind
 from littrans.storage import initialize_project_dirs, read_jsonl, save_project, sha256_file
 
 
@@ -86,12 +86,28 @@ def test_display_rows_render_as_a_column_with_a_lead_asset() -> None:
 
     text = ("{{asset:a-p0026-brace}} {{asset:a-p0026-x1}}, if the coin is a head,\n"
             "{{asset:a-p0026-x0}}, if the coin is a tail.")
-    unit = SourceUnit(unit_id="p0026-b4", page=26, kind=UnitKind.EQUATION, bbox=(0, 0, 10, 10), source_text=text,
-                      source_markdown=text, source_hash="h", confidence=0)
-    rendered = _unit_html(unit, None, source_view=True)
-    assert rendered.count('<span class="display-row">') == 2
-    assert rendered.startswith('<div class="fidelity-complex display-line multirow">'
-                               '<span class="display-lead">{{asset:a-p0026-brace}}</span>')
+    unit = SourceUnit(unit_id="p0026-b4", page=26, kind=UnitKind.EQUATION, bbox=(0, 0, 100, 40), source_text=text,
+                      source_markdown=text, source_hash="h", confidence=0, asset_refs=[
+                          AssetRef(kind="fidelity", path="brace.png", bbox=(0, 0, 10, 40)),
+                          AssetRef(kind="fidelity", path="x1.png", bbox=(15, 2, 25, 12)),
+                          AssetRef(kind="fidelity", path="x0.png", bbox=(15, 25, 25, 35)),
+                      ])
+    target = text.replace("if the coin is a head", "若为正面").replace("if the coin is a tail", "若为反面")
+    for translation, source_view in ((None, True), (target, False)):
+        rendered = _unit_html(unit, translation, source_view=source_view)
+        assert rendered.count('<span class="display-row">') == 2
+        assert rendered.startswith('<div class="fidelity-complex display-line multirow">'
+                                   '<span class="display-lead">{{asset:a-p0026-brace}}</span>')
+    # Ambiguous/missing fragment geometry must leave the whole first row intact.
+    for refs in ([], unit.asset_refs[:-1], [*unit.asset_refs, unit.asset_refs[-1]]):
+        rendered = _unit_html(unit.model_copy(update={"asset_refs": refs}), None, source_view=True)
+        assert 'class="display-lead"' not in rendered
+        assert '<span class="display-row">' + text.split("\n")[0] + '</span>' in rendered
+    for last_box in ((15, 25, 25, 45), (5, 25, 25, 35)):
+        refs = [*unit.asset_refs[:-1], unit.asset_refs[-1].model_copy(update={"bbox": last_box})]
+        assert 'class="display-lead"' not in _unit_html(unit.model_copy(update={"asset_refs": refs}), None, source_view=True)
+    # A row without an identifiable formula cannot establish a spanning lead.
+    assert 'class="display-lead"' not in _unit_html(unit, target.replace("{{asset:a-p0026-x0}}", "0"), source_view=False)
     assert _target_markdown(unit, None).count("  \n") == 1
 
 
@@ -143,6 +159,14 @@ def test_prepared_display_block_keeps_its_rows(tmp_path: Path, monkeypatch: pyte
     rows = display[0].source_text.split("\n")
     assert len(rows) == 2 and rows[0].endswith("head,") and rows[1].endswith("tail.")
     assert display[0].translatable
+    from littrans.rendering import _unit_html
+
+    target = display[0].source_text.replace("if the coin shows a head", "若为正面").replace("if the coin shows a tail", "若为反面")
+    for translation, source_view in ((None, True), (target, False)):
+        rendered = _unit_html(display[0], translation, source_view=source_view)
+        assert 'class="display-lead"' not in rendered
+        expected_rows = (translation or display[0].source_text).split("\n")
+        assert re.findall(r'<span class="display-row">(.*?)</span>', rendered) == expected_rows
 
 
 def test_cmex_control_characters_are_ink_and_owned_by_the_display() -> None:
