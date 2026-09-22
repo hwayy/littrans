@@ -21,7 +21,12 @@ from typing import Any
 from jinja2 import Environment
 
 from littrans.build_info import build_identity
-from littrans.hosts import HOST_ENV_SIGNALS, LENS_REVIEWER_BATCH_MAX, WAVE_LIMITS
+from littrans.hosts import (
+    HOST_ENV_SIGNALS,
+    LENS_REVIEWER_BATCH_MAX,
+    SUBAGENT_DISPATCH,
+    WAVE_LIMITS,
+)
 from littrans.storage import atomic_write_text, plugin_root, write_text_if_missing
 
 PLUGIN_OWNED_FILE = "docs/LITTRANS.md"
@@ -102,6 +107,11 @@ def plugin_facts() -> dict[str, Any]:
         "packet_stages": list(WORKFLOW_PACKET_STAGES),
         "wave_limits": {host: {"default": spec.default, "maximum": spec.maximum} for host, spec in WAVE_LIMITS.items()},
         "lens_reviewer_batch_max": LENS_REVIEWER_BATCH_MAX,
+        # What each host's task launcher lets the coordinator choose for one dispatch.
+        "subagent_dispatch": {
+            host: {"model": spec.model, "reasoning_effort": spec.reasoning_effort}
+            for host, spec in SUBAGENT_DISPATCH.items()
+        },
         "audit_lenses": sorted(REQUIRED_AUDIT_LENSES),
         "status_order": [status.value for status in ProjectStatus],
         "qa_version": DETERMINISTIC_QA_VERSION,

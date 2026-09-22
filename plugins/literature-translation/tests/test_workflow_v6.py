@@ -71,7 +71,7 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
     context = read_json(packet_dir / "original-images.json")
     assert context["candidate_access"] is False
     assert context["read_only_context"]
-    assert context["model_policy"]["codex"]["translate"] == "gpt-5.6-luna"
+    assert context["dispatch"] == {"model": "gpt-5.6-luna", "reasoning_effort": "max"}
     transcription = create_workflow_packet(project, "transcribe", [bid])
     assert isinstance(transcription, dict)
     assert transcription["asset_ids"]

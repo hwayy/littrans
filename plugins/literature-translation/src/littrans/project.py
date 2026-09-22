@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,12 @@ import yaml
 from pydantic import BaseModel
 
 from littrans.build_info import build_identity
+from littrans.hosts import (
+    DISPATCH_ROLES,
+    SUBAGENT_DISPATCH,
+    dispatch_advisories,
+    resolve_coordination_host,
+)
 from littrans.models import (
     AuditRun,
     BatchManifest,
@@ -336,6 +343,41 @@ def schema_models() -> dict[str, type[BaseModel]]:
         "fidelity-asset.schema.json": FidelityAsset,
         "asset-submission.schema.json": AssetSubmission,
         "asset-review-submission.schema.json": AssetReviewSubmission,
+    }
+
+
+def dispatch_report(
+    root: Path, host: str | None = None, reported: Iterable[str] | None = None
+) -> dict[str, Any]:
+    """The resolved per-role dispatch policy for one host, with its advisories.
+
+    Feeds `project models`, the CLI's stderr advisories and the workflow JSON. Every
+    finding is advisory: an unset model or effort dispatches on the host's default,
+    and a value a host cannot take is still recorded in the packet. `reported` narrows
+    the advisories to the roles a command is about to dispatch; the policy itself is
+    always reported in full.
+    """
+    resolved = resolve_coordination_host(host)
+    config = load_project(root)
+    capability = SUBAGENT_DISPATCH[resolved]
+    selected = DISPATCH_ROLES if reported is None else tuple(reported)
+    roles: dict[str, dict[str, str | None]] = {}
+    advisories: list[str] = []
+    for role in DISPATCH_ROLES:
+        dispatch = config.dispatch(resolved, role)
+        roles[role] = dispatch.model_dump(mode="json")
+        if role in selected:
+            advisories.extend(
+                dispatch_advisories(resolved, role, dispatch.model, dispatch.reasoning_effort)
+            )
+    return {
+        "host": resolved,
+        "supports": {
+            "model": capability.model,
+            "reasoning_effort": capability.reasoning_effort,
+        },
+        "roles": roles,
+        "advisories": advisories,
     }
 
 

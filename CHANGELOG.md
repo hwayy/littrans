@@ -6,12 +6,39 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.15`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.16`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- Every dispatch role carries its own model and reasoning effort, and an unset one is a
+  supported choice (0.6.0-dev.16). `agent_models.<host>` gave `translate` and `transcribe`
+  a bare model string and made them share one `reasoning_effort`, so a role could not pair a
+  cheaper model with a higher effort and the reviewer lenses could not be configured at all.
+  Each of `translate` (which also covers `revise`), `transcribe`, `audit` and `asset-audit`
+  now holds its own `model` and `reasoning_effort`:
+
+      agent_models:
+        claude:
+          translate: {model: sonnet, reasoning_effort: high}
+          transcribe: {model: sonnet, reasoning_effort: high}
+
+  Leaving a role, a model or an effort unset no longer refuses a packet. `workflow packet`
+  and `assets packet` used to raise *"Configure agent_models.<host>.translate and
+  reasoning_effort ..."*, which blocked Cursor and Qoder out of the box — neither host lets a
+  coordinator choose the model of a single dispatched task — and forced a pin on Codex and
+  Claude Code users who would rather let the host decide. An unset value now dispatches on the
+  host's own default, and the plugin reports the two mismatches as advisories instead:
+  a value configured for a host whose launcher cannot take it (kept in the packet, never
+  dropped) and an unset value on a host whose launcher can. Advisories appear on stderr, in
+  the `dispatch_advisories` field of `workflow next` and `workflow status`, and in the new
+  `project models PROJECT --host HOST`. Codex takes a per-dispatch model and effort, Claude
+  Code a model only (its effort comes from the writer agents' frontmatter), Cursor and Qoder
+  neither. `assets submit` still rejects an echo that differs from its packet, but a packet
+  recording no model has nothing to echo. A `project.yaml` written in the old flat form is
+  read unchanged and rewritten in the nested form on its next save; a misspelled host or role
+  key, previously silent, is now named.
 - The exponent of a text-face number is notation (0.6.0-dev.15). TeX sets digits in the
   text face inside mathematics too, so `2^{19937}` or `10^6` carries no mathematical font at
   all: nothing opened an inline run, and the `− 1` that followed opened one after a word

@@ -225,14 +225,20 @@ def test_semantic_uncertainty_blocks_translation_but_untranscribed_does_not(proj
     assert not validate_asset_references(project, "{{asset:a2}}", "{{asset:a2}}")
 
 
-def test_cursor_requires_configured_model_without_imposing_codex_profile(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cursor_dispatches_on_its_own_policy_without_imposing_codex_profile(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from littrans.models import RoleDispatch
     from littrans.storage import load_project
 
     monkeypatch.setenv("CURSOR_AGENT", "1")
-    with pytest.raises(ValueError, match="Configure agent_models.cursor"):
-        build_asset_packet(project, ["a1"])
+    # Cursor has no per-dispatch model selection, so an empty policy is a supported
+    # choice: the packet records no model and the host's own policy runs the task.
+    unconfigured = build_asset_packet(project, ["a1"])
+    assert (unconfigured["host"], unconfigured["model"]) == ("cursor", None)
+    assert unconfigured["reasoning_effort"] is None
     config = load_project(project)
-    config.agent_models["cursor"] = {"transcribe": "host-configured-model", "reasoning_effort": "high"}
+    config.agent_models["cursor"] = {
+        "transcribe": RoleDispatch(model="host-configured-model", reasoning_effort="high")
+    }
     save_project(project, config)
     packet = build_asset_packet(project, ["a1"])
     assert packet["host"] == "cursor"

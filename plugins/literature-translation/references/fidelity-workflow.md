@@ -722,7 +722,8 @@ review, never silently repairs an old approval.
 Submit transcription through `assets submit PROJECT INPUT`; the envelope includes `packet_id`,
 `author_task_id`, the packet's dispatch `model` and `reasoning_effort` echoed verbatim, `image_evidence`,
 `candidates` and available `usage` (otherwise `null`); an optional `served_model_label` records the model the
-host environment reported under that dispatch value (stored as is, unverified, never gated). Candidates name `asset_id`, `format` and `content`; `status` is
+host environment reported under that dispatch value (stored as is, unverified, never gated). A packet that
+records no model or effort dispatched on the host's own default, so the echo of the absent field is omitted. Candidates name `asset_id`, `format` and `content`; `status` is
 `candidate` or `unresolved`, with `notes` and `semantic_uncertainty` as needed. LaTeX content is a
 math body without dollar delimiters; table content uses a rectangular `rows` array of cell
 strings. Both candidate and review envelopes record actual viewing in `image_evidence` using the
@@ -876,9 +877,12 @@ dispatch source review.
 `workflow packet` stages are `source-review`, `translate`, `revise`, `audit`, `transcribe` and
 `asset-audit`. Use the emitted schemas as the authority for exact fields. All model work reads
 original image evidence; a translate packet does not consume unverified transcription candidates.
-New workflow packets record host/model/reasoning_effort in their manifest and identity. Legacy
+New workflow packets record host/model/reasoning_effort in their manifest and identity, resolved from
+the stage's own role in `agent_models.<host>`; each role carries its own model and effort. Either may be
+absent, which dispatches on the host's default and is reported as an advisory, never refused. Legacy
 manifests remain readable with absent policy fields; create fresh packets for an explicitly bound
-dispatch policy. `workflow status --host` uses the same override as next/packet.
+dispatch policy. `workflow status --host` uses the same override as next/packet, and
+`project models PROJECT --host HOST` reports the resolved policy with its advisories.
 
 Workflow coordination rechecks source authority across each selected batch's page-evidence
 closure before reusing QA. Failed authority returns `source-review`, suppresses optional asset

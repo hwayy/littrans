@@ -11,7 +11,14 @@ from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.cli import app
 from littrans.context_packets import original_context
 from littrans.fidelity_models import load_assets
-from littrans.models import AssetTranslation, SourceUnit, TableData, TranslationRecord, UnitKind
+from littrans.models import (
+    AssetTranslation,
+    RoleDispatch,
+    SourceUnit,
+    TableData,
+    TranslationRecord,
+    UnitKind,
+)
 from littrans.quality import run_qa
 from littrans.storage import (
     load_project,
@@ -53,7 +60,9 @@ def submit(root, bid, changes=None):
 def test_status_explicit_host(project, monkeypatch, host):
     monkeypatch.setenv("CODEX_THREAD_ID", "test")
     config = load_project(project)
-    config.agent_models[host] = {"translate": "selected-host-model", "reasoning_effort": "high"}
+    config.agent_models[host] = {
+        "translate": RoleDispatch(model="selected-host-model", reasoning_effort="high")
+    }
     save_project(project, config)
     status = workflow_status(project, ["sample-one-b001"], host=host)
     assert status["host"] == host

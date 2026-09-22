@@ -71,10 +71,17 @@
       "type": "string"
     },
     "model": {
-      "description": "The packet's dispatch model, echoed verbatim: the value passed to the host's task launcher (a host alias or a concrete id). Not the served model.",
-      "minLength": 1,
-      "title": "Model",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The packet's dispatch model, echoed verbatim: the value passed to the host's task launcher (a host alias or a concrete id). Not the served model. Absent only when the packet records no model and the task ran on the host's default.",
+      "title": "Model"
     },
     "reasoning_effort": {
       "anyOf": [
@@ -134,7 +141,6 @@
   "required": [
     "packet_id",
     "author_task_id",
-    "model",
     "image_evidence",
     "candidates"
   ],
