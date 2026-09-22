@@ -956,8 +956,9 @@ def _delimiter_piece(glyph: dict[str, Any]) -> bool:
     """A stretched delimiter or a piece of one.
 
     A subset font re-encoded by the PDF producer maps CMEX glyphs to arbitrary codes, so a
-    piece may decode to a control character rather than a known slot; then only its shape
-    (tall and narrow) tells it from a big operator in the same font.
+    piece may decode to a control character or an ordinary bracket rather than a known
+    slot. Both require a tall, narrow shape; other printable CMEX glyphs (including
+    large operators) do not become delimiters merely because of their font.
     """
     text = str(glyph["text"])
     if len(text) != 1:
@@ -969,7 +970,9 @@ def _delimiter_piece(glyph: dict[str, Any]) -> bool:
     if text in _CMEX_PIECE_SLOTS:
         return True
     x0, y0, x1, y1 = glyph["bbox"]
-    return not text.isprintable() and (y1 - y0) >= _DELIMITER_ASPECT * max(x1 - x0, 1e-6)
+    return (not text.isprintable() or text in OPENING_BRACKETS + CLOSING_BRACKETS) and (
+        (y1 - y0) >= _DELIMITER_ASPECT * max(x1 - x0, 1e-6)
+    )
 
 
 def _merge_delimiter_pieces(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]],
@@ -1438,7 +1441,7 @@ def _absorb_delimited_rows(regions: list[dict[str, Any]], glyphs: list[dict[str,
         size = max((g.get("size", 10) for g in owned if inked_glyph(g)), default=10.0)
         # Tall delimiter columns: pieces merged earlier share an x, a single big brace is one.
         columns: list[list[dict[str, Any]]] = []
-        for g in sorted((g for g in owned if inked_glyph(g) and (_delimiter_piece(g) or "cmex" in g["font"].lower())), key=lambda g: (g["bbox"][0], g["bbox"][1])):
+        for g in sorted((g for g in owned if inked_glyph(g) and _delimiter_piece(g)), key=lambda g: (g["bbox"][0], g["bbox"][1])):
             if columns and abs(g["bbox"][0] - columns[-1][0]["bbox"][0]) <= 1.5:
                 columns[-1].append(g)
             else:

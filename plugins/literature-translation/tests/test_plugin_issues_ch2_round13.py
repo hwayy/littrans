@@ -40,6 +40,22 @@ def _fonts(text: str, math: str) -> list[str]:
     return ["CMMI10" if c in math else "CMR10" for c in text]
 
 
+@pytest.mark.parametrize("symbol", ["∑", "∏", "∫"])
+def test_tall_cmex_operators_do_not_absorb_following_prose(symbol: str) -> None:
+    prose = _line("Let the following expression be given.", "CMR10", line="b0-l0", x=40, y=20)
+    operator = _line(symbol, "CMEX10", line="b1-l0", x=140, y=90)
+    operator[0]["bbox"] = [140, 74, 160, 108]
+    row = _line("x is finite.", _fonts("x is finite.", "x"), line="b1-l1", x=165, y=90)
+    glyphs = prose + operator + row
+    regions = _regions(_Page(), glyphs, [])
+    math = [r for r in regions if r["kind"] == "math"]
+    owned = {gid for region in math for gid in region.get("glyph_ids", [])}
+    assert operator[0]["id"] in owned and row[0]["id"] in owned
+    assert not owned.intersection(g["id"] for g in row[2:])
+    assert all(not region.get("formula_conditions") for region in math)
+    assert all("stretched-delimiter-rows" not in region["provenance"] for region in math)
+
+
 # --- LT-046 ①: brackets balance over the expression, not the native line ------------------
 
 def test_closing_bracket_on_a_second_native_line_is_kept_when_the_expression_balances() -> None:
@@ -125,20 +141,32 @@ def _cases_page() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return glyphs, [row1_value, row1_condition, row2_value, row2_condition]
 
 
-def test_inline_cases_rows_are_owned_by_the_region_of_their_brace() -> None:
+@pytest.mark.parametrize("delimiter", ["\x05", "{", "(", "["])
+def test_inline_cases_rows_are_owned_by_the_region_of_their_brace(delimiter: str) -> None:
     glyphs, rows = _cases_page()
+    next(g for g in glyphs if g["font"] == "CMEX10")["text"] = delimiter
     regions = _regions(_Page(), glyphs, [])
     cases = [r for r in regions if "stretched-delimiter-rows" in r["provenance"]]
     assert len(cases) == 1
     region = cases[0]
     assert not region["display"] and "fragments" not in region
     owned = "".join(g["text"] for g in glyphs if g["id"] in region["glyph_ids"])
-    assert owned == "G(x) =\x050,x ≤ 0,e−x,x > 0"
+    assert owned == f"G(x) ={delimiter}0,x ≤ 0,e−x,x > 0"
     # The sentence period after the last row is prose; the commas inside the block are not.
     assert rows[3][-1]["id"] not in region["glyph_ids"]
     assert rows[0][-1]["id"] in region["glyph_ids"] and rows[1][-1]["id"] in region["glyph_ids"]
     assert [r for r in regions if r["kind"] == "math"] == cases
     assert region["bbox"][1] <= 271.0 and region["bbox"][3] >= 300.0
+
+
+@pytest.mark.parametrize("delimiter", list("()[]{}"))
+def test_printable_cmex_delimiters_require_tall_narrow_geometry(delimiter: str) -> None:
+    glyph = {"text": delimiter, "font": "CMEX10", "bbox": [0, 0, 5, 30]}
+    assert _delimiter_piece(glyph)
+    assert not _delimiter_piece({**glyph, "bbox": [0, 0, 10, 10]})
+    assert not _delimiter_piece({**glyph, "font": "CMR10"})
+    for other in ("S", "x", "∑", "∏", "∫"):
+        assert not _delimiter_piece({**glyph, "text": other})
 
 
 def test_a_big_delimiter_on_a_paragraph_line_absorbs_no_neighbouring_line() -> None:

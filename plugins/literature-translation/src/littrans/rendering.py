@@ -592,15 +592,39 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
     return "".join(parts)
 
 
-def _display_rows_html(rows: list[str], inline: Any, number: str) -> str:
-    """Stack the rows of a displayed block; a leading asset spans them.
+def _spans_display_rows(unit: SourceUnit, lead_id: str, rows: list[str]) -> bool:
+    """Require source geometry before moving an asset out of its printed row."""
+    source_ids = list(dict.fromkeys(ASSET_RE.findall(unit.source_markdown or unit.source_text)))
+    # Preparation flattens fragments in source asset order. Only a one-to-one
+    # correspondence lets us recover the boxes without guessing fragment counts.
+    if not source_ids or source_ids[0] != lead_id or len(source_ids) != len(unit.asset_refs):
+        return False
+    if any(ref.kind != "fidelity" or ref.bbox[0] >= ref.bbox[2] or ref.bbox[1] >= ref.bbox[3]
+           for ref in unit.asset_refs):
+        return False
+    boxes = {aid: ref.bbox for aid, ref in zip(source_ids, unit.asset_refs, strict=True)}
+    lead = boxes[lead_id]
+    tolerance = 1.0  # PDF points: tolerate small crop padding differences.
+    for row in rows:
+        ids = ASSET_RE.findall(row)
+        if not ids or any(aid == lead_id or aid not in boxes for aid in ids):
+            return False
+        if any(not (lead[2] <= boxes[aid][0] + tolerance
+                    and lead[1] <= boxes[aid][1] + tolerance
+                    and lead[3] >= boxes[aid][3] - tolerance) for aid in ids):
+            return False
+    return True
+
+
+def _display_rows_html(unit: SourceUnit, rows: list[str], inline: Any, number: str) -> str:
+    """Stack display rows, promoting a lead only when its source box spans them.
 
     A cases formula keeps its brace (or ``X = {`` head) as the lead and its rows as
     a column, so a tall delimiter is not squeezed into a single flowed line.
     """
     lead = ""
     first = ASSET_RE.match(rows[0])
-    if first and rows[0][first.end():].strip():
+    if first and _spans_display_rows(unit, first[1], [rows[0][first.end():].strip(), *rows[1:]]):
         lead = '<span class="display-lead">' + inline(first[0]) + "</span>"
         rows = [rows[0][first.end():].strip(), *rows[1:]]
     body = "".join('<span class="display-row">' + inline(row) + "</span>" for row in rows)
@@ -640,7 +664,7 @@ def _unit_html(
         mixed = " display-line" if unit.kind is UnitKind.EQUATION and ASSET_RE.sub("", text).strip() else ""
         rows = [row for row in text.split("\n") if row.strip()] if unit.kind is UnitKind.EQUATION else []
         if len(rows) > 1:
-            return _display_rows_html(rows, inline, number)
+            return _display_rows_html(unit, rows, inline, number)
         return f'<div class="fidelity-complex{mixed}">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
@@ -1275,11 +1299,16 @@ def render_project(
             and next_unit.kind is unit.kind
             and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
         )
+        ordinary_paragraph = unit.kind is UnitKind.PARAGRAPH and unit.sidebar_role is not SidebarRole.BODY
+        if ordinary_paragraph:
+            # Match the append decision above, including sender-only continuations
+            # and terminal punctuation that ends a receiver-only chain.
+            next_continues_this_unit = next_unit is not None and _continues_paragraph(unit, next_unit)
         if not next_continues_this_unit:
             for companion in pending_markdown_companions:
                 markdown.extend([companion, ""])
             pending_markdown_companions.clear()
-        if not unit.continued_to_next and not next_continues_this_unit:
+        if not next_continues_this_unit and (ordinary_paragraph or not unit.continued_to_next):
             for reader_note in pending_markdown_reader_notes:
                 markdown.extend([*_reader_note_markdown(reader_note), ""])
             pending_markdown_reader_notes.clear()

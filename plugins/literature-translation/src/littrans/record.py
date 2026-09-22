@@ -34,6 +34,7 @@ RECORD_GLOBS = (
     "evidence/pages/*",
     "evidence/audits/*.json",
     "evidence/audits/*.jsonl",
+    "evidence/representations/**/*",
     "translations/*.jsonl",
     "qa/*.json",
     "qa/*.md",
@@ -69,6 +70,7 @@ def git_toplevel(root: Path) -> Path:
 
 def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
     """The record and the excluded set, relative to the project root, plus the live source packets."""
+    root = Path(root).resolve()
     must_track: set[str] = set()
     for relative in RECORD_FILES:
         if (root / relative).is_file():
@@ -104,6 +106,9 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
     if (root / ".littrans" / "state.json").is_file():
         must_ignore.add(".littrans/state.json")
     must_ignore.update(path.relative_to(root).as_posix() for path in (root / "source").glob("*.pdf"))
+    source = load_project(root).source(root)
+    if source.is_relative_to(root):
+        must_ignore.add(source.relative_to(root).as_posix())
     must_ignore.update(path.relative_to(root).as_posix() for path in (root / "output").glob("*.html"))
     # A detector result is evidence a page ledger names and no other runtime reproduces,
     # so every rerun (on any host) cuts the page on it; the request and log of the run
@@ -122,7 +127,7 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
 def record_tracking(root: Path) -> dict[str, Any]:
     """Classify every file under the project with git and report the gaps; read-only."""
     root = Path(root).resolve()
-    load_project(root)
+    config = load_project(root)
     toplevel = git_toplevel(root)
     prefix = root.relative_to(toplevel).as_posix()
     prefix = "" if prefix == "." else prefix + "/"
@@ -148,6 +153,13 @@ def record_tracking(root: Path) -> dict[str, Any]:
     for relative in sorted(must_ignore):
         if relative in tracked:
             problems.append(f"must never be tracked but is: {relative}")
+    # A nested project may keep its source beside it in the same repository.
+    # Query that one file explicitly; the rest of the report remains project-scoped.
+    source = config.source(root)
+    if source.is_relative_to(toplevel) and not source.is_relative_to(root):
+        relative = source.relative_to(toplevel).as_posix()
+        if _git(toplevel, "ls-files", "-z", "--", ":(literal)" + relative):
+            problems.append(f"must never be tracked but is: {relative} (relative to repository root)")
     gap = sorted(universe - tracked - ignored)
     for relative in gap[:GAP_REPORT_LIMIT]:
         problems.append(f"neither tracked nor ignored (silently outside the record): {relative}")

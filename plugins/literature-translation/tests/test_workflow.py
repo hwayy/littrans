@@ -1132,6 +1132,10 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     first, second = paragraphs[:2]
     revised = []
     for unit in units:
+        if unit.unit_id == first.unit_id:
+            # Explicitly continue this synthetic sentence: a receiver flag alone
+            # must not override the fixture's terminal punctuation.
+            unit = unit.model_copy(update={"continued_to_next": True})
         if unit.unit_id == second.unit_id:
             unit = unit.model_copy(update={"continues_from_previous": True})
         revised.append(unit)
