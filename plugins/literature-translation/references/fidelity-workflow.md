@@ -128,7 +128,11 @@ An asset no text block references becomes a `visual` unit of its own (`p<page>-v
 a `figure` unit for a figure and a paragraph otherwise, placed after the last body chunk that
 ends above it. A `figure` or `table` unit made from a native block that holds only
 placeholders (a stray label glyph inside the figure) takes the union of its assets' fragment
-boxes as its `bbox`, as a `visual` unit does. When structure assembly merges a chunk into the
+boxes as its `bbox`, as a `visual` unit does. A detector `table` box grows over the header
+rows set above it: a row within two lines of the box's first row whose ink lies inside the
+box's columns, that is not a caption (`Table 4.1.`), and that either shares the rows' native
+block or is separated from them by a rule of the table's width belongs to the table, so the
+column headings stay in the asset with the columns they head and never read as prose. When structure assembly merges a chunk into the
 one before it, every later chunk whose parent it was follows the survivor, so no `parent_id`
 names a unit that does not exist; an enumerated item (`(a)`, `(ii)`) hangs from the paragraph,
 statement or proof that introduces the list wherever its label sits — after paragraph white
@@ -285,7 +289,13 @@ its argument's bracket (`Cov(`, `mean(`, `area(`) joins the run like a single le
 operator does. A text-face accent (`ˆ`, `¯`) set over a mathematical base joins the base's run.
 Bold letters flush against bold digits of the same baseline and size (`KP92`), or a bold phrase
 enclosed in `[` `]`, are a citation key and stay prose; a bold single letter elsewhere is a
-variable. A known operator name (`log`, `lim`, `dim`, `max`, `mod`; the `MATH_OPERATORS` set)
+variable. A text-face digit smaller than the text-face digit before it, set on a raised or
+lowered baseline and flush against it, is a script digit, and so are the digits continuing
+it: TeX sets a power of a number in the text face alone (`2^{19937}`, `10^6`), so the script
+opens the run, the number it is attached to joins it as its prefix and the notation after it
+continues it (`2^{19937} − 1` is one asset). A superscript after a letter or a punctuation
+mark is a footnote call, never an exponent — the same reading the footnote planner takes; a
+script MuPDF emits as a native line of its own is not joined by this rule. A known operator name (`log`, `lim`, `dim`, `max`, `mod`; the `MATH_OPERATORS` set)
 also continues an open run when notation or an opening bracket follows it (`lim_{ε→0} log c_ε /
 log d_ε` is one run; `the log of` is prose), and opens one across the word space TeX sets after
 it (`log x`, `−log P(D)`), whether that space is a text-face glyph or a math-face one — a
@@ -397,8 +407,9 @@ computed without it, so re-preparing identical content keeps the page fingerprin
 ID (an existing valid packet is returned untouched rather than rewritten) and the review
 receipt. `source prepare --replace` reports such pages in `retained_receipt_pages`; a page
 whose fingerprint moved, or a page outside the run whose receipt depends on a re-prepared
-page (continuation or container closure), loses its receipt explicitly and is listed in
-`invalidated_pages`. `littrans doctor` prints the installed `build` (`plugin_version`,
+page (continuation or container closure, read from the record before the run and from the
+re-prepared units, so a page the run reaches only through an edge it added is found too),
+loses its receipt explicitly and is listed in `invalidated_pages`. `littrans doctor` prints the installed `build` (`plugin_version`,
 `build_digest`, `package_path`) for comparison with an artifact's `generator`.
 
 ### Replaying reviewer overrides
@@ -471,9 +482,11 @@ of recoverable paragraphs: split the source region and obtain a fresh packet.
 Overrides are applied before approvals. Decisions whose dependency fingerprints changed because
 another decision in the same import corrected a page appear in `deferred_pages`; corrected pages
 appear in `changed_pages`; pages outside the review whose receipt depended on a corrected page
-(continuation or container closure) lose that receipt and appear in `invalidated_pages`. The
-three lists are disjoint and together are what needs a new packet and review, never an
-immediately stale receipt.
+(continuation or container closure, in the graph before the correction or in the one it
+produced — units re-parented to a container on the page before reach that page only through
+the new edge) lose that receipt and appear in `invalidated_pages`. The three lists are
+disjoint and together are what needs a new packet and review, never an immediately stale
+receipt.
 
 ### Override contract
 
