@@ -4,7 +4,7 @@ import json
 import re
 import shutil
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -209,6 +209,37 @@ def _batch_series(batch_id: str | None) -> str | None:
         return None
     match = BATCH_SERIES_RE.fullmatch(batch_id)
     return match.group("series") if match else None
+
+
+def _unbatched_in_scope(
+    units: Sequence[SourceUnit],
+    all_manifests: Sequence[BatchManifest],
+    scope: Sequence[BatchManifest],
+) -> tuple[list[str], list[int]]:
+    """Renderable units no manifest covers: those inside the coordination scope, and the
+    pages of those outside it.
+
+    The scope is the pages of the coordinated batches plus the reading-order span from their
+    first unit to their last, so a unit recovered on a coordinated page or between two
+    coordinated batches blocks the wave, while a later chapter that was extracted but not yet
+    batched is reported, not enforced: coordinating one chapter does not require batching the
+    book.
+    """
+    covered = {unit_id for manifest in all_manifests for unit_id in manifest.unit_ids}
+    pages = {page for manifest in scope for page in manifest.pages}
+    positions = {unit.unit_id: index for index, unit in enumerate(units)}
+    span = [positions[unit_id] for manifest in scope for unit_id in manifest.unit_ids if unit_id in positions]
+    lower, upper = (min(span), max(span)) if span else (0, -1)
+    inside: list[str] = []
+    outside: set[int] = set()
+    for index, unit in enumerate(units):
+        if unit.render_policy is not RenderPolicy.INCLUDE or unit.unit_id in covered:
+            continue
+        if unit.page in pages or lower <= index <= upper:
+            inside.append(unit.unit_id)
+        else:
+            outside.add(unit.page)
+    return sorted(inside), sorted(outside)
 
 
 def _bounded_manifest_series(
@@ -503,14 +534,10 @@ def workflow_next(
     upper = indexes[through] if through else len(manifests) - 1
     if lower > upper:
         raise ValueError("workflow next --start-at must not follow --through")
-    manifest_unit_ids = {
-        unit_id for manifest in all_manifests for unit_id in manifest.unit_ids
-    }
-    unbatched_units = sorted(
-        unit.unit_id
-        for unit in units
-        if unit.render_policy is RenderPolicy.INCLUDE
-        and unit.unit_id not in manifest_unit_ids
+    # Coverage is checked over the coordinated range, not the whole record: a chapter
+    # extracted but not yet batched is reported in ``unbatched_pages``.
+    unbatched_units, unbatched_pages = _unbatched_in_scope(
+        units, all_manifests, manifests[lower : upper + 1]
     )
     if unbatched_units:
         raise ValueError(
@@ -572,6 +599,7 @@ def workflow_next(
             "limit": resolved_limit,
             "start_at": start_at,
             "through": through,
+            "unbatched_pages": unbatched_pages,
         }
     stage = stages[start][1]
     batch_ids: list[str] = []
@@ -616,6 +644,7 @@ def workflow_next(
             if stage_details[batch_id][1]
         },
         "schedule": "translation-first-optional-assets",
+        "unbatched_pages": unbatched_pages,
     }
 
 
@@ -668,14 +697,8 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
             "affected batches before continuing: "
             f"batch_ids={stale_translatability}"
         )
-    covered_unit_ids = {
-        unit_id for manifest in snapshot.manifests for unit_id in manifest.unit_ids
-    }
-    unbatched_units = sorted(
-        unit.unit_id
-        for unit in snapshot.units
-        if unit.render_policy is RenderPolicy.INCLUDE
-        and unit.unit_id not in covered_unit_ids
+    unbatched_units, unbatched_pages = _unbatched_in_scope(
+        snapshot.units, snapshot.manifests, requested_manifests
     )
     if unbatched_units:
         raise ValueError(
@@ -707,6 +730,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
         "optional_asset_tasks": _ready_tasks(root, requested, snapshot, resolved_host, optional_assets=True),
         "assets_complete": all(x["complete"] for x in lanes.values()),
         "complete": all(stage == "complete" for stage in stages.values()),
+        "unbatched_pages": unbatched_pages,
     }
 
 

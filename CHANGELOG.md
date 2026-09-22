@@ -6,12 +6,73 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.13`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.14`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- Workflow coordination checks batch coverage over its own scope (0.6.0-dev.14). `workflow
+  status --batch-ids …` and `workflow next` used to refuse to run while any renderable unit of
+  the record was outside every manifest, so a book whose later chapters were extracted but not
+  yet batched could not be coordinated chapter by chapter. The check now covers the pages of
+  the coordinated batches and the reading-order span between them — a unit recovered on a
+  coordinated page or between two coordinated batches still blocks the wave with the same
+  message — and both commands report the pages outside that scope that no manifest covers as
+  `unbatched_pages`. Formal rendering keeps its own page-scoped check.
+- The scaffolded launcher runs what the session's client installed (0.6.0-dev.14).
+  `tools/lt.py` tried the client caches in a fixed order and took the first one holding the
+  plugin, so a leftover `0.6.0` directory in the Claude Code cache outranked the
+  `0.6.0-dev.13` Codex had installed, and a cachebuster build (`0.6.0-dev.13+codex.<stamp>`)
+  did not sort as a version at all. A regenerated launcher reads the client running the
+  session from the same environment signals workflow coordination reads, prefers that client's
+  install (Claude Code's own `installed_plugins.json` record, otherwise the highest version in
+  the client's cache), then the highest installed version across clients; version order accepts
+  build metadata as a later build of the same version. `LITTRANS_PLUGIN_ROOT` and a recorded
+  root that still exists keep precedence. The launcher is user-owned: delete `tools/lt.py` and
+  run `project scaffold` to regenerate it.
+- A numerator, a denominator or a case row that holds words stays in its display
+  (0.6.0-dev.14). A row of a detector display box was judged by its share of prose words alone,
+  so `surface area(U)` over a fraction bar became a prose fragment and the fraction lost its
+  numerator; a row a rule spans directly above or below it is now the fraction's, whatever it
+  says, and a row bracketed by a stretched delimiter is judged against the whole delimiter
+  column, not the one extender piece its baseline happens to fall in. The prose margin the
+  decision reads is the pen origin of text-opened lines, not the first ink of every native
+  line: seven pieces of one brace, each a native line at one x, used to outvote the prose and
+  moved the margin into the formula, and the case rows of `(1.53)` (`X is discrete-valued,`)
+  were dropped as a paragraph the box had overshot into. The words a kept row carries are
+  declared as formula conditions, as before.
+- A decorative rule never parents the prose after it, and the page-top continuation flag
+  means a continued sentence (0.6.0-dev.14). The running-head rule (an omitted `note` unit,
+  first in the reading order) opened the page's group, so the first paragraph of the page
+  hung from it; an omitted unit now takes the open group as its parent (its own at the page
+  top, as recorded before) and opens none. `continues_from_previous` is set only when the flush
+  first line also does not open a sentence — a first alphabetic character in upper case
+  (`This gives`, `Then`) reads as a new sentence, a lower-case one (`where the notation …`)
+  as a continuation; scripts without letter case keep the geometric reading, and the sender's
+  `continued_to_next` still carries a sentence that ends mid-line whatever the receiver says.
+  Container membership across a page edge (a proof or exercise that continues on the next
+  page) remains a source-review decision recorded by override.
+- Enumerated items hang from the paragraph that introduces them wherever their label sits,
+  and a statement's italic continuation stays in the statement (0.6.0-dev.14). A bracketed
+  item (`(a)`, `(ii)`) set at a paragraph indent opened a group of its own — the rule that a
+  clause after white space belongs to its introducer applied only where the planner's margin
+  happened to be the list's text column — so `(a)`–`(c)` after "This can be used to compute
+  …" and the steps `(ii)`–`(v)` of a proof opened after `**Proof.** (i) …` were each a
+  container; they now join the introducing paragraph, statement or proof, and a sibling's
+  column is read from the planner's line start rather than a bbox a display widens. Items
+  that open a group of their own (at a page top) still leave their siblings their own. An
+  indented paragraph set in the statement's own italic face (`*Conversely, if …*` after a
+  theorem's clauses) continues the statement instead of ending it, and is never merged into
+  the unit before it; upright prose ends the statement as before. A chunk the planner
+  recorded as an item's continuation (`structure.list_items … continues`) returns to the
+  item's group whatever opened in between. Multi-paragraph upright containers (an Example
+  whose later paragraphs are indented plain prose) are not decidable from typography and
+  remain a review decision.
+- A proof's tombstone reads after the display it closes (0.6.0-dev.14). The `□` of a
+  `□ (1.50)` block kept the block's native position, which MuPDF orders before the display,
+  so it merged into the paragraph before the display (`… Then □`); the residue now follows
+  the display it labelled and is a paragraph of the proof's group.
 - A recorded `units` override whose asset moved is refused, not crashed on (0.6.0-dev.13).
   The check that every page asset is referenced exactly once now runs before any unit is
   built, so an override that names an asset the page no longer cuts (a display that gained a

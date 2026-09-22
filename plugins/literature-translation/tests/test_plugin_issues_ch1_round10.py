@@ -363,9 +363,16 @@ def test_project_tracked_asks_git_and_reports_every_kind_of_gap(tmp_path: Path, 
     assert result.exit_code == 1 and json.loads(result.output)["gap"] >= 1
 
 
-def test_launcher_resolves_the_newest_sibling_when_the_recorded_root_moved(tmp_path: Path) -> None:
+def test_launcher_resolves_the_newest_sibling_when_the_recorded_root_moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _init(tmp_path)
     launcher = root / "tools" / "lt.py"
+    # Isolated from this machine's clients: no session signal, an empty home.
+    from littrans.hosts import HOST_ENV_SIGNALS
+
+    for names in HOST_ENV_SIGNALS.values():
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     cache = tmp_path / "cache"
     for name in ("0.6.0-dev.7", "0.6.0", "0.10.0-dev.1", "0.9.9", "notes"):
         (cache / name / "scripts").mkdir(parents=True)

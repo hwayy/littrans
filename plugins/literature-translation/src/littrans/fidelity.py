@@ -590,13 +590,52 @@ def _strip_display_prose(owned: list[dict[str, Any]], prose_ids: set[str],
 
 
 def _left_margin(glyphs: list[dict[str, Any]]) -> float:
-    """The prose left margin: the most common start of a native line."""
+    """The prose left margin: the most common pen origin of a native line opened by a text-face
+    glyph.
+
+    The origin, not the ink: a line's first ink starts where its first letter's side bearing
+    puts it, so the ink x of flush prose lines scatters over a few tenths of a point while the
+    pieces of one stretched brace, each a native line of its own, share an x exactly and would
+    outvote the prose (LT-079). Lines opened by notation are left out for the same reason;
+    a page without a text-opened line falls back to every line.
+    """
     firsts: dict[str, dict[str, Any]] = {}
     for g in glyphs:
         if inked_glyph(g) and g["line"] not in firsts:
             firsts[g["line"]] = g
-    starts = Counter(round(g["bbox"][0], 1) for g in firsts.values())
+    text_opened = [g for g in firsts.values() if not MATH_FONT.search(g["font"])]
+    starts = Counter(round((g.get("origin") or g["bbox"])[0], 1) for g in (text_opened or firsts.values()))
     return starts.most_common(1)[0][0] if starts else 0.0
+
+
+def _rule_boxes(page: Any) -> list[list[float]]:
+    """The page's horizontal rules (fraction bars, over- and underlines): thin, wide drawings."""
+    if not hasattr(page, "get_drawings"):
+        return []
+    boxes: list[list[float]] = []
+    for drawing in page.get_drawings():
+        rect = drawing["rect"]
+        height = float(rect.y1 - rect.y0)
+        if height <= 1.5 and float(rect.x1 - rect.x0) >= 4 * max(height, 0.1):
+            boxes.append([float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)])
+    return boxes
+
+
+def _delimiter_columns(owned: list[dict[str, Any]]) -> list[list[float]]:
+    """The ink columns of the stretched delimiters a box owns: pieces that overlap in x and
+    touch in y are one delimiter, so a row bracketed by its extender pieces is bracketed by
+    the whole (a case row's baseline need not fall inside any one piece)."""
+    pieces = sorted((list(g["bbox"]) for g in owned if inked_glyph(g) and (_delimiter_piece(g) or "cmex" in g["font"].lower())),
+                    key=lambda box: (box[0], box[1]))
+    columns: list[list[float]] = []
+    for box in pieces:
+        for column in columns:
+            if min(box[2], column[2]) - max(box[0], column[0]) > 0 and box[1] <= column[3] + 1.0 and box[3] >= column[1] - 1.0:
+                column[:] = [min(column[0], box[0]), min(column[1], box[1]), max(column[2], box[2]), max(column[3], box[3])]
+                break
+        else:
+            columns.append(box)
+    return columns
 
 
 def _visual_lines(glyphs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -611,19 +650,22 @@ def _visual_lines(glyphs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     return [sorted(line, key=lambda g: g["bbox"][0]) for line in lines]
 
 
-def _display_box_owned(owned: list[dict[str, Any]], prose_ids: set[str], margin: float) -> tuple[list[dict[str, Any]], bool, set[str]]:
+def _display_box_owned(owned: list[dict[str, Any]], prose_ids: set[str], margin: float,
+                       rules: list[list[float]] | tuple[()] = ()) -> tuple[list[dict[str, Any]], bool, set[str]]:
     """Decide what a detector display box owns when it also contains prose words.
 
     Works per visual line (baseline), because the detector rectangle may overshoot
-    into the paragraph above or below. Returns the formula glyphs, whether prose
-    remains outside the formula, and the glyphs of lines that must stay displayed
-    lines of native text around the formula:
+    into the paragraph above or below. ``rules`` are the page's horizontal rules
+    (``_rule_boxes``). Returns the formula glyphs, whether prose remains outside the
+    formula, and the glyphs of lines that must stay displayed lines of native text
+    around the formula:
 
     - a phrase set off by a gap ("X(t) = ...   for all times t > 0.") beside the
       whole formula returns to the line, which keeps its displayed position;
     - a row inside the vertical span of a stretched delimiter the box owns is a
       case of the formula ("0, otherwise.") and stays whole, its words declared
-      as formula conditions;
+      as formula conditions; so is a row a fraction bar spans directly above or
+      below it (the numerator "surface area(U)", a denominator "vol(B)");
     - a few words inside the notation ("sup over Y simple", "{terms of order ...
       and higher}") are text operators or annotations and stay in the formula;
     - a line that is mostly prose is not part of the formula: at the left margin
@@ -639,8 +681,8 @@ def _display_box_owned(owned: list[dict[str, Any]], prose_ids: set[str], margin:
     def notation(glyph: dict[str, Any]) -> bool:
         return bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]))
 
-    # Ink spans of the delimiters the box owns: rows they bracket belong to the formula.
-    spans = [g["bbox"] for g in owned if inked_glyph(g) and (_delimiter_piece(g) or "cmex" in g["font"].lower())]
+    # Ink columns of the delimiters the box owns: rows they bracket belong to the formula.
+    spans = _delimiter_columns(owned)
     for index, line in enumerate(lines):
         inked = [g for g in line if inked_glyph(g)]
         prose = [g for g in inked if g["id"] in prose_ids]
@@ -659,7 +701,14 @@ def _display_box_owned(owned: list[dict[str, Any]], prose_ids: set[str], margin:
             outside = True
             continue
         baseline = sorted(g.get("baseline", g["bbox"][3]) for g in inked)[len(inked) // 2]
-        if any(span[1] <= baseline <= span[3] for span in spans):
+        top, bottom = min(g["bbox"][1] for g in inked), max(g["bbox"][3] for g in inked)
+        x0, x1 = min(g["bbox"][0] for g in inked), max(g["bbox"][2] for g in inked)
+        barred = any(
+            rule[0] - 1 <= x0 and x1 <= rule[2] + 1
+            and (0 <= rule[1] - bottom <= size * 0.6 or 0 <= top - rule[3] <= size * 0.6)
+            for rule in rules
+        )
+        if barred or any(span[1] <= baseline <= span[3] for span in spans):
             kept.extend(line)
             continue
         undecided.append((line, len(inked), len(prose)))
@@ -795,7 +844,8 @@ def _split_display_at_tags(region: dict[str, Any], owned: list[dict[str, Any]],
     return (parts, cuts) if len(parts) > 1 else ([owned], [])
 
 
-def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str, Any]]) -> set[str]:
+def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str, Any]],
+                            rules: list[list[float]] | tuple[()] = ()) -> set[str]:
     """Glyphs of detector display formulas that also contain prose words.
 
     Such a line ("B : R^n -> M (= space of n x m matrices)", "X(t) = ...  for all
@@ -814,7 +864,7 @@ def _display_line_glyph_ids(glyphs: list[dict[str, Any]], layout: list[dict[str,
         box = [float(v) / 2 for v in item["bbox"]]
         owned = [g for g in glyphs if inked_glyph(g) and _inside(g, box) and g["id"] not in tags]
         if owned and any(g["id"] in prose for g in owned):
-            ids.update(_display_box_owned(owned, prose, margin)[2])
+            ids.update(_display_box_owned(owned, prose, margin, rules)[2])
     return ids
 
 
@@ -979,6 +1029,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         unmeasured = {g["id"] for g in glyphs if inked_glyph(g) and g["id"] not in ink}
         glyphs = [{**g, "bbox": ink.get(g["id"], g["bbox"])} for g in glyphs]
     regions: list[dict[str, Any]] = []
+    rules = _rule_boxes(page)
     # A damaged character does not make the surrounding paragraph opaque.
     for glyph in glyphs:
         if "\ufffd" in glyph["text"] or (any(ord(c) < 32 and c not in "\t\r\n" for c in glyph["text"]) and not MATH_FONT.search(glyph["font"])):
@@ -1094,7 +1145,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             owned = [g for g in glyphs if inked_glyph(g) and _inside(g, region["bbox"]) and g["id"] not in tags]
             whole_display = False
             if region["kind"] == "math" and region["display"] and owned and any(g["id"] in prose_ids for g in owned):
-                owned = _display_box_owned(owned, prose_ids, margin)[0]
+                owned = _display_box_owned(owned, prose_ids, margin, rules)[0]
                 # Words that stay inside the formula are its text operators.
                 whole_display = bool(owned)
             if region["kind"] == "math" and owned and all(p.startswith("PP-DocLayoutV2:") for p in region["provenance"]) and not any(
@@ -1695,6 +1746,9 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         else:
             result.append(unit)
     removed = set()
+    # A tombstone that closes the proof at the end of its display line reads after the
+    # display, wherever MuPDF put its block (LT-082): (tombstone index, display index).
+    after_display: list[tuple[int, int]] = []
     # A label MuPDF put in the text block before or after the display ("... given by
     # (8.50)", "(8.32) (i) ...") binds to the adjacent unnumbered display beside it and
     # leaves the paragraph.
@@ -1717,6 +1771,8 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
                 break
             result[neighbour_index] = _make_unit(neighbour.page, neighbour.unit_id, neighbour.source_text, neighbour.bbox, assets, kind=neighbour.kind.value, equation_number=match[1], footnote_refs=neighbour.footnote_refs)
             result[index] = _make_unit(unit.page, unit.unit_id, body, unit.bbox, assets, kind=unit.kind.value, footnote_refs=unit.footnote_refs)
+            if neighbour_index > index and all(c in QED_MARKERS or c.isspace() for c in body):
+                after_display.append((index, neighbour_index))
             break
     for index, unit in enumerate(result):
         label = re.fullmatch(tombstones + number_pattern + tombstones, unit.source_text.strip())
@@ -1729,12 +1785,18 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
             result[i] = _make_unit(other.page, other.unit_id, other.source_text, _union([unit.bbox, other.bbox]), assets, kind=other.kind.value, equation_number=label[1], footnote_refs=other.footnote_refs)
             residue = "".join(c for c in unit.source_text if c in QED_MARKERS)
             if residue:
-                # The tombstone stays in the reading order; structure assembly attaches it
-                # to the paragraph the proof ends in.
+                # The tombstone stays in the reading order, after the display it closes;
+                # structure assembly attaches it to the paragraph the proof ends in.
                 result[index] = _make_unit(unit.page, unit.unit_id, residue, unit.bbox, assets, kind=unit.kind.value, footnote_refs=unit.footnote_refs)
+                if index < i:
+                    after_display.append((index, i))
             else:
                 removed.add(index)
-    return [unit for i, unit in enumerate(result) if i not in removed]
+    ordered = [unit for i, unit in enumerate(result) if i not in removed and i not in {t for t, _ in after_display}]
+    for tombstone_index, display_index in after_display:
+        display = result[display_index]
+        ordered.insert(ordered.index(display) + 1, result[tombstone_index])
+    return ordered
 
 
 def _expanded_native(page: fitz.Page, original_glyphs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1900,7 +1962,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         from littrans.glyph_export import glyph_ink_boxes
         ink = glyph_ink_boxes(page, glyphs)
     structure = plan_structure(glyphs, blocks, items, page.rect.height,
-                               display_glyph_ids=_display_line_glyph_ids(glyphs, items), ink=ink)
+                               display_glyph_ids=_display_line_glyph_ids(glyphs, items, _rule_boxes(page)), ink=ink)
     from littrans.structure_profile import guidance_digest, structure_context
     profile_context = structure_context(root)
     if profile_context:

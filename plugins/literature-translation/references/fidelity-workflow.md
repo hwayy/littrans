@@ -130,17 +130,22 @@ ends above it. A `figure` or `table` unit made from a native block that holds on
 placeholders (a stray label glyph inside the figure) takes the union of its assets' fragment
 boxes as its `bbox`, as a `visual` unit does. When structure assembly merges a chunk into the
 one before it, every later chunk whose parent it was follows the survivor, so no `parent_id`
-names a unit that does not exist; an enumerated item that opens after paragraph white space
-hangs from the paragraph that introduces the list, never from a sibling item, and its later
-siblings return to that same parent whatever group an item's own indented continuation
-paragraph opened in between (an enumeration whose first item opened a group of its own leaves
+names a unit that does not exist; an enumerated item (`(a)`, `(ii)`) hangs from the paragraph,
+statement or proof that introduces the list wherever its label sits — after paragraph white
+space or at a paragraph indent — never from a sibling item, and its later siblings return to
+that same parent whatever group an item's own indented continuation paragraph opened in
+between (an enumeration whose first item opened a group of its own, at a page top, leaves
 each item its own group; a heading, statement, proof, run-in or numbered label, or prose back
-at the margin after white space closes the enumeration).
+at the margin after white space closes the enumeration). A chunk the planner recorded as an
+item's continuation (`structure.list_items … continues`) returns to the item's group whatever
+opened in between.
 
 A bare rule — a glyph-free `mixed-region` at most 10 pt tall and at least three times as
 wide as tall, whatever proposed it: a native drawing, a reviewer's region with
 `visual-region-correction` provenance — is layout, not content: its unit is a `note` with
-`render_policy: omit`, not translatable, kept in the ledger and never read. A region a
+`render_policy: omit`, not translatable, kept in the ledger and never read; it takes the open
+group as its parent (its own at the page top) and never opens one, so the prose after a
+running-head rule starts its own paragraph. A region a
 detector labelled (`PP-DocLayoutV2:*`) or an embedded image (`native-image`) is never treated
 as a rule. Overlapping native drawings (the segments of a diagram) are clustered into one
 region before regions are merged pairwise — the same result the pairwise merge reaches one
@@ -150,8 +155,8 @@ A printed equation label such as `(1.6)` beside a display is bound to the unit's
 `equation_number` and removed from `source_text`; the checkpoint HTML shows it in the unit meta
 line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
 label that shares its PDF block with the tombstone closing a proof (`□ (1.50)`) binds too; the
-tombstone stays in the reading order and structure assembly attaches it to the paragraph the
-proof ends in. A native line that is a label and nothing else is text wherever it sits: it is
+tombstone stays in the reading order, after the display it closes wherever MuPDF put its
+block, and structure assembly attaches it to the paragraph the proof ends in. A native line that is a label and nothing else is text wherever it sits: it is
 never notation (seeded by a detector box or not), never carries a formula across the line
 end, and no display box owns its ink, so a crop never holds a label and a label cut into
 `(6.` + `14)` cannot happen. A label the paragraph is still left holding at its start or end
@@ -250,10 +255,15 @@ declared the same way; an explicit list (even empty) is the reviewer's decision,
 approval gate then reports language that list leaves undeclared.
 
 A displayed formula box owns every row a stretched delimiter it owns brackets (the cases of
-`ρ(x) = {…`), including a row that is mostly a condition word (`0, otherwise.`), and a phrase is
-returned to the paragraph as set-off prose only when it sits beside the whole formula, not when
-it lies within the horizontal extent of the formula's other rows (a fraction denominator such as
-`vol(B)`).
+`ρ(x) = {…`), including a row that is mostly a condition word (`0, otherwise.`) — the bracket
+is the whole delimiter column, the extender pieces joined, not the one piece a row's baseline
+happens to fall in — and every row a fraction bar spans directly above or below it, however
+many words it holds (`surface area(U)` over the bar, `vol(B)` under it); a phrase is returned
+to the paragraph as set-off prose only when it sits beside the whole formula, not when it lies
+within the horizontal extent of the formula's other rows. A row that starts at the prose
+margin and is mostly prose is the paragraph the box overshot into, as before; the margin is
+the most common pen origin of the page's text-opened lines, so the pieces of one brace (each a
+native line at one x) cannot move it into the formula.
 
 An inline region owns such rows too. A cases block or a matrix set in running text (`G(x) = {`
 in a list item, which the detector may label `inline_formula` or miss) is scanned per native
@@ -616,7 +626,11 @@ together with enumerated clauses and display equations. Preparation recognizes e
 labels and enumerated children conservatively; a heading, proof or new indented prose ends the
 inferred statement, and so does prose opening after paragraph white space — unless it resumes
 after the statement's enumerated clauses, when it is the statement's conclusion and keeps its
-group. A numbered label unit (`1.11. Let …`, an exercise or numbered item) opens a
+group, or it is an indented paragraph set in the statement's own italic face (a theorem body
+at least 60 % italic continued by `*Conversely, if …*`), which continues the statement and is
+never merged into the unit before it. An upright container's later paragraphs (an example
+whose plain indented paragraphs still belong to it) carry no typographic evidence and stay a
+source-review decision, as does container membership across a page edge. A numbered label unit (`1.11. Let …`, an exercise or numbered item) opens a
 parent group of its own unless a statement is open, in which case it joins the statement like a
 bracketed clause; bracketed clauses (`(a)`, `(ii)`) join the paragraph or statement that
 introduces them, and the item's displays and continuation chunks join its group. A label unit
@@ -871,6 +885,14 @@ translatable, and workflow dispatches the independent asset audit before QA.
 A batch set for a packet or a render may span batch series when units do not overlap and source
 order holds; within one series the batches must stay consecutive.
 
+`workflow next` and `workflow status` check batch coverage over the coordinated scope: the
+pages of the coordinated batches (the bounded or series range for `next`, the requested IDs
+for `status`) and the reading-order span between them. A renderable unit no manifest covers
+inside that scope stops the wave (`unbatched_units=…`: refresh or create batches); pages
+outside it that hold such units — a chapter extracted but not yet batched — are reported as
+`unbatched_pages` and do not block coordinating the batched chapters. Formal rendering keeps
+its own check over the pages it renders.
+
 ## Rendering
 
 A project without any transcription candidate renders originals-only automatically; render QA
@@ -885,7 +907,11 @@ dependency cover selection considers only current QA/audit/external evidence.
 A paragraph continues across a page edge when the sender's `continued_to_next` is set (its
 last line ends mid-sentence), or when the receiver's `continues_from_previous` is set and the
 sender's text does not end in terminal punctuation; the receiver's flag is never set on a unit
-that opens with a bold run-in label, a theorem statement, `Proof` or a list label. Batching
+that opens with a bold run-in label, a theorem statement, `Proof` or a list label, nor on one
+whose first letter is a capital (`This gives`, `Then` open a sentence; `where the notation …`
+continues one; a script without letter case keeps the geometric reading). The flags express
+a continued sentence; a container that continues on the next page (a proof, an exercise) is
+recorded by a reviewed `parent_id` override, never inferred. Batching
 and audit closure read the same pair of flags.
 
 Reading output appends image-language companions after a complete continuation chain; footnote
@@ -921,7 +947,7 @@ for nested layouts (`repo/workspace`); the default is the project root.
 | `glossary/approved.yaml`, `candidates.yaml`, `reference.yaml` | user | the three terminology stores, each headed by its effect |
 | `.gitignore` (project root) | user | keeps the source PDF, `output/`, the layout runs' `*.request.json` and `*.log`, per-asset `original.pdf` and unreferenced source packets out; keeps `.littrans/work/` and the layout results in and the lock out; an existing file only gains the `.littrans/*` / `!.littrans/work/` pair, and a file that spells it `/.littrans/*` already has it |
 | `.gitattributes`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `PLUGIN-ISSUES.md`, `docs/{HISTORY,DECISIONS,TERMINOLOGY,REVIEWS}.md` | user | LF policy for the record (`*.cmd` CRLF, `*.sh` LF), handbook, operating manual (`CLAUDE.md` imports `AGENTS.md`), defect ledger and the four records — headings plus one line each on what belongs there, nothing document-specific |
-| `tools/lt.py`, `tools/lt.cmd`, `tools/lt.sh` | user | launcher: `LITTRANS_PLUGIN_ROOT`, else the recorded plugin root, else the same path under this user's home, else their highest-versioned siblings (numeric, pre-release aware), else each client's plugin cache; executable on POSIX |
+| `tools/lt.py`, `tools/lt.cmd`, `tools/lt.sh` | user | launcher: `LITTRANS_PLUGIN_ROOT`, else the recorded plugin root or the same path under this user's home while it exists, else the install of the client running the session (read from its environment signals; Claude Code's `installed_plugins.json` record, otherwise the highest version in that client's cache), else the newest sibling of a recorded root outside every cache, else every client's install by version (numeric, pre-release aware, build metadata as a later build); executable on POSIX |
 | `docs/LITTRANS.md` | **plugin** | what the installed build guarantees — version, build digest, term semantics, audit context parts, stale reasons, stages, wave limits, status order, QA version — rendered from the package constants; regenerated by `--refresh`, never hand-edited |
 
 `project tracked PROJECT` derives the record from the data — `project.yaml`, context and
@@ -966,10 +992,13 @@ without a shared file system. What the hosts must agree on:
 6. **Windows checkouts:** `git config core.longpaths true` (packet payloads nest deep) and
    keep `core.autocrlf` irrelevant by relying on the generated `.gitattributes`; a project's
    `tools/lt.sh` needs its executable bit once (`git update-index --chmod=+x tools/lt.sh`).
-7. **The launcher resolves the plugin per host**: `tools/lt.py` tries `LITTRANS_PLUGIN_ROOT`,
-   the recorded root, the same path under this user's home, their newest siblings and each
-   client's plugin cache, so a project scaffolded on one host runs on the other once the
-   plugin is installed there.
+7. **The launcher resolves the plugin per host and per client**: `tools/lt.py` tries
+   `LITTRANS_PLUGIN_ROOT`, the recorded root (or the same path under this user's home) while
+   it exists, the install of the client running the session, the newest sibling of a recorded
+   root outside every cache, then every client's install by version, so a project scaffolded
+   on one host runs on the other once the plugin is installed there, and a Codex session never
+   runs a leftover Claude Code cache. The launcher is user-owned: after an upgrade of the plugin
+   delete `tools/lt.py` and run `project scaffold` to regenerate it.
 
 ## Resume and recovery
 
