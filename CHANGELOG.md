@@ -6,12 +6,39 @@ versioning and correspond to Git tags named `v<version>`.
 ## [0.6.0] - Unreleased
 
 Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, currently `0.6.0-dev.14`) that is bumped with every behaviour-changing commit, so
+(`0.6.0-dev.N`, currently `0.6.0-dev.15`) that is bumped with every behaviour-changing commit, so
 plugin caches keyed by version no longer share a directory between builds and `claude plugin
 update` sees a change; the release drops the suffix.
 
 ### Changed
 
+- The exponent of a text-face number is notation (0.6.0-dev.15). TeX sets digits in the
+  text face inside mathematics too, so `2^{19937}` or `10^6` carries no mathematical font at
+  all: nothing opened an inline run, and the `− 1` that followed opened one after a word
+  space, so the page read `a period of up to 219937 {{asset}}` with an asset holding only
+  `− 1`. A text-face digit that is smaller than the text-face digit before it, set on a
+  raised or lowered baseline and flush against it, is now a script digit — as are the digits
+  continuing it — and the number it is attached to joins the run, which then continues into
+  the notation after it (`2^{19937} − 1` is one inline asset). A superscript after a letter or
+  a punctuation mark (a footnote call) is untouched; a script MuPDF emits as a separate
+  native line is not recognised by this rule.
+- A detector table box takes the header rows set above it (0.6.0-dev.15). PP-DocLayoutV2
+  often starts a `table` box at the rule under the column headings, so the headings fell
+  to the paragraph around the table (`Class Spin Number of neighboring spin ups {{asset}}`)
+  and the asset lost the column–heading correspondence. A row directly above the box
+  (within two lines of its first row) whose ink lies inside the box's columns, that is not
+  a caption, and that either sits in the same native block as the rows below or is
+  separated from them by a rule of the table's width, is now part of the table; the box
+  grows over it and over the next such row above. The block that held only the headings
+  becomes the `table` unit itself.
+- A correction's dependency pages are read from the graph after the correction as well as
+  before it (0.6.0-dev.15). `import` and `source prepare --replace` settled the receipts of
+  the pages the corrected page reached in the recorded graph only; an override that
+  re-parented a page's units to a container on the page before (a Solution continued
+  across the edge) reached that container's page only through the edge it added, so that
+  page kept a receipt whose fingerprint had moved and `invalidated_pages` was empty until a
+  full-range `source verify` found it. Both commands now settle, by name, every page the
+  change reaches in either graph and report it in `invalidated_pages`.
 - Workflow coordination checks batch coverage over its own scope (0.6.0-dev.14). `workflow
   status --batch-ids …` and `workflow next` used to refuse to run while any renderable unit of
   the record was outside every manifest, so a book whose later chapters were extracted but not

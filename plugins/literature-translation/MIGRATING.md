@@ -38,6 +38,24 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
   blocks that were absorbed into prose become units of their own kind on re-preparation.
 
+## Projects prepared with 0.6.0-dev.14 or earlier: script digits, table headers and dependency receipts (0.6.0-dev.15)
+
+- **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and
+  overrides stay valid; `source verify` reads as before.
+- **On re-preparation (`source prepare --replace`, or an override import) these forms change
+  the page's units:** a power of a text-face number (`2^{19937} − 1`, `10^6`) becomes one
+  inline math asset instead of flattened digits and a fragment (`219937 {{asset}}`), so the
+  paragraph's text and the asset's ID move; a detector table whose column headings sat
+  above its box becomes one table asset holding headings, rules and rows, so the block that
+  carried the headings as prose becomes a `table` unit (its text is the placeholder alone)
+  and the asset's ID moves. A page corrected by hand for either form (a `regions` override
+  cutting the power or the whole table) replays as recorded.
+- **`import` and `source prepare --replace` now name every receipt they remove.** A page a
+  correction reaches only through the edge it adds — units re-parented to a container on
+  the page before — appears in `invalidated_pages` and loses its receipt at import time.
+  A project that ran a full-range `source verify` after each import to find such pages may
+  stop; a receipt such a verify already found stale is already gone.
+
 ## Projects prepared with 0.6.0-dev.13 or earlier: display rows, containers and the launcher (0.6.0-dev.14)
 
 - **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and

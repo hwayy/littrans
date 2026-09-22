@@ -328,6 +328,37 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
     # Delimiters stay: intervals, function arguments and expressions continuing
     # on the next line are legitimately unbalanced within one crop.
     return run
+
+
+def _script_digit_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
+    """Text-face digits set as the exponent or index of a text-face number (``2^{19937}``, ``10^6``).
+
+    TeX sets digits in the text face in mathematics too, so a power of a number carries no
+    mathematical font at all: the script is told by its size (smaller than its base) and its
+    baseline (raised or lowered), flush against the digit it is attached to. Later digits of
+    the same script continue it at its size and baseline. A superscript after a letter or a
+    punctuation mark (a footnote call) is not one.
+    """
+    ids: set[str] = set()
+    for line in lines.values():
+        inked = [g for g in line if inked_glyph(g)]
+        for index in range(1, len(inked)):
+            glyph, previous = inked[index], inked[index - 1]
+            if not (glyph["text"].isdigit() and not MATH_FONT.search(glyph["font"])):
+                continue
+            baseline, size = glyph.get("baseline", glyph["bbox"][3]), glyph.get("size", 10)
+            base_line, base_size = previous.get("baseline", previous["bbox"][3]), previous.get("size", 10)
+            gap = glyph["bbox"][0] - previous["bbox"][2]
+            if previous["id"] in ids:
+                if abs(baseline - base_line) < 1 and abs(size - base_size) < 0.5 and -1 <= gap <= size * 0.25:
+                    ids.add(glyph["id"])
+            elif (previous["text"].isdigit() and not MATH_FONT.search(previous["font"])
+                    and size <= base_size * 0.85 and abs(baseline - base_line) >= base_size * 0.1
+                    and -1 <= gap <= base_size * 0.25):
+                ids.add(glyph["id"])
+    return ids
+
+
 def _operator_name(text: str) -> bool:
     """Whether a text-face prefix is a known operator name (``log``, ``limsup``, ``dim``)."""
     match = re.fullmatch(r"([A-Za-z]{2,})([0-9([{}.*+/-]*)", text)
@@ -636,6 +667,45 @@ def _delimiter_columns(owned: list[dict[str, Any]]) -> list[list[float]]:
         else:
             columns.append(box)
     return columns
+
+
+def _grow_table_header(bbox: list[float], glyphs: list[dict[str, Any]], margin: float,
+                       rules: list[list[float]]) -> list[float]:
+    """Extend a detector table box over the header rows set above it.
+
+    A detector box often starts at the rule under the column headings, so the headings
+    fall to the paragraph around the table. A row directly above the box (within two
+    lines of the first row it holds) whose ink lies inside the box's columns, that is not
+    a caption (``Table 4.1.``), and that either sits in the same native block as the rows
+    below or is separated from them by a rule of the table's width, is a header row; the
+    box grows over it, and over the next such row above.
+    """
+    owned = [g for g in glyphs if inked_glyph(g) and _inside(g, bbox)]
+    if not owned:
+        return bbox
+    sizes = sorted(g.get("size", 10) for g in owned)
+    size = sizes[len(sizes) // 2]
+    blocks = {g["line"].rsplit("-l", 1)[0] for g in owned}
+    x0, y0, x1, y1 = bbox
+    lower = min(g.get("baseline", g["bbox"][3]) for g in owned)
+    above = [g for g in glyphs if inked_glyph(g) and not _inside(g, bbox)
+             and lower - 6 * size < g.get("baseline", g["bbox"][3]) < lower]
+    top = y0
+    for row in reversed(_visual_lines(above)):
+        baseline = row[0].get("baseline", row[0]["bbox"][3])
+        left, right = min(g["bbox"][0] for g in row), max(g["bbox"][2] for g in row)
+        text = _spaced_text(row)
+        if lower - baseline > 2 * size or left < x0 - size * 0.5 or right > x1 + size * 0.5:
+            break
+        if re.match(r"(?:table|tab\.|figure|fig\.)\s*\d", text.strip("*_ "), re.I):
+            break
+        ruled = any(r[0] <= x0 + (x1 - x0) * 0.1 and r[2] >= x1 - (x1 - x0) * 0.1 and baseline < r[1] < lower for r in rules)
+        same_block = all(g["line"].rsplit("-l", 1)[0] in blocks for g in row)
+        if not (ruled or (same_block and abs(left - margin) > size)):
+            break
+        top = min(top, min(g["bbox"][1] for g in row) - 0.5)
+        lower = baseline
+    return [x0, top, x1, y1] if top < y0 else bbox
 
 
 def _visual_lines(glyphs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -1057,8 +1127,9 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     continuation = "0123456789()[]{}+-*/.,: "
 
     def mathematical_glyph(glyph: dict[str, Any]) -> bool:
-        return bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or glyph.get("id") in accents or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
+        return bool(MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph.get("id") in bold_variables or glyph.get("id") in accents or glyph.get("id") in scripts or (separate_roman_math and re.match(r"CM(?:R|BX)\d", glyph["font"], re.I)))
 
+    scripts = _script_digit_ids(lines)
     accents: set[str] = set()
     accents = _accent_glyph_ids(lines, mathematical_glyph)
     # A text-face operator name applied to notation ("log c_ε", "max{...}") continues an open
@@ -1142,6 +1213,8 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     while pending:
         region = pending.pop(0)
         if "glyph_ids" not in region:
+            if region["kind"] == "table" and any(p.startswith("PP-DocLayoutV2:") for p in region["provenance"]):
+                region["bbox"] = _grow_table_header(region["bbox"], glyphs, margin, rules)
             owned = [g for g in glyphs if inked_glyph(g) and _inside(g, region["bbox"]) and g["id"] not in tags]
             whole_display = False
             if region["kind"] == "math" and region["display"] and owned and any(g["id"] in prose_ids for g in owned):
@@ -2321,7 +2394,11 @@ def _dependent_pages(root: Path, pages: Iterable[int], units: list[SourceUnit]) 
     """Prepared pages outside ``pages`` whose receipt depends on a unit of ``pages``.
 
     A receipt fingerprints the continuation and container closure of its page, so a
-    change to one page moves the fingerprint of every page that closure reaches.
+    change to one page moves the fingerprint of every page that closure reaches. The
+    closure is read from ``units`` as given: a change that adds an edge (a unit re-parented
+    to a container on the page before) reaches a page only in the changed graph, so a
+    caller settles receipts over the dependants of the graph before and after the change
+    (`_late_dependents`).
     """
     from littrans.evidence import page_evidence_units
 
@@ -2329,6 +2406,12 @@ def _dependent_pages(root: Path, pages: Iterable[int], units: list[SourceUnit]) 
     prepared = {int(path.stem[1:]) for path in (root / "derived/fidelity-pages").glob("p[0-9][0-9][0-9][0-9].json")}
     return [page for page in sorted(prepared - targets)
             if any(unit.page in targets for unit in page_evidence_units(page, units))]
+
+
+def _late_dependents(root: Path, pages: Iterable[int], units: list[SourceUnit], known: Iterable[int]) -> list[int]:
+    """Dependants of ``pages`` in the changed graph ``units`` that ``known`` did not already name."""
+    seen = set(known)
+    return [page for page in _dependent_pages(root, pages, units) if page not in seen]
 
 
 def _page_fingerprint(root: Path, page: int, units: list[SourceUnit], assets: dict[str, FidelityAsset]) -> str | None:
@@ -2402,6 +2485,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         if not needed:
             return {"pages": pages, "prepared_pages": [], "cached_pages": pages, "assets": len(registry), "requires_visual_review": True, "document_structure": profile_context}
         old_ledgers = {p: read_json(_page_path(root, p)) for p in needed if _page_path(root, p).is_file()}
+        old_registry = registry
         dependents = _dependent_pages(root, needed, old)
         stack.enter_context(_authority_transaction(root, [*pages, *dependents]))
         doc = stack.enter_context(fitz.open(source))
@@ -2475,8 +2559,14 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         for ledger in ledgers:
             write_json(_page_path(root, ledger["page"]), ledger)
         # A receipt outlives a rerun that reproduced the page byte for byte; a dependency
-        # page whose fingerprint moved loses its receipt explicitly, not silently.
-        retained, invalidated = _settle_receipts(root, [*needed, *dependents], before, units, registry)
+        # page whose fingerprint moved loses its receipt explicitly, not silently. A page the
+        # re-prepared pages reach only in the new graph (a unit now parented to its container
+        # on the page before) is a dependant too, so it is settled by name as well.
+        late = _late_dependents(root, needed, units, [*pages, *dependents])
+        if late:
+            stack.enter_context(_authority_transaction(root, late))
+            before.update({p: _page_fingerprint(root, p, old, old_registry) for p in late if _receipt_path(root, p).is_file()})
+        retained, invalidated = _settle_receipts(root, [*needed, *dependents, *late], before, units, registry)
         # A page whose receipt outlived the rerun is still verified: its units say so, as
         # they did before, instead of reading as fresh work until the next review import.
         if any(unit.page in retained for unit in units):
@@ -2897,9 +2987,11 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 raise ValueError("source page changed while waiting for project write lock")
         units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
         assets = load_assets(root)
+        initial_units, initial_assets = list(units), dict(assets)
         decision_pages = {d["page"] for d in decisions}
+        override_pages = [d["page"] for d in decisions if d.get("override")]
         # Pages outside this review whose receipt depends on a corrected page.
-        dependents = _dependent_pages(root, [d["page"] for d in decisions if d.get("override")], units)
+        dependents = _dependent_pages(root, override_pages, units)
         dependents = [p for p in dependents if p not in decision_pages]
         stack.enter_context(_authority_transaction(root, [*decision_pages, *dependents]))
         before = {p: _page_fingerprint(root, p, units, assets) for p in dependents if _receipt_path(root, p).is_file()}
@@ -2979,8 +3071,14 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             write_json(root / f"evidence/pages/fidelity-p{p:04d}.review.json",
                        {**receipt, "receipt_sha256": _hash(receipt)})
         # A neighbour whose fingerprint moved with a corrected page loses its receipt
-        # here, by name, rather than at the next verify.
-        _, invalidated = _settle_receipts(root, dependents, before, units, assets)
+        # here, by name, rather than at the next verify — including a neighbour the
+        # correction reaches only through the edge it added (units re-parented to a
+        # container on the page before), which the graph before the correction did not name.
+        late = _late_dependents(root, override_pages, units, [*decision_pages, *dependents])
+        if late:
+            stack.enter_context(_authority_transaction(root, late))
+            before.update({p: _page_fingerprint(root, p, initial_units, initial_assets) for p in late if _receipt_path(root, p).is_file()})
+        _, invalidated = _settle_receipts(root, [*dependents, *late], before, units, assets)
         for unit in units:
             if unit.page in decision_pages:
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
