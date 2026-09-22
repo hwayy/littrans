@@ -84,7 +84,7 @@ def test_asset_packet_rejects_duplicate_ids_and_uses_source_context(tmp_path: Pa
     assert "unique" in duplicate.output
     result = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1"])
     assert result.exit_code == 0, result.output
-    packet = json.loads(result.output)
+    packet = json.loads(result.stdout)
     assert packet["asset_ids"] == ["fixture-asset-1"]
     assert any(item["unit_id"] == units[0].unit_id for item in packet["context_units"])
     assert packet["required_images"]

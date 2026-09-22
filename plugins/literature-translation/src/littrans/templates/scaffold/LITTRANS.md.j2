@@ -57,6 +57,10 @@ reported with one of: {% for reason in stale_reasons %}`{{ reason }}`{% if not l
 - Project status order: {% for status in status_order %}`{{ status }}`{% if not loop.last %} → {% endif %}{% endfor %}.
 - The packet's `model` is the dispatch value for the host, not a claim about the model that
   served the task; a served model may be recorded separately and is never gated.
+- Per-dispatch selection by host (`agent_models.<host>`, per role): {% for host, spec in subagent_dispatch.items() %}{{ host }} model {{ 'yes' if spec.model else 'no' }}/effort {{ 'yes' if spec.reasoning_effort else 'no' }}{% if not loop.last %}, {% endif %}{% endfor %}.
+- Each role (`translate`, `transcribe`, `audit`, `asset-audit`) sets its own model and reasoning
+  effort. An unset one follows the host's default and is advised, never refused; see
+  `project models PROJECT --host HOST`.
 
 ## Structure guidance
 

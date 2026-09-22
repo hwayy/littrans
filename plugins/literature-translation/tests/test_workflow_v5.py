@@ -886,10 +886,11 @@ def test_revise_packet_carries_current_translation_and_open_issues(tmp_path: Pat
     task = status["ready_tasks"][0]
     from littrans.hosts import resolve_coordination_host
 
-    policy = load_project(root).agent_models[resolve_coordination_host(None)]
+    # Revision is translator work, so it reuses the translate role's own model and effort.
+    policy = load_project(root).dispatch(resolve_coordination_host(None), "translate")
     assert task["stage"] == "revise"
-    assert task["model"] == policy["translate"]
-    assert task["reasoning_effort"] == policy["reasoning_effort"]
+    assert task["model"] == policy.model
+    assert task["reasoning_effort"] == policy.reasoning_effort
 
     with pytest.raises(ValueError, match="do not accept a lens"):
         create_workflow_packet(root, "revise", [batch.batch_id], "fidelity")

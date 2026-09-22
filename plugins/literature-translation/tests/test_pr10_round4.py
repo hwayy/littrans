@@ -6,7 +6,7 @@ from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity
 from littrans.fidelity_models import load_assets
-from littrans.models import SourceUnit, TableData, UnitKind
+from littrans.models import RoleDispatch, SourceUnit, TableData, UnitKind
 from littrans.rendering import _unit_html
 from littrans.source_structure import plan_structure
 from littrans.storage import load_project, read_json, save_project, write_json
@@ -45,7 +45,9 @@ def test_packet_explicit_host(project: Path, monkeypatch: pytest.MonkeyPatch, ho
     monkeypatch.setenv("CODEX_THREAD_ID", "test")
     cfg = load_project(project)
     cfg.agent_models["codex"] = {}
-    cfg.agent_models[host] = {"translate": "test-model", "reasoning_effort": "high"}
+    cfg.agent_models[host] = {
+        "translate": RoleDispatch(model="test-model", reasoning_effort="high")
+    }
     save_project(project, cfg)
     assert create_workflow_packet(project, "translate", ["sample-one-b001"], host=host)
 
@@ -142,7 +144,9 @@ def test_cli_packet_honors_host(project: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("CODEX_THREAD_ID", "test")
     cfg = load_project(project)
     cfg.agent_models["codex"] = {}
-    cfg.agent_models["claude"] = {"translate": "test-model", "reasoning_effort": "high"}
+    cfg.agent_models["claude"] = {
+        "translate": RoleDispatch(model="test-model", reasoning_effort="high")
+    }
     save_project(project, cfg)
     result = CliRunner().invoke(
         app,

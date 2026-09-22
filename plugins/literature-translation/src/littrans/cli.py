@@ -4,6 +4,7 @@ import importlib.util
 import json
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -115,6 +116,22 @@ def emit(payload: object) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
+def advise(notes: Iterable[str]) -> None:
+    """Report dispatch-policy gaps on stderr, leaving the stdout JSON contract untouched."""
+    for note in notes:
+        typer.echo(f"LitTrans advisory: {note}", err=True)
+
+
+def advise_roles(project: Path, host: str | None, *roles: str) -> None:
+    """Report the gaps of the roles a command is about to dispatch."""
+    from littrans.project import dispatch_report
+
+    try:
+        advise(dispatch_report(project, host, roles)["advisories"])
+    except (OSError, ValueError):  # a project or host problem the command itself reports
+        return
+
+
 @app.command()
 def doctor() -> None:
     """Check the local runtime, including the required layout detector, without changing it."""
@@ -182,6 +199,17 @@ def project_init(
         source, project, profile, title, source_language, target_language, repo_root=repo_root, scaffold=False
     )
     emit({**config.model_dump(mode="json"), "scaffold": scaffold_project(project, repo_root=repo_root, refresh=True)})
+
+
+@project_app.command("models")
+def project_models(
+    project: PathArg,
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+) -> None:
+    """Report the resolved per-role dispatch policy for a host, with its advisories."""
+    from littrans.project import dispatch_report
+
+    emit(dispatch_report(project, host))
 
 
 @project_app.command("scaffold")
@@ -333,6 +361,7 @@ def assets_packet(
     units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit)
              if set(ids) & set(asset_reference_ids(u.source_markdown or u.source_text))]
     emit(build_asset_packet(project, ids, stage, units + adjacent_source_units(project, units), revision_notes, host=host))
+    advise_roles(project, host, stage)
 
 
 @assets_app.command("import-review")
@@ -567,19 +596,21 @@ def workflow_get_next(
         help="Coordination host: auto, codex, cursor, claude, or qoder.",
     ),
 ) -> None:
-    emit(workflow_next(project, limit, start_at, through, host))
+    wave = workflow_next(project, limit, start_at, through, host)
+    emit(wave)
+    advise(wave["dispatch_advisories"])
 
 
 @workflow_app.command("status")
 def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...),
                         host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder.")) -> None:
-    emit(
-        workflow_status(
-            project,
-            [value.strip() for value in batch_ids.split(",") if value.strip()],
-            host=host,
-        )
+    status = workflow_status(
+        project,
+        [value.strip() for value in batch_ids.split(",") if value.strip()],
+        host=host,
     )
+    emit(status)
+    advise(status["dispatch_advisories"])
 
 
 @workflow_app.command("packet")
@@ -605,6 +636,7 @@ def workflow_create_packet(
         if isinstance(result, list)
         else result.model_dump(mode="json") if isinstance(result, BaseModel) else result
     )
+    advise_roles(project, host, "translate" if stage in {"translate", "revise"} else stage)
 
 
 @workflow_app.command("prune-packets")

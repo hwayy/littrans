@@ -20,8 +20,10 @@ from littrans.evidence import (
     translations_semantically_equal,
 )
 from littrans.hosts import (
+    DISPATCH_ROLES,
     LENS_REVIEWER_BATCH_MAX,
     WAVE_BATCH_SET_MAX,
+    dispatch_advisories,
     resolve_coordination_host,
     resolve_wave_limit,
 )
@@ -452,7 +454,6 @@ def _editable_revision_batches(root: Path, batch_ids: list[str], snapshot: Workf
 def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                  host: str, *, optional_assets: bool = False) -> list[dict[str, Any]]:
     config = load_project(root)
-    model_policy = config.agent_models.get(host, {})
     tasks: list[dict[str, Any]] = []
     by_id = {m.batch_id: m for m in snapshot.manifests}
     if not optional_assets:
@@ -468,22 +469,44 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         if stage != "complete" and not optional_assets:
             # Revision is translator work: it reuses the translate model policy.
             role = "translate" if stage == "revise" else stage
+            dispatch = config.dispatch(host, role)
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
-                          "model": model_policy.get(role),
-                          "reasoning_effort": model_policy.get("reasoning_effort") if role == "translate" else None,
+                          "model": dispatch.model,
+                          "reasoning_effort": dispatch.reasoning_effort,
                           "fresh_context": True})
             if stage == "transcribe" and lane["recovery"]:
                 tasks[-1].update(asset_ids=lane["recovery"], recovery=True)
         for role, ids in lane["pending"].items():
             if ids and optional_assets:
+                dispatch = config.dispatch(host, role)
                 tasks.append({"batch_id": bid, "stage": role, "asset_ids": ids, "optional": True,
                               "depends_on": ["source-fidelity"] if role == "transcribe" else ["candidate"],
-                              "model": model_policy.get(role),
-                              "reasoning_effort": model_policy.get("reasoning_effort") if role == "transcribe" else None,
+                              "model": dispatch.model,
+                              "reasoning_effort": dispatch.reasoning_effort,
                               "fresh_context": True})
                 if role == "transcribe" and lane["recovery"]:
                     tasks[-1]["recovery"] = True
     return tasks
+
+
+def _with_advisories(root: Path, host: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach the advisories for the roles this wave is about to dispatch.
+
+    Advisories never block and never enter a packet: a manifest is compared for
+    replay identity and an asset packet's id hashes its whole payload.
+    """
+    config = load_project(root)
+    notes: list[str] = []
+    seen: set[str] = set()
+    for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]:
+        role = "translate" if task.get("stage") == "revise" else str(task.get("stage", ""))
+        if role not in DISPATCH_ROLES or role in seen:
+            continue
+        seen.add(role)
+        dispatch = config.dispatch(host, role)
+        notes.extend(dispatch_advisories(host, role, dispatch.model, dispatch.reasoning_effort))
+    payload["dispatch_advisories"] = notes
+    return payload
 
 
 def workflow_next(
@@ -588,7 +611,7 @@ def workflow_next(
     if start is None:
         pending = [m.batch_id for m in manifests
                    if not _snapshot_lane(root, m, snapshot)["complete"]][:resolved_limit]
-        return {
+        payload = {
             "stage": "complete",
             "batch_ids": [],
             "ready_tasks": [],
@@ -601,6 +624,7 @@ def workflow_next(
             "through": through,
             "unbatched_pages": unbatched_pages,
         }
+        return _with_advisories(root, resolved_host, payload)
     stage = stages[start][1]
     batch_ids: list[str] = []
     selected_unit_ids: set[str] = set()
@@ -628,7 +652,7 @@ def workflow_next(
                 break
             batch_ids.append(bid)
         stage_details.update({bid: _batch_stage_details(root, bid, snapshot, context_cache) for bid in batch_ids})
-    return {
+    payload = {
         "stage": stage,
         "batch_ids": batch_ids,
         "requested_batch_ids": requested_batch_ids,
@@ -646,6 +670,7 @@ def workflow_next(
         "schedule": "translation-first-optional-assets",
         "unbatched_pages": unbatched_pages,
     }
+    return _with_advisories(root, resolved_host, payload)
 
 
 def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = None) -> dict[str, Any]:
@@ -716,7 +741,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
     stages = {batch_id: details[0] for batch_id, details in stage_details.items()}
     unique_stages = set(stages.values())
     lanes = {m.batch_id: _snapshot_lane(root, m, snapshot) for m in requested_manifests}
-    return {
+    payload = {
         "batch_ids": requested,
         "host": resolved_host,
         "stage": next(iter(unique_stages)) if len(unique_stages) == 1 else "mixed",
@@ -732,6 +757,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
         "complete": all(stage == "complete" for stage in stages.values()),
         "unbatched_pages": unbatched_pages,
     }
+    return _with_advisories(root, resolved_host, payload)
 
 
 def _validate_batch_set(
@@ -1051,12 +1077,12 @@ def create_workflow_packet(
         )
     if stage in {"translate", "revise"} and lens is not None:
         raise ValueError("translation packets do not accept a lens")
-    policy = load_project(root).agent_models.get(host, {})
-    if stage in {"translate", "revise"}:
-        if not policy.get("translate") or not policy.get("reasoning_effort"):
-            raise ValueError(f"Configure agent_models.{host}.translate and reasoning_effort before creating translation tasks; no model substitution is allowed")
-    selected_model = policy.get("translate" if stage in {"translate", "revise"} else "audit")
-    selected_effort = policy.get("reasoning_effort") if stage in {"translate", "revise"} else None
+    # Revision is translator work; every other packet stage names its own role.
+    # An unconfigured role dispatches on the host's default, reported as an advisory.
+    dispatch_role = "translate" if stage in {"translate", "revise"} else stage
+    dispatch = load_project(root).dispatch(host, dispatch_role)
+    selected_model = dispatch.model
+    selected_effort = dispatch.reasoning_effort
     manifests = _validate_batch_set(root, batch_ids)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     unit_map = {unit.unit_id: unit for unit in all_units}
@@ -1138,7 +1164,7 @@ def create_workflow_packet(
         "shared": ("shared.md", _shared_context(root, selected_units))
     }
     from littrans.context_packets import original_context
-    original = original_context(root, selected_units, stage, include_adjacent=True)
+    original = original_context(root, selected_units, stage, include_adjacent=True, host=host)
     planned_files["original-images"] = (
         "original-images.json", json.dumps(original, ensure_ascii=False, indent=2) + "\n",
     )

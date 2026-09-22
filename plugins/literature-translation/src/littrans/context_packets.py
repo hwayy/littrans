@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from littrans.models import SourceUnit
+from littrans.models import RoleDispatch, SourceUnit
 from littrans.storage import load_project, read_json, read_jsonl, sha256_file
 
 
@@ -38,7 +38,8 @@ TARGET_TEXT_CONTRACTS = (
 )
 
 
-def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *, include_adjacent: bool = False) -> dict[str, Any]:
+def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *,
+                     include_adjacent: bool = False, host: str | None = None) -> dict[str, Any]:
     from littrans.fidelity_models import asset_reference_ids, load_assets
     assets = load_assets(root)
     adjacent = adjacent_source_units(root, units) if include_adjacent else []
@@ -61,10 +62,14 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         if overflow:
             images[overflow["path"]] = sha256_file(root / overflow["path"])
     config = load_project(root)
+    # Only this packet's own dispatch policy: a writer has no use for the other
+    # hosts' configuration, and either field may be unset on the host's default.
+    dispatch = (config.dispatch(host, "translate" if role == "revise" else role)
+                if host else RoleDispatch())
     return {
         "source_sha256": config.source_sha256,
         "role": role,
-        "model_policy": config.agent_models,
+        "dispatch": dispatch.model_dump(mode="json"),
         "fresh_context": True,
         "candidate_access": False,
         "instructions": (

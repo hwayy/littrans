@@ -89,19 +89,30 @@ def test_detect_qoder_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     defaults = host_model_defaults()
-    assert defaults["codex"] == {"translate": "gpt-5.6-luna", "transcribe": "gpt-5.6-luna",
-                                 "reasoning_effort": "max"}
-    assert defaults["claude"] == {"translate": "sonnet", "transcribe": "sonnet",
-                                  "reasoning_effort": "high"}
+    # Every role carries its own model and effort; none is shared across roles.
+    assert defaults["codex"] == {"translate": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                                 "transcribe": {"model": "gpt-5.6-luna", "reasoning_effort": "max"}}
+    assert defaults["claude"] == {"translate": {"model": "sonnet", "reasoning_effort": "high"},
+                                  "transcribe": {"model": "sonnet", "reasoning_effort": "high"}}
     assert defaults["cursor"] == {}
     assert defaults["qoder"] == {}
-    assert ProjectConfig(project_id="p", title="t", source_path="s.pdf", source_sha256="0" * 64,
-                         source_pages=1, profile="technical-book").agent_models == defaults
+    config = ProjectConfig(project_id="p", title="t", source_path="s.pdf", source_sha256="0" * 64,
+                           source_pages=1, profile="technical-book")
+    assert config.model_dump(mode="json", exclude_none=True)["agent_models"] == defaults
     custom = tmp_path / "host-models.yaml"
     custom.write_text("claude:\n  translate: opus\n", encoding="utf-8")
-    assert host_model_defaults(custom) == {"claude": {"translate": "opus"}, "codex": {}, "cursor": {}, "qoder": {}}
+    assert host_model_defaults(custom) == {"claude": {"translate": {"model": "opus"}},
+                                           "codex": {}, "cursor": {}, "qoder": {}}
+    # The legacy flat form still reads: one host-level effort fills every role.
+    custom.write_text("claude:\n  translate: opus\n  reasoning_effort: high\n", encoding="utf-8")
+    assert host_model_defaults(custom)["claude"] == {
+        "translate": {"model": "opus", "reasoning_effort": "high"}
+    }
     custom.write_text("antigravity: {}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported host"):
+        host_model_defaults(custom)
+    custom.write_text("claude:\n  translte: opus\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported role"):
         host_model_defaults(custom)
 
 

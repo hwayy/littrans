@@ -16,6 +16,26 @@ For QASC, keep the existing project as history and prepare an independent v6 pro
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
 
+## Projects on 0.6.0-dev.15 or earlier: the per-role dispatch policy (0.6.0-dev.16)
+
+- **`project.yaml` needs no edit.** The old flat `agent_models.<host>` (a model string per role
+  plus one shared `reasoning_effort`) is still read and normalized; the shared effort becomes the
+  default of every role that states none. The file is rewritten in the nested per-role form the
+  next time the project is saved. Give a role its own effort by writing it out:
+  `translate: {model: sonnet, reasoning_effort: high}`.
+- **A misspelled host or role key now fails loudly** instead of leaving that host unconfigured.
+  The supported roles are `translate`, `transcribe`, `audit` and `asset-audit`.
+- **Finish or discard in-flight packets before upgrading.** A translate, revise or asset-audit
+  packet's identity covers its dispatch policy and its files, and both change here: the
+  translate context packet now carries only that packet's own resolved dispatch rather than the
+  whole four-host map, and an `asset-audit` packet takes the `asset-audit` role's effort instead
+  of the host-wide one. Packets are recreated under new ids, so a worker returning with an old
+  `packet_id` fails its binding. Submitted work, translations and approvals are unaffected.
+- **Nothing is blocked by an unset model any more.** Cursor and Qoder projects that could not
+  create translate or transcribe packets now create them with `model: null` and dispatch on the
+  host's own policy. Run `project models PROJECT --host HOST` to see the resolved policy and any
+  advisory.
+
 ## Projects prepared with a 0.6.0 development build
 
 - `context/chapters/` is no longer created; nothing ever read it, and an existing directory is

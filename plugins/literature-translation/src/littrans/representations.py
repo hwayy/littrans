@@ -197,15 +197,13 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
         from littrans.hosts import resolve_coordination_host
 
         host = resolve_coordination_host(host)
-        profile = load_project(root).agent_models.get(host, {})
-        if stage == "transcribe" and (not profile.get("transcribe", "").strip()
-                                      or not profile.get("reasoning_effort", "").strip()):
-            raise ValueError(f"Configure agent_models.{host}.transcribe and reasoning_effort "
-                             "before dispatching transcription; model substitution is not automatic")
+        # An unconfigured role is a supported choice: the task then runs on the host's
+        # own default. The CLI reports the gap as an advisory; it never blocks a packet.
+        dispatch = load_project(root).dispatch(host, stage)
         payload: dict[str, Any] = {
             "stage": stage, "host": host,
-            "model": profile.get("transcribe" if stage == "transcribe" else "asset-audit"),
-            "reasoning_effort": profile.get("reasoning_effort"),
+            "model": dispatch.model,
+            "reasoning_effort": dispatch.reasoning_effort,
             "fresh_context": True, "prompt_version": PROMPT_VERSION,
             "allowed_formats": {key: ASSET_FORMATS[assets[key]["kind"]] for key in asset_ids},
             "asset_ids": asset_ids, "assets": [assets[key] for key in asset_ids],
@@ -388,11 +386,12 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
         author = payload.get("author_task_id")
         if not isinstance(author, str) or not author.strip():
             raise ValueError("Candidate author_task_id is required")
-        if not payload.get("model"):
+        if packet["model"] and not payload.get("model"):
             raise ValueError("Record the packet's dispatch model")
         # The echo proves the task ran under the packet's policy; it is not an
         # identity check. A host may serve another model under the same alias,
-        # and that observation belongs in served_model_label.
+        # and that observation belongs in served_model_label. A packet that records
+        # no model dispatched on the host's default, so there is nothing to echo.
         if ((packet["model"] and payload.get("model") != packet["model"])
                 or (packet["reasoning_effort"] and payload.get("reasoning_effort") != packet["reasoning_effort"])):
             raise ValueError(
@@ -433,7 +432,7 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
             record = {
                 "asset_id": key, "asset_fingerprint": packet["asset_fingerprints"][key],
                 "packet_id": packet["packet_id"], "author_task_id": author,
-                "model": payload["model"], "reasoning_effort": payload.get("reasoning_effort"),
+                "model": payload.get("model"), "reasoning_effort": payload.get("reasoning_effort"),
                 "served_model_label": payload.get("served_model_label"),
                 "format": item.get("format", "latex"), "content": item.get("content", ""),
                 "status": item.get("status", "candidate"),

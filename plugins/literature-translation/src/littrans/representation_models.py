@@ -24,11 +24,12 @@ class AssetSubmission(StrictModel):
     # coordinator handed to the host's task launcher (an alias such as `sonnet`
     # or a concrete id, host-specific). The model a host actually served under
     # that value is a separate, unverified observation.
-    model: str = Field(
-        min_length=1,
+    model: str | None = Field(
+        default=None,
         description=(
             "The packet's dispatch model, echoed verbatim: the value passed to the host's task "
-            "launcher (a host alias or a concrete id). Not the served model."
+            "launcher (a host alias or a concrete id). Not the served model. Absent only when "
+            "the packet records no model and the task ran on the host's default."
         ),
     )
     reasoning_effort: str | None = Field(

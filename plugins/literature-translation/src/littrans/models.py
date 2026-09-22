@@ -10,7 +10,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from littrans.hosts import WAVE_BATCH_SET_MAX, host_model_defaults
+from littrans.hosts import (
+    WAVE_BATCH_SET_MAX,
+    host_model_defaults,
+    normalize_agent_models,
+)
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
@@ -298,6 +302,26 @@ class ExternalReviewConfig(StrictModel):
         return self
 
 
+class RoleDispatch(StrictModel):
+    """One role's dispatch policy. Either field may be unset: the host's default applies."""
+
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Dispatch model for this role: the value passed to the host's task launcher "
+            "(a host alias or a concrete id). Not the served model. Unset follows the "
+            "host's default subagent model."
+        ),
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description=(
+            "Dispatched reasoning effort for this role, independent of every other role. "
+            "Unset follows the host's default."
+        ),
+    )
+
+
 class ProjectConfig(StrictModel):
     schema_version: int = PROJECT_SCHEMA_VERSION
     project_id: str
@@ -310,19 +334,34 @@ class ProjectConfig(StrictModel):
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
     external_review: ExternalReviewConfig | None = None
-    agent_models: dict[str, dict[str, str]] = Field(
+    agent_models: dict[str, dict[str, RoleDispatch]] = Field(
         default_factory=host_model_defaults,
+        validate_default=True,
         description=(
-            "Per-host role model policy (translate, transcribe, reasoning_effort). Each value is "
-            "the dispatch value handed to that host's task launcher, a host alias or a concrete "
-            "id as the host defines; which model the host serves under it is the host's own "
-            "configuration and is never verified here."
+            "Per-host role dispatch policy: translate, transcribe, audit and asset-audit, each "
+            "with its own model and reasoning_effort. Each model is the dispatch value handed "
+            "to that host's task launcher, a host alias or a concrete id as the host defines; "
+            "which model the host serves under it is the host's own configuration and is never "
+            "verified here. An unset role, model or effort is supported and follows the host's "
+            "own default subagent behaviour."
         ),
     )
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dispatch_policy(cls, payload: Any) -> Any:
+        """Read `agent_models` in the nested or the legacy flat form, rejecting stray keys."""
+        if isinstance(payload, dict) and "agent_models" in payload:
+            payload = {**payload, "agent_models": normalize_agent_models(payload["agent_models"])}
+        return payload
+
+    def dispatch(self, host: str, role: str) -> RoleDispatch:
+        """The configured policy for one role on one host; unset fields stay None."""
+        return self.agent_models.get(host, {}).get(role, RoleDispatch())
 
     def source(self, project_root: Path) -> Path:
         path = Path(self.source_path)

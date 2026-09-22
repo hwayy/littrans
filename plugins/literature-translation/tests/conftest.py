@@ -22,6 +22,9 @@ def isolate_coordination_host(monkeypatch: pytest.MonkeyPatch) -> None:
         "CODEX_CI",
         "CLAUDECODE",
         "CLAUDE_CODE_SESSION_ID",
+        "QODER_PRODUCT_ID",
+        "QODER_CONFIG_DIR",
+        "QODERCN_CLI",
     ):
         monkeypatch.delenv(name, raising=False)
 
