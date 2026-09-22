@@ -31,6 +31,9 @@ from littrans.storage import atomic_write_text, plugin_root, write_text_if_missi
 
 PLUGIN_OWNED_FILE = "docs/LITTRANS.md"
 PROJECT_IGNORE_LINES = (".littrans/*", "!.littrans/work/")
+# Projects created before the pair above excluded the whole runtime directory. Such a line
+# hides `.littrans/work/` from the re-include, so it is removed when the pair is added.
+LEGACY_STATE_IGNORE_KEYS = frozenset({(False, ".littrans/"), (False, ".littrans")})
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,15 +159,22 @@ def ensure_project_ignore(root: Path) -> bool:
     """Add the runtime-state ignore pair to an existing project ``.gitignore`` once.
 
     A pair the file already carries in an equivalent spelling (a leading slash) is present.
+    The whole-directory exclusion projects wrote before the pair existed (``/.littrans/``)
+    is dropped rather than appended to: git never descends into an excluded directory, so a
+    later ``!.littrans/work/`` cannot re-include the packet payloads that line hides.
     """
     ignore_path = root / ".gitignore"
     existing = ignore_path.read_text(encoding="utf-8") if ignore_path.is_file() else ""
-    present = {_ignore_key(line) for line in existing.splitlines()}
+    # Line endings are kept as written: only the legacy line is removed and the pair added.
+    lines = existing.splitlines(keepends=True)
+    kept = [line for line in lines if _ignore_key(line) not in LEGACY_STATE_IGNORE_KEYS]
+    present = {_ignore_key(line) for line in kept}
     missing = [line for line in PROJECT_IGNORE_LINES if _ignore_key(line) not in present]
-    if not missing:
+    if not missing and len(kept) == len(lines):
         return False
-    separator = "" if not existing or existing.endswith("\n") else "\n"
-    atomic_write_text(ignore_path, existing + separator + "\n".join(missing) + "\n")
+    body = "".join(kept)
+    separator = "" if not body or body.endswith(("\n", "\r")) else "\n"
+    atomic_write_text(ignore_path, body + separator + "\n".join(missing) + ("\n" if missing else ""))
     return True
 
 
