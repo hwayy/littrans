@@ -38,6 +38,36 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   keeps its units, fingerprint and receipt. Detector-labelled `footnote` and `reference`
   blocks that were absorbed into prose become units of their own kind on re-preparation.
 
+## Projects prepared with 0.6.0-dev.13 or earlier: display rows, containers and the launcher (0.6.0-dev.14)
+
+- **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and
+  overrides stay valid; `source verify` reads as before. Workflow coordination and the
+  scaffold change without re-preparation (below).
+- **On re-preparation (`source prepare --replace`, or an override import) these forms change
+  the page's units:** a display whose numerator, denominator or case row holds words
+  (`surface area(U)` over a fraction bar, `X is discrete-valued,` inside a brace) is one asset
+  with the words declared as formula conditions, so that asset's ID and the prose chunk beside
+  it move; an enumerated item at a paragraph indent takes the introducing paragraph, statement
+  or proof as `parent_id` (no unit ID moves); an indented italic paragraph after an italic
+  statement keeps the statement's `parent_id`; a chunk the planner read as an item's
+  continuation returns to the item; a proof tombstone that shared its block with a display's
+  label follows the display as a unit of its own (the paragraph before the display loses the
+  `□`); the first paragraph after a running-head rule is its own parent instead of the rule's
+  child; and a flush page-top paragraph that opens with a capital letter no longer carries
+  `continues_from_previous`. A page whose reading these forms do not touch keeps its units,
+  fingerprint and receipt; a page corrected by hand for one of them (an `override.units`
+  that re-parents an item or moves a tombstone) replays as recorded.
+- **`workflow status` and `workflow next` no longer refuse a project whose later chapters
+  are extracted but not batched.** The coverage check is scoped to the coordinated batches'
+  pages and the span between them; the pages outside that scope with unbatched units are
+  reported as `unbatched_pages` in both results. Nothing to do; a coordinator that batched
+  every chapter only to query progress may stop doing so.
+- **The scaffolded launcher (`tools/lt.py`) is user-owned and is not rewritten.** To get the
+  client-aware resolution (the session's client first, Claude Code's install record, build
+  metadata in version order), delete `tools/lt.py` and run `project scaffold PROJECT` (with
+  `--repo-root DIR` for a nested layout), then commit it; a launcher a project patched by hand
+  for the same problem may stay.
+
 ## Projects prepared with 0.6.0-dev.12 or earlier: override refusal and enumerated siblings (0.6.0-dev.13)
 
 - **Nothing changes until a page is re-prepared.** Recorded pages, assets, receipts and

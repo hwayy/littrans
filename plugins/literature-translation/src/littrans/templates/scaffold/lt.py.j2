@@ -6,22 +6,30 @@
 
 Resolution order:
   1. ``LITTRANS_PLUGIN_ROOT`` — an explicit plugin directory (one containing scripts/littrans.py);
-  2. the plugin root recorded when this file was generated, on the machine that generated it;
-  3. the same root under this user's home directory, for a clone on another host or account
-     (the record keeps the path relative to the home directory as well);
-  4. if either directory is gone (a plugin upgrade moved the versioned cache directory), the
-     highest-versioned sibling of it that contains scripts/littrans.py;
-  5. the plugin cache each supported client keeps under the home directory (Claude Code,
-     Codex, Cursor, Qoder), highest installed version first.
+  2. the plugin root recorded when this file was generated, on the machine that generated it,
+     or the same root under this user's home directory (a clone on another host or account),
+     while that directory still exists;
+  3. the plugin the client running this session installed — the host is read from the same
+     environment signals the plugin's coordination reads (Claude Code, Codex, Cursor, Qoder);
+     Claude Code's own install record names the installed version, otherwise the highest
+     version in that client's cache;
+  4. the highest-versioned sibling of a recorded root that lies outside every known cache
+     (a private cache the project was pinned to, upgraded in place);
+  5. every client's install, highest version first (a tie goes to the client whose cache
+     holds the recorded root, then to the order above).
 
-Version order is numeric with pre-release awareness, so ``0.10.0`` beats ``0.6.0`` and
-``0.6.0`` beats ``0.6.0-dev.7``; a plain lexical sort gets both wrong. Set
-``LITTRANS_LAUNCHER_VERBOSE=1`` to print the resolved root. Standard library only, so it runs
-on whatever Python the wrapper picks; the plugin's own launcher then manages its environment.
+Another client's cache is never taken as the authority for what the current client runs: a
+leftover ``0.6.0`` directory in one cache does not outrank the ``0.6.0-dev.13`` the session's
+client installed. Version order is numeric with pre-release awareness (``0.10.0`` beats ``0.6.0``,
+``0.6.0`` beats ``0.6.0-dev.7``) and accepts build metadata (``0.6.0-dev.13+codex.20260920`` is a
+later build of ``0.6.0-dev.13``). Set ``LITTRANS_LAUNCHER_VERBOSE=1`` to print the resolved root.
+Standard library only, so it runs on whatever Python the wrapper picks; the plugin's own
+launcher then manages its environment.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -33,27 +41,38 @@ RECORDED_PLUGIN_ROOT = r"{{ plugin_root }}"
 # (POSIX separators), or empty when the plugin lived outside a home directory.
 RECORDED_HOME_RELATIVE_ROOT = "{{ plugin_root_home_relative }}"
 LAUNCHER = ("scripts", "littrans.py")
-# Where each supported client installs the plugin, relative to the home directory. A
-# versioned cache holds one directory per installed version; a local install is the plugin.
-CACHE_ROOTS = (
-    (".claude", "plugins", "cache", "littrans", "literature-translation"),
-    (".codex", "plugins", "cache", "littrans", "literature-translation"),
-    (".cursor", "plugins", "local", "literature-translation"),
-    (".qoder-cn", "plugins", "literature-translation"),
-)
+PLUGIN_NAME = "literature-translation"
+# The environment variables each client sets in its sessions, as the plugin reads them.
+HOST_SIGNALS = {
+{% for host, names in host_signals.items() %}
+    "{{ host }}": ({{ names | map('tojson') | join(', ') }},),
+{% endfor %}
+}
+# Where each client installs the plugin, relative to the home directory. A versioned cache
+# holds one directory per installed version; a local install is the plugin itself.
+HOST_CACHES = {
+    "claude": (".claude", "plugins", "cache", "littrans", PLUGIN_NAME),
+    "codex": (".codex", "plugins", "cache", "littrans", PLUGIN_NAME),
+    "cursor": (".cursor", "plugins", "local", PLUGIN_NAME),
+    "qoder": (".qoder-cn", "plugins", PLUGIN_NAME),
+}
+# Claude Code records what it installed; a directory in its cache is not an installation.
+CLAUDE_INSTALL_RECORD = (".claude", "plugins", "installed_plugins.json")
 
-_VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-([A-Za-z]+)\.?(\d+)?)?$")
+_VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-([A-Za-z]+)\.?(\d+)?)?(?:\+([0-9A-Za-z.-]+))?$")
 
 
-def version_key(name: str) -> tuple[int, tuple[int, ...], int, int]:
-    """Sort key: versioned names first, releases above pre-releases of the same number."""
+def version_key(name: str) -> tuple[int, tuple[int, ...], int, int, str]:
+    """Sort key: versioned names first, releases above pre-releases of the same number, and a
+    build with metadata above the same version without it (a cachebuster is a later build)."""
     match = _VERSION_RE.match(name)
     if not match:
-        return (0, (), 0, 0)
+        return (0, (), 0, 0, "")
     numbers = tuple(int(part) for part in match.group(1).split("."))
+    build = match.group(4) or ""
     if match.group(2) is None:
-        return (1, numbers, 1, 0)
-    return (1, numbers, 0, int(match.group(3) or 0))
+        return (1, numbers, 1, 0, build)
+    return (1, numbers, 0, int(match.group(3) or 0), build)
 
 
 def has_launcher(directory: Path) -> bool:
@@ -68,29 +87,90 @@ def newest_child(parent: Path) -> Path | None:
     return max(children, key=lambda child: version_key(child.name)) if children else None
 
 
+def detect_host() -> str | None:
+    """The client running this session, or None when no or several clients signal."""
+    detected = [host for host, names in HOST_SIGNALS.items() if any(os.environ.get(name) for name in names)]
+    return detected[0] if len(detected) == 1 else None
+
+
+def claude_recorded_install(home: Path) -> Path | None:
+    """The plugin directory Claude Code's install record names, when it holds the launcher."""
+    record = home.joinpath(*CLAUDE_INSTALL_RECORD)
+    try:
+        payload = json.loads(record.read_text(encoding="utf-8"))
+        entries = [
+            entry
+            for name, installs in payload.get("plugins", {}).items()
+            if name.split("@", 1)[0] == PLUGIN_NAME and isinstance(installs, list)
+            for entry in installs
+            if isinstance(entry, dict) and entry.get("installPath")
+        ]
+    except (OSError, ValueError, AttributeError):
+        return None
+    for entry in entries:
+        root = Path(str(entry["installPath"]))
+        if root.is_absolute() and has_launcher(root):
+            return root
+    return None
+
+
+def host_install(host: str, home: Path) -> Path | None:
+    """What the client ``host`` has installed: its record, else its cache's highest version."""
+    if host == "claude":
+        recorded = claude_recorded_install(home)
+        if recorded is not None:
+            return recorded
+    cache = home.joinpath(*HOST_CACHES[host])
+    if has_launcher(cache):
+        return cache
+    return newest_child(cache)
+
+
+def cache_host(root: Path, home: Path) -> str | None:
+    """The client whose cache holds ``root``."""
+    for host, parts in HOST_CACHES.items():
+        cache = home.joinpath(*parts)
+        try:
+            root.relative_to(cache)
+        except ValueError:
+            continue
+        return host
+    return None
+
+
 def candidates() -> list[Path]:
     """Every directory the launcher may live in, in resolution order."""
     home = Path.home()
     recorded = [Path(RECORDED_PLUGIN_ROOT)]
     if RECORDED_HOME_RELATIVE_ROOT:
         recorded.append(home.joinpath(*RECORDED_HOME_RELATIVE_ROOT.split("/")))
-    found: list[Path] = []
+    # A path recorded on another operating system is not absolute here (``C:\...`` is one
+    # relative component on POSIX) and must not be searched relative to the cwd.
+    recorded = [root for root in recorded if root.is_absolute()]
+    found: list[Path] = list(recorded)
+    current = detect_host()
+    if current is not None:
+        install = host_install(current, home)
+        if install is not None:
+            found.append(install)
     for root in recorded:
-        # A path recorded on another operating system is not absolute here (``C:\...`` is
-        # one relative component on POSIX) and must not be searched relative to the cwd.
-        if not root.is_absolute():
-            continue
-        found.append(root)
-        sibling = newest_child(root.parent)
-        if sibling is not None:
-            found.append(sibling)
-    for parts in CACHE_ROOTS:
-        cache = home.joinpath(*parts)
-        if has_launcher(cache):
-            found.append(cache)
-        newest = newest_child(cache)
-        if newest is not None:
-            found.append(newest)
+        if cache_host(root, home) is None:
+            sibling = newest_child(root.parent)
+            if sibling is not None:
+                found.append(sibling)
+    recorded_hosts = {cache_host(root, home) for root in recorded} - {None}
+    installs = [(host, host_install(host, home)) for host in HOST_CACHES]
+    order = list(HOST_CACHES)
+    found.extend(
+        install
+        for host, install in sorted(
+            ((host, install) for host, install in installs if install is not None),
+            key=lambda pair: (version_key(pair[1].name), pair[0] in recorded_hosts, -order.index(pair[0])),
+            reverse=True,
+        )
+    )
+    # Caches without an install are listed so a failure names where it looked.
+    found.extend(home.joinpath(*parts) for host, parts in HOST_CACHES.items() if dict(installs).get(host) is None)
     return list(dict.fromkeys(found))
 
 

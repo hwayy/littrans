@@ -51,6 +51,14 @@ def _launcher_module(root: Path, **constants: str) -> ModuleType:
     return module
 
 
+def _clear_host_signals(monkeypatch: pytest.MonkeyPatch) -> None:
+    from littrans.hosts import HOST_ENV_SIGNALS
+
+    for names in HOST_ENV_SIGNALS.values():
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
+
+
 def _plugin(directory: Path) -> Path:
     (directory / "scripts").mkdir(parents=True, exist_ok=True)
     (directory / "scripts" / "littrans.py").write_text("import sys; print(sys.argv[0])\n", encoding="utf-8")
@@ -66,6 +74,7 @@ def test_launcher_finds_the_plugin_under_another_hosts_home(tmp_path: Path, monk
     home = tmp_path / "home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("LITTRANS_PLUGIN_ROOT", raising=False)
+    _clear_host_signals(monkeypatch)
     # The root recorded on the generating host is gone here; the same path under this
     # user's home holds an upgraded version beside the recorded one.
     module = _launcher_module(
@@ -87,6 +96,7 @@ def test_launcher_scans_every_clients_cache_and_never_the_working_directory(tmp_
     home = tmp_path / "home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("LITTRANS_PLUGIN_ROOT", raising=False)
+    _clear_host_signals(monkeypatch)
     # A Windows path recorded on the other host is one relative component on POSIX; its
     # "parent" is the working directory, which must not be searched for siblings.
     module = _launcher_module(root, RECORDED_PLUGIN_ROOT='r"C:\\Users\\other\\.claude\\plugins\\cache\\littrans\\literature-translation\\0.6.0"',
@@ -98,9 +108,12 @@ def test_launcher_scans_every_clients_cache_and_never_the_working_directory(tmp_
     cursor = _plugin(home / ".cursor/plugins/local/literature-translation")
     assert module.resolve_plugin_root() == cursor
     codex = _plugin(home / ".codex/plugins/cache/littrans/literature-translation/0.7.0")
-    assert module.resolve_plugin_root() == codex  # cache roots are searched in client order
+    assert module.resolve_plugin_root() == codex  # a versioned install outranks a local one
     claude = _plugin(home / ".claude/plugins/cache/littrans/literature-translation/0.6.0-dev.9")
-    assert module.resolve_plugin_root() == claude
+    assert module.resolve_plugin_root() == codex  # the highest version wins, not client order
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert module.resolve_plugin_root() == claude  # the session's client wins (LT-078)
+    monkeypatch.delenv("CLAUDECODE")
     monkeypatch.setenv("LITTRANS_PLUGIN_ROOT", str(cursor))
     assert module.resolve_plugin_root() == cursor
 

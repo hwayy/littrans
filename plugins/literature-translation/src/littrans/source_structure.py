@@ -162,6 +162,20 @@ def _starts_statement(text: str) -> bool:
     return bool(STATEMENT_START.match(text) or STATEMENT_RUN_IN.match(text) or STATEMENT_CAPS.match(text))
 
 
+def _emphasised_share(text: str) -> float:
+    """The share of a unit's letters set in the italic face (single-star emphasis), the bold
+    run-in label left out: a theorem body set in italic reads near 1, upright prose near 0."""
+    body = re.sub(r"\*{2,3}[^*]+\*{2,3}", " ", text)
+    body = re.sub(r"\{\{asset:[^}]+\}\}", " ", body)
+    italic = sum(len(re.findall(r"[^\W\d_]", run)) for run in re.findall(r"\*([^*]+)\*", body))
+    letters = len(re.findall(r"[^\W\d_]", body))
+    return italic / letters if letters else 0.0
+
+
+# The statement body face is decided once, when the statement opens.
+STATEMENT_ITALIC_SHARE = 0.6
+
+
 def _mark_paragraph_breaks(
     split: list[dict[str, Any]], gm: dict[str, dict[str, Any]], omitted: dict[str, str],
     markers: dict[str, dict[str, Any]], display_blocks: set[str], margin: float, font_size: float,
@@ -595,10 +609,13 @@ def assemble_structure(
     group: str | None = None
     active_note: str | None = None
     statement = None
+    statement_italic = False
     # The open enumeration: the label x and the parent of its last bracketed item that
     # hangs from an introducing paragraph, so a later sibling returns to that parent
-    # whatever group an item's own continuation paragraph opened in between.
-    enumeration: tuple[float, str] | None = None
+    # whatever group an item's own continuation paragraph opened in between; a parent of
+    # None records an item that opened a group of its own (at a page top), whose siblings
+    # open their own too rather than hang from it.
+    enumeration: tuple[float, str | None] | None = None
     # A unit merged into the one before it keeps no id of its own; a parent set to that
     # id before the merge is redirected to the survivor at the end.
     merged_into: dict[str, str] = {}
@@ -636,6 +653,9 @@ def assemble_structure(
         bid = u.unit_id.split("-", 1)[1]
         refs = asset_reference_ids(u.source_text)
         display = any(assets[aid].display for aid in refs) or bid in display_blocks
+        # An indented paragraph that stays in its group (an italic continuation of a
+        # statement) is still a paragraph: it is never merged into the one before it.
+        opens_paragraph = False
         if bid in plan["omitted"] or (
             u.bbox[1] < plan["note_top"]
             and u.bbox[3] >= plan["note_top"] - 20
@@ -647,6 +667,12 @@ def assemble_structure(
             result.append(
                 rebuild(u, kind="note", render_policy=RenderPolicy.OMIT, translatable=False)
             )
+            continue
+        if u.render_policy == RenderPolicy.OMIT:
+            # Running material the page carries but nobody reads (a decorative rule) is
+            # placed in the open group but opens none: the prose after it starts its own
+            # (LT-080). At the page top it is its own parent, as recorded before.
+            result.append(rebuild(u, parent_id=group or u.unit_id))
             continue
         if bid in plan["notes"]:
             active_note = plan["notes"][bid]["number"]
@@ -665,6 +691,7 @@ def assemble_structure(
                 < x
                 < plan["margin"] + plan["font_size"] * 2.8
             )
+            opens_paragraph = indented
             starts_statement = _starts_statement(u.source_text)
             label = LIST_LABEL_START.match(u.source_text)
             # A bracketed clause ((a), (ii)) belongs to the paragraph or statement that
@@ -688,12 +715,26 @@ def assemble_structure(
                 and previous_body.parent_id == statement
                 and LIST_LABEL_START.match(previous_body.source_text) is not None
             )
+            # An indented paragraph set in the statement's own italic face continues the
+            # statement ("Conversely, if ..." after a theorem's enumerated clauses); upright
+            # prose ends it, as before (LT-081).
+            italic_continuation = (
+                statement is not None
+                and statement_italic
+                and label is None
+                and not run_in
+                and not proof
+                and u.kind.value == "paragraph"
+                and _emphasised_share(u.source_text) >= STATEMENT_ITALIC_SHARE
+            )
             if starts_statement:
                 statement = u.unit_id
+                statement_italic = _emphasised_share(u.source_text) >= STATEMENT_ITALIC_SHARE
             elif (
                 u.kind.value == "heading"
                 or proof
-                or ((indented or (paragraph_break and not concludes)) and label is None and u.kind.value != "equation")
+                or ((indented or (paragraph_break and not concludes)) and label is None and u.kind.value != "equation"
+                    and not italic_continuation)
             ):
                 statement = None
             # What closes the list closes its enumeration: a heading, a statement, a proof, a
@@ -723,6 +764,14 @@ def assemble_structure(
                 and previous_body.render_policy != RenderPolicy.OMIT
                 and previous_body.kind.value in {"list_item", "paragraph", "equation"}
             )
+            # The item this chunk continues, as the planner placed it (its text column).
+            continued_item = None
+            continued = list_items.get(bid, {}).get("continues")
+            if continued is not None:
+                item_id = f"p{u.page:04d}-{continued}"
+                while item_id in merged_into:
+                    item_id = merged_into[item_id]
+                continued_item = next((r for r in result if r.unit_id == item_id), None)
             if figure_pair and previous_body is not None:
                 # A figure/table and its adjacent caption form one element.
                 group = previous_body.parent_id or previous_body.unit_id
@@ -730,27 +779,35 @@ def assemble_structure(
                 # List items belong to the paragraph that introduces them and to
                 # each other; the list is one structure, not scattered elements.
                 group = previous_body.parent_id or previous_body.unit_id
-            elif statement and (starts_statement or label is not None or u.kind.value == "equation" or concludes):
+            elif statement and (starts_statement or label is not None or u.kind.value == "equation" or concludes or italic_continuation):
                 group = statement
+            elif continued_item is not None:
+                # Prose the planner read as an item's continuation returns to the item's
+                # group whatever opened in between (a displayed row of the item) (LT-081).
+                group = continued_item.parent_id or continued_item.unit_id
             elif (
                 enumerated
                 and enumeration is not None
                 and not after_heading
-                and abs(u.bbox[0] - enumeration[0]) <= plan["font_size"] * 0.5
+                and abs(x - enumeration[0]) <= plan["font_size"] * 0.5
             ):
-                # A sibling clause returns to the parent its enumeration opened with.
-                group = enumeration[1]
+                # A sibling clause returns to the parent its enumeration opened with, or
+                # opens its own group as the first item did.
+                group = enumeration[1] or u.unit_id
             elif group is None or after_heading or (
-                u.kind.value != "equation" and (indented or (paragraph_break and not enumerated) or boundary)
+                u.kind.value != "equation" and ((indented and not enumerated) or (paragraph_break and not enumerated) or boundary)
             ):
-                # A bracketed clause ((a), (ii)) set off by white space is still a clause
-                # of the paragraph that introduces it, never a group of its own.
+                # A bracketed clause ((a), (ii)) set off by white space or by its own indent
+                # is still a clause of the paragraph that introduces it, never a group of
+                # its own (LT-062, LT-081).
                 group = u.unit_id
-            if enumerated and group is not None and group != u.unit_id:
+            if enumerated and group is not None:
                 # Only an enumeration that hangs from an introducing paragraph or statement
-                # binds its siblings; items set as indented paragraphs of their own stay so.
-                enumeration = (u.bbox[0], group)
-            elif enumerated or after_heading:
+                # binds its siblings; items that opened a group of their own leave their
+                # siblings their own. The column is the planner's line start, not the bbox
+                # a display widens.
+                enumeration = (x, group if group != u.unit_id else None)
+            elif after_heading:
                 enumeration = None
             u = rebuild(u, parent_id=group)
         # Merge prose fragments within one paragraph, retaining display children.
@@ -789,8 +846,9 @@ def assemble_structure(
         if previous is not None and (same_line or (
             previous.render_policy != RenderPolicy.OMIT
             and previous.parent_id == u.parent_id
-            # Paragraph white space is a hard seam, whatever the group says.
+            # Paragraph white space or an indent is a hard seam, whatever the group says.
             and bid not in breaks
+            and not opens_paragraph
             and not display
             and not previous_display
             and previous.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
@@ -858,12 +916,18 @@ def assemble_structure(
             RUN_IN_LABEL.match(opening) or _starts_statement(opening)
             or re.match(r"[*\s]*Proof\b", opening) or LIST_LABEL_START.match(opening)
         )
+        # A first line that opens with a capital letter opens a sentence, not a continuation
+        # of one ("This gives", "Then"): the flag means the sentence continues, and a sender
+        # whose last line ends mid-sentence carries that on its own flag (LT-080). Scripts
+        # without case keep the geometric reading.
+        first_letter = next((c for c in re.sub(r"\{\{asset:[^}]+\}\}", "", opening) if c.isalpha()), "")
         if (
             plan.get("indent_style")
             and result[first].page > 1
             and result[first].kind.value == "paragraph"
             and abs(plan["first_x"].get(bid, 0) - plan["margin"]) < 2
             and not opens_own
+            and not first_letter.isupper()
         ):
             result[first] = rebuild(result[first], continues_from_previous=True)
         tail = re.sub(r"[*\s]+$", "", result[last].source_text)

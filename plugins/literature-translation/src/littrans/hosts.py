@@ -16,6 +16,13 @@ CURSOR_ENV_SIGNALS = ("CURSOR_TRACE_ID", "CURSOR_AGENT", "CURSOR_INVOKED_AS")
 CODEX_ENV_SIGNALS = ("CODEX_THREAD_ID", "CODEX_TASK_ID", "CODEX_CI")
 CLAUDE_ENV_SIGNALS = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID")
 QODER_ENV_SIGNALS = ("QODER_PRODUCT_ID", "QODER_CONFIG_DIR", "QODERCN_CLI")
+# By host, for the scaffolded launcher, which resolves the installed plugin per client.
+HOST_ENV_SIGNALS: dict[CoordinationHost, tuple[str, ...]] = {
+    "claude": CLAUDE_ENV_SIGNALS,
+    "codex": CODEX_ENV_SIGNALS,
+    "cursor": CURSOR_ENV_SIGNALS,
+    "qoder": QODER_ENV_SIGNALS,
+}
 
 HOST_MODELS_FILE = "host-models.yaml"
 

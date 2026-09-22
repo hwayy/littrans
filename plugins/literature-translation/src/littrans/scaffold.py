@@ -21,7 +21,7 @@ from typing import Any
 from jinja2 import Environment
 
 from littrans.build_info import build_identity
-from littrans.hosts import LENS_REVIEWER_BATCH_MAX, WAVE_LIMITS
+from littrans.hosts import HOST_ENV_SIGNALS, LENS_REVIEWER_BATCH_MAX, WAVE_LIMITS
 from littrans.storage import atomic_write_text, plugin_root, write_text_if_missing
 
 PLUGIN_OWNED_FILE = "docs/LITTRANS.md"
@@ -106,6 +106,8 @@ def plugin_facts() -> dict[str, Any]:
         "status_order": [status.value for status in ProjectStatus],
         "qa_version": DETERMINISTIC_QA_VERSION,
         "ignore_lines": list(PROJECT_IGNORE_LINES),
+        # The launcher detects the client running a session by the plugin's own signals.
+        "host_signals": {host: list(names) for host, names in HOST_ENV_SIGNALS.items()},
     }
 
 
