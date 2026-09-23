@@ -124,6 +124,21 @@ formula conditions, kind, display and grouping state. Legacy version 1 remains r
 preparation or semantic overrides create version 2 identities and require current
 source/translation evidence.
 
+A chunk's kind starts from the layout detector's label for the box that holds it (`paragraph_title`
+→ `heading`, `figure_title`/`table_caption` … → `caption`), but a heading or caption label stands
+only where the chunk's typography bears it out. A chunk set like running text — median letter
+size within 5 % of the body size, at least 60 % of its letters in the page's body face or a
+non-bold italic, not capitals or small capitals throughout, starting at the margin or a
+paragraph indent — is a `paragraph`, however confident the box: an italic step line ("*Step 2.*
+…"), a run-in theorem line whose statement follows on the same line, a sentence that mentions a
+figure ("Figure 10.2 shows …"). A caption also stands when it is set smaller, opens with a label
+in a face of its own (`**Figure 1.1.**`, small capitals), stands clear of the text start
+(centred or indented), or opens with a closed label (`Figure 3.`, `Table 2:`); a heading when it
+is larger, bold or in a face of its own, in capitals, or stands clear of the text start. The
+overruled label is recorded in the ledger (`structure.overruled_labels`, present only when one
+was overruled) and listed for the reviewer's role check. A title box over a block set like
+running text no longer keeps that block from being cut at an indent or a label.
+
 An asset no text block references becomes a `visual` unit of its own (`p<page>-visual-<asset>`),
 a `figure` unit for a figure and a paragraph otherwise, placed after the last body chunk that
 ends above it. A `figure` or `table` unit made from a native block that holds only
@@ -191,10 +206,19 @@ item's label (a nested clause), or its text column is an open item's (a sibling 
 label column; hanging numbers such as `1.9.`/`1.10.` share a text column, not an x) — so a
 sentence wrapping onto `2.3. The …` at the text column stays prose. Lines aligned with an item's
 text column are that item's continuation and are never cut as indented paragraphs, even on a
-page whose most common line start is the item column itself; prose resuming at an outer item's
+page whose most common line start is the item column itself. That column is not the page's
+margin when prose sits beside the list: when the most common line start is the text column of
+the page's labelled lines and at least two text lines with a language word (not labels, not
+running material) start left of those labels, the most common such start is the margin, so a
+paragraph indent between the margin and the labels still opens a paragraph (and sets
+`indent_style` and page-top continuations); a page of exercises with no prose beside them keeps
+the item column. Prose resuming at an outer item's
 column after a nested list starts its own chunk. The ledger's `structure.list_items` records
 `{"label", "body_x"}` for each label chunk and `{"continues": <chunk>}` for each continuation
-chunk; the key is absent on pages without labels. Bullet items keep their own rule (a bullet
+chunk; the key is absent on pages without labels. A line indented from an open item's text column
+(0.8–2.8 em right of it, carrying a language word) opens a paragraph of that item: its chunk is
+recorded as `{"continues": <item>, "paragraph": true}`, stays in the item's group and is never
+merged into the item's text. Bullet items keep their own rule (a bullet
 always hangs, so prose returning left of the bullet column ends the item).
 
 A line of prose that starts mid-row continues its printed row. MuPDF opens a new block after
@@ -463,8 +487,27 @@ them, `layout_fallback_checked` (layout not `ok`), `overflow_canvas_checked` (a 
 override) and `formula_conditions_checked` (declared formula conditions: the reviewer confirms
 the listed declarations are correct and complete, not that words are absent from the crop).
 The template's `context` block lists what the ledger already knows for that page —
-`formula_conditions` (asset, text, box), `grouping_pending` asset IDs, `boundary_diagnostics`
-and `findings` — so the review confirms a list instead of guessing from crops.
+`formula_conditions` (asset, text, box), `grouping_pending` asset IDs, `boundary_diagnostics`,
+`findings` and `structure_checks` — so the review confirms a list instead of guessing from crops.
+
+`structure_checks` holds the page's semantic decisions, one row each (the coverage report prints
+them per page). `roles`: every read unit prepared as a `heading` or `caption`, every unit that
+opens with a statement, run-in or proof label, and every unit whose detector heading/caption
+label preparation overruled (`detector_label`), with its `kind` and an excerpt. `joins`: every
+native text block whose text was joined into another unit rather than becoming one, with that
+unit and an excerpt. Page flags say nothing about which of these was looked at, so each is
+confirmed on its own: `confirmed_roles: [{"unit_id", "kind"}]` names every listed role with the
+kind read on the original — face and size against the page's running text, indent and vertical
+space, the same form on neighbouring pages — and `confirmed_joins: [{"block"}]` every listed
+join after checking that no paragraph break (an indent, white space, a new list item) separates
+the block from the text before it. A page passes only when both lists cover their rows
+(`role-unconfirmed`, `join-unconfirmed`), a confirmed kind equals the recorded one
+(`role-disputed`: correct the page with a `units` override instead) and no confirmation names a
+unit the list does not hold (`role-not-listed`); an entry in another shape is an error naming
+the page. A packet made before `structure_checks` existed asks for neither list, so receipts
+bound to it keep passing. List containers are flat: a lead-in paragraph is the parent of its
+items and of the displays and explanation paragraphs inside them; to hang a display from the
+item itself, use a `units` override.
 
 The approval gate and the checkpoint's attention list share one predicate
 (`page_review_findings`): an approved page is a page that needs no attention. A page passes

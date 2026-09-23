@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from fidelity_fixtures import confirm_structure_checks
 from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity
@@ -30,6 +31,7 @@ def test_source_report_damage_invalidates_review(project: Path, after_approval: 
             "layout_fallback_checked",
         ):
             p[key] = True
+        confirm_structure_checks(p)
     path = project / "new-review.json"
     write_json(path, review)
     if after_approval:

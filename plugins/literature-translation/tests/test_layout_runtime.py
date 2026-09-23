@@ -131,8 +131,8 @@ def test_review_import_reuses_cached_layout_detections(project: Path, monkeypatc
     prepare_source(project)
     ledger = read_json(project / "derived/fidelity-pages/p0001.json")
     assert ledger["layout_status"] == "ok" and ledger["layout_fingerprint"] == "fake-fingerprint"
-    heading_kinds = [u["kind"] for u in read_json(Path(build_source_review_packet(project, "1")["packet_path"]))["pages"][0]["units"]]
-    assert "heading" in heading_kinds
+    # The cached box was read: a title label on a plain sentence is overruled as running text (LT-086).
+    assert ledger["structure"]["overruled_labels"] == {"b0": "title"}
 
     packet = build_source_review_packet(project, "1")
     review = read_json(Path(packet["review_template"]))
@@ -144,6 +144,5 @@ def test_review_import_reuses_cached_layout_detections(project: Path, monkeypatc
     assert import_source_review(project, review_path, confirm_visual_review=True)["changed_pages"] == [1]
     ledger = read_json(project / "derived/fidelity-pages/p0001.json")
     assert ledger["layout_fingerprint"] == "fake-fingerprint"
-    kinds = [u["kind"] for u in read_json(Path(build_source_review_packet(project, "1")["packet_path"]))["pages"][0]["units"]]
-    assert "heading" in kinds
+    assert ledger["structure"]["overruled_labels"] == {"b0": "title"}
     assert len(calls) == 1  # the correction reused the cached result instead of re-running the detector

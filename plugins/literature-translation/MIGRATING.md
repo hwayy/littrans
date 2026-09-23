@@ -16,6 +16,34 @@ For QASC, keep the existing project as history and prepare an independent v6 pro
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
 
+## Projects prepared with 0.6.1-dev.1 or earlier: typographic kinds, list margins and per-unit structure checks (0.6.1-dev.2)
+
+- **Nothing changes until a page is re-prepared, and every existing receipt keeps passing.**
+  Recorded pages, assets and overrides stay valid; a receipt bound to a packet made before this
+  version is verified as before, without the new confirmation lists.
+- **No asset changes.** Re-preparation changes only unit kinds, paragraph seams, parents and
+  page-edge flags, and only on these page forms:
+  - a chunk a detector labelled as a heading or caption but set like running text becomes a
+    `paragraph` (italic step lines, run-in theorem lines, "Figure N shows …" sentences); the
+    overruled label is recorded as `structure.overruled_labels`, which also moves the page's
+    fingerprint when the chunk is replayed from a `units` override;
+  - a page whose most common line start was a list's text column gets its prose margin back:
+    paragraph indents between the margin and the labels open paragraphs again, lead-ins stop
+    merging into the paragraph before them, and page-top continuations are flagged. The
+    ledger's `structure.margin` (and `first_x`/`indent_style` readings) moves even where the
+    units do not;
+  - a paragraph indented inside a list item is a unit of its own in the list's container.
+  A page corrected by hand for any of these replays its recorded `units` as recorded; re-prepare
+  it with `--discard-overrides` only if the new native reading is wanted.
+- **New packets need per-unit confirmations.** `source review-packets` now lists
+  `context.structure_checks` for every page, and a decision must copy each `roles` row into
+  `confirmed_roles` (`{"unit_id", "kind"}`, the kind read on the original) and each `joins` row
+  into `confirmed_joins` (`{"block"}`). Scripts or agents that fill review templates must be
+  updated: a decision that only sets the page flags is rejected with `role-unconfirmed` /
+  `join-unconfirmed`. Correct a disputed kind with a `units` override instead of confirming it.
+- Lists stay flat: the lead-in is the parent of the items and of the displays and paragraphs
+  inside them. A project that hangs a display from its item keeps that as a `units` override.
+
 ## Projects on 0.6.0-dev.15 or earlier: the per-role dispatch policy (0.6.0-dev.16)
 
 - **`project.yaml` needs no edit.** The old flat `agent_models.<host>` (a model string per role

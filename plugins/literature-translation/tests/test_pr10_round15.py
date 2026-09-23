@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from fidelity_fixtures import confirm_structure_checks
 from test_asset_representation import candidate_input
 from test_asset_representation import project as asset_project
 from test_efficiency_v4 import _submit
@@ -114,6 +115,7 @@ def test_same_import_dependency_approval_is_deferred(tmp_path, reverse):
             for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct",
                         "grouping_checked", "layout_fallback_checked"):
                 decision[key] = True
+            confirm_structure_checks(decision)
     if reverse:
         review["pages"].reverse()
     path = root / "mixed-review.json"

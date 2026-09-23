@@ -6,6 +6,7 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from fidelity_fixtures import confirm_structure_checks
 from test_fidelity_source import approve
 from test_fidelity_source import project as fidelity_project  # noqa: F401
 from test_source_structure_v8 import _line, _owned_text, _Page
@@ -226,6 +227,7 @@ def test_override_import_names_the_dependency_pages_it_invalidates(continued_pro
     for page in review["pages"]:
         for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             page[key] = True
+        confirm_structure_checks(page)
         page["accepted_grouping_pending"] = [{"asset_id": aid, "reason": "diagonal rule kept as original evidence"} for aid in pending]
     write_json(continued_project / "review.json", review)
     assert import_source_review(continued_project, continued_project / "review.json", True)["approved_pages"] == [1, 2]
@@ -257,6 +259,7 @@ def test_pending_grouping_blocks_approval_until_accepted_with_a_reason(continued
     page = review["pages"][0]
     for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
         page[key] = True
+    confirm_structure_checks(page)
     page["accepted_grouping_pending"] = [{"asset_id": pending[0], "reason": ""}]
     write_json(continued_project / "review.json", review)
     assert import_source_review(continued_project, continued_project / "review.json", True)["approved_pages"] == []
