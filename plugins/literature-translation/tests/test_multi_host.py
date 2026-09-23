@@ -90,6 +90,49 @@ def test_launcher_finds_the_plugin_under_another_hosts_home(tmp_path: Path, monk
     assert module.resolve_plugin_root() == recorded  # the recorded version wins while it exists
 
 
+def test_launcher_prefers_current_client_over_recorded_other_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "project"
+    initialize_project(_pdf(tmp_path / "book.pdf"), root, "technical-book", "Fixture")
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("LITTRANS_PLUGIN_ROOT", raising=False)
+    _clear_host_signals(monkeypatch)
+    claude = _plugin(home / ".claude/plugins/cache/littrans/literature-translation/0.6.0-dev.8")
+    codex = _plugin(home / ".codex/plugins/cache/littrans/literature-translation/0.6.0-dev.9")
+    module = _launcher_module(root, RECORDED_PLUGIN_ROOT=repr(str(claude)),
+                              RECORDED_HOME_RELATIVE_ROOT='".claude/plugins/cache/littrans/literature-translation/0.6.0-dev.8"')
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "current-session")
+    assert module.resolve_plugin_root() == codex
+    monkeypatch.setenv("LITTRANS_PLUGIN_ROOT", str(claude))
+    assert module.resolve_plugin_root() == claude  # explicit pin still wins
+    monkeypatch.delenv("LITTRANS_PLUGIN_ROOT")
+    (codex / "scripts" / "littrans.py").unlink()
+    assert module.resolve_plugin_root() == claude  # recorded path is the fallback
+
+
+def test_launcher_prefers_newer_current_client_install_over_recorded_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "project"
+    initialize_project(_pdf(tmp_path / "book.pdf"), root, "technical-book", "Fixture")
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("LITTRANS_PLUGIN_ROOT", raising=False)
+    _clear_host_signals(monkeypatch)
+    recorded = _plugin(home / ".codex/plugins/cache/littrans/literature-translation/0.6.0-dev.8")
+    newer = _plugin(home / ".codex/plugins/cache/littrans/literature-translation/0.6.0-dev.9")
+    module = _launcher_module(root, RECORDED_PLUGIN_ROOT=repr(str(recorded)),
+                              RECORDED_HOME_RELATIVE_ROOT='".codex/plugins/cache/littrans/literature-translation/0.6.0-dev.8"')
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "current-session")
+    assert module.resolve_plugin_root() == newer
+    monkeypatch.delenv("CODEX_THREAD_ID")
+    assert module.resolve_plugin_root() == recorded  # no detected client: existing order
+
+
 def test_launcher_scans_every_clients_cache_and_never_the_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "project"
     initialize_project(_pdf(tmp_path / "book.pdf"), root, "technical-book", "Fixture")

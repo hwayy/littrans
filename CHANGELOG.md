@@ -3,6 +3,16 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.4] - 2026-09-23
+
+### Fixed
+
+- A scaffolded project launcher now tries the current client's installed plugin before the
+  plugin path recorded when the project was created. Opening a project in another client,
+  or upgrading the same client's plugin while its old cache remains, no longer runs the
+  stale build. `LITTRANS_PLUGIN_ROOT` remains an explicit override; when no current client
+  installation is available, the recorded path remains the first fallback.
+
 ## [0.6.1-dev.2] - 2026-09-23
 
 ### Fixed
