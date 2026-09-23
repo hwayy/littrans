@@ -49,6 +49,10 @@ def approve(root: Path, pages: str = "1", *extra: str) -> dict:
     for page in review["pages"]:
         for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked", *extra):
             page[key] = True
+        # The reviewer confirms each listed role and joined block as recorded.
+        checks = page.get("context", {}).get("structure_checks", {})
+        page["confirmed_roles"] = [{"unit_id": r["unit_id"], "kind": r["kind"]} for r in checks.get("roles", [])]
+        page["confirmed_joins"] = [{"block": j["block"]} for j in checks.get("joins", [])]
     path = root / "review.json"
     write_json(path, review)
     return import_source_review(root, path, confirm_visual_review=True)

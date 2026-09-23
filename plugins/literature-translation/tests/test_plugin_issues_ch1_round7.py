@@ -90,8 +90,10 @@ def test_list_label_reads_the_hanging_number_and_its_text_column() -> None:
 
 def test_labels_cut_chunks_and_continuations_survive_a_list_column_margin() -> None:
     plan = _plan(EXERCISES)
-    # The page's most common line start is the exercise text column, not the text margin.
-    assert plan["margin"] == 109.1
+    # The page's most common line start is the exercise text column; with prose beside the
+    # exercises the margin is still the prose margin (LT-086), and the cuts are the same.
+    assert plan["margin"] == 58.7
+    assert _plan([row for row in EXERCISES if row[3] != 58.7])["margin"] == 109.1
     chunks = _chunks(plan)
     assert list(chunks) == ["b0", "b1", "b1-s2", "b2", "b2-s2", "b2-s3", "b3", "b4"]
     assert chunks["b1"][0][:4] == "1.1." and len(chunks["b1"]) == 2
@@ -140,7 +142,11 @@ def test_numbers_opening_wrapped_prose_headings_and_display_lines_are_not_labels
     assert [len(c) for c in chunks.values()] == [2, 3]
     assert plan["list_items"] == {"b0": {"label": "1.4.", "body_x": 109.1}}
     # Section headings inside a title box and display lines are never labels.
-    glyphs, blocks = _page([("b0", "1.2. Probability Space", 0, 58.7), ("b1", "(1) x = y", 30, 100)])
+    glyphs, blocks = _page([("b0", "1.2. Probability Space", 0, 58.7), ("b1", "(1) x = y", 30, 100),
+                            ("b2", "Running prose sets the body face of the page.", 60, 58.7)])
+    for g in glyphs:
+        if g["line"].startswith("b0"):
+            g["font"] = "CMBX12"  # a heading face: a title box over running text is no heading (LT-086)
     title = {"label": "paragraph_title", "bbox": [100, -10, 400, 30], "score": 0.9}
     plan = plan_structure(glyphs, blocks, [title], 700, display_glyph_ids={g["id"] for g in glyphs if g["line"].startswith("b1")})
     assert "list_items" not in plan

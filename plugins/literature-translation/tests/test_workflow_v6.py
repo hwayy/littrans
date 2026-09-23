@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from fidelity_fixtures import confirm_structure_checks
 from typer.testing import CliRunner
 
 from littrans.batching import create_batches
@@ -51,6 +52,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         for key in ("viewed_original", "coverage_complete", "boundaries_complete",
                     "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[key] = True
+        confirm_structure_checks(decision)
         decision["notes"] = "Synthetic oracle: known prose and 1+1=2, no production approval."
     write_json(root / "oracle-review.json", review)
     import_source_review(root, root / "oracle-review.json", True)
@@ -247,6 +249,7 @@ def test_unchanged_translation_retains_fresh_images_after_boundary_repair(tmp_pa
             for key in ("viewed_original", "coverage_complete", "boundaries_complete",
                         "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
                 decision[key] = True
+            confirm_structure_checks(decision)
             if override:
                 decision["override"] = override
         write_json(root / "boundary-review.json", review)

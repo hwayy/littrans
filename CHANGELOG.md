@@ -3,6 +3,33 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.2] - 2026-09-23
+
+### Fixed
+
+- A detector heading or caption label no longer decides a unit's kind on its own. A chunk set
+  like running text — body size, the body face or its italic, at the margin or a paragraph
+  indent — is a paragraph: an italic step line, a run-in theorem line and a sentence that
+  mentions a figure were published as headings and a caption (LT-086). Headings keep their
+  label when set apart by size, a bold or other face, capitals, small capitals or position;
+  captions also by a smaller size, a label in its own face, an indent or a closed label
+  (`Figure 3.`). Overruled labels are recorded in `structure.overruled_labels`.
+- A list-heavy page keeps its prose margin. When the items' text column was the most common
+  line start, paragraph indents left of it read as no indent at all, so two paragraphs merged,
+  a lead-in joined the paragraph before it and a page-top continuation went unflagged (LT-086).
+- A paragraph indented from a list item's text column opens a paragraph of that item
+  (`structure.list_items … {"continues", "paragraph": true}`) instead of being merged into the
+  item's text; it stays in the list's container.
+
+### Changed
+
+- Source review packets list each page's `structure_checks` — every heading, caption, run-in
+  label and overruled detector label (`roles`) and every native block joined into another unit
+  (`joins`) — and a decision must confirm each one (`confirmed_roles: [{unit_id, kind}]`,
+  `confirmed_joins: [{block}]`). A confirmed kind that differs from the recorded one is
+  rejected as `role-disputed` and corrected with an override. Packets made before this version
+  ask for neither list, so existing receipts keep passing.
+
 ## [0.6.1-dev.1] - 2026-09-23
 
 ### Fixed

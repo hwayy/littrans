@@ -16,6 +16,11 @@ BOLD_FONT = re.compile(r"bx|bold|heavy|black|semibold|demi|(?<![a-z])(?:cm|sf|ec
 # Text italic/slanted faces: PostScript/OpenType style names and the TeX families
 # (CMTI, CMSL, CMBXTI, SFTI, SFBI, ECTI ...). Math italic (CMMI) is notation, not emphasis.
 ITALIC_FONT = re.compile(r"ital|oblique|slant|(?<![a-z])(?:cm|sf|ec|ae|lm|tc)(?:bx|b|ss|tt)?(?:ti|sl|it|bi|ri)\d", re.I)
+# Small-capital faces: the TeX families (CMCSC, SFCC, ECCC) and style names.
+SMALL_CAPS_FONT = re.compile(r"csc\d|small.?caps|(?<![a-z])(?:sf|ec|tc|lm)cc\d", re.I)
+# A caption's printed label closed by punctuation ("Figure 3.", "Fig. 2.1:", "Table IV."), as
+# opposed to a sentence that mentions the figure ("Figure 3 shows ...").
+CLOSED_CAPTION_LABEL = re.compile(r"[*_\s]*[A-Z][A-Za-z]*\.?\s*[A-Z0-9][\w.\-]*?[.:](?:\s|\*|$)")
 FORMAT_CONTROLS = {chr(9), chr(10), chr(13)}
 MATH_FONT = re.compile(r"cmmi|cmsy|cmex|msam|msbm|math|symbol|stix|cm[a-z]*sy", re.I)
 # Upright operator names TeX sets in the text face; they are notation, never prose words
@@ -304,6 +309,111 @@ def _line_starts(
     return starts
 
 
+def body_font(glyphs: list[dict[str, Any]]) -> str:
+    """The running text face of a page: the font most of its text-face letters are set in."""
+    fonts = Counter(
+        str(g.get("font", "")) for g in glyphs
+        if str(g["text"]).isalpha() and not MATH_FONT.search(str(g.get("font", "")))
+    )
+    return fonts.most_common(1)[0][0] if fonts else ""
+
+
+def _letters(glyphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [g for g in glyphs if str(g["text"]).isalpha() and not MATH_FONT.search(str(g.get("font", "")))]
+
+
+def _running_text_face(letters: list[dict[str, Any]], font_size: float, body: str) -> bool:
+    """Letters set like the page's running text: body size, mostly in the body face or its
+    (non-bold) italic, neither capitals nor small capitals throughout."""
+    if not letters:
+        return False
+    size = sorted(g["size"] for g in letters)[len(letters) // 2]
+    if abs(size - font_size) > font_size * 0.05:
+        return False
+    running = sum(
+        str(g["font"]) == body or (bool(ITALIC_FONT.search(str(g["font"]))) and not BOLD_FONT.search(str(g["font"])))
+        for g in letters
+    )
+    if running < 0.6 * len(letters):
+        return False
+    if len(letters) >= 2 and sum(str(g["text"]).isupper() for g in letters) >= 0.8 * len(letters):
+        return False
+    return sum(bool(SMALL_CAPS_FONT.search(str(g["font"]))) for g in letters) < 0.5 * len(letters)
+
+
+def detector_role_holds(
+    kind: str, glyphs: list[dict[str, Any]], first_x: float, margin: float, font_size: float, body: str, text: str,
+) -> bool:
+    """Whether a chunk's typography bears out a detector's heading or caption label.
+
+    A layout detector labels boxes by their look, and it labels a body-size italic step line
+    ("Step 2. Infinite-dimensional analog.") or a run-in theorem line as a title, and a sentence
+    that mentions a figure ("Figure 10.2 shows ...") as its caption (LT-086). The label stands when
+    the chunk is set apart from running text; set like running text — body size, the body face or
+    its italic, starting at the margin or a paragraph indent — it is prose. A heading is set apart
+    by size, a bold face, capitals or small capitals, or by standing clear of the text start (a
+    centred title); a caption by a smaller size, a label in a face of its own (``**Figure 1.1.**``,
+    small capitals), standing clear of the text start (a centred or indented caption), or opening
+    with a closed label (``Figure 3.`` / ``Table 2:``).
+    """
+    letters = _letters(glyphs)
+    if not letters:
+        return True
+    at_text_start = margin - font_size * 0.3 <= first_x < margin + font_size * 2.8
+    if not at_text_start:
+        return True
+    if kind == "heading":
+        return not _running_text_face(letters, font_size, body)
+    size = sorted(g["size"] for g in letters)[len(letters) // 2]
+    if size <= font_size * 0.95:
+        return True
+    faces = Counter(str(g["font"]) for g in letters)
+    dominant = faces.most_common(1)[0][0]
+    if str(letters[0]["font"]) != dominant or dominant != body:
+        return True
+    return CLOSED_CAPTION_LABEL.match(text) is not None
+
+
+def _prose_margin(
+    starts: Counter[float], blocks: list[dict[str, Any]], gm: dict[str, dict[str, Any]],
+    omitted: dict[str, str], font_size: float,
+) -> float:
+    """The page's prose margin: the most common line start, unless that start is a list's text column.
+
+    On a page set mostly as a list the continuation lines of the items outnumber the prose lines,
+    and the items' text column would read as the margin: a paragraph indent left of it would then
+    be no indent at all and two paragraphs would run together (LT-086). The mode is replaced only
+    when it is the text column of the labelled lines on the page and prose — at least two text lines
+    that open in a text face, carry a language word and are not labels or running material — starts
+    left of those labels; a page of exercises with no prose beside them keeps the mode.
+    """
+    margin = starts.most_common(1)[0][0] if starts else 0
+    align = font_size * 0.15
+    label_x: list[float] = []
+    prose: Counter[float] = Counter()
+    for b in blocks:
+        if b["id"] in omitted:
+            continue
+        for line in b["lines"]:
+            glyphs = [gm[gid] for gid in line]
+            inked = [g for g in glyphs if inked_glyph(g)]
+            if not inked:
+                continue
+            x = gm[line[0]]["origin"][0]
+            label = list_label(glyphs, font_size)
+            if label is not None:
+                if abs(label[1] - margin) <= align and label[1] > x + align:
+                    label_x.append(x)
+                continue
+            text = "".join(str(g["text"]) for g in glyphs if not MATH_FONT.search(str(g.get("font", ""))))
+            if not MATH_FONT.search(str(inked[0].get("font", ""))) and language_words(text):
+                prose[round(x, 1)] += 1
+    if not label_x:
+        return margin
+    left = [(count, -x) for x, count in prose.items() if count >= 2 and x < min(label_x) - align]
+    return -max(left)[1] if left else margin
+
+
 def plan_structure(
     glyphs: list[dict[str, Any]], blocks: list[dict[str, Any]], layout: list[dict[str, Any]], height: float,
     display_glyph_ids: set[str] | None = None, ink: dict[str, Any] | None = None,
@@ -316,8 +426,6 @@ def plan_structure(
     starts = Counter(
         round(gm[line[0]]["origin"][0], 1) for b in blocks for line in b["lines"] if line
     )
-    margin = starts.most_common(1)[0][0] if starts else 0
-    line_starts = _line_starts(glyphs, blocks, margin, font_size, ink)
     labels = [(item["label"], [v / 2 for v in item["bbox"]]) for item in layout]
     notes, omitted = {}, {}
     display_glyph_ids = display_glyph_ids or set()
@@ -374,6 +482,8 @@ def plan_structure(
         for bid, n in notes.items()
         for gid in n["glyph_ids"]
     }
+    margin = _prose_margin(starts, blocks, gm, omitted, font_size)
+    line_starts = _line_starts(glyphs, blocks, margin, font_size, ink)
     note_top = min((n["top"] for n in notes.values()), default=height + 1)
     note_numbers = {n["number"]: bid for bid, n in notes.items()}
     for block in blocks:
@@ -415,6 +525,7 @@ def plan_structure(
     # on the same visual line. PDF blocks may span multiple author paragraphs.
     split, first_x, display_blocks = [], {}, set()
     title_boxes = [box for label, box in labels if label in TITLE_LABELS]
+    page_font = body_font(glyphs)
     display_boxes = [box for label, box in labels if label == "display_formula"]
     # The page's usual baseline pitch; a gap well beyond it is paragraph white space.
     pitches = sorted(
@@ -435,8 +546,11 @@ def plan_structure(
     line_x: dict[str, float] = {}
     for b in blocks:
         gs = [gm[gid] for line in b["lines"] for gid in line]
-        # A wrapped heading keeps its continuation line even though the wrap is indented.
-        heading_block = bool(gs) and any(all(_contains(g, box) for g in gs) for box in title_boxes)
+        # A wrapped heading keeps its continuation line even though the wrap is indented; a
+        # title box over a block set like running text is the detector's mistake (LT-086).
+        heading_block = bool(gs) and any(all(_contains(g, box) for g in gs) for box in title_boxes) and detector_role_holds(
+            "heading", gs, gm[b["lines"][0][0]]["origin"][0], margin, font_size, page_font, ""
+        )
         chunks: list[list[list[str]]] = []
         current: list[list[str]] = []
         chunk_roles: list[dict[str, Any]] = [{}]
@@ -500,7 +614,18 @@ def plan_structure(
             )
             continues: str | None = None
             resumes = False
-            if label_line and label is not None:
+            # A paragraph indent measured from an open item's text column is a new paragraph of
+            # that item ("The natural extension ..." under "(1) As random functions ..."): it
+            # opens a chunk that stays in the item's group and is never merged into it (LT-086).
+            item_paragraph = (
+                not label_line and owner is None and not display_line and not mid_row and bool(items)
+                and (last_y is None or new_line)
+                and items[-1][2] + font_size * 0.8 < x < items[-1][2] + font_size * 2.8
+                and bool(language_words("".join(gm[gid]["text"] for gid in line if not MATH_FONT.search(gm[gid]["font"]))))
+            )
+            if item_paragraph:
+                continues = items[-1][0]
+            elif label_line and label is not None:
                 while items and items[-1][2] >= label[1] - align:
                     items.pop()
             else:
@@ -517,6 +642,7 @@ def plan_structure(
                         items.pop()
             if current and not heading_block and (
                 (indent and new_line and continues is None)
+                or item_paragraph
                 or gap
                 or run_in
                 or display_line != previous_display
@@ -535,7 +661,7 @@ def plan_structure(
                 if label_line and label is not None:
                     chunk_roles[-1] = {"label": label[0], "body_x": round(label[1], 1)}
                 elif continues is not None:
-                    chunk_roles[-1] = {"continues": continues}
+                    chunk_roles[-1] = {"continues": continues, **({"paragraph": True} if item_paragraph else {})}
             if label_line and label is not None:
                 chunk_id = b["id"] if not chunks else b["id"] + f"-s{len(chunks) + 1}"
                 items.append((chunk_id, x, label[1]))
@@ -691,7 +817,8 @@ def assemble_structure(
                 < x
                 < plan["margin"] + plan["font_size"] * 2.8
             )
-            opens_paragraph = indented
+            # A paragraph indented from an item's text column opens a paragraph of that item.
+            opens_paragraph = indented or bool(list_items.get(bid, {}).get("paragraph"))
             starts_statement = _starts_statement(u.source_text)
             label = LIST_LABEL_START.match(u.source_text)
             # A bracketed clause ((a), (ii)) belongs to the paragraph or statement that

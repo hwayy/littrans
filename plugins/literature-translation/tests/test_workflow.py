@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
-from fidelity_fixtures import original_image_evidence
+from fidelity_fixtures import confirm_structure_checks, original_image_evidence
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -372,6 +372,7 @@ def _review_synthetic_workflow_source(root: Path) -> None:
     for decision in review["pages"]:
         for field in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[field] = True
+        confirm_structure_checks(decision)
         decision["notes"] = "Test-only generated PDF oracle: exact original code and equation regions, image hashes and metadata checked."
     path = root / "tmp" / "workflow-fixture-review.json"
     write_json(path, review)

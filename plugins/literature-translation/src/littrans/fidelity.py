@@ -30,6 +30,8 @@ from littrans.source_structure import (
     LANGUAGE_TOKEN,
     MATH_FONT,
     MATH_OPERATORS,
+    body_font,
+    detector_role_holds,
     font_style,
     inked_glyph,
     is_bullet_line,
@@ -2091,6 +2093,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     units, emitted = [], set()
     glyph_by_id = {g["id"]: g for g in glyphs}
     hyphenation = _hyphenation_evidence(doc, source_hash)
+    page_font = body_font(glyphs)
     for block in blocks:
         # Style the block as a whole: emphasis and hyphenated words cross line breaks.
         tokens: list[tuple[str, str]] = []
@@ -2193,6 +2196,15 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             for item in items:
                 if item.get("label") in semantic_labels and _inside({"bbox": block["bbox"]}, [v / 2 for v in item["bbox"]]):
                     kind = semantic_labels[item["label"]]
+                    chunk = [glyph_by_id[gid] for line in block["lines"] for gid in line]
+                    if kind in {"heading", "caption"} and not detector_role_holds(
+                        kind, chunk, structure["first_x"].get(block["id"], block["bbox"][0]), structure["margin"],
+                        structure["font_size"], page_font, text,
+                    ):
+                        # Set like running text, the chunk is prose whatever the box said (LT-086);
+                        # the overruled label is recorded for the reviewer's role check.
+                        structure.setdefault("overruled_labels", {})[block["id"]] = item["label"]
+                        kind = "paragraph"
                     break
             if kind == "paragraph" and is_bullet_line([glyph_by_id[gid] for line in block["lines"] for gid in line if inked_glyph(glyph_by_id[gid])]):
                 kind = "list_item"
@@ -2733,6 +2745,7 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         payload["document_structure"] = profile_context
     for page in payload["pages"]:
         page["boundary_diagnostics"] = _boundary_diagnostics(page["ledger"]["glyphs"], page["assets"])
+        page["structure_checks"] = _structure_checks(page)
     sections = []
     if profile_context:
         sections.append('<h2>Document-specific structure guidance</h2><pre>' + html.escape(json.dumps(profile_context, ensure_ascii=False, indent=2)) + '</pre>')
@@ -2740,6 +2753,9 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         ledger = p["ledger"]
         if p["boundary_diagnostics"]:
             sections.append("<h3>Prose/formula boundary diagnostics</h3><pre>" + html.escape(json.dumps(p["boundary_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
+        if p["structure_checks"]["roles"] or p["structure_checks"]["joins"]:
+            sections.append(f'<h3>PDF page {p["page"]}: roles and joined blocks to confirm one by one</h3><pre>'
+                            + html.escape(json.dumps(p["structure_checks"], ensure_ascii=False, indent=2)) + "</pre>")
         boxes = "".join(f'<rect x="{f["bbox"][0]}" y="{f["bbox"][1]}" width="{f["width"]}" height="{f["height"]}" fill="none" stroke="red" stroke-width="0.6"><title>{html.escape(a["id"])}</title></rect>' for a in p["assets"] for f in a["fragments"])
         image_uri = "../../" + quote(ledger["page_image"], safe="/")
         if ledger.get("overflow_evidence"):
@@ -2777,9 +2793,10 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "visual_report_sha256": payload["visual_report"]["sha256"], "reviewer": "", "pages": [
         {"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False,
          "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False,
-         "accepted_grouping_pending": [], "issues": [], "notes": "",
+         "accepted_grouping_pending": [], "confirmed_roles": [], "confirmed_joins": [], "issues": [], "notes": "",
          "context": {"formula_conditions": _declared_conditions(p), "grouping_pending": [a["id"] for a in p["assets"] if a.get("grouping_pending")],
-                     "findings": page_review_findings(p), "boundary_diagnostics": p["boundary_diagnostics"]}}
+                     "findings": page_review_findings(p), "boundary_diagnostics": p["boundary_diagnostics"],
+                     "structure_checks": p["structure_checks"]}}
         for p in payload["pages"]]}
     write_json(directory / "review-template.json", review_template)
     report = directory / "coverage.html"
@@ -2819,6 +2836,99 @@ def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[
         if sha256_file(_path(root, relative)) != expected:
             raise ValueError("source report image changed")
     return packet
+
+
+STRUCTURE_ROLE_KINDS = {"heading", "caption"}
+
+
+def _excerpt(text: str, limit: int = 80) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _structure_checks(page: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """The semantic decisions of a packet page a reviewer confirms one by one (LT-086).
+
+    ``roles``: every read unit that preparation made a heading or caption, that opens with a
+    statement, run-in or proof label, or whose detector heading/caption label preparation overruled
+    as running text — each is confirmed with the kind the reviewer read on the original.
+    ``joins``: every native text block whose text preparation joined into another unit (no unit of
+    its own), with the unit it joined — each is confirmed as the same paragraph, or the page is
+    corrected. A page-level flag cannot say which of these was looked at; the lists can.
+    """
+    from littrans.source_structure import RUN_IN_LABEL, _starts_statement
+
+    ledger = page["ledger"]
+    structure = ledger.get("structure") or {}
+    overruled = structure.get("overruled_labels") or {}
+    prefix = f"p{page['page']:04d}-"
+    roles = []
+    for unit in page["units"]:
+        if unit.get("render_policy", "include") != "include" or unit["kind"] in {"footnote", "note"}:
+            continue
+        text = unit.get("source_text") or ""
+        chunk = unit["unit_id"][len(prefix):]
+        label = overruled.get(chunk)
+        if not (unit["kind"] in STRUCTURE_ROLE_KINDS or label or _starts_statement(text)
+                or RUN_IN_LABEL.match(text) or re.match(r"[*\s]*Proof\b", text)):
+            continue
+        row = {"unit_id": unit["unit_id"], "kind": unit["kind"], "text": _excerpt(re.sub(r"\{\{asset:[^}]+\}\}", "[asset]", text))}
+        if label:
+            row["detector_label"] = label
+        roles.append(row)
+    blocks = {u["unit_id"][len(prefix):].split("-")[0] for u in page["units"] if u["unit_id"].startswith(prefix)}
+    omitted = set(structure.get("omitted") or {})
+    native: dict[str, list[dict[str, Any]]] = {}
+    for glyph in ledger["glyphs"]:
+        if glyph.get("owner", "native-text") == "native-text":
+            native.setdefault(glyph["id"].split("-")[0], []).append(glyph)
+    readable = [u for u in page["units"] if u.get("render_policy", "include") == "include"]
+    joins = []
+    for block, glyphs in native.items():
+        if block in blocks or block in omitted:
+            continue
+        text = "".join(str(g["text"]) for g in glyphs if not MATH_FONT.search(str(g.get("font", ""))))
+        first = next((g for g in glyphs if inked_glyph(g)), None)
+        if first is None or not language_words(text):
+            continue
+        owners = [u for u in readable if _inside(first, u["bbox"])]
+        owner = min(owners, key=lambda u: (u["bbox"][2] - u["bbox"][0]) * (u["bbox"][3] - u["bbox"][1]), default=None)
+        joins.append({"block": block, "unit_id": owner["unit_id"] if owner else None, "text": _excerpt(text, 60)})
+    return {"roles": roles, "joins": joins}
+
+
+def _confirmation_failures(page: dict[str, Any], decision: dict[str, Any]) -> list[str]:
+    """The listed roles and joins a decision does not confirm; nothing for a packet made before
+    the lists existed, whose receipts keep passing as they did."""
+    checks = page.get("structure_checks")
+    if checks is None:
+        return []
+    roles = decision.get("confirmed_roles") or []
+    joins = decision.get("confirmed_joins") or []
+    if not isinstance(roles, list) or any(not isinstance(r, dict) or not isinstance(r.get("unit_id"), str) or not isinstance(r.get("kind"), str) for r in roles):
+        raise ValueError(f'page {page["page"]}: confirmed_roles must be a list of objects {{"unit_id": ..., "kind": ...}}; got '
+                         + json.dumps(roles, ensure_ascii=False)[:200])
+    if not isinstance(joins, list) or any(not isinstance(j, dict) or not isinstance(j.get("block"), str) for j in joins):
+        raise ValueError(f'page {page["page"]}: confirmed_joins must be a list of objects {{"block": ...}}; got '
+                         + json.dumps(joins, ensure_ascii=False)[:200])
+    confirmed = {r["unit_id"]: r["kind"] for r in roles}
+    failures = []
+    missing = [r["unit_id"] for r in checks.get("roles", []) if r["unit_id"] not in confirmed]
+    if missing:
+        failures.append("role-unconfirmed: " + ", ".join(missing))
+    for row in checks.get("roles", []):
+        read = confirmed.get(row["unit_id"])
+        if read is not None and read != row["kind"]:
+            failures.append(f"role-disputed: {row['unit_id']} is recorded as {row['kind']}, the review reads {read}; correct it with a units override")
+    listed = {r["unit_id"] for r in checks.get("roles", [])}
+    unknown = [uid for uid in confirmed if uid not in listed]
+    if unknown:
+        failures.append("role-not-listed: " + ", ".join(unknown))
+    joined = {j["block"] for j in joins}
+    missing_joins = [j["block"] for j in checks.get("joins", []) if j["block"] not in joined]
+    if missing_joins:
+        failures.append("join-unconfirmed: " + ", ".join(missing_joins))
+    return failures
 
 
 def _declared_conditions(page: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2906,6 +3016,7 @@ def _source_decision_failures(page: dict[str, Any], decision: dict[str, Any]) ->
         failures.append("override present: the page is re-prepared and needs a fresh packet")
     if decision.get("issues") != []:
         failures.append("issues are not empty")
+    failures.extend(_confirmation_failures(page, decision))
     for finding in page_review_findings(page, decision):
         ids = finding.get("asset_ids") or [finding.get("asset_id")]
         failures.append(finding["code"] + ": " + ", ".join(str(aid) for aid in ids))

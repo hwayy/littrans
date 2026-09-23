@@ -172,7 +172,7 @@ def figure_project(tmp_path: Path) -> Path:
     pdf = tmp_path / "source/book.pdf"
     with fitz.open() as doc:
         page = doc.new_page(width=300, height=400)
-        page.insert_text((40, 40), "A heading line")
+        page.insert_text((40, 40), "A heading line", fontsize=16)
         page.insert_text((40, 70), "Prose before the figure.")
         page.draw_line((60, 100), (240, 160), width=1.5)
         page.draw_line((60, 160), (240, 100), width=1.5)
