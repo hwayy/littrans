@@ -3,6 +3,21 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.6] - 2026-09-23
+
+### Fixed
+
+- Bilingual HTML now joins page-spanning paragraphs using the same continuation decision
+  as Markdown, including sender-only continuations and closed preceding sentences.
+- Message-only missing-file errors retain the missing path or command in CLI output.
+- Translation memory invalidates its completion cache when reference terminology changes.
+- Translated language in native equation lines reaches Markdown and HTML without turning
+  pure formulas into text or duplicating and dropping printed equation numbers.
+- Receipt-referenced source review packets remain required in the tracked record even when
+  their files or entire directory have been deleted.
+- Candidate submissions must echo the packet's dispatch model and effort, including unset
+  host-default values; observed models remain in `served_model_label`.
+
 ## [0.6.1-dev.5] - 2026-09-23
 
 ### Fixed

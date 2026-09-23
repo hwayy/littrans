@@ -64,7 +64,7 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
-from littrans.source_structure import TERMINAL_PUNCTUATION
+from littrans.source_structure import TERMINAL_PUNCTUATION, language_words
 from littrans.storage import (
     atomic_write_text,
     load_project,
@@ -470,6 +470,27 @@ def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, So
     return FOOTNOTE_TOKEN_RE.sub(replace, text)
 
 
+_DISPLAY_PROSE_CUES = frozenset({
+    "case", "cases", "for", "if", "when", "where", "otherwise", "else", "then",
+    "provided", "assuming", "unless", "such", "that", "all", "only", "with",
+})
+
+
+def _translated_native_equation(unit: SourceUnit, target: str | None) -> bool:
+    """A submitted translation replaces native display text, including mixed math and prose."""
+    if not unit.translatable or unit.asset_refs or unit.latex or target is None:
+        return False
+    # Formatting a formula (including whitespace around operators) is not translation.
+    if re.sub(r"\s+", "", target) == re.sub(r"\s+", "", unit.source_text):
+        return False
+    # A multi-letter math function or variable (erf, CDF, alpha) is not prose.
+    # Explicit connectors or a Chinese translation of source words disambiguate
+    # native case labels whose vocabulary is otherwise open-ended.
+    words = language_words(unit.source_text)
+    return bool(words and (any(word.casefold() in _DISPLAY_PROSE_CUES for word in words)
+                           or re.search(r"[\u3400-\u9fff]", target)))
+
+
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target if target is not None else unit.source_text
     safe_text = escape_markdown_prose(text)
@@ -507,6 +528,9 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
         return fenced_code(unit.source_text, unit.code_language)
     if unit.kind is UnitKind.EQUATION:
         # A native-text display line ("Prob", "otherwise.") renders its translation as text.
+        if _translated_native_equation(unit, target):
+            number = f" ({unit.equation_number})" if unit.equation_number and f"({unit.equation_number})" not in text else ""
+            return safe_text + number
         return equation_markdown(unit, safe_text if not equation_is_notation(unit) else None)
     if unit.kind is UnitKind.FIGURE:
         asset = _asset_markdown(unit) or f"`[figure: PDF page {unit.page}]`"
@@ -644,6 +668,7 @@ def _unit_html(
     target_table: Any = None,
     *,
     source_view: bool,
+    submitted_translation: bool = False,
     unit_map: dict[str, SourceUnit] | None = None,
 ) -> str:
     targets = _footnote_targets(unit, unit_map or {}, source_view)
@@ -671,7 +696,8 @@ def _unit_html(
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
-            plain_unit, target, target_table, source_view=source_view, unit_map=unit_map
+            plain_unit, target, target_table, source_view=source_view,
+            submitted_translation=submitted_translation, unit_map=unit_map
         ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
@@ -688,16 +714,22 @@ def _unit_html(
             highlighted = html.escape(unit.source_text)
         return f'<pre><code class="language-{language}">{highlighted}</code></pre>'
     if unit.kind is UnitKind.EQUATION:
+        display_as_text = not equation_is_notation(unit) or (
+            submitted_translation and _translated_native_equation(unit, target)
+        )
+        display_content = text if display_as_text else (unit.latex or unit.source_text)
         number = (
             f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
-            if unit.equation_number
+            if unit.equation_number and (
+                not display_as_text or f"({unit.equation_number})" not in text
+            )
             else ""
         )
-        if not equation_is_notation(unit):
+        if display_as_text:
             # Native words on a displayed line stay upright text and keep their translation.
             return '<div class="fidelity-complex display-line">' + inline(text) + number + "</div>"
         return '<div class="math display">' + _mathml(
-            unit.latex or unit.source_text, "block"
+            display_content, "block"
         ) + number + "</div>"
     if unit.kind is UnitKind.TABLE:
         table = target_table or unit.table
@@ -1330,6 +1362,7 @@ def render_project(
             bilingual_target,
             target_table,
             source_view=False,
+            submitted_translation=target is not None,
             unit_map=footnote_unit_map,
         )
         source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only, cache=asset_cache)
@@ -1445,7 +1478,8 @@ def render_project(
                     }
                 )
         elif (
-            unit.continues_from_previous
+            previous_unit is not None
+            and _continues_paragraph(previous_unit, unit)
             and rows
             and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH

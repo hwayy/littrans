@@ -172,6 +172,20 @@ def test_a_modelless_packet_has_nothing_to_echo(assets: Path) -> None:
     assert submit_candidates(assets, assets / "candidate.json")["candidate_count"] == 1
 
 
+@pytest.mark.parametrize("echo", [{"model": "observed-model"}, {"reasoning_effort": "high"}])
+def test_a_modelless_packet_rejects_dispatch_echoes(assets: Path, echo: dict[str, str]) -> None:
+    config = load_project(assets)
+    config.agent_models = {name: {} for name in COORDINATION_HOSTS}
+    save_project(assets, config)
+    packet = build_asset_packet(assets, ["a1"])
+    payload = {"packet_id": packet["packet_id"], "author_task_id": "task-1",
+               "image_evidence": packet["required_images"],
+               "candidates": [{"asset_id": "a1", "format": "latex", "content": "x=1"}], **echo}
+    write_json(assets / "candidate.json", payload)
+    with pytest.raises(ValueError, match="echo the dispatched packet's model policy"):
+        submit_candidates(assets, assets / "candidate.json")
+
+
 def test_a_model_bearing_packet_still_requires_its_echo(assets: Path) -> None:
     config = load_project(assets)
     config.agent_models["codex"] = {

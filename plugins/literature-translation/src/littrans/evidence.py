@@ -773,6 +773,7 @@ def translation_memory(
                 units_path,
                 translations_path,
                 root / "glossary" / "approved.yaml",
+                root / "glossary" / "reference.yaml",
                 root / "context" / "document-brief.md",
                 root / "context" / "style-guide.md",
             ]
