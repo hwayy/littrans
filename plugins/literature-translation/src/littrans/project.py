@@ -89,6 +89,10 @@ def initialize_project(
     if root.joinpath("project.yaml").exists():
         raise ValueError(f"Project already exists: {root}")
     load_profile(profile)
+    # Refuse a record root that cannot hold the project before anything is written, so a
+    # wrong --repo-root never leaves a half-initialized project behind.
+    if repo_root is not None and not root.resolve().is_relative_to(Path(repo_root).resolve()):
+        raise ValueError(f"The project root {root.resolve()} must lie inside the record root {Path(repo_root).resolve()}")
     initialize_project_dirs(root)
     # A PDF inside the project is recorded relative to it, so a clone on another host
     # finds it under the same name; one kept elsewhere can only be named absolutely.

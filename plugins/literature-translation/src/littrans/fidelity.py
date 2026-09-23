@@ -2605,12 +2605,14 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         # A page whose receipt outlived the rerun is still verified: its units say so, as
         # they did before, instead of reading as fresh work until the next review import.
         # Only a receipt that passed says that: a retained rejection leaves its page
-        # unverified, exactly as the review import left it.
+        # unverified, exactly as the review import left it. A dependency page whose receipt
+        # was removed is unverified again, like a page the rerun re-prepared.
         approved = [p for p in retained if read_json(_receipt_path(root, p)).get("passed") is True]
-        if any(unit.page in approved for unit in units):
+        statuses = {**{p: SemanticStatus.UNVERIFIED for p in invalidated}, **{p: SemanticStatus.VERIFIED for p in approved}}
+        if any(unit.page in statuses for unit in units):
             for unit in units:
-                if unit.page in approved:
-                    unit.verification_status = SemanticStatus.VERIFIED
+                if unit.page in statuses:
+                    unit.verification_status = statuses[unit.page]
             write_jsonl(root / "derived/units.jsonl", units)
         # Crops the replaced pages no longer refer to are reclaimed once the new authority
         # is committed (the transaction snapshots files, not directories) and before the
@@ -3231,6 +3233,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         for unit in units:
             if unit.page in decision_pages:
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
+            elif unit.page in invalidated:
+                # The neighbour's receipt is gone; its units no longer claim verification.
+                unit.verification_status = SemanticStatus.UNVERIFIED
         units.sort(key=lambda u: u.page)
         write_jsonl(root / "derived/units.jsonl", units)
         # Reclaimed once the corrections are committed and while the lock is still held.

@@ -672,7 +672,10 @@ def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
     The reference section is present only when an entry matches the units, so a project
     without reference entries keeps the audit context it had before the channel existed.
     """
-    parts = audit_context_sections(root, units)
+    return _render_audit_context(audit_context_sections(root, units))
+
+
+def _render_audit_context(parts: dict[str, str]) -> str:
     text = (
         f"# Document brief\n\n{parts['document-brief']}\n\n# Translation style\n\n{parts['style-guide']}\n\n"
         f"# Relevant approved terminology\n\n```yaml\n{parts['approved-terms']}\n```\n"
@@ -682,16 +685,28 @@ def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
     return text
 
 
-def audit_context_parts(root: Path, units: Iterable[SourceUnit]) -> dict[str, dict[str, Any]]:
-    """Per-part hash and size of the shared context, so staleness can name what grew."""
+def _summarize_audit_context(parts: dict[str, str]) -> dict[str, dict[str, Any]]:
     return {
         part: {"sha256": sha256_text(text), "lines": len(text.splitlines()) if text else 0}
-        for part, text in audit_context_sections(root, units).items()
+        for part, text in parts.items()
     }
+
+
+def audit_context_parts(root: Path, units: Iterable[SourceUnit]) -> dict[str, dict[str, Any]]:
+    """Per-part hash and size of the shared context, so staleness can name what grew."""
+    return _summarize_audit_context(audit_context_sections(root, units))
 
 
 def audit_context_fingerprint(root: Path, units: Iterable[SourceUnit]) -> str:
     return sha256_text(audit_context_text(root, units))
+
+
+def audit_context_fingerprint_and_parts(
+    root: Path, units: Iterable[SourceUnit]
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """``audit_context_fingerprint`` and ``audit_context_parts`` from one context build."""
+    parts = audit_context_sections(root, units)
+    return sha256_text(_render_audit_context(parts)), _summarize_audit_context(parts)
 
 
 def translation_memory(

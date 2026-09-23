@@ -51,7 +51,8 @@ class _GuardedGroup(TyperGroup):
 
     Workflow guards (stale packets, missing batches, invalid submissions) signal
     "not available" with ValueError, pydantic's ValidationError included, and a
-    wrong path surfaces as FileNotFoundError. At the CLI boundary those are an
+    wrong path surfaces as FileNotFoundError (an existing batch or profile as
+    FileExistsError). At the CLI boundary those are an
     error message with exit code 1, never a traceback that reads like a defect
     and invites bypassing the guard.
     """
@@ -63,6 +64,9 @@ class _GuardedGroup(TyperGroup):
             raise _ClickException(str(exc)) from exc
         except FileNotFoundError as exc:
             raise _ClickException(f"{exc.strerror or 'File not found'}: {exc.filename}") from exc
+        except FileExistsError as exc:
+            # "Batch already exists" and similar refusals are raised with a message only.
+            raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File exists'}: {exc.filename}") from exc
 
 
 app = typer.Typer(cls=_GuardedGroup, no_args_is_help=True, help="Controlled literature translation tooling.")

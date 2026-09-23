@@ -13,6 +13,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import (
     AUDIT_CONTEXT_PARTS,
     audit_context_fingerprint,
+    audit_context_fingerprint_and_parts,
     audit_context_parts,
     batch_unit_fingerprints,
     dependency_closure,
@@ -381,14 +382,6 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
     errors: list[QAItem] = []
     warnings: list[QAItem] = []
     approved_terms = load_terms(root)
-    # A gate whose source never occurs in the prepared document (typo, accent or
-    # quote variant) would otherwise fail silently; report it once per run.
-    folded_units = [term_source_text(unit) for unit in units.values()]
-    for term in approved_terms:
-        source_term = str(term.get("source", "")).strip()
-        if source_term and not any(term_matches(term, folded) for folded in folded_units):
-            warnings.append(QAItem(code="approved-term-never-matched", severity="warning",
-                                   message=f"Approved term never matches any prepared source unit: {source_term}"))
     fingerprint = batch_translation_fingerprint(root, batch_id)
     qa_context_fingerprint = current_qa_context_fingerprint(
         root, batch_id, units=list(units.values()), translations=translations, manifest=manifest
@@ -402,6 +395,15 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             and existing.qa_context_fingerprint == qa_context_fingerprint
         ):
             return existing
+
+    # A gate whose source never occurs in the prepared document (typo, accent or
+    # quote variant) would otherwise fail silently; report it once per run.
+    folded_units = [term_source_text(unit) for unit in units.values()]
+    for term in approved_terms:
+        source_term = str(term.get("source", "")).strip()
+        if source_term and not any(term_matches(term, folded) for folded in folded_units):
+            warnings.append(QAItem(code="approved-term-never-matched", severity="warning",
+                                   message=f"Approved term never matches any prepared source unit: {source_term}"))
 
     from littrans.fidelity_models import load_assets
 
@@ -1127,10 +1129,7 @@ def _prepare_review_import_locked(
             )
             for unit_id in run_context_ids
         }
-        run_shared_fingerprint = audit_context_fingerprint(
-            root, [all_units[unit_id] for unit_id in run_context_ids]
-        )
-        run_shared_parts = audit_context_parts(
+        run_shared_fingerprint, run_shared_parts = audit_context_fingerprint_and_parts(
             root, [all_units[unit_id] for unit_id in run_context_ids]
         )
         run_context_fingerprint = audit_evidence_context_fingerprint(
