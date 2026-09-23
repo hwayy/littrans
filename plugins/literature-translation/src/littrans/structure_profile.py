@@ -154,9 +154,17 @@ def rescope_rules(root: Path, packet_id: str, page_spec: str, label: str = '', *
     or whose current text is not the packet's text extended after a line break, is
     refused rather than guessed at; a rule that did not grow needs no block entry.
     """
+    root = root.resolve()
+    if not apply:
+        return _rescope_rules(root, packet_id, page_spec, label, apply=False)
+    # The profile is read and rewritten under one lock, so a concurrent probe is not lost.
+    with project_write_lock(root):
+        return _rescope_rules(root, packet_id, page_spec, label, apply=True)
+
+
+def _rescope_rules(root: Path, packet_id: str, page_spec: str, label: str, *, apply: bool) -> dict[str, Any]:
     from littrans.fidelity import _load_source_packet
 
-    root = root.resolve()
     config = load_project(root)
     packet_path = root / 'packets' / packet_id / 'packet.json'
     packet = _load_source_packet(root, packet_id, sha256_file(packet_path))
@@ -194,8 +202,7 @@ def rescope_rules(root: Path, packet_id: str, page_spec: str, label: str = '', *
     result = {'profile': str(target), 'packet_id': packet_id, 'pages': pages, 'scoped_rules': sorted(block),
               'unchanged_rules': unchanged, 'page_rules': len(updated.page_rules), 'applied': apply}
     if apply:
-        with project_write_lock(root):
-            write_json(target, updated.model_dump(mode='json'))
+        write_json(target, updated.model_dump(mode='json'))
     return result
 
 

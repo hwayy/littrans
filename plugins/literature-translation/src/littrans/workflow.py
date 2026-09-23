@@ -20,10 +20,8 @@ from littrans.evidence import (
     translations_semantically_equal,
 )
 from littrans.hosts import (
-    DISPATCH_ROLES,
     LENS_REVIEWER_BATCH_MAX,
     WAVE_BATCH_SET_MAX,
-    dispatch_advisories,
     resolve_coordination_host,
     resolve_wave_limit,
 )
@@ -42,7 +40,7 @@ from littrans.models import (
     UnitKind,
     WorkflowPacketManifest,
 )
-from littrans.project import translation_map
+from littrans.project import dispatch_report, translation_map
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     _apply_review_import_locked,
@@ -495,17 +493,11 @@ def _with_advisories(root: Path, host: str, payload: dict[str, Any]) -> dict[str
     Advisories never block and never enter a packet: a manifest is compared for
     replay identity and an asset packet's id hashes its whole payload.
     """
-    config = load_project(root)
-    notes: list[str] = []
-    seen: set[str] = set()
-    for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]:
-        role = "translate" if task.get("stage") == "revise" else str(task.get("stage", ""))
-        if role not in DISPATCH_ROLES or role in seen:
-            continue
-        seen.add(role)
-        dispatch = config.dispatch(host, role)
-        notes.extend(dispatch_advisories(host, role, dispatch.model, dispatch.reasoning_effort))
-    payload["dispatch_advisories"] = notes
+    roles = dict.fromkeys(
+        "translate" if task.get("stage") == "revise" else str(task.get("stage", ""))
+        for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]
+    )
+    payload["dispatch_advisories"] = dispatch_report(root, host, roles)["advisories"]
     return payload
 
 
