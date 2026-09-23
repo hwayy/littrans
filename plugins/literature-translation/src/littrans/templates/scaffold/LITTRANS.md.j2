@@ -90,11 +90,12 @@ review packets named by page receipts are live dependencies and must be re-inclu
 
 ## Launcher and hosts
 
-`tools/lt.py` resolves the plugin by `LITTRANS_PLUGIN_ROOT`, then the recorded plugin root,
-then the same path under this user's home, then their highest-versioned siblings, then each
-client's plugin cache; `tools/lt.cmd` and `tools/lt.sh` pick the interpreter (3.12+ for the
-CLI, 3.10–3.13 as the layout detector's base). The record names no machine, so the project
-moves between hosts through a git remote: pull before writing, one host writes at a time,
+`tools/lt.py` resolves the plugin by `LITTRANS_PLUGIN_ROOT`, then the current client's
+installed plugin, then the recorded plugin root or the same path under this user's home,
+then their highest-versioned siblings, then each client's plugin cache; `tools/lt.cmd` and
+`tools/lt.sh` pick the interpreter (3.12+ for the CLI, 3.10–3.13 as the layout detector's
+base). The record names no machine, so the project moves between hosts through a git remote:
+pull before writing, one host writes at a time,
 same plugin build everywhere (`doctor` → `build`), the PDF at `source/` on each host, and
 `source prepare --replace` reuses the recorded layout results (`--redetect` to detect again),
 so only a host that prepares new pages needs the layout runtime.

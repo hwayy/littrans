@@ -16,6 +16,17 @@ For QASC, keep the existing project as history and prepare an independent v6 pro
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
 
+## Projects scaffolded with 0.6.1-dev.2 or earlier: launcher priority (0.6.1-dev.4)
+
+The generated `tools/lt.py` is project-owned, so `project scaffold --refresh` does not replace
+an existing copy. To adopt the corrected priority, back up `PROJECT/tools/lt.py` outside the
+project record, remove the original, then run the upgraded installed plugin's
+`littrans project scaffold PROJECT`. Pass `--repo-root DIR` for a nested project. This
+recreates only the missing launcher and other missing scaffold files; it does not overwrite
+the project's remaining files. Review and reapply any local launcher customizations from
+the backup. Until then, set
+`LITTRANS_PLUGIN_ROOT` to the desired installed plugin directory to override the old launcher.
+
 ## Projects prepared with 0.6.1-dev.1 or earlier: typographic kinds, list margins and per-unit structure checks (0.6.1-dev.2)
 
 - **Nothing changes until a page is re-prepared, and every existing receipt keeps passing.**

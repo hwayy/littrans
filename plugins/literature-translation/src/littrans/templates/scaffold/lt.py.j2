@@ -6,13 +6,14 @@
 
 Resolution order:
   1. ``LITTRANS_PLUGIN_ROOT`` — an explicit plugin directory (one containing scripts/littrans.py);
-  2. the plugin root recorded when this file was generated, on the machine that generated it,
-     or the same root under this user's home directory (a clone on another host or account),
-     while that directory still exists;
-  3. the plugin the client running this session installed — the host is read from the same
+  2. the plugin the client running this session installed — the host is read from the same
      environment signals the plugin's coordination reads (Claude Code, Codex, Cursor, Qoder);
      Claude Code's own install record names the installed version, otherwise the highest
      version in that client's cache;
+  3. the plugin root recorded when this file was generated, on the machine that generated it,
+     or the same root under this user's home directory (a clone on another host or account),
+     while that directory still exists; this is the first fallback when the current client's
+     installation is unavailable or its host cannot be detected;
   4. the highest-versioned sibling of a recorded root that lies outside every known cache
      (a private cache the project was pinned to, upgraded in place);
   5. every client's install, highest version first (a tie goes to the client whose cache
@@ -147,12 +148,13 @@ def candidates() -> list[Path]:
     # A path recorded on another operating system is not absolute here (``C:\...`` is one
     # relative component on POSIX) and must not be searched relative to the cwd.
     recorded = [root for root in recorded if root.is_absolute()]
-    found: list[Path] = list(recorded)
+    found: list[Path] = []
     current = detect_host()
     if current is not None:
         install = host_install(current, home)
         if install is not None:
             found.append(install)
+    found.extend(recorded)
     for root in recorded:
         if cache_host(root, home) is None:
             sibling = newest_child(root.parent)
