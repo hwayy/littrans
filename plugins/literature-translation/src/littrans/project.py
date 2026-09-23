@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import stat
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
@@ -34,13 +35,16 @@ from littrans.models import (
     WorkflowPacketManifest,
 )
 from littrans.storage import (
+    PROJECT_DIRS,
     atomic_write_text,
     initialize_project_dirs,
     load_project,
     plugin_root,
     read_jsonl,
+    restore_files,
     save_project,
     sha256_file,
+    snapshot_files,
     write_json,
 )
 
@@ -73,6 +77,7 @@ def initialize_project(
     target_language: str = "zh-CN",
     repo_root: Path | None = None,
     scaffold: bool = True,
+    scaffold_report: dict[str, Any] | None = None,
 ) -> ProjectConfig:
     """Create a schema-6 project and grow its record structure.
 
@@ -81,47 +86,80 @@ def initialize_project(
     the handbook, records, ledger, launcher and plugin-facts files under ``repo_root``
     (the project root unless the project is nested in a larger repository).
     """
-    from littrans.scaffold import scaffold_project
+    from littrans.scaffold import SCAFFOLD_FILES, scaffold_project
 
     source = source.resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
+    root = root.resolve()
     if root.joinpath("project.yaml").exists():
         raise ValueError(f"Project already exists: {root}")
     load_profile(profile)
     # Refuse a record root that cannot hold the project before anything is written, so a
     # wrong --repo-root never leaves a half-initialized project behind.
-    if repo_root is not None and not root.resolve().is_relative_to(Path(repo_root).resolve()):
-        raise ValueError(f"The project root {root.resolve()} must lie inside the record root {Path(repo_root).resolve()}")
-    initialize_project_dirs(root)
+    record_root = root if repo_root is None else Path(repo_root).resolve()
+    if not root.is_relative_to(record_root):
+        raise ValueError(f"The project root {root} must lie inside the record root {record_root}")
+
+    # Initialization also writes into an ancestor record root. Snapshot only paths this
+    # call may touch, then remove only its new files and empty directories on failure.
+    targets = {root / "project.yaml", root / "derived" / "provenance.json"}
+    targets.update(
+        (root if spec.at_project_root else record_root) / spec.relative
+        for spec in SCAFFOLD_FILES
+    )
+    snapshots = snapshot_files(targets)
+    modes = {path: stat.S_IMODE(path.stat().st_mode) for path, data in snapshots.items() if data is not None}
+    created_dirs: set[Path] = set()
+    for directory in {root, *(root / name for name in PROJECT_DIRS), *(path.parent for path in targets)}:
+        while not directory.exists():
+            created_dirs.add(directory)
+            directory = directory.parent
+
     # A PDF inside the project is recorded relative to it, so a clone on another host
     # finds it under the same name; one kept elsewhere can only be named absolutely.
-    project_root = root.resolve()
-    recorded_source = source.relative_to(project_root).as_posix() if source.is_relative_to(project_root) else str(source)
-    document = fitz.open(source)
-    config = ProjectConfig(
-        project_id=slugify(title or source.stem),
-        title=title or source.stem,
-        source_path=recorded_source,
-        source_sha256=sha256_file(source),
-        source_pages=document.page_count,
-        profile=profile,
-        source_language=source_language,
-        target_language=target_language,
-    )
-    save_project(root, config)
-    if scaffold:
-        scaffold_project(root, repo_root=repo_root, refresh=True)
-    write_json(
-        root / "derived" / "provenance.json",
-        {
-            "source_path": recorded_source,
-            "source_sha256": config.source_sha256,
-            "rights_status": config.rights_status,
-            "source_is_copied": False,
-            "generator": build_identity(),
-        },
-    )
+    recorded_source = source.relative_to(root).as_posix() if source.is_relative_to(root) else str(source)
+    record_parts = root.relative_to(record_root).parts
+    report: dict[str, Any] | None = None
+    try:
+        initialize_project_dirs(root)
+        with fitz.open(source) as document:
+            config = ProjectConfig(
+                project_id=slugify(title or source.stem),
+                title=title or source.stem,
+                source_path=recorded_source,
+                source_sha256=sha256_file(source),
+                source_pages=document.page_count,
+                profile=profile,
+                record_root_relative="/".join(".." for _ in record_parts) or ".",
+                source_language=source_language,
+                target_language=target_language,
+            )
+        save_project(root, config)
+        if scaffold:
+            report = scaffold_project(root, repo_root=record_root, refresh=True)
+        write_json(
+            root / "derived" / "provenance.json",
+            {
+                "source_path": recorded_source,
+                "source_sha256": config.source_sha256,
+                "rights_status": config.rights_status,
+                "source_is_copied": False,
+                "generator": build_identity(),
+            },
+        )
+    except BaseException:
+        restore_files(snapshots)
+        for path, mode in modes.items():
+            path.chmod(mode)
+        for directory in sorted(created_dirs, key=lambda path: len(path.parts), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass  # Leave a directory that gained unrelated contents alone.
+        raise
+    if scaffold_report is not None and report is not None:
+        scaffold_report.update(report)
     return config
 
 
@@ -200,6 +238,15 @@ DEFAULT_REFERENCE_KIND = "reference"
 def _validate_term(path: Path, term: dict[str, Any]) -> None:
     """Refuse an entry whose source forms could never be matched as written."""
     source = str(term.get("source", ""))
+    status = term.get("status", APPROVED_STATUS)
+    if path.name == "approved.yaml" and (
+        not isinstance(status, str)
+        or status not in {APPROVED_STATUS, REFERENCE_STATUS, PROPOSED_STATUS}
+    ):
+        raise ValueError(
+            f"{path}: term {source!r} has unknown status {status!r}; "
+            "use approved, reference-only, or proposed"
+        )
     mode = str(term.get("match", "substring"))
     if mode not in TERM_MATCH_MODES:
         raise ValueError(f"{path}: term {source!r} has unknown match mode {mode!r}; use one of {TERM_MATCH_MODES}")
@@ -225,9 +272,9 @@ def _read_term_file(path: Path) -> list[dict[str, Any]]:
     if not isinstance(data, dict) or not isinstance(data.get("terms", []), list):
         raise ValueError(f"{path} must contain a terms list")
     terms = []
-    for term in data.get("terms", []):
+    for index, term in enumerate(data.get("terms", []), start=1):
         if not isinstance(term, dict):
-            continue
+            raise ValueError(f"{path}: terms[{index}] must be a mapping, got {type(term).__name__}")
         _validate_term(path, term)
         terms.append(term)
     return terms

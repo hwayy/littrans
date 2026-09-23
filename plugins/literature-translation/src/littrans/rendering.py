@@ -794,7 +794,9 @@ def _continues_paragraph(previous: SourceUnit, unit: SourceUnit) -> bool:
         return True
     if not unit.continues_from_previous:
         return False
-    tail = re.sub(r"[*\s]+$", "", previous.source_text)
+    # A printed full stop can precede the Markdown call inserted for a footnote.
+    # Peel only trailing calls and wrappers, leaving the prose punctuation in place.
+    tail = re.sub(r"(?:\[\^\d+\]|[*_~\s”’\"')\]）】〕])+$", "", previous.source_text)
     return TERMINAL_PUNCTUATION.search(tail) is None
 
 

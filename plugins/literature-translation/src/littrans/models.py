@@ -330,6 +330,11 @@ class ProjectConfig(StrictModel):
     source_sha256: str
     source_pages: int
     profile: str
+    record_root_relative: str | None = Field(
+        default=None,
+        pattern=r"^(?:\.|\.\.(?:/\.\.)*)$",
+        description="Portable path from the project to its scaffold record root; absent in older projects.",
+    )
     source_language: str = "en"
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"

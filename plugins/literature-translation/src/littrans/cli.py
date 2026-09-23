@@ -197,12 +197,12 @@ def project_init(
     ),
 ) -> None:
     """Create a private schema-6 project with its record structure scaffolded."""
-    from littrans.scaffold import scaffold_project
-
+    scaffold_report: dict[str, Any] = {}
     config = initialize_project(
-        source, project, profile, title, source_language, target_language, repo_root=repo_root, scaffold=False
+        source, project, profile, title, source_language, target_language,
+        repo_root=repo_root, scaffold_report=scaffold_report,
     )
-    emit({**config.model_dump(mode="json"), "scaffold": scaffold_project(project, repo_root=repo_root, refresh=True)})
+    emit({**config.model_dump(mode="json"), "scaffold": scaffold_report})
 
 
 @project_app.command("models")
@@ -219,13 +219,36 @@ def project_models(
 @project_app.command("scaffold")
 def project_scaffold(
     project: PathArg,
-    repo_root: Path | None = typer.Option(None, resolve_path=True, help="Record root for a nested layout (default: PROJECT)."),
+    repo_root: Path | None = typer.Option(None, resolve_path=True, help="Record root for a nested layout (default: saved record root)."),
     refresh: bool = typer.Option(False, help="Regenerate the plugin-owned docs/LITTRANS.md from the installed build."),
 ) -> None:
     """Create the missing record files of an existing project; never overwrites user-owned files."""
     from littrans.scaffold import scaffold_project
+    from littrans.storage import load_project, save_project
 
-    emit(scaffold_project(project, repo_root=repo_root, refresh=refresh))
+    config = load_project(project)
+    selected_root = repo_root
+    if selected_root is None and config.record_root_relative is not None:
+        selected_root = (project.resolve() / config.record_root_relative).resolve()
+    elif selected_root is None:
+        # Dev.4 project files did not persist the record root. Find the nearest
+        # distinctive scaffold, stopping at the repository boundary.
+        for ancestor in (project.resolve(), *project.resolve().parents):
+            if any((ancestor / marker).is_file() for marker in (
+                "docs/LITTRANS.md", "PLUGIN-ISSUES.md", "tools/lt.py",
+            )):
+                selected_root = ancestor
+                break
+            if (ancestor / ".git").exists():
+                break
+    report = scaffold_project(project, repo_root=selected_root, refresh=refresh)
+    if repo_root is not None:
+        relative = project.resolve().relative_to(repo_root.resolve()).parts
+        record_root_relative = "/".join(".." for _ in relative) or "."
+        if config.record_root_relative != record_root_relative:
+            config.record_root_relative = record_root_relative
+            save_project(project, config)
+    emit(report)
 
 
 @project_app.command("tracked")

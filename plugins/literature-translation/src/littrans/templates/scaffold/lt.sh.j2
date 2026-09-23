@@ -8,6 +8,11 @@
 # Python 3.13 is preferred: the CLI needs 3.12 or later and the isolated MinerU layout
 # detector needs a 3.10-3.13 base interpreter.
 dir=$(cd "$(dirname "$0")" && pwd)
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+  if "$VIRTUAL_ENV/bin/python" -c 'import sys; sys.exit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
+    exec "$VIRTUAL_ENV/bin/python" "$dir/lt.py" "$@"
+  fi
+fi
 for py in python3.13 python3.12 python3 python; do
   if command -v "$py" >/dev/null 2>&1; then
     exec "$py" "$dir/lt.py" "$@"

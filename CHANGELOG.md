@@ -3,6 +3,22 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.5] - 2026-09-23
+
+### Fixed
+
+- Project initialization now rolls back scaffold files, refreshed content and empty
+  directories on failure, so correcting the obstruction permits a clean retry.
+- Paragraph endings with trailing Markdown footnote calls retain their sentence punctuation
+  for continuation decisions.
+- The build digest now covers runtime templates, profiles and vendored MathJax resources.
+- Nested projects retain their repository record root and check its required scaffold,
+  handbook and launcher files, including newly added records and private PDFs.
+- Bare capitalized words in formulas remain eligible as conditions; applied operators
+  still retain their operator treatment.
+- Scaffold launchers can use an active virtual environment and a wheel-only installation.
+- Invalid glossary entries and approval statuses now fail with a clear validation error.
+
 ## [0.6.1-dev.4] - 2026-09-23
 
 ### Fixed

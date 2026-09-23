@@ -17,7 +17,8 @@ Resolution order:
   4. the highest-versioned sibling of a recorded root that lies outside every known cache
      (a private cache the project was pinned to, upgraded in place);
   5. every client's install, highest version first (a tie goes to the client whose cache
-     holds the recorded root, then to the order above).
+     holds the recorded root, then to the order above);
+  6. a LitTrans wheel installed in the Python interpreter running this launcher.
 
 Another client's cache is never taken as the authority for what the current client runs: a
 leftover ``0.6.0`` directory in one cache does not outrank the ``0.6.0-dev.13`` the session's
@@ -30,6 +31,7 @@ launcher then manages its environment.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -195,10 +197,21 @@ def resolve_plugin_root() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    root = resolve_plugin_root()
-    if os.environ.get("LITTRANS_LAUNCHER_VERBOSE"):
-        print(f"[lt] plugin root: {root}", file=sys.stderr)
-    command = [sys.executable, str(root.joinpath(*LAUNCHER)), *(sys.argv[1:] if argv is None else argv)]
+    args = sys.argv[1:] if argv is None else argv
+    try:
+        root = resolve_plugin_root()
+    except SystemExit:
+        # A wheel has the CLI but no plugin archive's scripts/littrans.py. An explicit
+        # plugin pin still fails if wrong; only automatic discovery gains this fallback.
+        if os.environ.get("LITTRANS_PLUGIN_ROOT") or importlib.util.find_spec("littrans") is None:
+            raise
+        if os.environ.get("LITTRANS_LAUNCHER_VERBOSE"):
+            print("[lt] plugin module: littrans", file=sys.stderr)
+        command = [sys.executable, "-m", "littrans", *args]
+    else:
+        if os.environ.get("LITTRANS_LAUNCHER_VERBOSE"):
+            print(f"[lt] plugin root: {root}", file=sys.stderr)
+        command = [sys.executable, str(root.joinpath(*LAUNCHER)), *args]
     return subprocess.run(command, check=False).returncode
 
 
