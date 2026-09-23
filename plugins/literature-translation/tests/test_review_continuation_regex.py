@@ -158,3 +158,59 @@ def test_annotations_flush_at_an_actual_paragraph_boundary(
 def test_annotations_flush_at_end_of_selection(annotation_project: Path) -> None:
     text = _render_chain(annotation_project, [1], [(False, True)])
     assert text.index("BODY1") < text.index("COMPANION1") < text.index("NOTE1")
+
+
+@pytest.mark.parametrize("texts, flags, joined", [
+    (["First fragment", "Second fragment", "Third fragment."],
+     [(False, True), (False, True), (False, False)], True),
+    (["First sentence.", "Second paragraph."], [(False, False), (True, False)], False),
+    (["First fragment", "Second fragment."], [(False, False), (True, False)], True),
+])
+def test_html_paragraph_rows_follow_the_same_continuation_decision(
+    annotation_project: Path, texts: list[str], flags: list[tuple[bool, bool]], joined: bool,
+) -> None:
+    units = [
+        SourceUnit(unit_id=f"p{page:04d}-b0", page=page, kind="paragraph", bbox=(0, 0, 100, 60),
+                   source_text=text, source_hash=f"source-{page}", confidence=1,
+                   continues_from_previous=receiver, continued_to_next=sender)
+        for page, (text, (receiver, sender)) in enumerate(zip(texts, flags, strict=True), start=1)
+    ]
+    records = [TranslationRecord(unit_id=unit.unit_id, source_hash=unit.source_hash,
+                                 target_text=f"译文{unit.page}") for unit in units]
+    write_jsonl(annotation_project / "derived/units.jsonl", units)
+    write_jsonl(annotation_project / "translations/current.jsonl", records)
+    outputs = render_project(annotation_project, ",".join(str(unit.page) for unit in units),
+                             "html-continuation", allow_draft=True)
+    markup = Path(outputs["html"]).read_text(encoding="utf-8")
+    first = markup.index(texts[0])
+    last = markup.index(texts[-1], first + len(texts[0]))
+    assert (markup.index("</p>", first) > last) is joined
+
+
+def test_render_project_uses_mixed_equation_translation_without_reformatting_pure_math(
+    annotation_project: Path,
+) -> None:
+    units = [
+        SourceUnit(unit_id="mixed", page=1, kind="equation", bbox=(0, 0, 100, 60),
+                   source_text="Case 1", source_hash="mixed-source", confidence=1),
+        SourceUnit(unit_id="pure", page=2, kind="equation", bbox=(0, 0, 100, 60),
+                   source_text="x = y^2", source_hash="pure-source", confidence=1),
+        SourceUnit(unit_id="condition", page=3, kind="equation", bbox=(0, 0, 100, 60),
+                   source_text="0, even n", source_hash="condition-source", confidence=1),
+    ]
+    records = [
+        TranslationRecord(unit_id="mixed", source_hash="mixed-source", target_text="情况 1"),
+        TranslationRecord(unit_id="pure", source_hash="pure-source", target_text="x=y^2"),
+        TranslationRecord(unit_id="condition", source_hash="condition-source", target_text="0，n 为偶数"),
+    ]
+    write_jsonl(annotation_project / "derived/units.jsonl", units)
+    write_jsonl(annotation_project / "translations/current.jsonl", records)
+    outputs = render_project(annotation_project, "1,2,3", "mixed-equation", allow_draft=True)
+    markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
+    markup = Path(outputs["html"]).read_text(encoding="utf-8")
+    assert "情况 1" in markdown
+    assert "0，n 为偶数" in markdown
+    assert "$$\nx = y^2\n$$" in markdown
+    assert '<div class="fidelity-complex display-line">情况 1</div>' in markup
+    assert '<div class="fidelity-complex display-line">0，n 为偶数</div>' in markup
+    assert markup.count('class="math display"') >= 2

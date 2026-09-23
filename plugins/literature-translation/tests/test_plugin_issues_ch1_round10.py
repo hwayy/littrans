@@ -363,6 +363,37 @@ def test_project_tracked_asks_git_and_reports_every_kind_of_gap(tmp_path: Path, 
     assert result.exit_code == 1 and json.loads(result.output)["gap"] >= 1
 
 
+@pytest.mark.parametrize("missing", ["packet.json", "coverage.html", "whole-directory"])
+def test_receipt_packet_stays_required_after_deletion(tmp_path: Path, missing: str) -> None:
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    scaffold_project(root)
+    _submit(root, manifests[0].batch_id)
+    _, _, live = record_sets(root)
+    assert len(live) == 1
+    packet_dir = root / "packets" / live[0]
+    _git(root, "init", "-q")
+    ignore = root / ".gitignore"
+    atomic_write_text(ignore, ignore.read_text(encoding="utf-8")
+                      + f"!packets/{live[0]}/packet.json\n!packets/{live[0]}/coverage.html\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "record")
+    assert record_tracking(root)["problems"] == []
+    if missing == "whole-directory":
+        for item in packet_dir.iterdir():
+            assert item.is_file()
+            item.unlink()
+        packet_dir.rmdir()
+        expected = {"packet.json", "coverage.html"}
+    else:
+        (packet_dir / missing).unlink()
+        expected = {missing}
+    must_track, _, after = record_sets(root)
+    assert after == live
+    assert all(f"packets/{live[0]}/{name}" in must_track for name in expected)
+    problems = record_tracking(root)["problems"]
+    assert {f"required record file is missing: packets/{live[0]}/{name}" for name in expected} <= set(problems)
+
+
 def test_launcher_resolves_the_newest_sibling_when_the_recorded_root_moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _init(tmp_path)
     launcher = root / "tools" / "lt.py"

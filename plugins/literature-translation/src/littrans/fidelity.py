@@ -2402,9 +2402,15 @@ def source_packet_liveness(root: Path) -> dict[str, list[str]]:
     A packet named by any receipt is live; other packets are unreferenced by receipts,
     which does not make them disposable: a review file not yet imported may name one.
     """
-    referenced = {str(read_json(path).get("packet_id")) for path in (root / "evidence/pages").glob("fidelity-p[0-9][0-9][0-9][0-9].review.json")}
+    referenced: set[str] = set()
+    for path in (root / "evidence/pages").glob("fidelity-p[0-9][0-9][0-9][0-9].review.json"):
+        receipt = read_json(path)
+        packet_id = receipt.get("packet_id") if isinstance(receipt, dict) else None
+        if not isinstance(packet_id, str) or not re.fullmatch(r"source-[a-f0-9]{20}", packet_id):
+            raise ValueError(f"invalid source packet ID in page receipt: {path}")
+        referenced.add(packet_id)
     packets = sorted(path.name for path in (root / "packets").glob("source-*") if path.is_dir())
-    return {"live_source_packets": [name for name in packets if name in referenced],
+    return {"live_source_packets": sorted(referenced),
             "unreferenced_source_packets": [name for name in packets if name not in referenced]}
 
 

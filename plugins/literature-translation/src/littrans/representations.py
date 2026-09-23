@@ -392,8 +392,8 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
         # identity check. A host may serve another model under the same alias,
         # and that observation belongs in served_model_label. A packet that records
         # no model dispatched on the host's default, so there is nothing to echo.
-        if ((packet["model"] and payload.get("model") != packet["model"])
-                or (packet["reasoning_effort"] and payload.get("reasoning_effort") != packet["reasoning_effort"])):
+        if (payload.get("model") != packet["model"]
+                or payload.get("reasoning_effort") != packet["reasoning_effort"]):
             raise ValueError(
                 "Candidate model/effort must echo the dispatched packet's model policy "
                 "(dispatch values, not the served model; record a served model in served_model_label)"

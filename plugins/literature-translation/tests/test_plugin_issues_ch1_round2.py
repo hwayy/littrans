@@ -81,6 +81,52 @@ def test_native_text_equation_units_render_as_text() -> None:
     assert equation_is_notation(unit.model_copy(update={"latex": r"\operatorname{Prob}"}))
 
 
+@pytest.mark.parametrize("source, target", [("Case 1", "情况 1"), ("for n > 0", "当 n > 0 时"),
+                                             ("0, even n", "0，n 为偶数")])
+def test_mixed_native_equation_uses_submitted_translation(source: str, target: str) -> None:
+    from littrans.rendering import _target_markdown, _unit_html
+
+    unit = SourceUnit(unit_id="mixed", page=1, kind=UnitKind.EQUATION, bbox=(0, 0, 10, 10),
+                      source_text=source, source_hash="mixed-source", confidence=1, translatable=True)
+    assert _target_markdown(unit, target) == target.replace(">", "&gt;")
+    assert target.replace(">", "&gt;") in _unit_html(unit, target, source_view=False,
+                                                       submitted_translation=True)
+    assert target not in _unit_html(unit, source, source_view=True)
+    notation = unit.model_copy(update={"source_text": "x = y^2", "translatable": False})
+    assert _target_markdown(notation, None).startswith("$$\n")
+    assert '<div class="math display">' in _unit_html(notation, None, source_view=True)
+    translated_notation = notation.model_copy(update={"translatable": True})
+    assert _target_markdown(translated_notation, "x=y^2").startswith("$$\n")
+    assert '<div class="math display">' in _unit_html(
+        translated_notation, "x=y^2", source_view=False, submitted_translation=True
+    )
+    for source_text, reformatted in (("dx/dt = v", "dx / dt = v"), ("AB = C", "AB=C"),
+                                     ("f(x) = erf(x)", "f(x) = erf(-x)")):
+        variable_notation = notation.model_copy(update={"source_text": source_text, "translatable": True})
+        assert _target_markdown(variable_notation, reformatted).startswith("$$\n")
+        assert '<div class="math display">' in _unit_html(
+            variable_notation, reformatted, source_view=False, submitted_translation=True
+        )
+
+
+def test_mixed_native_equation_does_not_duplicate_printed_number() -> None:
+    from littrans.rendering import _target_markdown, _unit_html
+
+    unit = SourceUnit(unit_id="case", page=1, kind=UnitKind.EQUATION, bbox=(0, 0, 10, 10),
+                      source_text="for n > 0", source_hash="case-source", confidence=1,
+                      equation_number="1.2")
+    target = "当 n > 0 时 (1.2)"
+    assert _target_markdown(unit, target).count("(1.2)") == 1
+    assert _unit_html(unit, target, source_view=False, submitted_translation=True).count("(1.2)") == 1
+    notation = unit.model_copy(update={"source_text": "x = y^2"})
+    pure = _unit_html(notation, "x=y^2 (1.2)", source_view=False, submitted_translation=True)
+    assert 'class="math display"' in pure and pure.count("(1.2)") == 1
+    function = unit.model_copy(update={"source_text": "f(1) = 2", "equation_number": "1", "translatable": False})
+    function_html = _unit_html(function, None, source_view=True)
+    assert function_html.count('class="equation-number"') == 1
+    assert "(1)" in _target_markdown(function, None)
+
+
 def test_display_rows_render_as_a_column_with_a_lead_asset() -> None:
     from littrans.rendering import _target_markdown, _unit_html
 

@@ -68,6 +68,15 @@ def test_project_init_rolls_back_scaffold_failure_and_can_retry(tmp_path: Path) 
     assert load_project(root).record_root_relative == ".."
 
 
+def test_cli_preserves_message_only_missing_file_path(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.pdf"
+    result = CliRunner().invoke(app, ["project", "init", str(missing), str(tmp_path / "project")],
+                                terminal_width=200)
+    assert result.exit_code == 1
+    assert str(missing)[:20] in result.output  # Rich truncates long absolute paths in the CLI panel.
+    assert "File not found: None" not in result.output
+
+
 def test_project_launcher_uses_installed_wheel_without_plugin_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

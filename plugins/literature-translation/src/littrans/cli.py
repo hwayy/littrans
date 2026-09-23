@@ -63,7 +63,7 @@ class _GuardedGroup(TyperGroup):
         except ValueError as exc:
             raise _ClickException(str(exc)) from exc
         except FileNotFoundError as exc:
-            raise _ClickException(f"{exc.strerror or 'File not found'}: {exc.filename}") from exc
+            raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File not found'}: {exc.filename}") from exc
         except FileExistsError as exc:
             # "Batch already exists" and similar refusals are raised with a message only.
             raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File exists'}: {exc.filename}") from exc

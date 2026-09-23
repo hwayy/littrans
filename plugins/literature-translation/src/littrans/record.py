@@ -95,11 +95,10 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
     # A packet named by a page receipt is a live dependency of that review (the verifier
     # refuses a receipt whose packet is missing); unreferenced packets duplicate tracked
     # tables. A path lands in exactly one set, so a conflict is reported, not silently won.
-    liveness = source_packet_liveness(root) if (root / "packets").is_dir() else {}
+    liveness = source_packet_liveness(root)
     for name in liveness.get("live_source_packets", []):
         for filename in ("packet.json", "coverage.html"):
-            if (root / "packets" / name / filename).is_file():
-                must_track.add(f"packets/{name}/{filename}")
+            must_track.add(f"packets/{name}/{filename}")
     for name in liveness.get("unreferenced_source_packets", []):
         for filename in ("packet.json", "coverage.html"):
             if (root / "packets" / name / filename).is_file():
@@ -187,10 +186,14 @@ def record_tracking(root: Path) -> dict[str, Any]:
     pathspecs = [prefix or ".", record_prefix or "."] if record_root != root else [prefix or "."]
     tracked = set(_git(toplevel, "ls-files", "--", *pathspecs).splitlines())
     problems: list[str] = []
+    required_packet_paths = {
+        prefix + f"packets/{name}/{filename}"
+        for name in live_packets for filename in ("packet.json", "coverage.html")
+    }
     for relative in sorted(must_track & must_ignore):
         problems.append(f"in both the record and the excluded set (a defect in this check, not the project): {relative}")
     for relative in sorted(must_track):
-        if relative in scaffold_paths and not (toplevel / relative).is_file():
+        if (relative in scaffold_paths or relative in required_packet_paths) and not (toplevel / relative).is_file():
             problems.append(f"required record file is missing: {relative}")
         elif relative not in tracked:
             if relative in ignored:
