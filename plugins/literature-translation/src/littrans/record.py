@@ -93,16 +93,12 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
                 if (root / directory / "original.pdf").is_file():
                     must_ignore.add((directory / "original.pdf").as_posix())
     # A packet named by a page receipt is a live dependency of that review (the verifier
-    # refuses a receipt whose packet is missing); unreferenced packets duplicate tracked
-    # tables. A path lands in exactly one set, so a conflict is reported, not silently won.
+    # refuses a receipt whose packet is missing). Unreferenced packets may still be kept
+    # as historical evidence, so their core files are optional rather than excluded.
     liveness = source_packet_liveness(root)
     for name in liveness.get("live_source_packets", []):
         for filename in ("packet.json", "coverage.html"):
             must_track.add(f"packets/{name}/{filename}")
-    for name in liveness.get("unreferenced_source_packets", []):
-        for filename in ("packet.json", "coverage.html"):
-            if (root / "packets" / name / filename).is_file():
-                must_ignore.add(f"packets/{name}/{filename}")
     if (root / ".littrans" / "state.json").is_file():
         must_ignore.add(".littrans/state.json")
     # The scaffold excludes the whole source directory, including nested PDFs and
@@ -116,7 +112,8 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
         must_ignore.add(source.relative_to(root).as_posix())
     must_ignore.update(
         path.relative_to(root).as_posix()
-        for path in (root / "output").rglob("*") if path.is_file()
+        for path in (root / "output").rglob("*")
+        if path.is_file() and path.relative_to(root).as_posix() != "output/.gitkeep"
     )
     # A detector result is evidence a page ledger names and no other runtime reproduces,
     # so every rerun (on any host) cuts the page on it; the request and log of the run
@@ -185,6 +182,16 @@ def record_tracking(root: Path) -> dict[str, Any]:
     record_prefix = record_root.relative_to(toplevel).as_posix()
     pathspecs = [prefix or ".", record_prefix or "."] if record_root != root else [prefix or "."]
     tracked = set(_git(toplevel, "ls-files", "--", *pathspecs).splitlines())
+    # Optional record files may be ignored by default or deliberately retained in git.
+    # Keep the exception narrow: only source packet cores without a live receipt and
+    # the output directory's own placeholder qualify.
+    optional = {
+        prefix + f"packets/{path.name}/{filename}"
+        for path in (root / "packets").glob("source-*")
+        if path.is_dir() and path.name not in live_packets
+        for filename in ("packet.json", "coverage.html")
+    }
+    optional.add(prefix + "output/.gitkeep")
     problems: list[str] = []
     required_packet_paths = {
         prefix + f"packets/{name}/{filename}"
@@ -203,7 +210,7 @@ def record_tracking(root: Path) -> dict[str, Any]:
     for relative in sorted(must_ignore):
         if relative in tracked:
             problems.append(f"must never be tracked but is: {relative}")
-    for relative in sorted((tracked & ignored & universe) - must_track - must_ignore):
+    for relative in sorted((tracked & ignored & universe) - must_track - must_ignore - optional):
         problems.append(f"tracked despite .gitignore exclusion: {relative}")
     # A nested project may keep its source beside it in the same repository.
     # Query that one file explicitly; the rest of the report remains project-scoped.

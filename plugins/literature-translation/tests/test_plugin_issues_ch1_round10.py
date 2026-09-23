@@ -329,7 +329,8 @@ def test_project_tracked_asks_git_and_reports_every_kind_of_gap(tmp_path: Path, 
     assert "source/book.pdf" in must_ignore
     # The fixture's page receipts name one source packet: a live dependency of the review.
     assert len(live) == 1 and f"packets/{live[0]}/packet.json" in must_track
-    assert any(path.startswith("packets/") and path not in must_track for path in must_ignore)
+    historical = next(path.name for path in (root / "packets").glob("source-*") if path.name not in live)
+    assert f"packets/{historical}/packet.json" not in must_track | must_ignore
     with pytest.raises(ValueError, match="not inside a git repository"):
         record_tracking(root)
     _git(root, "init", "-q")
@@ -361,6 +362,55 @@ def test_project_tracked_asks_git_and_reports_every_kind_of_gap(tmp_path: Path, 
     runner = CliRunner()
     result = runner.invoke(cli.app, ["project", "tracked", str(root)])
     assert result.exit_code == 1 and json.loads(result.output)["gap"] >= 1
+
+
+def test_project_tracked_allows_optional_packet_history_and_output_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root, manifests = _make_project(tmp_path, pages=2, max_words=100)
+    scaffold_project(root)
+    _submit(root, manifests[0].batch_id)
+    _, _, live = record_sets(root)
+    historical = next(path.name for path in (root / "packets").glob("source-*") if path.name not in live)
+    packet_paths = [f"packets/{historical}/{name}" for name in ("packet.json", "coverage.html")]
+    placeholder = root / "output" / ".gitkeep"
+    placeholder.write_text("", encoding="utf-8")
+    _, must_ignore, _ = record_sets(root)
+    assert not (set(packet_paths) | {"output/.gitkeep"}) & must_ignore
+
+    _git(root, "init", "-q")
+    ignore = root / ".gitignore"
+    original_ignore = ignore.read_text(encoding="utf-8")
+    atomic_write_text(ignore, original_ignore + "".join(
+        f"!packets/{live[0]}/{name}\n" for name in ("packet.json", "coverage.html")
+    ))
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "record")
+    assert record_tracking(root)["problems"] == []  # Optional files remain ignored.
+
+    atomic_write_text(ignore, ignore.read_text(encoding="utf-8") + "".join(
+        f"!{path}\n" for path in packet_paths
+    ) + "!output/\n!output/.gitkeep\n")
+    gaps = record_tracking(root)
+    assert gaps["gap"] == 3
+    assert {f"neither tracked nor ignored (silently outside the record): {path}"
+            for path in [*packet_paths, "output/.gitkeep"]} <= set(gaps["problems"])
+
+    atomic_write_text(ignore, original_ignore + "".join(
+        f"!packets/{live[0]}/{name}\n" for name in ("packet.json", "coverage.html")
+    ))
+    _git(root, "add", "-f", *packet_paths, "output/.gitkeep")
+    assert record_tracking(root)["problems"] == []  # Optional files are retained in git.
+
+    (root / "output" / "final.md").write_text("rendered edition", encoding="utf-8")
+    nested = root / "output" / "nested" / ".gitkeep"
+    nested.parent.mkdir()
+    nested.write_text("", encoding="utf-8")
+    _git(root, "add", "-f", "output/final.md", "output/nested/.gitkeep")
+    problems = record_tracking(root)["problems"]
+    assert "must never be tracked but is: output/final.md" in problems
+    assert "must never be tracked but is: output/nested/.gitkeep" in problems
 
 
 @pytest.mark.parametrize("missing", ["packet.json", "coverage.html", "whole-directory"])

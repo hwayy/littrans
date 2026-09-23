@@ -33,8 +33,9 @@ derived/fidelity-layout/*.request.json
 derived/fidelity-layout/*.log
 
 # Source review packets duplicate tracked tables, except the ones page receipts name:
-# those are live dependencies of the review. `project tracked` lists them; re-include
-# each live packet below by name, e.g.
+# those are live dependencies of the review. `project tracked` requires them; re-include
+# each live packet below by name. Other packets are ignored by default, but a project
+# may retain their packet.json and coverage.html in git as historical evidence, e.g.
 #   !packets/source-<id>/packet.json
 #   !packets/source-<id>/coverage.html
 packets/*/packet.json
