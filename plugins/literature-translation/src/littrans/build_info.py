@@ -1,6 +1,6 @@
 """Identity of the plugin build that wrote an artifact.
 
-Extraction output depends on the exact source tree, not only on the released version:
+Extraction output depends on the exact runtime tree, not only on the released version:
 a development checkout keeps the version string while its behaviour moves. Artifacts
 therefore record the version, a digest of the package sources and the time of writing.
 """
@@ -17,11 +17,26 @@ from littrans.models import utc_now
 
 @lru_cache(maxsize=1)
 def build_digest() -> str:
-    """Digest of every Python module in the running ``littrans`` package."""
+    """Digest Python modules and the resources that affect runtime behaviour."""
     package = Path(littrans.__file__).resolve().parent
     digest = hashlib.sha256()
-    for path in sorted(package.rglob("*.py")):
-        digest.update(path.relative_to(package).as_posix().encode())
+    paths = {path.relative_to(package).as_posix(): path for path in package.rglob("*.py")}
+    for directory in ("templates", "vendor"):
+        paths.update(
+            (path.relative_to(package).as_posix(), path)
+            for path in (package / directory).rglob("*") if path.is_file()
+        )
+    profiles = package / "profiles"
+    if not profiles.is_dir():
+        profiles = package.parents[1] / "profiles"  # source checkout; wheel keeps them in-package
+    paths.update(
+        ("profiles/" + path.relative_to(profiles).as_posix(), path)
+        for path in profiles.rglob("*") if path.is_file()
+    )
+    for name, path in sorted(paths.items()):
+        if any(part.startswith(".") or part == "__pycache__" for part in Path(name).parts) or path.suffix in {".pyc", ".pyo", ".tmp", ".swp", ".bak"}:
+            continue
+        digest.update(name.encode())
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")

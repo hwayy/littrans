@@ -64,6 +64,14 @@ def test_load_terms_filters_status_and_validates_match(tmp_path: Path) -> None:
         {"source": "partition", "target": "划分", "status": "reference-only"},
         "not a mapping",
     ]})
+    with pytest.raises(ValueError, match=r"terms\[5\] must be a mapping"):
+        load_terms(root)
+    write_yaml(root / "glossary" / "approved.yaml", {"terms": [
+        {"source": "measure", "target": "测度"},
+        {"source": "mean", "target": "均值", "status": "approved"},
+        {"source": "moment", "target": "矩", "status": "proposed"},
+        {"source": "partition", "target": "划分", "status": "reference-only"},
+    ]})
     assert [t["source"] for t in load_terms(root)] == ["measure", "mean"]
     assert [t["source"] for t in load_terms(root, enforced_only=False)] == ["measure", "mean", "moment", "partition"]
     write_yaml(root / "glossary" / "approved.yaml", {"terms": [{"source": "x", "target": "y", "match": "fuzzy"}]})

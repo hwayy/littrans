@@ -89,7 +89,10 @@ def restore_files(snapshots: dict[Path, bytes | None]) -> None:
     """Restore a snapshot made by :func:`snapshot_files` atomically per file."""
     for path, content in snapshots.items():
         if content is None:
-            path.unlink(missing_ok=True)
+            # A failed multi-file write may have met a regular file in a parent path;
+            # unlink(missing_ok=True) still raises ENOTDIR for that absent child.
+            if path.exists() or path.is_symlink():
+                path.unlink()
         else:
             atomic_write_bytes(path, content)
 

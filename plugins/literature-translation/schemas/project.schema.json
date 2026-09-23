@@ -300,6 +300,20 @@
       "title": "Profile",
       "type": "string"
     },
+    "record_root_relative": {
+      "anyOf": [
+        {
+          "pattern": "^(?:\\.|\\.\\.(?:/\\.\\.)*)$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Portable path from the project to its scaffold record root; absent in older projects.",
+      "title": "Record Root Relative"
+    },
     "source_language": {
       "default": "en",
       "title": "Source Language",

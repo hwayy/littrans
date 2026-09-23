@@ -1052,8 +1052,8 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     Preparation passes measured glyph ink. ``measured_ink=False`` says the boxes are PDF
     font metrics, as a ledger records them: a stretched delimiter's metric rectangle then
     sits on an adjacent line, so an operator's argument can be invisible to the lookup
-    below. A reader of the ledger must not turn that into language preparation failed to
-    declare, so a bare operator name stays notation there too.
+    below. Known operator names remain notation; capitalization alone does not turn a
+    bare case label such as ``Otherwise`` into an operator.
     """
     owned = [glyph_by_id[gid] for gid in region.get("glyph_ids", []) if gid in glyph_by_id]
     order = {gid: i for i, gid in enumerate(glyph_by_id)}
@@ -1088,8 +1088,6 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
                 operator = after is not None and applied and name_only and (
                     words[0][0].isupper() or words[0].lower() in MATH_OPERATORS
                     or (flush and after["text"] in OPENING_BRACKETS))
-                if not measured_ink and after is None and name_only:
-                    operator = words[0][0].isupper() or words[0].lower() in MATH_OPERATORS
                 if not operator:
                     # The validator compares against native page order, not visual order.
                     segment.sort(key=lambda g: order[g["id"]])

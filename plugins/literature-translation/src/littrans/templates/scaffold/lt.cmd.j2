@@ -5,7 +5,12 @@ REM
 REM   tools\lt.cmd doctor
 REM   tools\lt.cmd <group> --help
 REM
-REM Python 3.13 is preferred deliberately: the CLI needs 3.12 or later and the isolated
+REM An active compatible virtual environment may hold a wheel-only installation.
+if defined VIRTUAL_ENV if exist "%VIRTUAL_ENV%\Scripts\python.exe" (
+  "%VIRTUAL_ENV%\Scripts\python.exe" -c "import sys; sys.exit(sys.version_info < (3, 12))" >nul 2>&1
+  if not errorlevel 1 goto use_venv
+)
+REM Otherwise prefer Python 3.13: the CLI needs 3.12 or later and the isolated
 REM MinerU layout detector needs a 3.10-3.13 base interpreter. Falls back to python on PATH.
 py -3.13 -c "pass" >nul 2>&1
 if errorlevel 1 (
@@ -13,4 +18,8 @@ if errorlevel 1 (
 ) else (
   py -3.13 "%~dp0lt.py" %*
 )
+exit /b %ERRORLEVEL%
+
+:use_venv
+"%VIRTUAL_ENV%\Scripts\python.exe" "%~dp0lt.py" %*
 exit /b %ERRORLEVEL%

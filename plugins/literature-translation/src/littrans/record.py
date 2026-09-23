@@ -19,6 +19,7 @@ from typing import Any
 
 from littrans.fidelity import source_packet_liveness
 from littrans.fidelity_models import load_assets
+from littrans.scaffold import SCAFFOLD_FILES
 from littrans.storage import load_project
 
 BATCH_FILES = ("manifest.yaml", "translation.jsonl", "source.md", "context.md", "output-schema.json")
@@ -105,11 +106,19 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
                 must_ignore.add(f"packets/{name}/{filename}")
     if (root / ".littrans" / "state.json").is_file():
         must_ignore.add(".littrans/state.json")
-    must_ignore.update(path.relative_to(root).as_posix() for path in (root / "source").glob("*.pdf"))
+    # The scaffold excludes the whole source directory, including nested PDFs and
+    # companion files. A force-added file anywhere below it is still a privacy leak.
+    must_ignore.update(
+        path.relative_to(root).as_posix()
+        for path in (root / "source").rglob("*") if path.is_file()
+    )
     source = load_project(root).source(root)
     if source.is_relative_to(root):
         must_ignore.add(source.relative_to(root).as_posix())
-    must_ignore.update(path.relative_to(root).as_posix() for path in (root / "output").glob("*.html"))
+    must_ignore.update(
+        path.relative_to(root).as_posix()
+        for path in (root / "output").rglob("*") if path.is_file()
+    )
     # A detector result is evidence a page ledger names and no other runtime reproduces,
     # so every rerun (on any host) cuts the page on it; the request and log of the run
     # carry the paths and interpreter of the host that ran it and stay out.
@@ -129,30 +138,70 @@ def record_tracking(root: Path) -> dict[str, Any]:
     root = Path(root).resolve()
     config = load_project(root)
     toplevel = git_toplevel(root)
+    if config.record_root_relative is not None:
+        record_root = (root / config.record_root_relative).resolve()
+    else:
+        # Older project files did not record --repo-root. Prefer the nearest ancestor
+        # carrying a distinctive scaffold file, then the git root for a nested layout.
+        ancestors = (root, *root.parents[:len(root.parts) - len(toplevel.parts)])
+        markers = ("docs/LITTRANS.md", "PLUGIN-ISSUES.md", "tools/lt.py")
+        record_root = next(
+            (ancestor for ancestor in ancestors if any((ancestor / name).is_file() for name in markers)),
+            toplevel,
+        )
+    if not root.is_relative_to(record_root) or not record_root.is_relative_to(toplevel):
+        raise ValueError(f"The record root {record_root} must be inside {toplevel} and contain {root}")
     prefix = root.relative_to(toplevel).as_posix()
     prefix = "" if prefix == "." else prefix + "/"
-    must_track, must_ignore, live_packets = record_sets(root)
+    project_track, project_ignore, live_packets = record_sets(root)
+    scaffold_paths = {
+        ((root if spec.at_project_root else record_root) / spec.relative).relative_to(toplevel).as_posix()
+        for spec in SCAFFOLD_FILES
+    }
+    must_track = {prefix + path for path in project_track} | scaffold_paths
+    must_ignore = {prefix + path for path in project_ignore}
     universe = {
-        path.relative_to(root).as_posix()
+        prefix + path.relative_to(root).as_posix()
         for path in root.rglob("*")
         if path.is_file() and ".git" not in path.relative_to(root).parts
     }
+    if record_root != root:
+        # The record root owns its top-level files, handbook, and launcher. Do not
+        # sweep sibling projects into this project's check.
+        shared = [path for path in record_root.iterdir() if path.is_file()]
+        shared.extend(
+            path for directory in ("docs", "tools")
+            for path in (record_root / directory).rglob("*") if path.is_file()
+        )
+        shared_paths = {path.relative_to(toplevel).as_posix() for path in shared}
+        universe.update(shared_paths)
+        must_ignore.update(path for path in shared_paths if Path(path).suffix.lower() == ".pdf")
+    universe.update(path for path in scaffold_paths if (toplevel / path).is_file())
     # check-ignore only answers about what it is asked, so the whole universe goes in,
     # not just the declared sets, or every ignored scratch file reads as a gap.
-    payload = "\n".join(sorted(prefix + path for path in universe | must_track | must_ignore))
-    ignored = {line[len(prefix):] for line in _git(toplevel, "check-ignore", "--stdin", stdin=payload).splitlines() if line}
-    tracked = {line[len(prefix):] for line in _git(toplevel, "ls-files", "--", prefix or ".").splitlines() if line}
+    payload = "\n".join(sorted(universe | must_track | must_ignore))
+    # --no-index also classifies force-added files; otherwise git suppresses ignored
+    # paths already in its index and a private file can evade this check.
+    ignored = set(_git(toplevel, "check-ignore", "--no-index", "--stdin", stdin=payload).splitlines())
+    record_prefix = record_root.relative_to(toplevel).as_posix()
+    pathspecs = [prefix or ".", record_prefix or "."] if record_root != root else [prefix or "."]
+    tracked = set(_git(toplevel, "ls-files", "--", *pathspecs).splitlines())
     problems: list[str] = []
     for relative in sorted(must_track & must_ignore):
         problems.append(f"in both the record and the excluded set (a defect in this check, not the project): {relative}")
     for relative in sorted(must_track):
-        if relative in ignored:
-            problems.append(f"meant for the record but .gitignore excludes it: {relative}")
+        if relative in scaffold_paths and not (toplevel / relative).is_file():
+            problems.append(f"required record file is missing: {relative}")
         elif relative not in tracked:
-            problems.append(f"meant for the record but not committed: {relative}")
+            if relative in ignored:
+                problems.append(f"meant for the record but .gitignore excludes it: {relative}")
+            else:
+                problems.append(f"meant for the record but not committed: {relative}")
     for relative in sorted(must_ignore):
         if relative in tracked:
             problems.append(f"must never be tracked but is: {relative}")
+    for relative in sorted((tracked & ignored & universe) - must_track - must_ignore):
+        problems.append(f"tracked despite .gitignore exclusion: {relative}")
     # A nested project may keep its source beside it in the same repository.
     # Query that one file explicitly; the rest of the report remains project-scoped.
     source = config.source(root)
