@@ -3,6 +3,13 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.7] - 2026-09-24
+
+### Fixed
+
+- `project tracked` accepts retained historical source packets and `output/.gitkeep`
+  as optional records while still requiring receipt-bound packets and excluding generated output.
+
 ## [0.6.1-dev.6] - 2026-09-23
 
 ### Fixed
