@@ -3664,6 +3664,19 @@ def test_memory_excludes_stored_approval_with_stale_qa(tmp_path: Path) -> None:
     }
 
 
+def test_memory_rechecks_relevant_reference_terms_in_same_process(tmp_path: Path) -> None:
+    root, manifests = _make_project(tmp_path, pages=2)
+    for manifest in manifests:
+        _submit(root, manifest.batch_id)
+        _audit_and_approve(root, manifest.batch_id)
+    candidate_id = manifests[0].unit_ids[0]
+    assert candidate_id in {item["unit_id"] for item in translation_memory(root, manifests[1].unit_ids)}
+    write_yaml(root / "glossary" / "reference.yaml", {"terms": [
+        {"source": "architecture", "target": "架构"},
+    ]})
+    assert candidate_id not in {item["unit_id"] for item in translation_memory(root, manifests[1].unit_ids)}
+
+
 def test_memory_excludes_external_approval_with_open_minor_issue(
     tmp_path: Path,
 ) -> None:

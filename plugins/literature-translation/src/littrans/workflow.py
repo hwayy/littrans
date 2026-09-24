@@ -4,7 +4,7 @@ import json
 import re
 import shutil
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,7 @@ from littrans.models import (
     UnitKind,
     WorkflowPacketManifest,
 )
-from littrans.project import translation_map
+from littrans.project import dispatch_report, translation_map
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     _apply_review_import_locked,
@@ -209,6 +209,37 @@ def _batch_series(batch_id: str | None) -> str | None:
         return None
     match = BATCH_SERIES_RE.fullmatch(batch_id)
     return match.group("series") if match else None
+
+
+def _unbatched_in_scope(
+    units: Sequence[SourceUnit],
+    all_manifests: Sequence[BatchManifest],
+    scope: Sequence[BatchManifest],
+) -> tuple[list[str], list[int]]:
+    """Renderable units no manifest covers: those inside the coordination scope, and the
+    pages of those outside it.
+
+    The scope is the pages of the coordinated batches plus the reading-order span from their
+    first unit to their last, so a unit recovered on a coordinated page or between two
+    coordinated batches blocks the wave, while a later chapter that was extracted but not yet
+    batched is reported, not enforced: coordinating one chapter does not require batching the
+    book.
+    """
+    covered = {unit_id for manifest in all_manifests for unit_id in manifest.unit_ids}
+    pages = {page for manifest in scope for page in manifest.pages}
+    positions = {unit.unit_id: index for index, unit in enumerate(units)}
+    span = [positions[unit_id] for manifest in scope for unit_id in manifest.unit_ids if unit_id in positions]
+    lower, upper = (min(span), max(span)) if span else (0, -1)
+    inside: list[str] = []
+    outside: set[int] = set()
+    for index, unit in enumerate(units):
+        if unit.render_policy is not RenderPolicy.INCLUDE or unit.unit_id in covered:
+            continue
+        if unit.page in pages or lower <= index <= upper:
+            inside.append(unit.unit_id)
+        else:
+            outside.add(unit.page)
+    return sorted(inside), sorted(outside)
 
 
 def _bounded_manifest_series(
@@ -421,7 +452,6 @@ def _editable_revision_batches(root: Path, batch_ids: list[str], snapshot: Workf
 def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                  host: str, *, optional_assets: bool = False) -> list[dict[str, Any]]:
     config = load_project(root)
-    model_policy = config.agent_models.get(host, {})
     tasks: list[dict[str, Any]] = []
     by_id = {m.batch_id: m for m in snapshot.manifests}
     if not optional_assets:
@@ -437,22 +467,38 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         if stage != "complete" and not optional_assets:
             # Revision is translator work: it reuses the translate model policy.
             role = "translate" if stage == "revise" else stage
+            dispatch = config.dispatch(host, role)
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
-                          "model": model_policy.get(role),
-                          "reasoning_effort": model_policy.get("reasoning_effort") if role == "translate" else None,
+                          "model": dispatch.model,
+                          "reasoning_effort": dispatch.reasoning_effort,
                           "fresh_context": True})
             if stage == "transcribe" and lane["recovery"]:
                 tasks[-1].update(asset_ids=lane["recovery"], recovery=True)
         for role, ids in lane["pending"].items():
             if ids and optional_assets:
+                dispatch = config.dispatch(host, role)
                 tasks.append({"batch_id": bid, "stage": role, "asset_ids": ids, "optional": True,
                               "depends_on": ["source-fidelity"] if role == "transcribe" else ["candidate"],
-                              "model": model_policy.get(role),
-                              "reasoning_effort": model_policy.get("reasoning_effort") if role == "transcribe" else None,
+                              "model": dispatch.model,
+                              "reasoning_effort": dispatch.reasoning_effort,
                               "fresh_context": True})
                 if role == "transcribe" and lane["recovery"]:
                     tasks[-1]["recovery"] = True
     return tasks
+
+
+def _with_advisories(root: Path, host: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach the advisories for the roles this wave is about to dispatch.
+
+    Advisories never block and never enter a packet: a manifest is compared for
+    replay identity and an asset packet's id hashes its whole payload.
+    """
+    roles = dict.fromkeys(
+        "translate" if task.get("stage") == "revise" else str(task.get("stage", ""))
+        for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]
+    )
+    payload["dispatch_advisories"] = dispatch_report(root, host, roles)["advisories"]
+    return payload
 
 
 def workflow_next(
@@ -503,14 +549,10 @@ def workflow_next(
     upper = indexes[through] if through else len(manifests) - 1
     if lower > upper:
         raise ValueError("workflow next --start-at must not follow --through")
-    manifest_unit_ids = {
-        unit_id for manifest in all_manifests for unit_id in manifest.unit_ids
-    }
-    unbatched_units = sorted(
-        unit.unit_id
-        for unit in units
-        if unit.render_policy is RenderPolicy.INCLUDE
-        and unit.unit_id not in manifest_unit_ids
+    # Coverage is checked over the coordinated range, not the whole record: a chapter
+    # extracted but not yet batched is reported in ``unbatched_pages``.
+    unbatched_units, unbatched_pages = _unbatched_in_scope(
+        units, all_manifests, manifests[lower : upper + 1]
     )
     if unbatched_units:
         raise ValueError(
@@ -561,7 +603,7 @@ def workflow_next(
     if start is None:
         pending = [m.batch_id for m in manifests
                    if not _snapshot_lane(root, m, snapshot)["complete"]][:resolved_limit]
-        return {
+        payload = {
             "stage": "complete",
             "batch_ids": [],
             "ready_tasks": [],
@@ -572,7 +614,9 @@ def workflow_next(
             "limit": resolved_limit,
             "start_at": start_at,
             "through": through,
+            "unbatched_pages": unbatched_pages,
         }
+        return _with_advisories(root, resolved_host, payload)
     stage = stages[start][1]
     batch_ids: list[str] = []
     selected_unit_ids: set[str] = set()
@@ -600,7 +644,7 @@ def workflow_next(
                 break
             batch_ids.append(bid)
         stage_details.update({bid: _batch_stage_details(root, bid, snapshot, context_cache) for bid in batch_ids})
-    return {
+    payload = {
         "stage": stage,
         "batch_ids": batch_ids,
         "requested_batch_ids": requested_batch_ids,
@@ -616,7 +660,9 @@ def workflow_next(
             if stage_details[batch_id][1]
         },
         "schedule": "translation-first-optional-assets",
+        "unbatched_pages": unbatched_pages,
     }
+    return _with_advisories(root, resolved_host, payload)
 
 
 def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = None) -> dict[str, Any]:
@@ -668,14 +714,8 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
             "affected batches before continuing: "
             f"batch_ids={stale_translatability}"
         )
-    covered_unit_ids = {
-        unit_id for manifest in snapshot.manifests for unit_id in manifest.unit_ids
-    }
-    unbatched_units = sorted(
-        unit.unit_id
-        for unit in snapshot.units
-        if unit.render_policy is RenderPolicy.INCLUDE
-        and unit.unit_id not in covered_unit_ids
+    unbatched_units, unbatched_pages = _unbatched_in_scope(
+        snapshot.units, snapshot.manifests, requested_manifests
     )
     if unbatched_units:
         raise ValueError(
@@ -693,7 +733,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
     stages = {batch_id: details[0] for batch_id, details in stage_details.items()}
     unique_stages = set(stages.values())
     lanes = {m.batch_id: _snapshot_lane(root, m, snapshot) for m in requested_manifests}
-    return {
+    payload = {
         "batch_ids": requested,
         "host": resolved_host,
         "stage": next(iter(unique_stages)) if len(unique_stages) == 1 else "mixed",
@@ -707,7 +747,9 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
         "optional_asset_tasks": _ready_tasks(root, requested, snapshot, resolved_host, optional_assets=True),
         "assets_complete": all(x["complete"] for x in lanes.values()),
         "complete": all(stage == "complete" for stage in stages.values()),
+        "unbatched_pages": unbatched_pages,
     }
+    return _with_advisories(root, resolved_host, payload)
 
 
 def _validate_batch_set(
@@ -1027,12 +1069,12 @@ def create_workflow_packet(
         )
     if stage in {"translate", "revise"} and lens is not None:
         raise ValueError("translation packets do not accept a lens")
-    policy = load_project(root).agent_models.get(host, {})
-    if stage in {"translate", "revise"}:
-        if not policy.get("translate") or not policy.get("reasoning_effort"):
-            raise ValueError(f"Configure agent_models.{host}.translate and reasoning_effort before creating translation tasks; no model substitution is allowed")
-    selected_model = policy.get("translate" if stage in {"translate", "revise"} else "audit")
-    selected_effort = policy.get("reasoning_effort") if stage in {"translate", "revise"} else None
+    # Revision is translator work; every other packet stage names its own role.
+    # An unconfigured role dispatches on the host's default, reported as an advisory.
+    dispatch_role = "translate" if stage in {"translate", "revise"} else stage
+    dispatch = load_project(root).dispatch(host, dispatch_role)
+    selected_model = dispatch.model
+    selected_effort = dispatch.reasoning_effort
     manifests = _validate_batch_set(root, batch_ids)
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
     unit_map = {unit.unit_id: unit for unit in all_units}
@@ -1114,7 +1156,7 @@ def create_workflow_packet(
         "shared": ("shared.md", _shared_context(root, selected_units))
     }
     from littrans.context_packets import original_context
-    original = original_context(root, selected_units, stage, include_adjacent=True)
+    original = original_context(root, selected_units, stage, include_adjacent=True, host=host)
     planned_files["original-images"] = (
         "original-images.json", json.dumps(original, ensure_ascii=False, indent=2) + "\n",
     )

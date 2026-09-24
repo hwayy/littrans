@@ -1,0 +1,53 @@
+# LitTrans project: keep the record in, keep the source out.
+#
+# Tracked: what a later batch run or audit needs to reproduce or check the work — the
+# extraction (derived/units.jsonl, the asset crops and their evidence), the page receipts
+# and review packets they name, the translation, QA reports, review ledgers and the
+# packets each agent was actually shown. Ignored: the copyrighted source PDF and anything
+# regenerable. Never add a public remote: the record embeds excerpts of the source.
+#
+# Verify after editing: `littrans project tracked PROJECT` asks git whether exactly the
+# record is tracked and reports every gap.
+
+# The source PDF, never redistributed.
+source/
+*.pdf
+
+# Runtime state. state.json is the write lock; .littrans/work/ holds the exact packet
+# payload each translator or reviewer was given and is named by packet id in the audit
+# ledger, so it is part of the record.
+{% for line in ignore_lines %}
+{{ line }}
+{% endfor %}
+.littrans-write-lock/
+
+# Regenerable from the record.
+output/
+derived/assets/fidelity/*/original.pdf
+
+# Layout detector results (derived/fidelity-layout/<fingerprint>.json) are evidence the
+# page ledgers name: a rerun on any host cuts each page on its recorded result, and no
+# other detector runtime reproduces the fingerprint. The request and log of a detection
+# run carry this host's paths and interpreter and stay out.
+derived/fidelity-layout/*.request.json
+derived/fidelity-layout/*.log
+
+# Source review packets duplicate tracked tables, except the ones page receipts name:
+# those are live dependencies of the review. `project tracked` requires them; re-include
+# each live packet below by name. Other packets are ignored by default, but a project
+# may retain their packet.json and coverage.html in git as historical evidence, e.g.
+#   !packets/source-<id>/packet.json
+#   !packets/source-<id>/coverage.html
+packets/*/packet.json
+packets/*/coverage.html
+
+# Editor and Python noise.
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.mypy_cache/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

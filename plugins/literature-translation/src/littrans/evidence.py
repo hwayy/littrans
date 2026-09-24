@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
@@ -19,7 +20,12 @@ from littrans.models import (
     UnitKind,
     utc_now,
 )
-from littrans.project import load_terms, translation_map
+from littrans.project import (
+    DEFAULT_REFERENCE_KIND,
+    load_reference_terms,
+    load_terms,
+    translation_map,
+)
 from littrans.semantics import normalize_zh_caption
 from littrans.storage import (
     load_project,
@@ -394,37 +400,276 @@ def source_representation_text(unit: SourceUnit) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def equation_markdown(unit: SourceUnit) -> str:
-    """Return the exact display-math representation emitted in formal Markdown."""
+# Characters that mark notation in an equation unit's text: TeX commands and
+# delimiters, relation/operator ASCII, digits, Greek, letterlike symbols, arrows, operators.
+_NOTATION_CHAR = re.compile(r"[\\$^_=<>|+*/{}\dͰ-Ͽ℀-⅏←-⋿⟀-⟯]")
+
+
+def equation_is_notation(unit: SourceUnit) -> bool:
+    """Whether an equation unit without asset placeholders carries mathematical notation.
+
+    Preserved sources never import LaTeX, so a displayed line the preparation kept as
+    native text (an upright ``Prob`` operator, an ``otherwise.`` case label) has plain
+    words as its text; typesetting those as a symbol sequence spaces and slants them.
+    """
+    if unit.latex:
+        return True
+    return _NOTATION_CHAR.search(unit.source_text) is not None
+
+
+def equation_markdown(unit: SourceUnit, text: str | None = None) -> str:
+    """Return the exact display-math representation emitted in formal Markdown.
+
+    ``text`` substitutes the translation of a native-text display line; notation
+    always renders from the source (``latex`` or the preserved text).
+    """
     if unit.kind is not UnitKind.EQUATION:
         raise ValueError(f"Unit is not an equation: {unit.unit_id}")
+    if not equation_is_notation(unit):
+        body = text if text is not None else unit.source_text
+        number = f" ({unit.equation_number})" if unit.equation_number and f"({unit.equation_number})" not in body else ""
+        return body + number
     number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
     return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
 
 
-def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+# PDF text extraction often prints a TeX accent as a spacing character before its
+# base letter ("L´evy", "H¨older"); NFKD alone would keep it as a stray space.
+_SPACING_ACCENTS = str.maketrans(
+    "", "", "´¨ˆ˜¯˘˙˚˝¸ˇ"
+)
+_PUNCTUATION_FOLD = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "−": "-",
+    " ": " ",
+})
+
+
+def fold_term_text(text: str) -> str:
+    """Fold source text and glossary sources to one comparable form.
+
+    Accents (precomposed, combining or TeX spacing marks), ligatures, curly quotes,
+    dash variants, whitespace runs and case are all normalized so that a glossary
+    source such as ``Hölder`` still gates the extracted ``H¨older``.
+    """
+    text = text.translate(_SPACING_ACCENTS)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = text.translate(_PUNCTUATION_FOLD)
+    return re.sub(r"\s+", " ", text).casefold()
+
+
+_REGEX_ESCAPE = re.compile(r"\\(?:N\{[^}]*\}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|[0-9]{1,3}|.)", re.S)
+_REGEX_GROUP_HEADER = re.compile(r"\(\?(?:P<[^>]+>|P=[^)]+\)|\([^)]+\)|[aiLmsux]*(?:-[imsx]+)?[:)])")
+_REGEX_FLAGS = re.compile(r"\(\?([aiLmsux]*)(?:-([imsx]+))?([:)])")
+
+
+@lru_cache(maxsize=512)
+def fold_regex_pattern(pattern: str) -> str:
+    r"""Fold literals while preserving Python regex syntax and group identifiers.
+
+    Escapes are opaque, including complete Unicode escapes. Group headers and
+    comments are syntax, not terminology. Verbose mode is tracked per group so a
+    comment's terminating newline cannot disappear during whitespace folding.
+    Validate first: normalization must never repair an invalid user pattern.
+    """
+    re.compile(pattern, re.I)
+    parts: list[str] = []
+    verbose = [False]
+    in_class = False
+    class_start = 0
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\":
+            escape = _REGEX_ESCAPE.match(pattern, index)
+            assert escape is not None  # the original pattern compiled above
+            parts.append(escape[0])
+            index = escape.end()
+            continue
+        if in_class:
+            if char == "]" and index != class_start:
+                in_class = False
+                parts.append(char)
+            elif char == "^" and index == class_start - 1:
+                # Only an original leading caret negates the class. Dropping an
+                # accent before a literal caret must not turn it into negation.
+                parts.append(char)
+            elif char == "-" and index != class_start and pattern[index + 1:index + 2] != "]":
+                parts.append(char)  # an original range operator
+            else:
+                # Folding a fullwidth bracket or a dash must not introduce syntax.
+                parts.append(re.escape(fold_term_text(char)))
+            index += 1
+            continue
+        if verbose[-1] and char == "#":
+            end = pattern.find("\n", index)
+            end = len(pattern) if end < 0 else end + 1
+            parts.append(pattern[index:end])
+            index = end
+            continue
+        if pattern.startswith("(?#", index):
+            comment = re.match(r"\(\?\#(?:\\.|[^\\)])*\)", pattern[index:], re.S)
+            assert comment is not None
+            parts.append(comment[0])
+            index += comment.end()
+            continue
+        if char == "(":
+            header = _REGEX_GROUP_HEADER.match(pattern, index)
+            if header:
+                token = header[0]
+                flags = _REGEX_FLAGS.fullmatch(token)
+                if flags:
+                    enabled = (verbose[-1] or "x" in flags[1]) and "x" not in (flags[2] or "")
+                    if flags[3] == ")":
+                        verbose[-1] = enabled
+                    else:
+                        verbose.append(enabled)
+                elif not token.startswith("(?P="):
+                    verbose.append(verbose[-1])
+                parts.append(token)
+                index = header.end()
+                continue
+            verbose.append(verbose[-1])
+        elif char == ")":
+            verbose.pop()
+        elif char == "[":
+            in_class = True
+            class_start = index + 1
+            if pattern[class_start:class_start + 1] == "^":
+                class_start += 1
+        elif char == "{":
+            repeat = re.match(r"\{[0-9]*(?:,[0-9]*)?\}", pattern[index:])
+            if repeat:
+                parts.append(repeat[0])
+                index += repeat.end()
+                continue
+        if char in ".^$*+?[]()|":
+            parts.append(char)
+        elif char.isspace():
+            end = index + 1
+            while end < len(pattern) and pattern[end].isspace():
+                end += 1
+            parts.append(pattern[index:end] if verbose[-1] else " ")
+            index = end
+            continue
+        else:
+            folded = fold_term_text(char)
+            # Keep ordinary spaces readable; re.escape protects any new operators
+            # and a normalized '#' when the group uses verbose mode.
+            parts.append(re.escape(folded).replace(r"\ ", " " if not verbose[-1] else r"\ "))
+        index += 1
+    result = "".join(parts)
+    re.compile(result, re.I)
+    return result
+
+
+# Words a title leaves in lower case; every other word of a quoted title is capitalised.
+TITLE_MINOR_WORDS = frozenset(
+    "a an and as at but by for from in into nor of on or over the to via vs with".split()
+)
+
+
+def _title_like(phrase: str) -> bool:
+    words = re.findall(r"[^\W\d_][\w'’-]*", phrase)
+    return (len(words) >= 2 and words[0][0].isupper()
+            and all(word[0].isupper() for word in words[1:] if word.casefold() not in TITLE_MINOR_WORDS))
+
+
+def without_quoted_titles(text: str, every_quote: bool = False) -> str:
+    """Drop quoted titles: cited work names are not translated terminology.
+
+    Quotation marks also set off a term or a phrase (“strict mode”, “discrete Itô
+    formula”), which is exactly where terminology matters, so only a phrase set as a
+    title (``“Binding Theory”``) is dropped; ``every_quote`` drops every quotation, for
+    a bibliography entry whose quotes are cited titles in whatever case.
+    """
+    return re.sub(r'["“]([^"”]{2,})["”]',
+                  lambda match: " " if every_quote or _title_like(match[1]) else match[0], text)
+
+
+def term_source_text(unit: SourceUnit) -> str:
+    """The folded source representation every terminology check matches against."""
+    text = source_representation_text(unit)
+    return fold_term_text(without_quoted_titles(text, every_quote=unit.kind is UnitKind.BIBLIOGRAPHY))
+
+
+def term_source_forms(term: dict[str, Any]) -> list[str]:
+    """The source forms an entry is located by: ``source`` plus any ``aliases``."""
+    forms = [str(term.get("source", "")).strip()]
+    forms.extend(str(alias).strip() for alias in (term.get("aliases") or []))
+    return [form for form in forms if form]
+
+
+def term_matches(term: dict[str, Any], folded_source: str) -> bool:
+    """Whether a glossary entry's source (or one of its aliases) occurs in folded source text."""
+    mode = str(term.get("match", "substring"))
+    for source_term in term_source_forms(term):
+        if mode == "regex":
+            if re.search(fold_regex_pattern(source_term), folded_source, re.I) is not None:
+                return True
+            continue
+        folded_term = fold_term_text(source_term)
+        if mode == "word":
+            if re.search(r"(?<!\w)" + re.escape(folded_term) + r"(?!\w)", folded_source) is not None:
+                return True
+        elif folded_term in folded_source:
+            return True
+    return False
+
+
+def select_relevant(terms: Iterable[dict[str, Any]], units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+    """The entries whose scope covers the units and whose source occurs in them, in order."""
     selected = list(units)
-    source = "\n".join(
-        source_representation_text(unit) for unit in selected
-    ).casefold()
+    source = "\n".join(term_source_text(unit) for unit in selected)
     pages = {unit.page for unit in selected}
     parents = {unit.parent_id for unit in selected if unit.parent_id}
     matches: list[dict[str, Any]] = []
-    for term in load_terms(root):
-        source_term = str(term.get("source", "")).strip()
+    for term in terms:
         scope = str(term.get("scope", "document"))
         in_scope = (
             scope == "document"
             or scope in parents
             or any(scope == f"page:{page}" for page in pages)
         )
-        if source_term and in_scope and source_term.casefold() in source:
+        if in_scope and term_matches(term, source):
             matches.append(term)
     return matches
 
 
-def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
-    """Return the exact shared instructions and terminology shown to auditors."""
+def relevant_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+    """The gated (approved) entries a set of units needs."""
+    return select_relevant(load_terms(root), units)
+
+
+def relevant_reference_terms(root: Path, units: Iterable[SourceUnit]) -> list[dict[str, Any]]:
+    """The binding-but-not-gated entries a set of units needs, filtered like approved terms."""
+    return select_relevant(load_reference_terms(root), units)
+
+
+def reference_terms_by_kind(terms: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group reference entries by ``kind`` in first-seen order, dropping the key from each entry."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for term in terms:
+        kind = str(term.get("kind") or DEFAULT_REFERENCE_KIND)
+        grouped.setdefault(kind, []).append({k: v for k, v in term.items() if k != "kind"})
+    return grouped
+
+
+def reference_terms_yaml(terms: Iterable[dict[str, Any]]) -> str:
+    """The YAML block packets show for reference entries; empty when nothing is relevant."""
+    grouped = reference_terms_by_kind(terms)
+    if not grouped:
+        return ""
+    return str(yaml.safe_dump({"reference_terms": grouped}, allow_unicode=True, sort_keys=False))
+
+
+AUDIT_CONTEXT_PARTS = ("document-brief", "style-guide", "approved-terms", "reference-terms")
+
+
+def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str, str]:
+    """The shared context by part: the two context files whole, the terms filtered per unit."""
     selected = list(units)
     brief = (root / "context" / "document-brief.md").read_text(
         encoding="utf-8"
@@ -437,14 +682,51 @@ def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
         allow_unicode=True,
         sort_keys=False,
     ).strip()
-    return (
-        f"# Document brief\n\n{brief}\n\n# Translation style\n\n{style}\n\n"
-        f"# Relevant approved terminology\n\n```yaml\n{terms}\n```\n"
+    reference = reference_terms_yaml(relevant_reference_terms(root, selected)).strip()
+    return {"document-brief": brief, "style-guide": style, "approved-terms": terms, "reference-terms": reference}
+
+
+def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
+    """Return the exact shared instructions and terminology shown to auditors.
+
+    The reference section is present only when an entry matches the units, so a project
+    without reference entries keeps the audit context it had before the channel existed.
+    """
+    return _render_audit_context(audit_context_sections(root, units))
+
+
+def _render_audit_context(parts: dict[str, str]) -> str:
+    text = (
+        f"# Document brief\n\n{parts['document-brief']}\n\n# Translation style\n\n{parts['style-guide']}\n\n"
+        f"# Relevant approved terminology\n\n```yaml\n{parts['approved-terms']}\n```\n"
     )
+    if parts["reference-terms"]:
+        text += f"\n# Relevant reference terminology (not gated)\n\n```yaml\n{parts['reference-terms']}\n```\n"
+    return text
+
+
+def _summarize_audit_context(parts: dict[str, str]) -> dict[str, dict[str, Any]]:
+    return {
+        part: {"sha256": sha256_text(text), "lines": len(text.splitlines()) if text else 0}
+        for part, text in parts.items()
+    }
+
+
+def audit_context_parts(root: Path, units: Iterable[SourceUnit]) -> dict[str, dict[str, Any]]:
+    """Per-part hash and size of the shared context, so staleness can name what grew."""
+    return _summarize_audit_context(audit_context_sections(root, units))
 
 
 def audit_context_fingerprint(root: Path, units: Iterable[SourceUnit]) -> str:
     return sha256_text(audit_context_text(root, units))
+
+
+def audit_context_fingerprint_and_parts(
+    root: Path, units: Iterable[SourceUnit]
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """``audit_context_fingerprint`` and ``audit_context_parts`` from one context build."""
+    parts = audit_context_sections(root, units)
+    return sha256_text(_render_audit_context(parts)), _summarize_audit_context(parts)
 
 
 def translation_memory(
@@ -511,6 +793,7 @@ def translation_memory(
                 units_path,
                 translations_path,
                 root / "glossary" / "approved.yaml",
+                root / "glossary" / "reference.yaml",
                 root / "context" / "document-brief.md",
                 root / "context" / "style-guide.md",
             ]

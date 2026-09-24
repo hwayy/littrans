@@ -59,6 +59,7 @@
         }
       ],
       "default": null,
+      "description": "Dispatch model for the stage from agent_models.<host>: the value passed to the host's task launcher (alias or concrete id, host-specific), echoed by submissions. Not the served model.",
       "title": "Model"
     },
     "reasoning_effort": {
@@ -71,6 +72,7 @@
         }
       ],
       "default": null,
+      "description": "Dispatched reasoning effort from agent_models.<host>, echoed by submissions.",
       "title": "Reasoning Effort"
     },
     "unit_ids": {

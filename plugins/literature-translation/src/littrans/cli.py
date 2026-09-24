@@ -4,13 +4,17 @@ import importlib.util
 import json
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from pydantic import BaseModel
+from typer.core import TyperGroup
 
+import littrans
 from littrans.batching import create_batches, refresh_batch, show_batch
+from littrans.build_info import build_identity
 from littrans.external_review import external_review_status, run_external_review
 from littrans.extractor import inspect_source
 from littrans.models import IssueStatus
@@ -35,7 +39,37 @@ from littrans.workflow import (
     workflow_status,
 )
 
-app = typer.Typer(no_args_is_help=True, help="Controlled literature translation tooling.")
+# Typer renders click's own exception class as a clean error panel; resolve it
+# through BadParameter so the lookup survives typer bundling click privately.
+_ClickException: type[Exception] = next(
+    base for base in typer.BadParameter.__mro__ if base.__name__ == "ClickException"
+)
+
+
+class _GuardedGroup(TyperGroup):
+    """Report a refused precondition as an error, not as a crash.
+
+    Workflow guards (stale packets, missing batches, invalid submissions) signal
+    "not available" with ValueError, pydantic's ValidationError included, and a
+    wrong path surfaces as FileNotFoundError (an existing batch or profile as
+    FileExistsError). At the CLI boundary those are an
+    error message with exit code 1, never a traceback that reads like a defect
+    and invites bypassing the guard.
+    """
+
+    def invoke(self, ctx: Any) -> Any:
+        try:
+            return super().invoke(ctx)
+        except ValueError as exc:
+            raise _ClickException(str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File not found'}: {exc.filename}") from exc
+        except FileExistsError as exc:
+            # "Batch already exists" and similar refusals are raised with a message only.
+            raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File exists'}: {exc.filename}") from exc
+
+
+app = typer.Typer(cls=_GuardedGroup, no_args_is_help=True, help="Controlled literature translation tooling.")
 project_app = typer.Typer(no_args_is_help=True)
 source_app = typer.Typer(no_args_is_help=True)
 batch_app = typer.Typer(no_args_is_help=True)
@@ -45,6 +79,7 @@ review_app = typer.Typer(no_args_is_help=True)
 workflow_app = typer.Typer(no_args_is_help=True)
 assets_app = typer.Typer(no_args_is_help=True)
 layout_app = typer.Typer(no_args_is_help=True)
+glossary_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(source_app, name="source")
 app.add_typer(batch_app, name="batch")
@@ -54,6 +89,7 @@ app.add_typer(review_app, name="review")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(assets_app, name="assets")
 app.add_typer(layout_app, name="layout")
+app.add_typer(glossary_app, name="glossary")
 
 
 def _configure_console_stream(stream: Any) -> None:
@@ -84,6 +120,22 @@ def emit(payload: object) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
+def advise(notes: Iterable[str]) -> None:
+    """Report dispatch-policy gaps on stderr, leaving the stdout JSON contract untouched."""
+    for note in notes:
+        typer.echo(f"LitTrans advisory: {note}", err=True)
+
+
+def advise_roles(project: Path, host: str | None, *roles: str) -> None:
+    """Report the gaps of the roles a command is about to dispatch."""
+    from littrans.project import dispatch_report
+
+    try:
+        advise(dispatch_report(project, host, roles)["advisories"])
+    except (OSError, ValueError):  # a project or host problem the command itself reports
+        return
+
+
 @app.command()
 def doctor() -> None:
     """Check the local runtime, including the required layout detector, without changing it."""
@@ -103,6 +155,8 @@ def doctor() -> None:
         {
             "python": sys.version,
             "python_ok": sys.version_info >= (3, 12),
+            # The installed build, comparable with the `generator` block of artifacts.
+            "build": {**{k: v for k, v in build_identity().items() if k != "generated_at"}, "package_path": str(Path(littrans.__file__).resolve().parent)},
             "modules": {name: importlib.util.find_spec(name) is not None for name in modules},
             "pdftoppm": shutil.which("pdftoppm"),
             "pdfinfo": shutil.which("pdfinfo"),
@@ -137,8 +191,75 @@ def project_init(
     title: str | None = typer.Option(None),
     source_language: str = typer.Option("en"),
     target_language: str = typer.Option("zh-CN"),
+    repo_root: Path | None = typer.Option(
+        None, resolve_path=True,
+        help="Where the handbook, records, ledger and launcher go when the project is nested in a larger repository (default: PROJECT).",
+    ),
 ) -> None:
-    emit(initialize_project(source, project, profile, title, source_language, target_language))
+    """Create a private schema-6 project with its record structure scaffolded."""
+    scaffold_report: dict[str, Any] = {}
+    config = initialize_project(
+        source, project, profile, title, source_language, target_language,
+        repo_root=repo_root, scaffold_report=scaffold_report,
+    )
+    emit({**config.model_dump(mode="json"), "scaffold": scaffold_report})
+
+
+@project_app.command("models")
+def project_models(
+    project: PathArg,
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+) -> None:
+    """Report the resolved per-role dispatch policy for a host, with its advisories."""
+    from littrans.project import dispatch_report
+
+    emit(dispatch_report(project, host))
+
+
+@project_app.command("scaffold")
+def project_scaffold(
+    project: PathArg,
+    repo_root: Path | None = typer.Option(None, resolve_path=True, help="Record root for a nested layout (default: saved record root)."),
+    refresh: bool = typer.Option(False, help="Regenerate the plugin-owned docs/LITTRANS.md from the installed build."),
+) -> None:
+    """Create the missing record files of an existing project; never overwrites user-owned files."""
+    from littrans.scaffold import scaffold_project
+    from littrans.storage import load_project, save_project
+
+    config = load_project(project)
+    selected_root = repo_root
+    if selected_root is None and config.record_root_relative is not None:
+        selected_root = (project.resolve() / config.record_root_relative).resolve()
+    elif selected_root is None:
+        # Dev.4 project files did not persist the record root. Find the nearest
+        # distinctive scaffold, stopping at the repository boundary.
+        for ancestor in (project.resolve(), *project.resolve().parents):
+            if any((ancestor / marker).is_file() for marker in (
+                "docs/LITTRANS.md", "PLUGIN-ISSUES.md", "tools/lt.py",
+            )):
+                selected_root = ancestor
+                break
+            if (ancestor / ".git").exists():
+                break
+    report = scaffold_project(project, repo_root=selected_root, refresh=refresh)
+    if repo_root is not None:
+        relative = project.resolve().relative_to(repo_root.resolve()).parts
+        record_root_relative = "/".join(".." for _ in relative) or "."
+        if config.record_root_relative != record_root_relative:
+            config.record_root_relative = record_root_relative
+            save_project(project, config)
+    emit(report)
+
+
+@project_app.command("tracked")
+def project_tracked(project: PathArg) -> None:
+    """Ask git whether exactly the project record is tracked; exit 1 on any gap. Read-only."""
+    from littrans.record import record_tracking
+
+    result = record_tracking(project)
+    emit(result)
+    if result["problems"]:
+        raise typer.Exit(code=1)
 
 
 @source_app.command("inspect")
@@ -169,19 +290,55 @@ def source_probe(project: PathArg, pages: str = typer.Option("all")) -> None:
     emit(probe_structure(project, pages))
 
 
+@source_app.command("rescope")
+def source_rescope(
+    project: PathArg,
+    packet: str = typer.Option(..., "--packet", help="A source packet whose embedded base rules the earlier receipts are bound to."),
+    pages: str = typer.Option(..., "--pages", help="The pages the appended rule text holds for (a spec such as 52-67)."),
+    label: str = typer.Option("", "--label", help="Descriptive name of the block, e.g. 'Chapter 2'."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would move without writing the profile."),
+) -> None:
+    """Move rule text appended since a packet into a page_rules block so its receipts verify again."""
+    from littrans.structure_profile import rescope_rules
+    emit(rescope_rules(project, packet, pages, label, apply=not dry_run))
+
+
 @source_app.command("prepare")
 def source_prepare(
     project: PathArg,
     pages: str = typer.Option("all"),
     replace: bool = typer.Option(False),
+    discard_overrides: bool = typer.Option(
+        False, "--discard-overrides",
+        help="With --replace, re-derive pages that carry a reviewer's override instead of replaying it.",
+    ),
     allow_missing_layout: bool = typer.Option(
         False, "--allow-missing-layout",
         help="Only at the user's explicit request: prepare without the layout detector; every region then needs full visual review.",
     ),
+    redetect: bool = typer.Option(
+        False, "--redetect",
+        help="With --replace, run the layout detector again instead of cutting each page on the result its ledger records.",
+    ),
 ) -> None:
     """Preserve original prose and complex visual assets without formula transcription."""
     from littrans.fidelity import prepare_source
-    emit(prepare_source(project, pages, replace, allow_missing_layout))
+    if redetect and not replace:
+        raise typer.BadParameter("--redetect only applies with --replace")
+    emit(prepare_source(project, pages, replace, allow_missing_layout, discard_overrides, redetect))
+
+
+@source_app.command("gc")
+def source_gc(
+    project: PathArg,
+    apply: bool = typer.Option(False),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    """List or remove original-asset directories no current fragment refers to."""
+    if apply == dry_run:
+        raise typer.BadParameter("choose exactly one of --apply or --dry-run")
+    from littrans.fidelity import gc_asset_directories
+    emit(gc_asset_directories(project, apply=apply))
 
 
 @source_app.command("render")
@@ -220,7 +377,7 @@ def assets_packet(
     asset_ids: str = typer.Option(..., help="Comma-separated stable asset IDs."),
     stage: str = typer.Option("transcribe"),
     revision_notes: str | None = typer.Option(None, help="Explicit correction request bound to existing candidate/review evidence."),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
 ) -> None:
     from littrans.context_packets import adjacent_source_units
     from littrans.fidelity_models import asset_reference_ids
@@ -231,6 +388,7 @@ def assets_packet(
     units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit)
              if set(ids) & set(asset_reference_ids(u.source_markdown or u.source_text))]
     emit(build_asset_packet(project, ids, stage, units + adjacent_source_units(project, units), revision_notes, host=host))
+    advise_roles(project, host, stage)
 
 
 @assets_app.command("import-review")
@@ -350,6 +508,45 @@ def review_get_status(project: PathArg, batch_id: str) -> None:
     emit(review_status(project, batch_id))
 
 
+@glossary_app.command("lookup")
+def glossary_lookup_command(
+    project: PathArg,
+    batch_id: str | None = typer.Option(None, help="The batch whose units to match."),
+    pages: str | None = typer.Option(None, help="PDF page spec, e.g. 26-51 or 3,5-7."),
+    unit_ids: str | None = typer.Option(None, help="Comma-separated source unit IDs."),
+    text: Path | None = typer.Option(None, help="Any UTF-8 file to match without page scope."),
+    kind: str | None = typer.Option(None, help="Only reference entries of this kind."),
+    jsonl: bool = typer.Option(False, help="One entry per line with its channel."),
+) -> None:
+    """List the approved (gated) and reference (not gated) entries a selection needs; read-only."""
+    from littrans.glossary import glossary_lookup
+
+    result = glossary_lookup(
+        project,
+        batch_id=batch_id,
+        pages=pages,
+        unit_ids=[value.strip() for value in unit_ids.split(",") if value.strip()] if unit_ids else None,
+        text=text,
+        kind=kind,
+    )
+    if jsonl:
+        for term in result["approved"]:
+            typer.echo(json.dumps({"channel": "approved", **term}, ensure_ascii=False))
+        for group, terms in result["reference"].items():
+            for term in terms:
+                typer.echo(json.dumps({"channel": "reference", "kind": group, **term}, ensure_ascii=False))
+        return
+    emit(result)
+
+
+@glossary_app.command("check")
+def glossary_check_command(project: PathArg) -> None:
+    """Load every glossary file and report entries matching no prepared unit; read-only."""
+    from littrans.glossary import glossary_check
+
+    emit(glossary_check(project))
+
+
 @review_app.command("external")
 def review_external(
     project: PathArg,
@@ -417,28 +614,30 @@ def workflow_get_next(
     project: PathArg,
     limit: int | None = typer.Option(
         None,
-        help="Wave size. Defaults to 3 on Codex and Claude Code, 6 on Cursor.",
+        help="Wave size. Defaults to 3 on Codex, Claude Code and Qoder, 6 on Cursor.",
     ),
     start_at: str | None = typer.Option(None),
     through: str | None = typer.Option(None),
     host: str = typer.Option(
         "auto",
-        help="Coordination host: auto, codex, cursor, or claude.",
+        help="Coordination host: auto, codex, cursor, claude, or qoder.",
     ),
 ) -> None:
-    emit(workflow_next(project, limit, start_at, through, host))
+    wave = workflow_next(project, limit, start_at, through, host)
+    emit(wave)
+    advise(wave["dispatch_advisories"])
 
 
 @workflow_app.command("status")
 def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...),
-                        host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude.")) -> None:
-    emit(
-        workflow_status(
-            project,
-            [value.strip() for value in batch_ids.split(",") if value.strip()],
-            host=host,
-        )
+                        host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder.")) -> None:
+    status = workflow_status(
+        project,
+        [value.strip() for value in batch_ids.split(",") if value.strip()],
+        host=host,
     )
+    emit(status)
+    advise(status["dispatch_advisories"])
 
 
 @workflow_app.command("packet")
@@ -450,7 +649,7 @@ def workflow_create_packet(
     ),
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, or claude."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
 ) -> None:
     result = create_workflow_packet(
         project,
@@ -464,6 +663,7 @@ def workflow_create_packet(
         if isinstance(result, list)
         else result.model_dump(mode="json") if isinstance(result, BaseModel) else result
     )
+    advise_roles(project, host, "translate" if stage in {"translate", "revise"} else stage)
 
 
 @workflow_app.command("prune-packets")

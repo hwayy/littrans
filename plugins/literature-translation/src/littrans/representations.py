@@ -18,6 +18,7 @@ from collections import Counter
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from littrans.models import SourceUnit
 from littrans.representation_models import AssetReviewSubmission, AssetSubmission
@@ -196,15 +197,13 @@ def build_asset_packet(root: Path, asset_ids: list[str], stage: str = "transcrib
         from littrans.hosts import resolve_coordination_host
 
         host = resolve_coordination_host(host)
-        profile = load_project(root).agent_models.get(host, {})
-        if stage == "transcribe" and (not profile.get("transcribe", "").strip()
-                                      or not profile.get("reasoning_effort", "").strip()):
-            raise ValueError(f"Configure agent_models.{host}.transcribe and reasoning_effort "
-                             "before dispatching transcription; model substitution is not automatic")
+        # An unconfigured role is a supported choice: the task then runs on the host's
+        # own default. The CLI reports the gap as an advisory; it never blocks a packet.
+        dispatch = load_project(root).dispatch(host, stage)
         payload: dict[str, Any] = {
             "stage": stage, "host": host,
-            "model": profile.get("transcribe" if stage == "transcribe" else "asset-audit"),
-            "reasoning_effort": profile.get("reasoning_effort"),
+            "model": dispatch.model,
+            "reasoning_effort": dispatch.reasoning_effort,
             "fresh_context": True, "prompt_version": PROMPT_VERSION,
             "allowed_formats": {key: ASSET_FORMATS[assets[key]["kind"]] for key in asset_ids},
             "asset_ids": asset_ids, "assets": [assets[key] for key in asset_ids],
@@ -387,11 +386,18 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
         author = payload.get("author_task_id")
         if not isinstance(author, str) or not author.strip():
             raise ValueError("Candidate author_task_id is required")
-        if not payload.get("model"):
-            raise ValueError("Record the actual candidate model")
-        if ((packet["model"] and payload.get("model") != packet["model"])
-                or (packet["reasoning_effort"] and payload.get("reasoning_effort") != packet["reasoning_effort"])):
-            raise ValueError("Candidate model/effort must match the dispatched packet")
+        if packet["model"] and not payload.get("model"):
+            raise ValueError("Record the packet's dispatch model")
+        # The echo proves the task ran under the packet's policy; it is not an
+        # identity check. A host may serve another model under the same alias,
+        # and that observation belongs in served_model_label. A packet that records
+        # no model dispatched on the host's default, so there is nothing to echo.
+        if (payload.get("model") != packet["model"]
+                or payload.get("reasoning_effort") != packet["reasoning_effort"]):
+            raise ValueError(
+                "Candidate model/effort must echo the dispatched packet's model policy "
+                "(dispatch values, not the served model; record a served model in served_model_label)"
+            )
         records = payload.get("candidates", [])
         if not isinstance(records, list) or Counter(item["asset_id"] for item in records) != Counter(packet["asset_ids"]):
             raise ValueError("Candidate coverage must match packet assets exactly, once each")
@@ -426,7 +432,8 @@ def submit_candidates(root: Path, input_file: Path) -> dict[str, Any]:
             record = {
                 "asset_id": key, "asset_fingerprint": packet["asset_fingerprints"][key],
                 "packet_id": packet["packet_id"], "author_task_id": author,
-                "model": payload["model"], "reasoning_effort": payload.get("reasoning_effort"),
+                "model": payload.get("model"), "reasoning_effort": payload.get("reasoning_effort"),
+                "served_model_label": payload.get("served_model_label"),
                 "format": item.get("format", "latex"), "content": item.get("content", ""),
                 "status": item.get("status", "candidate"),
                 "notes": item.get("notes", ""),
@@ -774,6 +781,19 @@ window.MathJax = {
 })();</script><script defer src="BASE_PATH/tex-svg.js"></script>'''.replace("BASE_PATH", html.escape(base, quote=True)).replace("BASE", base_json)
 
 
+def portable_href(target: Path, output: Path, root: Path) -> str:
+    """A link from a page under ``output`` to ``target`` that survives moving the tree.
+
+    A file inside the project root is referenced relatively (percent-encoded, POSIX
+    separators), so the same tree renders the same bytes on every host; only a file kept
+    outside the project — a source PDF that was never copied in — still needs a file URI.
+    """
+    target, output, root = target.resolve(), output.resolve(), root.resolve()
+    if target.is_relative_to(root):
+        return quote(Path(os.path.relpath(target, output)).as_posix(), safe="/")
+    return target.as_uri()
+
+
 def _href(root: Path, name: str, output: Path) -> str:
     original = _local(root, name)
     digest = hashlib.sha256(original.read_bytes()).hexdigest()
@@ -802,7 +822,7 @@ def _original_html(root: Path, asset: dict[str, Any], output: Path, *, linked: b
             image += ' onerror="this.onerror=null;this.src=this.dataset.originalFallback;"'
         image += ">"
         if linked:
-            href = _href(root, fragment.get("pdf_path") or png, output)
+            href = _href(root, svg or png, output)
             image = f'<a class="original-image-link" href="{href}" title="查看高清原式" aria-label="查看高清原式 {html.escape(asset["id"], quote=True)}">{image}</a>'
         rendered.append(image)
     return '<span class="asset-original">' + "".join(rendered) + "</span>"
@@ -836,7 +856,7 @@ def _asset_html(root: Path, asset: dict[str, Any], output: Path,
             content += '<span class="asset-candidate" hidden></span>'
         else:
             content += '<span class="asset-candidate">' + _candidate_html(candidate) + "</span>"
-    originals = "".join(f'<a href="{_href(root, fragment.get("pdf_path") or fragment["png_path"], output)}">查看原式 {index + 1}</a> ' for index, fragment in enumerate(asset["fragments"]))
+    originals = "".join(f'<a href="{_href(root, fragment.get("svg_path") or fragment["png_path"], output)}">查看原式 {index + 1}</a> ' for index, fragment in enumerate(asset["fragments"]))
     return "<span" + attributes + ">" + content + f'<small class="asset-state">{label}</small><span class="asset-original-links">{originals}</span></span>'
 
 

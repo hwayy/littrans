@@ -21,7 +21,7 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 PROJECT_DIRS = (
     "source",
     "derived/assets",
-    "context/chapters",
+    "context",
     "glossary",
     "batches",
     "translations",
@@ -71,6 +71,15 @@ def atomic_write_text(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"))
 
 
+def write_text_if_missing(path: Path, text: str) -> bool:
+    """Create a user-owned file once; an existing file is never touched. Returns whether it was written."""
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, text)
+    return True
+
+
 def snapshot_files(paths: Iterable[Path]) -> dict[Path, bytes | None]:
     """Capture exact file contents so a locked multi-file mutation can roll back."""
     return {path: path.read_bytes() if path.exists() else None for path in paths}
@@ -80,7 +89,10 @@ def restore_files(snapshots: dict[Path, bytes | None]) -> None:
     """Restore a snapshot made by :func:`snapshot_files` atomically per file."""
     for path, content in snapshots.items():
         if content is None:
-            path.unlink(missing_ok=True)
+            # A failed multi-file write may have met a regular file in a parent path;
+            # unlink(missing_ok=True) still raises ENOTDIR for that absent child.
+            if path.exists() or path.is_symlink():
+                path.unlink()
         else:
             atomic_write_bytes(path, content)
 

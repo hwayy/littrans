@@ -1,0 +1,7 @@
+# Approved terminology: every entry here is a hard, per-unit QA gate.
+# When `source` occurs in a unit, `target` must appear in that unit's translation
+# (approved-term-missing); `forbidden` wording is checked in every unit. Entries with
+# `status: reference-only` are not gated but still reach packets; `status: proposed` is inert.
+# Fields: source, target, match (substring | word | regex), scope (document | page:N | parent
+# unit id), status, forbidden, aliases, definition. See docs/LITTRANS.md for the exact rules.
+terms: []

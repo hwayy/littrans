@@ -42,13 +42,17 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def approve(root: Path, pages: str = "1") -> dict:
+def approve(root: Path, pages: str = "1", *extra: str) -> dict:
     packet = build_source_review_packet(root, pages)
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "independent-test-reviewer"
     for page in review["pages"]:
-        for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
+        for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked", *extra):
             page[key] = True
+        # The reviewer confirms each listed role and joined block as recorded.
+        checks = page.get("context", {}).get("structure_checks", {})
+        page["confirmed_roles"] = [{"unit_id": r["unit_id"], "kind": r["kind"]} for r in checks.get("roles", [])]
+        page["confirmed_joins"] = [{"block": j["block"]} for j in checks.get("joins", [])]
     path = root / "review.json"
     write_json(path, review)
     return import_source_review(root, path, confirm_visual_review=True)
@@ -130,7 +134,9 @@ def test_multifragment_asset_keeps_order_without_filling_gap(project: Path) -> N
     asset = load_assets(project)["split-formula"]
     assert len(asset.fragments) == 2
     assert asset.fragments[0].bbox[1] < asset.fragments[1].bbox[1]
-    approve(project)
+    # The box holds the words "Let x": preparation declares them, review attests them.
+    assert [c.source_text for c in asset.formula_conditions] == ["Let x"]
+    approve(project, "1", "formula_conditions_checked")
     assert verify_fidelity(project, "1")["passed"]
 
 

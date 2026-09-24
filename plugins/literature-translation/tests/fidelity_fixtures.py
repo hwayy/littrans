@@ -55,6 +55,7 @@ def prepare_plain_text_fixture(root: Path, expected_units: list[SourceUnit]) -> 
         for field in ("viewed_original", "coverage_complete", "boundaries_complete",
                       "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[field] = True
+        confirm_structure_checks(decision)
         decision["notes"] = "Test-only oracle for generated prose; source text, page raster and unit IDs checked."
     write_json(review_path, review)
     result = import_source_review(root, review_path, confirm_visual_review=True)
@@ -93,6 +94,7 @@ def review_fixture_metadata(root: Path) -> None:
         for field in ("viewed_original", "coverage_complete", "boundaries_complete",
                       "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[field] = True
+        confirm_structure_checks(decision)
         decision["notes"] = (
             "Synthetic metadata regression fixture, no original complex assets. "
             "The test supplies the classification/ownership oracle; this is not a production coverage claim."
@@ -155,6 +157,7 @@ def make_asset_fixture(tmp_path: Path, entries: list[tuple[str, str, str]]) -> t
         for field in ("viewed_original", "coverage_complete", "boundaries_complete",
                       "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[field] = True
+        confirm_structure_checks(decision)
         decision["notes"] = "Generated fixture oracle: exact PDF labels, region extents and original raster checked."
     write_json(path, review)
     import_source_review(root, path, confirm_visual_review=True)
@@ -201,3 +204,10 @@ def record_fixture_source_issue(root: Path, page: int, message: str) -> None:
     write_json(path, review)
     result = import_source_review(root, path, confirm_visual_review=True)
     assert not result["approved_pages"]
+
+
+def confirm_structure_checks(decision: dict) -> None:
+    """A test oracle confirms each listed role and joined block as recorded (LT-086)."""
+    checks = decision.get("context", {}).get("structure_checks", {})
+    decision["confirmed_roles"] = [{"unit_id": r["unit_id"], "kind": r["kind"]} for r in checks.get("roles", [])]
+    decision["confirmed_joins"] = [{"block": j["block"]} for j in checks.get("joins", [])]

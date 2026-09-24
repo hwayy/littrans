@@ -2,20 +2,47 @@
 #
 # `project init` copies this mapping into the project's `project.yaml` under
 # `agent_models`. Review and adjust it per project: packets carry the configured
-# model/effort, submissions must match, and a missing or unavailable model is a
-# configuration problem to report, never a reason to substitute silently.
+# model/effort and submissions echo them.
 #
-# Roles: `translate` (target-prose writer), `transcribe` (structured asset
-# candidate author) and a shared `reasoning_effort`. Reviewer lenses use the
-# host's own subagent defaults unless a project adds explicit role entries.
+# Every value is a dispatch value: what the coordinator hands to the host's task
+# launcher. Whether that is a category alias or a concrete model id is the host's
+# convention, and which model the host serves under it is the host's own
+# configuration (a Claude Code alias may be routed to any provider). The plugin
+# never verifies a dispatched subagent's model; a writer may record what its
+# environment reports in the submission's `served_model_label`, unverified.
+#
+# Roles: `translate` (target-prose writer, also used for `revise`), `transcribe`
+# (structured asset candidate author), `audit` (the three translation lenses) and
+# `asset-audit` (independent candidate review). Each role sets its own `model` and
+# `reasoning_effort`; neither is shared across roles.
+#
+# Leaving a role, a model or an effort unset is supported: that dispatch then
+# follows the host's own default subagent behaviour. The CLI reports the mismatch
+# as an advisory — on stderr, in `workflow next`/`status` and in `project models` —
+# and never refuses a packet over it. Codex takes both a per-dispatch model and a
+# per-dispatch effort; Claude Code takes a model only (effort comes from the
+# `effort` frontmatter of the plugin's writer agents); Cursor and Qoder take
+# neither, so their own policy decides.
+#
+# The legacy flat form (a bare model string per role plus one host-level
+# `reasoning_effort`) is still read and normalized into this shape.
 codex:
-  translate: gpt-5.6-luna
-  transcribe: gpt-5.6-luna
-  reasoning_effort: max
+  translate:
+    model: gpt-5.6-luna
+    reasoning_effort: max
+  transcribe:
+    model: gpt-5.6-luna
+    reasoning_effort: max
 claude:
-  # Claude Code model alias passed to the Agent tool's `model` parameter. Effort
-  # is applied through the `effort` frontmatter of the writer agents.
-  translate: sonnet
-  transcribe: sonnet
-  reasoning_effort: high
-cursor: {}  # Configure the host-available role models explicitly per project.
+  # Claude Code model alias passed to the Agent tool's `model` parameter. Effort is
+  # applied through the `effort` frontmatter of the writer agents, not per dispatch.
+  translate:
+    model: sonnet
+    reasoning_effort: high
+  transcribe:
+    model: sonnet
+    reasoning_effort: high
+cursor: {}  # No per-dispatch model selection on this host; configure it per project if the host gains one.
+qoder: {}  # No per-dispatch model selection on this host; configure it per project if the host gains one.
+# `audit` and `asset-audit` are deliberately unset: reviewer lenses run on the
+# host's own subagent defaults unless a project configures them.

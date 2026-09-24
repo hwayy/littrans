@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
-from fidelity_fixtures import original_image_evidence
+from fidelity_fixtures import confirm_structure_checks, original_image_evidence
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -372,6 +372,7 @@ def _review_synthetic_workflow_source(root: Path) -> None:
     for decision in review["pages"]:
         for field in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[field] = True
+        confirm_structure_checks(decision)
         decision["notes"] = "Test-only generated PDF oracle: exact original code and equation regions, image hashes and metadata checked."
     path = root / "tmp" / "workflow-fixture-review.json"
     write_json(path, review)
@@ -1132,6 +1133,10 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     first, second = paragraphs[:2]
     revised = []
     for unit in units:
+        if unit.unit_id == first.unit_id:
+            # Explicitly continue this synthetic sentence: a receiver flag alone
+            # must not override the fixture's terminal punctuation.
+            unit = unit.model_copy(update={"continued_to_next": True})
         if unit.unit_id == second.unit_id:
             unit = unit.model_copy(update={"continues_from_previous": True})
         revised.append(unit)
@@ -2958,7 +2963,9 @@ def test_cursor_host_subagent_from_result_skips_cli(
     )
     assert reservation_path.is_file()
     assert len(dry_run["review_binding"]) == 64
-    packet_text = Path(dry_run["packet_path"]).read_text(encoding="utf-8")
+    # Recorded relative to the project so the record imports on any host.
+    assert not Path(dry_run["packet_path"]).is_absolute() and "\\" not in dry_run["packet_path"]
+    packet_text = (prepared_project / dry_run["packet_path"]).read_text(encoding="utf-8")
     assert dry_run["review_binding"] in packet_text
     assert dry_run["review_binding"] in dry_run["prompt"]
 

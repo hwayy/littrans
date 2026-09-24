@@ -71,9 +71,17 @@
       "type": "string"
     },
     "model": {
-      "minLength": 1,
-      "title": "Model",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The packet's dispatch model, echoed verbatim: the value passed to the host's task launcher (a host alias or a concrete id). Not the served model. Absent only when the packet records no model and the task ran on the host's default.",
+      "title": "Model"
     },
     "reasoning_effort": {
       "anyOf": [
@@ -85,7 +93,21 @@
         }
       ],
       "default": null,
+      "description": "The packet's dispatched reasoning effort, echoed verbatim.",
       "title": "Reasoning Effort"
+    },
+    "served_model_label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The model the host environment reported to the task under the dispatch value, recorded verbatim and unverified; never used for gating.",
+      "title": "Served Model Label"
     },
     "image_evidence": {
       "additionalProperties": {
@@ -119,7 +141,6 @@
   "required": [
     "packet_id",
     "author_task_id",
-    "model",
     "image_evidence",
     "candidates"
   ],

@@ -4,7 +4,7 @@ import pytest
 from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity
-from littrans.models import SourceUnit, UnitKind
+from littrans.models import RoleDispatch, SourceUnit, UnitKind
 from littrans.rendering import render_project
 from littrans.storage import (
     load_project,
@@ -28,7 +28,9 @@ def test_asset_packet_honors_workflow_host(
     monkeypatch.setenv("CODEX_THREAD_ID", "test")
     cfg = load_project(project)
     cfg.agent_models["codex"] = {}
-    cfg.agent_models["claude"] = {"transcribe": "selected-model", "reasoning_effort": "high"}
+    cfg.agent_models["claude"] = {
+        "transcribe": RoleDispatch(model="selected-model", reasoning_effort="high")
+    }
     save_project(project, cfg)
     if stage == "asset-audit":
         monkeypatch.setattr(
@@ -120,7 +122,9 @@ def test_asset_cli_explicit_host(
     monkeypatch.setenv("CODEX_THREAD_ID", "test")
     cfg = load_project(project)
     cfg.agent_models["codex"] = {}
-    cfg.agent_models["claude"] = {"transcribe": "selected-model", "reasoning_effort": "high"}
+    cfg.agent_models["claude"] = {
+        "transcribe": RoleDispatch(model="selected-model", reasoning_effort="high")
+    }
     save_project(project, cfg)
     selector = (
         ["--asset-ids", next(iter(load_assets(project)))]
@@ -134,7 +138,7 @@ def test_asset_cli_explicit_host(
     assert result.exit_code == 0, result.output
     import json
 
-    assert json.loads(result.output)["host"] == "claude"
+    assert json.loads(result.stdout)["host"] == "claude"
 
 
 def test_markdown_calls_preserve_literal_code_and_multiline_note() -> None:

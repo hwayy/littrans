@@ -10,7 +10,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from littrans.hosts import WAVE_BATCH_SET_MAX, host_model_defaults
+from littrans.hosts import (
+    WAVE_BATCH_SET_MAX,
+    host_model_defaults,
+    normalize_agent_models,
+)
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
@@ -169,16 +173,36 @@ MathStructuralField = Literal[
 Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
+_MODEL_IDENTITY_DESCRIPTION = (
+    "Concrete model the host must report as served for `model`. Set it when `model` is a host "
+    "alias (for example `sonnet`) that the host routes to another model; when unset, `model` "
+    "itself is the identity that host evidence must match."
+)
+
+
+def _nonempty_model_identity(value: str | None) -> str | None:
+    if value is not None and not value.strip():
+        raise ValueError("external reviewer model_identity must not be empty when set")
+    return value
+
+
 class ExternalReviewFallback(StrictModel):
-    model: str
+    model: str = Field(description="Dispatch value passed to the provider CLI.")
+    model_identity: str | None = Field(default=None, description=_MODEL_IDENTITY_DESCRIPTION)
     effort: str | None = None
+
+    @field_validator("model_identity")
+    @classmethod
+    def require_nonempty_fallback_model_identity(cls, value: str | None) -> str | None:
+        return _nonempty_model_identity(value)
 
 
 class ExternalReviewerConfig(StrictModel):
     id: str
     driver: ExternalReviewDriver
     command: str
-    model: str
+    model: str = Field(description="Dispatch value passed to the provider CLI's model option.")
+    model_identity: str | None = Field(default=None, description=_MODEL_IDENTITY_DESCRIPTION)
     effort: str | None = None
     fast: bool | None = None
     fallbacks: list[ExternalReviewFallback] = Field(default_factory=list)
@@ -189,6 +213,11 @@ class ExternalReviewerConfig(StrictModel):
         if not value.strip():
             raise ValueError("external reviewer values must not be empty")
         return value
+
+    @field_validator("model_identity")
+    @classmethod
+    def require_nonempty_model_identity(cls, value: str | None) -> str | None:
+        return _nonempty_model_identity(value)
 
     @model_validator(mode="after")
     def validate_driver_options(self) -> ExternalReviewerConfig:
@@ -273,6 +302,26 @@ class ExternalReviewConfig(StrictModel):
         return self
 
 
+class RoleDispatch(StrictModel):
+    """One role's dispatch policy. Either field may be unset: the host's default applies."""
+
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Dispatch model for this role: the value passed to the host's task launcher "
+            "(a host alias or a concrete id). Not the served model. Unset follows the "
+            "host's default subagent model."
+        ),
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description=(
+            "Dispatched reasoning effort for this role, independent of every other role. "
+            "Unset follows the host's default."
+        ),
+    )
+
+
 class ProjectConfig(StrictModel):
     schema_version: int = PROJECT_SCHEMA_VERSION
     project_id: str
@@ -281,15 +330,43 @@ class ProjectConfig(StrictModel):
     source_sha256: str
     source_pages: int
     profile: str
+    record_root_relative: str | None = Field(
+        default=None,
+        pattern=r"^(?:\.|\.\.(?:/\.\.)*)$",
+        description="Portable path from the project to its scaffold record root; absent in older projects.",
+    )
     source_language: str = "en"
     target_language: str = "zh-CN"
     rights_status: str = "private-research-only"
     external_review: ExternalReviewConfig | None = None
-    agent_models: dict[str, dict[str, str]] = Field(default_factory=host_model_defaults)
+    agent_models: dict[str, dict[str, RoleDispatch]] = Field(
+        default_factory=host_model_defaults,
+        validate_default=True,
+        description=(
+            "Per-host role dispatch policy: translate, transcribe, audit and asset-audit, each "
+            "with its own model and reasoning_effort. Each model is the dispatch value handed "
+            "to that host's task launcher, a host alias or a concrete id as the host defines; "
+            "which model the host serves under it is the host's own configuration and is never "
+            "verified here. An unset role, model or effort is supported and follows the host's "
+            "own default subagent behaviour."
+        ),
+    )
     status: ProjectStatus = ProjectStatus.INITIALIZED
     extractor_version: str = "2"
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dispatch_policy(cls, payload: Any) -> Any:
+        """Read `agent_models` in the nested or the legacy flat form, rejecting stray keys."""
+        if isinstance(payload, dict) and "agent_models" in payload:
+            payload = {**payload, "agent_models": normalize_agent_models(payload["agent_models"])}
+        return payload
+
+    def dispatch(self, host: str, role: str) -> RoleDispatch:
+        """The configured policy for one role on one host; unset fields stay None."""
+        return self.agent_models.get(host, {}).get(role, RoleDispatch())
 
     def source(self, project_root: Path) -> Path:
         path = Path(self.source_path)
@@ -874,9 +951,12 @@ class AuditRun(StrictModel):
     packet_id: str | None = None
     unit_fingerprints: dict[str, str]
     context_fingerprint: str | None = None
-    # Brief, style guide and relevant-term hash alone, so staleness can tell a
-    # context edit apart from a changed dependency unit.
+    # Brief, style guide and relevant approved/reference term hash alone, so staleness
+    # can tell a context edit apart from a changed dependency unit.
     shared_context_fingerprint: str | None = None
+    # The same context by part ({part: {sha256, lines}}), so a stale run can name which
+    # whole-file context grew and by how much.
+    shared_context_parts: dict[str, dict[str, Any]] | None = None
     context_unit_ids: list[str] = Field(default_factory=list)
     issue_ids: list[str] = Field(default_factory=list)
     reviewed_at: str = Field(default_factory=utc_now)
@@ -889,6 +969,21 @@ class AuditRun(StrictModel):
         return value
 
 
+# Stages `workflow packet --stage` accepts; source-review packets are review material
+# without a manifest of their own.
+WORKFLOW_PACKET_STAGES = ("source-review", "translate", "revise", "audit", "transcribe", "asset-audit")
+WORKFLOW_MANIFEST_STAGES = frozenset(WORKFLOW_PACKET_STAGES) - {"source-review"}
+# Why an audit run no longer counts, as `audit_coverage` reports it.
+AUDIT_STALE_REASONS = (
+    "context-changed",
+    "dependency-changed",
+    "unit-changed",
+    "invalidated",
+    "closure-incomplete",
+    "context-units-removed",
+)
+
+
 class WorkflowPacketManifest(StrictModel):
     schema_version: int = 2
     packet_id: BatchId
@@ -896,8 +991,18 @@ class WorkflowPacketManifest(StrictModel):
     batch_ids: list[BatchId] = Field(min_length=1, max_length=WAVE_BATCH_SET_MAX)
     lens: str | None = None
     host: str | None = None
-    model: str | None = None
-    reasoning_effort: str | None = None
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Dispatch model for the stage from agent_models.<host>: the value passed to the "
+            "host's task launcher (alias or concrete id, host-specific), echoed by submissions. "
+            "Not the served model."
+        ),
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="Dispatched reasoning effort from agent_models.<host>, echoed by submissions.",
+    )
     unit_ids: list[str]
     unit_fingerprints: dict[str, str]
     # v2 binds evidence to each batch's own coverage and dependency closure.
@@ -914,7 +1019,7 @@ class WorkflowPacketManifest(StrictModel):
     @field_validator("stage")
     @classmethod
     def require_supported_packet_stage(cls, value: str) -> str:
-        if value not in {"translate", "revise", "audit", "transcribe", "asset-audit"}:
+        if value not in WORKFLOW_MANIFEST_STAGES:
             raise ValueError(
                 "workflow packet stage must be translate, revise, transcribe, asset-audit or audit"
             )

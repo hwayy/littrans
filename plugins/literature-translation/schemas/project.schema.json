@@ -73,8 +73,22 @@
       "additionalProperties": false,
       "properties": {
         "model": {
+          "description": "Dispatch value passed to the provider CLI.",
           "title": "Model",
           "type": "string"
+        },
+        "model_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Concrete model the host must report as served for `model`. Set it when `model` is a host alias (for example `sonnet`) that the host routes to another model; when unset, `model` itself is the identity that host evidence must match.",
+          "title": "Model Identity"
         },
         "effort": {
           "anyOf": [
@@ -110,8 +124,22 @@
           "type": "string"
         },
         "model": {
+          "description": "Dispatch value passed to the provider CLI's model option.",
           "title": "Model",
           "type": "string"
+        },
+        "model_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Concrete model the host must report as served for `model`. Set it when `model` is a host alias (for example `sonnet`) that the host routes to another model; when unset, `model` itself is the identity that host evidence must match.",
+          "title": "Model Identity"
         },
         "effort": {
           "anyOf": [
@@ -196,6 +224,40 @@
       "title": "ProjectStatus",
       "type": "string"
     },
+    "RoleDispatch": {
+      "additionalProperties": false,
+      "description": "One role's dispatch policy. Either field may be unset: the host's default applies.",
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dispatch model for this role: the value passed to the host's task launcher (a host alias or a concrete id). Not the served model. Unset follows the host's default subagent model.",
+          "title": "Model"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dispatched reasoning effort for this role, independent of every other role. Unset follows the host's default.",
+          "title": "Reasoning Effort"
+        }
+      },
+      "title": "RoleDispatch",
+      "type": "object"
+    },
     "Severity": {
       "enum": [
         "blocker",
@@ -238,6 +300,20 @@
       "title": "Profile",
       "type": "string"
     },
+    "record_root_relative": {
+      "anyOf": [
+        {
+          "pattern": "^(?:\\.|\\.\\.(?:/\\.\\.)*)$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Portable path from the project to its scaffold record root; absent in older projects.",
+      "title": "Record Root Relative"
+    },
     "source_language": {
       "default": "en",
       "title": "Source Language",
@@ -267,10 +343,11 @@
     "agent_models": {
       "additionalProperties": {
         "additionalProperties": {
-          "type": "string"
+          "$ref": "#/$defs/RoleDispatch"
         },
         "type": "object"
       },
+      "description": "Per-host role dispatch policy: translate, transcribe, audit and asset-audit, each with its own model and reasoning_effort. Each model is the dispatch value handed to that host's task launcher, a host alias or a concrete id as the host defines; which model the host serves under it is the host's own configuration and is never verified here. An unset role, model or effort is supported and follows the host's own default subagent behaviour.",
       "title": "Agent Models",
       "type": "object"
     },

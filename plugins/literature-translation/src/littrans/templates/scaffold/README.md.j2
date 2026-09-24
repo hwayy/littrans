@@ -1,0 +1,62 @@
+# <Document title> — translation workspace
+
+Handbook for this LitTrans translation project: what is being translated, how to run the
+tools, where the work stands. Dated narrative belongs in `docs/HISTORY.md`, rulings in
+`docs/DECISIONS.md`, terminology procedure in `docs/TERMINOLOGY.md`, review outcomes in
+`docs/REVIEWS.md`, plugin defects in `PLUGIN-ISSUES.md`. What the installed plugin
+guarantees is in `docs/LITTRANS.md` (generated; regenerate after every plugin upgrade).
+
+## 1. The document
+
+| Item | Value |
+| --- | --- |
+| Title | |
+| Authors | |
+| Edition / publisher / year | |
+| Source PDF | `{{ project_prefix }}source/` (never tracked) |
+| Rights | private research reading; no public remote |
+
+Chapter → PDF page table (PDF pages are what every `--pages` option takes):
+
+| Chapter | Printed pages | PDF pages | Status |
+| --- | --- | --- | --- |
+| | | | |
+
+## 2. Layout
+
+- `{{ project_rel }}/` — the LitTrans project root (schema 6): `project.yaml`, `context/`,
+  `glossary/`, `derived/`, `batches/`, `translations/`, `reviews/`, `qa/`, `evidence/`,
+  `packets/`, `output/`, `overrides/`.
+- `docs/` — the records (history, decisions, terminology, reviews).
+- `tools/` — the launcher (`lt.cmd` / `lt.sh` / `lt.py`).
+- `PLUGIN-ISSUES.md` — the cumulative plugin defect ledger.
+
+## 3. Running the tools
+
+```text
+tools/lt.cmd doctor                         # Windows
+tools/lt.sh doctor                          # POSIX
+tools/lt.cmd <group> --help                 # discover commands
+tools/lt.cmd project tracked {{ project_rel }}         # does git track exactly the record?
+tools/lt.cmd project scaffold {{ project_rel }} --refresh   # after a plugin upgrade
+```
+
+Record here the interpreter pin and any environment variable each machine needs. The
+launcher finds the plugin on any host it is installed on (`LITTRANS_PLUGIN_ROOT` overrides);
+on a fresh POSIX clone give `tools/lt.sh` its executable bit once. When several hosts share
+this repository through a git remote: pull before writing, one host writes at a time, copy
+the PDF to `source/` on each host, run `project tracked` before every commit.
+
+## 4. Workflow
+
+Probe → prepare → verify → translate (optionally transcribe assets) → audit → revise →
+approve → render. Use `workflow next` / `workflow status` for the pipeline position; the
+stage names and limits are listed in `docs/LITTRANS.md`.
+
+## 5. Current status
+
+One paragraph: which pages are prepared, which batches are where, what is blocked.
+
+## 6. Next
+
+The next concrete step, and what it depends on.

@@ -11,11 +11,15 @@ from typing import Any
 
 from littrans.batching import load_manifest
 from littrans.evidence import (
+    AUDIT_CONTEXT_PARTS,
     audit_context_fingerprint,
+    audit_context_fingerprint_and_parts,
+    audit_context_parts,
     batch_unit_fingerprints,
     dependency_closure,
     effective_figure_labels,
-    source_representation_text,
+    term_matches,
+    term_source_text,
     translation_unit_fingerprint,
 )
 from littrans.models import (
@@ -128,9 +132,13 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
     )
 
 
+# Bump when a deterministic QA rule changes, or cached qa/<batch>.json reports stay current.
+DETERMINISTIC_QA_VERSION = "deterministic-qa-v6.18-quoted-titles"
+
+
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
     return sha256_text(
-        "deterministic-qa-v6.14-prose-omission-with-assets|"
+        DETERMINISTIC_QA_VERSION + "|"
         + json.dumps(approved_terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -338,10 +346,6 @@ def _comparison_source_text(
     return "\n".join([text, *missing])
 
 
-def _without_quoted_titles(text: str) -> str:
-    return re.sub(r'["“][^"”]{2,}["”]', " ", text)
-
-
 def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
     if unit.kind is UnitKind.HEADING and re.match(r"^\s*#{1,6}\s+", target):
         return "Heading target must contain body text only; the renderer owns the heading marker."
@@ -391,6 +395,15 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             and existing.qa_context_fingerprint == qa_context_fingerprint
         ):
             return existing
+
+    # A gate whose source never occurs in the prepared document (typo, accent or
+    # quote variant) would otherwise fail silently; report it once per run.
+    folded_units = [term_source_text(unit) for unit in units.values()]
+    for term in approved_terms:
+        source_term = str(term.get("source", "")).strip()
+        if source_term and not any(term_matches(term, folded) for folded in folded_units):
+            warnings.append(QAItem(code="approved-term-never-matched", severity="warning",
+                                   message=f"Approved term never matches any prepared source unit: {source_term}"))
 
     from littrans.fidelity_models import load_assets
 
@@ -488,6 +501,13 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                                    message="Automatic number/token checks cover extracted prose only. "
                                    "Numbers, symbols, and text inside original images require independent visual review.",
                                    unit_id=unit_id))
+            source_rows = [row for row in (unit.source_markdown or unit.source_text).split("\n") if row.strip()]
+            target_rows = [row for row in record.target_text.split("\n") if row.strip()]
+            if unit.kind is UnitKind.EQUATION and len(source_rows) > 1 and len(target_rows) != len(source_rows):
+                warnings.append(QAItem(code="display-rows-mismatch", severity="warning",
+                                       message=f"The displayed block has {len(source_rows)} rows but the translation has "
+                                       f"{len(target_rows)}; keep one row per line so the rendered cases stay aligned.",
+                                       unit_id=unit_id))
         effective_source = ASSET_RE.sub("", effective_source)
         effective_target = ASSET_RE.sub("", effective_target)
         semantic_source = _semantic_comparison_text(effective_source)
@@ -541,9 +561,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                             unit_id=unit_id,
                         )
                     )
-        source_folded = _without_quoted_titles(
-            source_representation_text(unit)
-        ).casefold()
+        source_folded = term_source_text(unit)
         # Forbidden wording applies to all translated content, independently of
         # whether image content can satisfy preservation checks for the prose.
         all_target = effective_target + "\n" + "\n".join(
@@ -555,7 +573,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             source_term = str(term.get("source", ""))
             target_term = str(term.get("target", ""))
             scope = str(term.get("scope", "document"))
-            if source_term and target_term and source_term.casefold() in source_folded:
+            if target_term and term_matches(term, source_folded):
                 if scope == "document" or scope == f"page:{unit.page}" or scope == unit.parent_id:
                     if target_term not in effective_target:
                         errors.append(
@@ -852,19 +870,38 @@ def audit_coverage(
     stale: dict[str, list[dict[str, Any]]] = {lens: [] for lens in REQUIRED_AUDIT_LENSES}
 
     def _mark_stale(
-        run: AuditRun, reason: str | None, unit_reasons: dict[str, str] | None = None
+        run: AuditRun,
+        reason: str | None,
+        unit_reasons: dict[str, str] | None = None,
+        context_changes: list[dict[str, Any]] | None = None,
     ) -> None:
         reasons = sorted(set((unit_reasons or {}).values())) if reason is None else [reason]
-        stale[run.lens].append(
-            {
-                "run_id": run.run_id,
-                "packet_id": run.packet_id,
-                "reviewed_at": run.reviewed_at,
-                "reasons": reasons,
-                "unit_ids": sorted(run.unit_fingerprints),
-                "unit_reasons": dict(sorted((unit_reasons or {}).items())),
-            }
-        )
+        entry: dict[str, Any] = {
+            "run_id": run.run_id,
+            "packet_id": run.packet_id,
+            "reviewed_at": run.reviewed_at,
+            "reasons": reasons,
+            "unit_ids": sorted(run.unit_fingerprints),
+            "unit_reasons": dict(sorted((unit_reasons or {}).items())),
+        }
+        if context_changes is not None:
+            # Which whole-file context grew (or which term list moved) since the run,
+            # so a coordinator sees the cost of a context edit without diffing files.
+            entry["context_changes"] = context_changes
+        stale[run.lens].append(entry)
+
+    def _context_changes(run: AuditRun, context_ids: tuple[str, ...]) -> list[dict[str, Any]] | None:
+        if not run.shared_context_parts:
+            return None
+        current_parts = audit_context_parts(root, [all_units[unit_id] for unit_id in context_ids])
+        changes = []
+        for part in AUDIT_CONTEXT_PARTS:
+            before = run.shared_context_parts.get(part)
+            after = current_parts.get(part)
+            if before is None or after is None or before.get("sha256") == after.get("sha256"):
+                continue
+            changes.append({"part": part, "lines_before": before.get("lines", 0), "lines_after": after.get("lines", 0)})
+        return changes
 
     for run in runs if runs is not None else _audit_runs(root, batch_id):
         if run.lens not in coverage:
@@ -922,7 +959,7 @@ def audit_coverage(
             if run.shared_context_fingerprint is None:
                 _mark_stale(run, "context-changed")
             elif run.shared_context_fingerprint != shared_fingerprint:
-                _mark_stale(run, "context-changed")
+                _mark_stale(run, "context-changed", context_changes=_context_changes(run, context_ids))
             else:
                 _mark_stale(run, "dependency-changed")
             continue
@@ -1003,6 +1040,7 @@ class _ReviewImportPlan:
     fingerprints: dict[str, str]
     context_fingerprint: str | None
     shared_context_fingerprint: str | None
+    shared_context_parts: dict[str, dict[str, Any]] | None
     context_unit_ids: list[str]
     preserve_status: bool
     reviewer: str | None
@@ -1059,10 +1097,15 @@ def _prepare_review_import_locked(
             if fingerprints.get(unit_id) != expected
         )
         if stale:
-            raise ValueError(f"Audit packet is stale for units: {stale}")
+            raise ValueError(
+                f"Audit packet is stale for units: {stale}. Their source or translation "
+                "changed after the packet was built; rebuild the audit packet "
+                "(workflow packet --stage audit ...) and re-run the lens on it"
+            )
     run_context_ids: list[str] = []
     run_context_fingerprint: str | None = None
     run_shared_fingerprint: str | None = None
+    run_shared_parts: dict[str, dict[str, Any]] | None = None
     if internal_lenses:
         run_context_ids = list(
             manifest.unit_ids if context_unit_ids is None else context_unit_ids
@@ -1086,7 +1129,7 @@ def _prepare_review_import_locked(
             )
             for unit_id in run_context_ids
         }
-        run_shared_fingerprint = audit_context_fingerprint(
+        run_shared_fingerprint, run_shared_parts = audit_context_fingerprint_and_parts(
             root, [all_units[unit_id] for unit_id in run_context_ids]
         )
         run_context_fingerprint = audit_evidence_context_fingerprint(
@@ -1098,7 +1141,12 @@ def _prepare_review_import_locked(
             expected_context_fingerprint is not None
             and run_context_fingerprint != expected_context_fingerprint
         ):
-            raise ValueError("Audit packet context is stale")
+            raise ValueError(
+                "Audit packet context is stale: the shared context (document brief, style "
+                "guide, approved glossary) or a covered translation changed after the packet "
+                "was built. Rebuild the audit packet (workflow packet --stage audit ...) and "
+                "re-run the lens on it instead of editing the recorded context"
+            )
 
     issue_path = root / "reviews" / f"{batch_id}.issues.jsonl"
     existing = {
@@ -1125,6 +1173,7 @@ def _prepare_review_import_locked(
         fingerprints=fingerprints,
         context_fingerprint=run_context_fingerprint,
         shared_context_fingerprint=run_shared_fingerprint,
+        shared_context_parts=run_shared_parts,
         context_unit_ids=run_context_ids,
         preserve_status=preserve_status,
         reviewer=reviewer,
@@ -1163,6 +1212,7 @@ def _apply_review_import_locked(root: Path, plan: _ReviewImportPlan) -> list[Rev
             },
             context_fingerprint=plan.context_fingerprint,
             shared_context_fingerprint=plan.shared_context_fingerprint,
+            shared_context_parts=plan.shared_context_parts,
             context_unit_ids=plan.context_unit_ids,
             issue_ids=[issue.issue_id for issue in plan.issues],
         )

@@ -58,7 +58,7 @@ def test_cli_prepare_forwards_allow_missing_layout(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(fidelity, "prepare_source", prepare)
     result = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--allow-missing-layout"])
     assert result.exit_code == 0, result.output
-    assert observed == [(tmp_path, "all", False, True)]
+    assert observed == [(tmp_path, "all", False, True, False, False)]
 
 
 def test_layout_status_reports_missing_interpreter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -114,24 +114,25 @@ def test_review_import_reuses_cached_layout_detections(project: Path, monkeypatc
     """A units/regions correction must re-prepare with the page's recorded detector output."""
     import littrans.fidelity as fidelity
     from littrans.fidelity import build_source_review_packet, import_source_review
+    from littrans.layout_detector import layout_result_path
     from littrans.storage import read_json, write_json
 
     calls: list[list[Path]] = []
 
-    def fake_detect(images: list[Path], output: Path) -> dict[str, Any]:
+    def fake_detect(images: list[Path], store: Path) -> dict[str, Any]:
         calls.append(images)
         payload = {"status": "ok", "fingerprint": "fake-fingerprint", "pages": {
             str(images[0].resolve()): [{"label": "title", "bbox": [100, 140, 700, 200], "score": 0.9}],
         }}
-        write_json(output, payload)
+        write_json(layout_result_path(store, payload["fingerprint"]), payload)
         return payload
 
     monkeypatch.setattr(fidelity, "detect_layout", fake_detect)
     prepare_source(project)
     ledger = read_json(project / "derived/fidelity-pages/p0001.json")
     assert ledger["layout_status"] == "ok" and ledger["layout_fingerprint"] == "fake-fingerprint"
-    heading_kinds = [u["kind"] for u in read_json(Path(build_source_review_packet(project, "1")["packet_path"]))["pages"][0]["units"]]
-    assert "heading" in heading_kinds
+    # The cached box was read: a title label on a plain sentence is overruled as running text (LT-086).
+    assert ledger["structure"]["overruled_labels"] == {"b0": "title"}
 
     packet = build_source_review_packet(project, "1")
     review = read_json(Path(packet["review_template"]))
@@ -143,6 +144,5 @@ def test_review_import_reuses_cached_layout_detections(project: Path, monkeypatc
     assert import_source_review(project, review_path, confirm_visual_review=True)["changed_pages"] == [1]
     ledger = read_json(project / "derived/fidelity-pages/p0001.json")
     assert ledger["layout_fingerprint"] == "fake-fingerprint"
-    kinds = [u["kind"] for u in read_json(Path(build_source_review_packet(project, "1")["packet_path"]))["pages"][0]["units"]]
-    assert "heading" in kinds
+    assert ledger["structure"]["overruled_labels"] == {"b0": "title"}
     assert len(calls) == 1  # the correction reused the cached result instead of re-running the detector

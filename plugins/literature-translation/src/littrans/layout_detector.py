@@ -43,8 +43,14 @@ def write_ready_marker(marker: Path, model: Path) -> None:
 
 
 def layout_cache_root() -> Path:
-    """Managed location of the isolated layout environment and its weights."""
-    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "littrans/layout"
+    """Managed location of the isolated layout environment and its weights.
+
+    ``%LOCALAPPDATA%/littrans/layout`` on Windows; ``$XDG_CACHE_HOME/littrans/layout``
+    (default ``~/.cache``) elsewhere — the same rule as the CLI's own environment.
+    """
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "littrans/layout"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "littrans/layout"
 
 
 def runtime_paths() -> tuple[Path | None, Path | None]:
@@ -104,8 +110,51 @@ def _runtime_identity(python: Path) -> dict[str, Any]:
             "interpreter_sha256": sha256_file(python), **identity}
 
 
-def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
-    """Return per-image pixel boxes, retaining inline formulas, or explicit unavailable state."""
+def layout_page_items(layout: dict[str, Any], image: Path, image_sha256: str | None) -> list[dict[str, Any]] | None:
+    """The detector's boxes for one page image, or None when the result does not hold them.
+
+    Results are keyed by image content (SHA-256), so a project tree keeps its layout
+    evidence wherever it is moved or cloned. A result written before content keys named
+    the image by its absolute path at detection time; it is still read by that path or,
+    once the tree has moved, by the image file name, which is unique within a project.
+    """
+    pages = layout.get("pages")
+    if not isinstance(pages, dict):
+        return None
+    for key in (image_sha256, str(image.resolve())):
+        if key in pages and isinstance(pages[key], list):
+            return list(pages[key])
+    # Legacy keys may come from a different OS; native Path parsing cannot split
+    # Windows backslashes on POSIX.
+    legacy = [items for key, items in pages.items()
+              if key.replace("\\", "/").rsplit("/", 1)[-1] == image.name and isinstance(items, list)]
+    return list(legacy[0]) if len(legacy) == 1 else None
+
+
+def _content_keyed(pages: Any, image_sha256: dict[str, str]) -> dict[str, Any] | None:
+    """Re-key a worker result from the request's image paths to image content, or None."""
+    if not isinstance(pages, dict) or set(pages) != set(image_sha256):
+        return None
+    if any(not isinstance(value, list) for value in pages.values()):
+        return None
+    return {image_sha256[name]: items for name, items in pages.items()}
+
+
+def layout_result_path(store: Path, fingerprint: str) -> Path:
+    """Where a detection result lives: one file per fingerprint, never overwritten by another."""
+    return store / f"{fingerprint}.json"
+
+
+def detect_layout(images: list[Path], store: Path) -> dict[str, Any]:
+    """Return per-image pixel boxes, retaining inline formulas, or explicit unavailable state.
+
+    ``pages`` is keyed by image SHA-256 and the fingerprint binds image content, detector
+    weights, runtime and worker, never a path of the project, so the same tree detects and
+    replays the same result under any root. Results are content-addressed inside ``store``
+    (``<fingerprint>.json`` with its ``.request.json`` and ``.log``): a rerun on the same
+    runtime reuses its file, a rerun on another runtime writes a new one, and a result a
+    page ledger already records is never overwritten (``path`` names the file).
+    """
     python, model = runtime_paths()
     if not python or not python.is_file() or not model or not model.is_dir():
         return {"status": "unavailable", "reason": "Layout runtime missing: run `littrans layout install` (MinerU 3.4.5, PP-DocLayoutV2) or configure LITTRANS_LAYOUT_PYTHON and LITTRANS_LAYOUT_MODEL; native evidence requires full visual region review.", "pages": {}}
@@ -122,18 +171,22 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         worker_sha = sha256_file(worker)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"status": "unavailable", "reason": str(exc), "pages": {}}
-    request = {"images": [str(p.resolve()) for p in images], "image_sha256": {str(p.resolve()): sha256_file(p) for p in images}, "model": str(model.resolve()), "weights": weights}
+    image_sha256 = {str(p.resolve()): sha256_file(p) for p in images}
+    request: dict[str, Any] = {"images": list(image_sha256), "image_sha256": image_sha256, "model": str(model.resolve()), "weights": weights}
     request.update(runtime=runtime, worker_sha256=worker_sha)
-    request["fingerprint"] = sha256_text(str(request))
+    identity = {"image_sha256": sorted(set(image_sha256.values())), "weights": weights, "runtime": runtime, "worker_sha256": worker_sha}
+    request["fingerprint"] = sha256_text(json.dumps(identity, sort_keys=True))
+    expected_keys = set(image_sha256.values())
+    output = layout_result_path(store, request["fingerprint"])
     if output.is_file():
         try:
             existing = read_json(output)
         except (OSError, ValueError):
             existing = {}
         if (existing.get("fingerprint") == request["fingerprint"] and existing.get("status") == "ok"
-                and isinstance(existing.get("pages"), dict) and set(existing["pages"]) == set(request["images"])
+                and isinstance(existing.get("pages"), dict) and set(existing["pages"]) == expected_keys
                 and all(isinstance(value, list) for value in existing["pages"].values())):
-            return existing
+            return {**existing, "path": str(output)}
     request_path = output.with_suffix(".request.json")
     write_json(request_path, request)
     env = os.environ.copy()
@@ -145,14 +198,16 @@ def detect_layout(images: list[Path], output: Path) -> dict[str, Any]:
         if result.returncode:
             raise RuntimeError(f"layout worker exit {result.returncode}; see {output.with_suffix('.log')}")
         payload = read_json(output)
-        if (payload.get("status") != "ok" or payload.get("fingerprint") != request["fingerprint"]
-                or not isinstance(payload.get("pages"), dict) or set(payload["pages"]) != set(request["images"])
-                or any(not isinstance(value, list) for value in payload["pages"].values())):
+        pages = _content_keyed(payload.get("pages"), image_sha256) if payload.get("status") == "ok" and payload.get("fingerprint") == request["fingerprint"] else None
+        if pages is None:
             raise ValueError("layout worker returned incomplete or stale output")
-        payload["elapsed_seconds"] = time.monotonic() - started
+        # Image names, not paths: the result is part of the project record and must not
+        # carry the directory of the host that ran the detector.
+        payload.update(pages=pages, images={Path(name).name: digest for name, digest in image_sha256.items()},
+                       elapsed_seconds=time.monotonic() - started)
         write_json(output, payload)
-        return payload
+        return {**payload, "path": str(output)}
     except (OSError, ValueError, subprocess.TimeoutExpired, RuntimeError) as exc:
         payload = {"status": "unavailable", "reason": str(exc), "pages": {}, "elapsed_seconds": time.monotonic() - started}
         write_json(output, payload)
-        return payload
+        return {**payload, "path": str(output)}

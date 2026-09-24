@@ -18,7 +18,7 @@ from littrans.extractor import parse_page_spec
 from littrans.fidelity_models import asset_reference_ids, load_assets
 from littrans.models import RenderPolicy, SourceUnit, UnitKind
 from littrans.rendering import _safe_name, _unit_html
-from littrans.representations import resolve_asset_html
+from littrans.representations import portable_href, resolve_asset_html
 from littrans.storage import atomic_write_text, load_project, read_json, read_jsonl
 from littrans.verification import verify_extraction
 
@@ -66,6 +66,10 @@ figcaption { margin:.35rem 0; font-size:.95em; color:var(--muted); font-style:it
 .fidelity-complex > .equation-number { display:block; text-align:right; }
 .kind-equation .display-line { padding-right:3.5rem; }
 .kind-equation .display-line .fidelity-asset[data-display="true"] { display:inline-block; margin:.2em .4em; vertical-align:middle; }
+.fidelity-complex.display-line.multirow { display:flex; align-items:center; justify-content:center; gap:.3em; }
+.display-rows { display:inline-flex; flex-direction:column; align-items:flex-start; text-align:left; }
+.display-row { display:block; }
+.display-lead .fidelity-asset[data-display="true"] { display:inline-block; margin:0; }
 .omitted { margin:.5rem 0 0; padding:.4rem .8rem; border:1px dashed var(--line); border-radius:.4rem; color:var(--muted); font-size:.8rem; }
 .omitted code { font-size:.8rem; }
 pre { margin:.25rem 0; padding:1rem; overflow:auto; border:1px solid var(--line); border-radius:.4rem; }
@@ -150,15 +154,34 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     attention: list[str] = []
     for error in verification.get("errors", []):
         attention.append("verify: " + html.escape(json.dumps(error, ensure_ascii=False)))
-    for aid in sorted(referenced):
-        asset = assets.get(aid)
-        if asset is not None and asset.grouping_pending:
-            attention.append(f"asset <code>{html.escape(aid)}</code> ({asset.kind}) has a pending grouping decision")
+    # The same predicate as the approval gate, one line per finding and page (hundreds of
+    # per-asset notices would push the body below the fold): an approved page needs no
+    # attention, and a grouping decision the review accepted shows as accepted.
+    from littrans.fidelity import page_review_findings
+
     for page in pages:
         ledger = _page_ledger(root, page)
-        if ledger and ledger.get("layout_status") != "ok":
+        if not ledger:
+            continue
+        receipt_path = root / f"evidence/pages/fidelity-p{page:04d}.review.json"
+        decision = read_json(receipt_path).get("decision", {}) if receipt_path.is_file() else {}
+        payload = {"ledger": ledger, "assets": [assets[aid].model_dump(mode="json") for aid in ledger.get("asset_ids", []) if aid in assets]}
+        wording = {"grouping-pending": "asset(s) with a pending grouping decision",
+                   "undeclared-formula-language": "math asset(s) with undeclared language inside the crop",
+                   "recoverable-prose-in-image": "image asset(s) holding recoverable prose"}
+        for finding in page_review_findings(payload, decision):
+            ids = finding.get("asset_ids") or [finding.get("asset_id")]
+            listed = ", ".join(f"<code>{html.escape(str(aid))}</code>" for aid in ids)
+            attention.append(f"page {page}: {len(ids)} {wording.get(finding['code'], html.escape(finding['code']))} "
+                             f"<details><summary>list</summary>{listed}</details>")
+        accepted = [item for item in decision.get("accepted_grouping_pending", []) if isinstance(item, dict)]
+        if accepted:
+            listed = ", ".join(f"<code>{html.escape(str(item.get('asset_id')))}</code> ({html.escape(str(item.get('reason', '')))})" for item in accepted)
+            attention.append(f"page {page}: {len(accepted)} pending grouping decision(s) accepted by review "
+                             f"<details><summary>list</summary>{listed}</details>")
+        if ledger.get("layout_status") != "ok":
             attention.append(f"page {page}: layout detector {html.escape(str(ledger.get('layout_status')))} — {html.escape(str(ledger.get('layout_reason')))}")
-        if ledger and not (root / f"evidence/pages/fidelity-p{page:04d}.review.json").is_file():
+        if not receipt_path.is_file():
             attention.append(f"page {page}: no approved source review receipt yet")
 
     sections: list[str] = []
@@ -168,7 +191,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         if page != current_page:
             current_page = page
             page_png = root / f"evidence/pages/fidelity-p{page:04d}.png"
-            link = f' <a href="{html.escape(page_png.resolve().as_uri())}">original page image</a>' if page_png.is_file() else ""
+            link = f' <a href="{html.escape(portable_href(page_png, output, root))}">original page image</a>' if page_png.is_file() else ""
             sections.append(f'<div class="page-break" id="page-{page}">PDF page {page}{link}</div>')
             omitted = [u for u in all_units if u.page == page and u.render_policy is RenderPolicy.OMIT]
             if omitted:
@@ -217,7 +240,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{html.escape(config.title)} — source checkpoint</title><style>{STYLE}</style></head><body>"
         f"<header><h1>{html.escape(config.title)}</h1><p>Source checkpoint · PDF pages {html.escape(page_label)} · {status}"
-        f' · <a href="{html.escape(config.source(root).as_uri())}">PDF</a></p></header><main>'
+        f' · <a href="{html.escape(portable_href(config.source(root), output, root))}">PDF</a></p></header><main>'
         f'<div class="summary">{summary}</div>{attention_html}' + "".join(sections) + "</main></body></html>"
     )
     if standalone:

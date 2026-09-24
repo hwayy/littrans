@@ -36,7 +36,7 @@ def test_wrong_format_rejected_before_publication(project: Path) -> None:
     assert not (project / 'evidence/representations/index.json').exists()
 
 
-@pytest.mark.parametrize('dependency', ['runtime', 'svg', 'png', 'pdf'])
+@pytest.mark.parametrize('dependency', ['runtime', 'svg', 'png'])
 @pytest.mark.parametrize('after_accept', [False, True])
 def test_review_binds_copied_dependencies(project: Path, dependency: str, after_accept: bool) -> None:
     candidate_input(project)

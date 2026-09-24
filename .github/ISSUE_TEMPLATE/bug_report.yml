@@ -10,14 +10,14 @@ body:
     id: version
     attributes:
       label: LitTrans version
-      placeholder: 0.5.0
+      placeholder: 0.6.2
     validations:
       required: true
   - type: dropdown
     id: host
     attributes:
       label: Host
-      options: [Codex, Cursor, Direct CLI]
+      options: [Codex, Cursor, Claude Code, Qoder, Direct CLI]
     validations:
       required: true
   - type: textarea

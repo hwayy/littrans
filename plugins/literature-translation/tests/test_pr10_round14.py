@@ -107,7 +107,7 @@ def test_table_asset_references_use_cells(project, keep_asset):
     assert ("asset-reference-mismatch" in errors) is (not keep_asset)
 
 
-@pytest.mark.parametrize("name", ["original.pdf", "original.svg", "original.png"])
+@pytest.mark.parametrize("name", ["original.svg", "original.png"])
 def test_unreceipted_cache_is_regenerated(project, name):
     config = load_project(project)
     region = {"kind": "math", "bbox": [45, 80, 110, 105]}
@@ -119,7 +119,6 @@ def test_unreceipted_cache_is_regenerated(project, name):
         (folder / name).write_bytes(b"truncated")
         fidelity._asset(project, doc, 1, config.source_sha256, region, [])
     assert (folder / name).read_bytes() != b"truncated"
-    assert read_json(receipt)["files"][name]
-    with fitz.open(folder / "original.pdf") as doc:
-        assert doc.page_count == 1
+    assert set(read_json(receipt)["files"]) == {"original.svg", "original.png"}
+    assert not (folder / "original.pdf").exists() and first.fragments[0].pdf_path is None
     assert fitz.Pixmap(str(folder / "original.png")).width > 0

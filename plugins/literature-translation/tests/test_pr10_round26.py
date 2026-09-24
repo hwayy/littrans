@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from fidelity_fixtures import confirm_structure_checks
 from test_fidelity_source import approve
 
 from littrans import fidelity, layout_detector, layout_runtime
@@ -38,6 +39,7 @@ def prose_project(tmp_path, monkeypatch):
         for key in ("viewed_original", "coverage_complete", "boundaries_complete",
                     "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[key] = True
+        confirm_structure_checks(decision)
     write_json(root / "prose-review.json", review)
     fidelity.import_source_review(root, root / "prose-review.json", True)
     create_batches(root, "1", prefix="prose")

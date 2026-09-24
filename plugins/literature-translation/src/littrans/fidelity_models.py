@@ -22,7 +22,8 @@ class FidelityFragment(StrictModel):
     bbox: tuple[float, float, float, float]
     png_path: str
     svg_path: str
-    pdf_path: str
+    # Fragments written before 0.6.1 also carried a per-region PDF; kept only for those records.
+    pdf_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
     glyph_ids: list[str] = Field(default_factory=list)
     width: float = Field(gt=0)
     height: float = Field(gt=0)
@@ -36,10 +37,11 @@ class FidelityFragment(StrictModel):
         x0, y0, x1, y1 = self.bbox
         if x1 <= x0 or y1 <= y0:
             raise ValueError("asset fragment must have positive area")
-        for value in (self.png_path, self.svg_path, self.pdf_path):
+        present = {value for value in (self.png_path, self.svg_path, self.pdf_path) if value}
+        for value in present:
             if Path(value).is_absolute() or ".." in Path(value).parts:
                 raise ValueError("asset evidence paths must stay inside the project")
-        if set(self.file_sha256) != {self.png_path, self.svg_path, self.pdf_path}:
+        if set(self.file_sha256) != present:
             raise ValueError("all original fragment files require hashes")
         if any(not re.fullmatch(r"[a-f0-9]{64}", v) for v in self.file_sha256.values()):
             raise ValueError("invalid fragment SHA256")
@@ -67,8 +69,8 @@ class FidelityAsset(StrictModel):
 
     @model_validator(mode="after")
     def valid_formula_conditions(self) -> FidelityAsset:
-        if self.formula_conditions and (self.kind != "math" or not self.display):
-            raise ValueError("formula_conditions require a displayed math asset")
+        if self.formula_conditions and self.kind != "math":
+            raise ValueError("formula_conditions require a math asset")
         owned = {gid for fragment in self.fragments for gid in fragment.glyph_ids}
         declared = [gid for condition in self.formula_conditions for gid in condition.glyph_ids]
         if len(declared) != len(set(declared)) or not set(declared) <= owned:

@@ -16,6 +16,8 @@ from typing import Any
 
 import pymupdf as fitz
 
+from littrans.storage import atomic_write_text
+
 SVG = "http://www.w3.org/2000/svg"
 XLINK = "http://www.w3.org/1999/xlink"
 NUMBER = r"[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?"
@@ -33,6 +35,19 @@ def _matrix(node: ET.Element) -> list[float]:
     return numbers
 
 
+def _rectangle_path(d: str) -> tuple[float, float, float, float] | None:
+    """Corners (left, top, right, bottom) of an axis-aligned ``M x y H x1 V y1 H x Z`` path."""
+    filled = re.fullmatch(
+        "M(" + NUMBER + ") (" + NUMBER + ")H(" + NUMBER + ")V(" + NUMBER + ")H(" + NUMBER + ")Z?", d
+    )
+    if not filled:
+        return None
+    left, top, right, bottom, back = (float(v) for v in filled.groups())
+    if abs(back - left) > .01:
+        return None
+    return left, top, right, bottom
+
+
 def _horizontal_rule(node: ET.Element, matrix: list[float]) -> tuple[float, float, float] | None:
     """Recognize a fraction bar/underline drawn as a stroked line or a thin filled rectangle.
 
@@ -44,17 +59,60 @@ def _horizontal_rule(node: ET.Element, matrix: list[float]) -> tuple[float, floa
     stroked = re.fullmatch("M0 0H(" + NUMBER + ")", d)
     if stroked:
         return matrix[4], matrix[4] + float(stroked[1]), matrix[5]
-    filled = re.fullmatch(
-        "M(" + NUMBER + ") (" + NUMBER + ")H(" + NUMBER + ")V(" + NUMBER + ")H(" + NUMBER + ")Z?", d
-    )
-    if not filled:
+    corners = _rectangle_path(d)
+    if corners is None:
         return None
-    left, top, right, bottom, back = (float(v) for v in filled.groups())
-    if abs(back - left) > .01 or abs(bottom - top) > 1.5:
+    left, top, right, bottom = corners
+    if abs(bottom - top) > 1.5:
         return None
     x0, x1 = sorted((left + matrix[4], right + matrix[4]))
     y = matrix[5] + matrix[3] * (top + bottom) / 2
     return x0, x1, y
+
+
+def _clip_covers_page(source: ET.Element, reference: str, page_rect: Any) -> bool:
+    """Whether ``clip-path="url(#id)"`` is one axis-aligned rectangle containing the page."""
+    match = re.fullmatch(r"url\(#([^)]+)\)", reference.strip())
+    if not match:
+        return False
+    clip = next((node for node in source.iter(f"{{{SVG}}}clipPath") if node.get("id") == match[1]), None)
+    if clip is None or len(clip) != 1 or clip[0].tag.split("}")[-1] != "path":
+        return False
+    try:
+        matrix = _matrix(clip[0])
+    except ValueError:
+        return False
+    corners = _rectangle_path(clip[0].get("d", ""))
+    if corners is None:
+        return False
+    a, b, c, d, e, f = matrix
+    xs = [a * x + c * y + e for x in corners[::2] for y in corners[1::2]]
+    ys = [b * x + d * y + f for x in corners[::2] for y in corners[1::2]]
+    tolerance = .05
+    return bool(min(xs) <= page_rect.x0 + tolerance and min(ys) <= page_rect.y0 + tolerance
+                and max(xs) >= page_rect.x1 - tolerance and max(ys) >= page_rect.y1 - tolerance)
+
+
+def _page_content(source: ET.Element, page_rect: Any) -> list[ET.Element]:
+    """Drawing nodes of the page SVG in page space.
+
+    MuPDF wraps the whole page in ``<g clip-path>`` whenever the PDF CropBox differs
+    from its MediaBox; that wrapper is clipping only, so its children keep page
+    coordinates. Any group with a transform, a smaller clip or other attributes is
+    returned intact for the callers' fail-closed group handling.
+    """
+    nodes: list[ET.Element] = []
+
+    def collect(parent: ET.Element) -> None:
+        for node in parent:
+            if (node.tag.split("}")[-1] == "g" and set(node.attrib) == {"clip-path"}
+                    and _clip_covers_page(source, node.get("clip-path", ""), page_rect)):
+                collect(node)
+            else:
+                nodes.append(node)
+
+    collect(source)
+    return nodes
 
 
 def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, list[float]]:
@@ -68,8 +126,8 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
     if definitions is None:
         return {}
     cache: dict[tuple[Any, ...], fitz.Rect] = {}
-    result = {}
-    for node in source:
+    result: dict[str, list[float]] = {}
+    for node in _page_content(source, page.rect):
         if node.tag.split("}")[-1] != "use":
             continue
         try:
@@ -96,9 +154,17 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
                 box |= drawing["rect"]
             cache[key] = box + (-100, -100, -100, -100)
         box = cache[key] + (matrix[4], matrix[5], matrix[4], matrix[5])
+        # A composite (relation + combining slash) is several <use> nodes at one origin.
         for glyph in matches:
-            result[glyph["id"]] = list(box)
+            prior = result.get(glyph["id"])
+            result[glyph["id"]] = list(box if prior is None else fitz.Rect(prior) | box)
     return result
+
+
+def _degenerate_path(node: ET.Element) -> bool:
+    """A path that draws nothing: no data, or move-to commands only (no segment, no close)."""
+    data = (node.get("d") or "").strip()
+    return not data or re.fullmatch(r"(?:[Mm][^A-LN-Za-ln-z]*)+", data) is not None
 
 
 def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
@@ -107,7 +173,7 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
     # Some PDF math fonts encode visible stretch delimiters as a space.
     # Native Unicode whitespace is not evidence that the original path is blank.
     use_origins = []
-    for node in source:
+    for node in _page_content(source, page.rect):
         if node.tag.split("}")[-1] == "use":
             use_origins.append(_matrix(node)[4:])
     glyphs = [g for g in owned if str(g["text"]).strip() or any(
@@ -131,7 +197,7 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
     used: set[str] = set()
     matched: set[str] = set()
     paths = 0
-    for node in source:
+    for node in _page_content(source, page.rect):
         tag = node.tag.split("}")[-1]
         if tag == "defs":
             continue
@@ -148,6 +214,10 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
             used.add(href[1:])
             target.append(copy.deepcopy(node))
         elif tag == "path":
+            if _degenerate_path(node):
+                # An empty or move-only path prints nothing anywhere on the page; it is
+                # no reason to give up the precise export of every fragment on the page.
+                continue
             matrix = _matrix(node)
             rule = _horizontal_rule(node, matrix)
             if rule is None:
@@ -162,9 +232,11 @@ def build_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                     continue
                 raise ValueError("Unsupported PDF vector primitive; retain raw region")
             x0, x1, y = rule
-            nearby = any(g["bbox"][0] < x1 + 1 and g["bbox"][2] > x0 - 1
-                         and g["bbox"][1] - 2 <= y <= g["bbox"][3] + 2 for g in glyphs)
-            if nearby and box.x0 - 2 <= x0 <= x1 <= box.x1 + 2 and box.y0 - 2 <= y <= box.y1 + 2:
+            # A rule inside the fragment's box (a fraction bar, a table rule, an overline)
+            # is part of the fragment wherever the nearest glyph box lies: the glyphs it
+            # belongs to are in the box; it must only share their horizontal extent.
+            beside = any(g["bbox"][0] < x1 + 1 and g["bbox"][2] > x0 - 1 for g in glyphs)
+            if beside and box.x0 - 2 <= x0 <= x1 <= box.x1 + 2 and box.y0 - 2 <= y <= box.y1 + 2:
                 target.append(copy.deepcopy(node))
                 paths += 1
         elif tag == "g":
@@ -224,7 +296,7 @@ def export_owned_fragment(page: fitz.Page, owned: list[dict[str, Any]],
                           svg_path: Path, png_path: Path, dpi: int,
                           bbox: list[float] | None = None) -> dict[str, Any]:
     svg, metadata = build_owned_fragment(page, owned, bbox)
-    svg_path.write_text(svg, encoding="utf-8")
+    atomic_write_text(svg_path, svg)
     with fitz.open("svg", svg.encode()) as document:
         document[0].get_pixmap(dpi=dpi, alpha=False).save(png_path)
     return {**metadata, "dpi": dpi}

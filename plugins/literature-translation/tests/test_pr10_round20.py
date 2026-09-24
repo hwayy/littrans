@@ -152,23 +152,28 @@ def test_detector_checks_prediction_lists(tmp_path, monkeypatch, invalid, where)
     image.touch()
     monkeypatch.setattr(layout_detector, "runtime_paths", lambda: (python, model))
     monkeypatch.setattr(layout_detector, "_runtime_identity", lambda _: {"python": "test"})
-    output = tmp_path / "layout.json"
+    store = tmp_path / "layout"
     calls = []
     def run(command, **kwargs):
         calls.append(command)
         request = read_json(Path(command[2]))
-        write_json(output, {"status": "ok", "fingerprint": request["fingerprint"],
-                            "pages": {str(image.resolve()): invalid if where == "worker" else []}})
+        write_json(Path(command[3]), {"status": "ok", "fingerprint": request["fingerprint"],
+                                      "pages": {str(image.resolve()): invalid if where == "worker" else []}})
         return subprocess.CompletedProcess(command, 0, "", "")
     monkeypatch.setattr(layout_detector.subprocess, "run", run)
-    result = layout_detector.detect_layout([image], output)
+    result = layout_detector.detect_layout([image], store)
+    output = Path(result["path"])
+    assert output.parent == store and (result["status"] != "ok" or output.stem == result["fingerprint"])
     if where == "worker":
         assert result["status"] == "unavailable"
     else:
+        # Published results are keyed by image content, not by the request's paths.
+        key = hashlib.sha256(image.read_bytes()).hexdigest()
+        assert set(read_json(output)["pages"]) == {key} and read_json(output)["images"] == {image.name: key}
         damaged = read_json(output)
-        damaged["pages"][str(image.resolve())] = invalid
+        damaged["pages"][key] = invalid
         write_json(output, damaged)
-        assert layout_detector.detect_layout([image], output)["pages"][str(image.resolve())] == []
+        assert layout_detector.detect_layout([image], store)["pages"][key] == []
         assert len(calls) == 2
 
 

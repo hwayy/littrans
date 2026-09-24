@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from fidelity_fixtures import confirm_structure_checks
 from typer.testing import CliRunner
 
 from littrans.batching import create_batches
@@ -51,6 +52,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         for key in ("viewed_original", "coverage_complete", "boundaries_complete",
                     "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
             decision[key] = True
+        confirm_structure_checks(decision)
         decision["notes"] = "Synthetic oracle: known prose and 1+1=2, no production approval."
     write_json(root / "oracle-review.json", review)
     import_source_review(root, root / "oracle-review.json", True)
@@ -71,7 +73,7 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
     context = read_json(packet_dir / "original-images.json")
     assert context["candidate_access"] is False
     assert context["read_only_context"]
-    assert context["model_policy"]["codex"]["translate"] == "gpt-5.6-luna"
+    assert context["dispatch"] == {"model": "gpt-5.6-luna", "reasoning_effort": "max"}
     transcription = create_workflow_packet(project, "transcribe", [bid])
     assert isinstance(transcription, dict)
     assert transcription["asset_ids"]
@@ -230,9 +232,10 @@ def test_unchanged_translation_retains_fresh_images_after_boundary_repair(tmp_pa
     source = tmp_path / "boundary.pdf"
     with fitz.open() as doc:
         page = doc.new_page()
-        # The incomplete prose parenthesis context deliberately leaves the
-        # automatic candidate needing an explicit reviewer correction.
-        page.insert_text((50, 60), "Let x = 1) be the size.")
+        # A balanced parenthesis around the notation stays in the automatic candidate
+        # (an unbalanced prose one is trimmed by balance), so the reviewer's decision
+        # to drop it is a genuine glyph ownership repair.
+        page.insert_text((50, 60), "Let x = (1) be the size.")
         doc.save(source)
     root = tmp_path / "boundary-project"
     initialize_project(source, root, "technical-book")
@@ -246,6 +249,7 @@ def test_unchanged_translation_retains_fresh_images_after_boundary_repair(tmp_pa
             for key in ("viewed_original", "coverage_complete", "boundaries_complete",
                         "reading_order_correct", "grouping_checked", "layout_fallback_checked"):
                 decision[key] = True
+            confirm_structure_checks(decision)
             if override:
                 decision["override"] = override
         write_json(root / "boundary-review.json", review)

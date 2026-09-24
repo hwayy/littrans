@@ -8,6 +8,8 @@ import yaml
 from littrans.evidence import (
     continuation_neighbors,
     record_audit_invalidation,
+    reference_terms_yaml,
+    relevant_reference_terms,
     relevant_terms,
     translation_memory,
 )
@@ -120,7 +122,14 @@ def _context_text(
     from littrans.structure_profile import structure_context
     structure = structure_context(root)
     if structure:
-        brief += "\n\n# Document structure rules\n\n" + yaml.safe_dump({"profile_sha256": structure["sha256"], "pages": structure["profile"]["pages"], "handling_rules": structure["profile"]["handling_rules"]}, allow_unicode=True, sort_keys=False)
+        profile = structure["profile"]
+        pages = {unit.page for unit in units}
+        # Scoped blocks reach a batch only when they cover one of its pages.
+        blocks = [block for block in profile.get("page_rules", [])
+                  if pages & set(parse_page_spec(block["pages"], max(profile["pages"])))]
+        rules = {"profile_sha256": structure["sha256"], "pages": profile["pages"], "handling_rules": profile["handling_rules"],
+                 **({"page_rules": blocks} if blocks else {})}
+        brief += "\n\n# Document structure rules\n\n" + yaml.safe_dump(rules, allow_unicode=True, sort_keys=False)
     style = (root / "context" / "style-guide.md").read_text(encoding="utf-8")
     terms = relevant_terms(root, units)
     adjacent = []
@@ -129,6 +138,9 @@ def _context_text(
     if after:
         adjacent.append(f"Next unit ({after.unit_id}):\n{after.source_text}")
     term_text = yaml.safe_dump({"approved_terms": terms}, allow_unicode=True, sort_keys=False)
+    reference_text = reference_terms_yaml(relevant_reference_terms(root, units))
+    if reference_text:
+        term_text += f"```\n\n# Reference terminology (not gated)\n\n```yaml\n{reference_text}"
     approved_memory = translation_memory(
         root, (unit.unit_id for unit in units), limit=6
     )

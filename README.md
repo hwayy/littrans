@@ -6,7 +6,7 @@
 
 LitTrans is a public Git-backed marketplace for the `literature-translation` plugin. The plugin
 provides a controlled, resumable workflow for translating English technical books and research
-papers into Simplified Chinese. It installs on Codex, Cursor and Claude Code from the same plugin tree.
+papers into Simplified Chinese. It installs on Codex, Cursor, Claude Code and Qoder from the same plugin tree.
 
 The implementation lives in [`plugins/literature-translation`](plugins/literature-translation/).
 Source PDFs, extracted assets, translation workspaces, credentials, and generated reading
@@ -21,13 +21,18 @@ images whenever LaTeX or another structured representation is unfinished or unve
 
 Role models are configured per host in each project's `agent_models`, seeded from the plugin's
 `profiles/host-models.yaml` (recommended: Codex `gpt-5.6-luna` at `max` effort, Claude Code `sonnet`
-at `high` effort; Cursor uses its explicit host role configuration). Source preparation requires the
-isolated layout detector installed by `littrans layout install`. Existing projects rebuild into a new schema-6 directory
-with source/context/glossary only. See the [plugin workflow](plugins/literature-translation/README.md)
-and [rebuild guide](plugins/literature-translation/MIGRATING.md).
-
-The 0.6 development branch does not change the installed stable plugin. Stable installations move
-only through the checked, tagged release procedure.
+at `high` effort). Each role — `translate`, `transcribe`, `audit`, `asset-audit` — sets its own
+model and reasoning effort. Leaving one unset dispatches on the host's own default, which is the
+only possibility on Cursor and Qoder; `project models PROJECT --host HOST` reports the resolved
+policy and the plugin advises rather than blocks when configuration and host capability disagree.
+Source preparation requires the isolated layout detector installed by `littrans layout install`.
+Projects from 0.5 or earlier rebuild into a new schema-6 directory with source/context/glossary/docs
+only; projects from any 0.6 build upgrade in place. `project init` also grows the project's record
+structure (handbook, records, defect ledger, launcher, `.gitignore`, and a plugin-owned
+`docs/LITTRANS.md` stating what the installed build guarantees); `project scaffold --refresh`
+regenerates it after an upgrade and `project tracked` asks git whether exactly the record is
+tracked. See the [plugin workflow](plugins/literature-translation/README.md) and [migration
+guide](plugins/literature-translation/MIGRATING.md).
 
 ## Repository layout
 
@@ -35,12 +40,14 @@ only through the checked, tagged release procedure.
 .agents/plugins/marketplace.json          Codex marketplace catalog
 .cursor-plugin/marketplace.json           Cursor marketplace catalog
 .claude-plugin/marketplace.json           Claude Code marketplace catalog
+.qoder-plugin/marketplace.json            Qoder marketplace catalog
 plugins/literature-translation/           Installable plugin
 plugins/literature-translation/.codex-plugin/   Codex plugin manifest
 plugins/literature-translation/.cursor-plugin/  Cursor plugin manifest
 plugins/literature-translation/.claude-plugin/  Claude Code plugin manifest
+plugins/literature-translation/.qoder-plugin/   Qoder plugin manifest
 plugins/literature-translation/skills/    Translation workflows
-plugins/literature-translation/agents/    Cursor and Claude Code local subagents
+plugins/literature-translation/agents/    Cursor, Claude Code and Qoder local subagents
 plugins/literature-translation/profiles/  Document profiles and per-host model defaults
 plugins/literature-translation/src/       Deterministic Python tooling
 scripts/                                  Repository validation commands
@@ -96,6 +103,8 @@ codex plugin list --json
 
 Do not remove an older installed version while a running task still depends on it. Existing
 tasks should finish or reach a durable checkpoint before the client installation is migrated.
+After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 On the primary development client, reinstall directly from its configured local `littrans`
 marketplace without running `marketplace upgrade`.
 
@@ -125,6 +134,16 @@ if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
+On Linux or macOS:
+
+```bash
+git clone --branch stable https://github.com/hwayy/littrans.git
+dest="$HOME/.cursor/plugins/local/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  littrans/plugins/literature-translation/ "$dest/"
+```
+
 Contributors with GitHub authentication may use the SSH repository URL instead.
 Start a new Cursor agent session after installation.
 
@@ -140,6 +159,13 @@ if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
 ```
 
+```bash
+dest="$HOME/.cursor/plugins/local/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  plugins/literature-translation/ "$dest/"
+```
+
 A Teams or Enterprise plan may also import this repository as a Cursor team marketplace from
 `.cursor-plugin/marketplace.json`. Local install does not require that.
 
@@ -148,7 +174,8 @@ A Teams or Enterprise plan may also import this repository as a Cursor team mark
 Published plugin changes always receive a new semantic version. Finish or checkpoint any running
 session first. Recopy the plugin directory into `~/.cursor/plugins/local/literature-translation`,
 reload the window, and start a new agent session. A leftover junction from an older install will
-be ignored.
+be ignored. After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 
 ## Install on Claude Code
 
@@ -184,24 +211,101 @@ claude --plugin-dir plugins/literature-translation
 Skills are invoked as `/literature-translation:<skill-name>`; the plugin subagents appear as
 `literature-translation:<agent-name>`. Run `python plugins/literature-translation/scripts/littrans.py doctor`
 and `... layout install` once so the CLI runtime and the required layout detector are available.
-Keep source PDFs and translation workspaces on the local machine.
+The commands are the same on Windows, Linux and macOS; the installed plugin lives under
+`~/.claude/plugins/cache/littrans/literature-translation/<version>` on every platform. Keep
+source PDFs and translation workspaces on the local machine.
 
 ### Update a Claude Code client
 
 Finish or checkpoint any running session first. Run `claude plugin marketplace update littrans`
 followed by `claude plugin update literature-translation@littrans` (a `--plugin-dir` session simply
-picks up the checkout on its next start), then start a new session.
+picks up the checkout on its next start), then start a new session. After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
+
+## Install on Qoder
+
+Qoder reads the same plugin tree through `.qoder-plugin/plugin.json` and reuses the shared
+`skills/*/SKILL.md` and `agents/*.md` files. The verified install path is to copy the plugin
+directory into Qoder's user plugin folder, enable it, and start a new session.
+
+### Consumer clients
+
+Clone or update the `stable` branch, then copy the plugin directory:
+
+```powershell
+git clone --branch stable https://github.com/hwayy/littrans.git
+$repo = Join-Path (Get-Location) "littrans"
+$src = Join-Path $repo "plugins\literature-translation"
+$dest = Join-Path $env:USERPROFILE ".qoder-cn\plugins\literature-translation"
+New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
+```
+
+On Linux or macOS:
+
+```bash
+git clone --branch stable https://github.com/hwayy/littrans.git
+dest="$HOME/.qoder-cn/plugins/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  littrans/plugins/literature-translation/ "$dest/"
+```
+
+Contributors with GitHub authentication may use the SSH repository URL instead.
+
+### Primary development client
+
+Copy the local plugin checkout into Qoder's plugin directory. From the repository root:
+
+```powershell
+$src = Join-Path (Get-Location) "plugins\literature-translation"
+$dest = Join-Path $env:USERPROFILE ".qoder-cn\plugins\literature-translation"
+New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+robocopy $src $dest /E /XD __pycache__ .pytest_cache .venv .mypy_cache
+```
+
+```bash
+dest="$HOME/.qoder-cn/plugins/literature-translation"
+rm -rf "$dest" && mkdir -p "$(dirname "$dest")"
+rsync -a --exclude __pycache__ --exclude .pytest_cache --exclude .venv --exclude .mypy_cache \
+  plugins/literature-translation/ "$dest/"
+```
+
+Enable `literature-translation` under `enabledPlugins` in `~/.qoder-cn/settings.json` and confirm it
+appears as `literature-translation@littrans` in `~/.qoder-cn/plugins/installed_plugins_v2.json`. A
+Qoder client that supports a Git marketplace may instead register `.qoder-plugin/marketplace.json`
+and install `literature-translation@littrans`; the manual copy above does not depend on that.
+
+Skills are invoked as `/literature-translation:<skill-name>`; the plugin subagents appear as
+`literature-translation:<agent-name>`. Run `python <dest>\scripts\littrans.py doctor` and
+`... layout install` once so the CLI runtime and the required layout detector are available, then
+start a new Qoder session. Keep source PDFs and translation workspaces on the local machine.
+
+### Update a Qoder client
+
+Finish or checkpoint any running session first. Recopy the plugin directory into
+`~/.qoder-cn/plugins/literature-translation`, then start a new session. As on every host, a plugin
+update is only picked up when the version string changes. After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 
 ## Development and release
 
 Development happens on `main` or topic branches. The `stable` branch advances only to checked,
-tagged release commits. Every distributed release increments the version in both plugin manifests,
+tagged release commits. Every distributed release increments the version in all host plugin manifests,
 Python package metadata, and `littrans.__version__` together.
 
-Run the local release checks from the repository root:
+Run the local release checks from the repository root — the two scripts perform the same steps
+(repository `.venv`, release metadata, ruff, mypy, the test suite, `doctor`) and the
+`release-checks` workflow runs both on Windows and Linux:
 
 ```powershell
 ./scripts/check.ps1
+```
+
+```bash
+bash scripts/check.sh
 ```
 
 See [`RELEASING.md`](RELEASING.md) for the manual release procedure and

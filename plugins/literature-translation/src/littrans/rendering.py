@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import Counter
 from functools import partial
 from importlib.resources import files
 from pathlib import Path
@@ -19,6 +20,7 @@ from littrans.batching import load_manifest
 from littrans.evidence import (
     dependency_closure,
     effective_figure_labels,
+    equation_is_notation,
     equation_markdown,
 )
 from littrans.extractor import parse_page_spec
@@ -38,7 +40,7 @@ from littrans.models import (
     TranslationRecord,
     UnitKind,
 )
-from littrans.project import load_terms, translation_map
+from littrans.project import PROPOSED_STATUS, load_terms, translation_map
 from littrans.quality import STATUS_ORDER, audit_coverage, qa_report_is_current
 from littrans.representations import (
     ASSET_RE,
@@ -47,6 +49,7 @@ from littrans.representations import (
     install_mathjax,
     mathjax_bootstrap,
     mathjax_publication_paths,
+    portable_href,
     resolve_asset_html,
     resolve_asset_markdown,
 )
@@ -61,6 +64,7 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
+from littrans.source_structure import TERMINAL_PUNCTUATION, language_words
 from littrans.storage import (
     atomic_write_text,
     load_project,
@@ -466,12 +470,36 @@ def _markdown_footnote_calls(text: str, unit: SourceUnit, unit_map: dict[str, So
     return FOOTNOTE_TOKEN_RE.sub(replace, text)
 
 
+_DISPLAY_PROSE_CUES = frozenset({
+    "case", "cases", "for", "if", "when", "where", "otherwise", "else", "then",
+    "provided", "assuming", "unless", "such", "that", "all", "only", "with",
+})
+
+
+def _translated_native_equation(unit: SourceUnit, target: str | None) -> bool:
+    """A submitted translation replaces native display text, including mixed math and prose."""
+    if not unit.translatable or unit.asset_refs or unit.latex or target is None:
+        return False
+    # Formatting a formula (including whitespace around operators) is not translation.
+    if re.sub(r"\s+", "", target) == re.sub(r"\s+", "", unit.source_text):
+        return False
+    # A multi-letter math function or variable (erf, CDF, alpha) is not prose.
+    # Explicit connectors or a Chinese translation of source words disambiguate
+    # native case labels whose vocabulary is otherwise open-ended.
+    words = language_words(unit.source_text)
+    return bool(words and (any(word.casefold() in _DISPLAY_PROSE_CUES for word in words)
+                           or re.search(r"[\u3400-\u9fff]", target)))
+
+
 def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     text = target if target is not None else unit.source_text
     safe_text = escape_markdown_prose(text)
     if unit.kind is UnitKind.TABLE and unit.table:
         return table_to_markdown(unit.table)
     if ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}:
+        if unit.kind is UnitKind.EQUATION and "\n" in safe_text:
+            # Rows of a displayed block stay rows: hard breaks, not a flowed paragraph.
+            safe_text = "  \n".join(row for row in safe_text.split("\n") if row.strip())
         return safe_text + (
             f" ({unit.equation_number})"
             if unit.equation_number and f"({unit.equation_number})" not in text
@@ -499,7 +527,11 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.CODE:
         return fenced_code(unit.source_text, unit.code_language)
     if unit.kind is UnitKind.EQUATION:
-        return equation_markdown(unit)
+        # A native-text display line ("Prob", "otherwise.") renders its translation as text.
+        if _translated_native_equation(unit, target):
+            number = f" ({unit.equation_number})" if unit.equation_number and f"({unit.equation_number})" not in text else ""
+            return safe_text + number
+        return equation_markdown(unit, safe_text if not equation_is_notation(unit) else None)
     if unit.kind is UnitKind.FIGURE:
         asset = _asset_markdown(unit) or f"`[figure: PDF page {unit.page}]`"
         labels = [
@@ -584,6 +616,45 @@ def _inline_html(text: str, footnote_scope: str = "", footnote_targets: dict[str
     return "".join(parts)
 
 
+def _spans_display_rows(unit: SourceUnit, lead_id: str, rows: list[str]) -> bool:
+    """Require source geometry before moving an asset out of its printed row."""
+    source_ids = list(dict.fromkeys(ASSET_RE.findall(unit.source_markdown or unit.source_text)))
+    # Preparation flattens fragments in source asset order. Only a one-to-one
+    # correspondence lets us recover the boxes without guessing fragment counts.
+    if not source_ids or source_ids[0] != lead_id or len(source_ids) != len(unit.asset_refs):
+        return False
+    if any(ref.kind != "fidelity" or ref.bbox[0] >= ref.bbox[2] or ref.bbox[1] >= ref.bbox[3]
+           for ref in unit.asset_refs):
+        return False
+    boxes = {aid: ref.bbox for aid, ref in zip(source_ids, unit.asset_refs, strict=True)}
+    lead = boxes[lead_id]
+    tolerance = 1.0  # PDF points: tolerate small crop padding differences.
+    for row in rows:
+        ids = ASSET_RE.findall(row)
+        if not ids or any(aid == lead_id or aid not in boxes for aid in ids):
+            return False
+        if any(not (lead[2] <= boxes[aid][0] + tolerance
+                    and lead[1] <= boxes[aid][1] + tolerance
+                    and lead[3] >= boxes[aid][3] - tolerance) for aid in ids):
+            return False
+    return True
+
+
+def _display_rows_html(unit: SourceUnit, rows: list[str], inline: Any, number: str) -> str:
+    """Stack display rows, promoting a lead only when its source box spans them.
+
+    A cases formula keeps its brace (or ``X = {`` head) as the lead and its rows as
+    a column, so a tall delimiter is not squeezed into a single flowed line.
+    """
+    lead = ""
+    first = ASSET_RE.match(rows[0])
+    if first and _spans_display_rows(unit, first[1], [rows[0][first.end():].strip(), *rows[1:]]):
+        lead = '<span class="display-lead">' + inline(first[0]) + "</span>"
+        rows = [rows[0][first.end():].strip(), *rows[1:]]
+    body = "".join('<span class="display-row">' + inline(row) + "</span>" for row in rows)
+    return '<div class="fidelity-complex display-line multirow">' + lead + '<span class="display-rows">' + body + "</span>" + number + "</div>"
+
+
 def _footnote_targets(unit: SourceUnit, unit_map: dict[str, SourceUnit], source_view: bool) -> dict[str, str]:
     side = "source" if source_view else "target"
     return {note.footnote_number: f"fn-{side}-{note.unit_id}"
@@ -597,6 +668,7 @@ def _unit_html(
     target_table: Any = None,
     *,
     source_view: bool,
+    submitted_translation: bool = False,
     unit_map: dict[str, SourceUnit] | None = None,
 ) -> str:
     targets = _footnote_targets(unit, unit_map or {}, source_view)
@@ -615,13 +687,17 @@ def _unit_html(
             return '<figure class="fidelity-complex source-figure">' + inline(text) + "</figure>"
         # A displayed line that also carries prose keeps its assets on the line.
         mixed = " display-line" if unit.kind is UnitKind.EQUATION and ASSET_RE.sub("", text).strip() else ""
+        rows = [row for row in text.split("\n") if row.strip()] if unit.kind is UnitKind.EQUATION else []
+        if len(rows) > 1:
+            return _display_rows_html(unit, rows, inline, number)
         return f'<div class="fidelity-complex{mixed}">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
         return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
-            plain_unit, target, target_table, source_view=source_view, unit_map=unit_map
+            plain_unit, target, target_table, source_view=source_view,
+            submitted_translation=submitted_translation, unit_map=unit_map
         ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
@@ -638,13 +714,22 @@ def _unit_html(
             highlighted = html.escape(unit.source_text)
         return f'<pre><code class="language-{language}">{highlighted}</code></pre>'
     if unit.kind is UnitKind.EQUATION:
+        display_as_text = not equation_is_notation(unit) or (
+            submitted_translation and _translated_native_equation(unit, target)
+        )
+        display_content = text if display_as_text else (unit.latex or unit.source_text)
         number = (
             f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
-            if unit.equation_number
+            if unit.equation_number and (
+                not display_as_text or f"({unit.equation_number})" not in text
+            )
             else ""
         )
+        if display_as_text:
+            # Native words on a displayed line stay upright text and keep their translation.
+            return '<div class="fidelity-complex display-line">' + inline(text) + number + "</div>"
         return '<div class="math display">' + _mathml(
-            unit.latex or unit.source_text, "block"
+            display_content, "block"
         ) + number + "</div>"
     if unit.kind is UnitKind.TABLE:
         table = target_table or unit.table
@@ -722,6 +807,29 @@ def _asset_companions(record: Any, unit: SourceUnit | None = None, unit_map: dic
         markup.append('<aside class="asset-translation" data-asset-id="' + html.escape(item.asset_id, quote=True)
                       + '">' + "".join(body) + "</aside>")
     return "\n\n".join(markdown), "".join(markup)
+
+
+def _continues_paragraph(previous: SourceUnit, unit: SourceUnit) -> bool:
+    """Whether ``unit`` continues the paragraph ``previous`` ended a page with.
+
+    The two page-edge flags are read together, as batching and audit closure read
+    them: the sender's ``continued_to_next`` (its last line ends mid-sentence) carries
+    the continuation even when the receiver's flag is unset, and a receiver's flag set
+    on geometry alone does not glue a paragraph to a sentence the sender closed with
+    terminal punctuation.
+    """
+    if previous.kind is not UnitKind.PARAGRAPH or unit.kind is not UnitKind.PARAGRAPH:
+        return False
+    if not 0 <= unit.page - previous.page <= 1:
+        return False
+    if previous.continued_to_next:
+        return True
+    if not unit.continues_from_previous:
+        return False
+    # A printed full stop can precede the Markdown call inserted for a footnote.
+    # Peel only trailing calls and wrappers, leaving the prose punctuation in place.
+    tail = re.sub(r"(?:\[\^\d+\]|[*_~\s”’\"')\]）】〕])+$", "", previous.source_text)
+    return TERMINAL_PUNCTUATION.search(tail) is None
 
 
 def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1198,10 +1306,8 @@ def render_project(
             markdown[-1] += f"{separator}{anchor}{continued_body}"
             markdown.append("")
         elif (
-            unit.continues_from_previous
-            and previous_unit is not None
-            and 0 <= unit.page - previous_unit.page <= 1
-            and previous_unit.kind is UnitKind.PARAGRAPH
+            previous_unit is not None
+            and _continues_paragraph(previous_unit, unit)
             and markdown
         ):
             while markdown and markdown[-1] == "":
@@ -1227,11 +1333,16 @@ def render_project(
             and next_unit.kind is unit.kind
             and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
         )
+        ordinary_paragraph = unit.kind is UnitKind.PARAGRAPH and unit.sidebar_role is not SidebarRole.BODY
+        if ordinary_paragraph:
+            # Match the append decision above, including sender-only continuations
+            # and terminal punctuation that ends a receiver-only chain.
+            next_continues_this_unit = next_unit is not None and _continues_paragraph(unit, next_unit)
         if not next_continues_this_unit:
             for companion in pending_markdown_companions:
                 markdown.extend([companion, ""])
             pending_markdown_companions.clear()
-        if not unit.continued_to_next and not next_continues_this_unit:
+        if not next_continues_this_unit and (ordinary_paragraph or not unit.continued_to_next):
             for reader_note in pending_markdown_reader_notes:
                 markdown.extend([*_reader_note_markdown(reader_note), ""])
             pending_markdown_reader_notes.clear()
@@ -1251,6 +1362,7 @@ def render_project(
             bilingual_target,
             target_table,
             source_view=False,
+            submitted_translation=target is not None,
             unit_map=footnote_unit_map,
         )
         source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only, cache=asset_cache)
@@ -1366,7 +1478,8 @@ def render_project(
                     }
                 )
         elif (
-            unit.continues_from_previous
+            previous_unit is not None
+            and _continues_paragraph(previous_unit, unit)
             and rows
             and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
@@ -1440,7 +1553,7 @@ def render_project(
         status=rendered_status,
         rows=rows,
         pages=(f"{min(pages)}–{max(pages)}" if len(set(pages)) == max(pages) - min(pages) + 1 else "、".join(map(str, sorted(set(pages))))),
-        pdf_uri=config.source(root).as_uri(),
+        pdf_uri=portable_href(config.source(root), output, root),
         allow_draft=allow_draft,
         mathjax_bootstrap="" if originals_only else mathjax_bootstrap(),
     )
@@ -1672,7 +1785,16 @@ def _write_quality_summary(
 
 
 def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
-    candidate_terms = load_terms(root, "candidates.yaml")
+    # A candidate is unresolved only while nobody has decided on it: entries whose
+    # status records a decision (reference-only, rejected, promoted) are counted, not listed.
+    decided: Counter[str] = Counter()
+    candidate_terms = []
+    for term in load_terms(root, "candidates.yaml", enforced_only=False):
+        status = str(term.get("status") or PROPOSED_STATUS)
+        if status == PROPOSED_STATUS:
+            candidate_terms.append(term)
+        else:
+            decided[status] += 1
     translations = translation_map(root)
     issues: list[ReviewIssue] = []
     for issue_path in (root / "reviews").glob("*.issues.jsonl"):
@@ -1688,6 +1810,9 @@ def _write_unresolved(path: Path, root: Path, selected_ids: set[str]) -> None:
     )
     if not candidate_terms:
         lines.append("None.")
+    if decided:
+        summary = ", ".join(f"{status}: {count}" for status, count in sorted(decided.items()))
+        lines.extend(["", f"{sum(decided.values())} decided candidate(s) omitted ({summary})."])
     lines.extend(["", "## Translator uncertainties", ""])
     uncertainty_lines = [
         f"- `{unit_id}`: {uncertainty}"

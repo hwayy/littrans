@@ -77,9 +77,10 @@ def test_wave_status_is_compact_and_packet_is_content_addressed(tmp_path: Path) 
     assert first.packet_id == second.packet_id
     assert first.storage_root == ".littrans/work"
     assert all(path.name.startswith("source-") for path in (root / "packets").iterdir())
-    assert (root / ".gitignore").read_text(encoding="utf-8").splitlines().count(
-        "/.littrans/"
-    ) == 1
+    ignore_lines = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    # The lock stays out; the packet payloads the audit ledger names stay in.
+    assert ignore_lines.count(".littrans/*") == 1
+    assert ignore_lines.count("!.littrans/work/") == 1
 
 
 def test_wave_status_rejects_stale_or_unbatched_layout_results(tmp_path: Path) -> None:
@@ -885,10 +886,11 @@ def test_revise_packet_carries_current_translation_and_open_issues(tmp_path: Pat
     task = status["ready_tasks"][0]
     from littrans.hosts import resolve_coordination_host
 
-    policy = load_project(root).agent_models[resolve_coordination_host(None)]
+    # Revision is translator work, so it reuses the translate role's own model and effort.
+    policy = load_project(root).dispatch(resolve_coordination_host(None), "translate")
     assert task["stage"] == "revise"
-    assert task["model"] == policy["translate"]
-    assert task["reasoning_effort"] == policy["reasoning_effort"]
+    assert task["model"] == policy.model
+    assert task["reasoning_effort"] == policy.reasoning_effort
 
     with pytest.raises(ValueError, match="do not accept a lens"):
         create_workflow_packet(root, "revise", [batch.batch_id], "fidelity")

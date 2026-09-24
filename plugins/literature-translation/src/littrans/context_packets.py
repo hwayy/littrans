@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from littrans.models import SourceUnit
+from littrans.models import RoleDispatch, SourceUnit
 from littrans.storage import load_project, read_json, read_jsonl, sha256_file
 
 
@@ -38,7 +38,8 @@ TARGET_TEXT_CONTRACTS = (
 )
 
 
-def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *, include_adjacent: bool = False) -> dict[str, Any]:
+def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *,
+                     include_adjacent: bool = False, host: str | None = None) -> dict[str, Any]:
     from littrans.fidelity_models import asset_reference_ids, load_assets
     assets = load_assets(root)
     adjacent = adjacent_source_units(root, units) if include_adjacent else []
@@ -61,10 +62,14 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         if overflow:
             images[overflow["path"]] = sha256_file(root / overflow["path"])
     config = load_project(root)
+    # Only this packet's own dispatch policy: a writer has no use for the other
+    # hosts' configuration, and either field may be unset on the host's default.
+    dispatch = (config.dispatch(host, "translate" if role == "revise" else role)
+                if host else RoleDispatch())
     return {
         "source_sha256": config.source_sha256,
         "role": role,
-        "model_policy": config.agent_models,
+        "dispatch": dispatch.model_dump(mode="json"),
         "fresh_context": True,
         "candidate_access": False,
         "instructions": (
@@ -80,7 +85,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
             "set language_present=false and explain in notes; the technical auditor must verify this. "
             "The v6 asset-reference contract overrides incompatible historical style instructions. "
             + TARGET_TEXT_CONTRACTS
-        ) + (" Displayed math with formula_conditions contains source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
+        ) + (" Math assets with formula_conditions contain source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
         "units": [{"unit_id": u.unit_id, "source_hash": u.source_hash,
                    "source": u.source_markdown or u.source_text, "page": u.page,
                    "equation_number": u.equation_number, "parent_id": u.parent_id, "footnote_number": u.footnote_number, "footnote_refs": u.footnote_refs} for u in units],

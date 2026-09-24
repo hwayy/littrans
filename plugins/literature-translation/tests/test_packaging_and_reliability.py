@@ -26,6 +26,9 @@ def test_wheel_contains_template_and_installed_render_uses_it(
     installed = tmp_path / "installed"
     with zipfile.ZipFile(wheel_path) as archive:
         assert "littrans/templates/bilingual.html.j2" in archive.namelist()
+        # The record scaffold ships with the package, so `project init` works from a wheel.
+        for template in ("LITTRANS.md.j2", "gitignore.j2", "lt.py.j2", "reference.yaml.j2"):
+            assert f"littrans/templates/scaffold/{template}" in archive.namelist()
         for profile in ("technical-book", "research-paper", "en-zh-cn"):
             assert f"littrans/profiles/{profile}.yaml" in archive.namelist()
         archive.extractall(installed)

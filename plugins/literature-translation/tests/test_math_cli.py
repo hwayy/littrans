@@ -28,7 +28,7 @@ def test_source_prepare_preserves_page_scope_without_a_mode_selector(tmp_path: P
     monkeypatch.setattr(fidelity, "prepare_source", prepare)
     result = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--pages", "2-3"])
     assert result.exit_code == 0, result.output
-    assert observed == [(tmp_path, "2-3", False, False)]
+    assert observed == [(tmp_path, "2-3", False, False, False, False)]
     assert json.loads(result.output)["prepared_pages"] == [2, 3]
     invalid = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--mode", "visual"])
     assert invalid.exit_code != 0
@@ -81,10 +81,10 @@ def test_asset_packet_rejects_duplicate_ids_and_uses_source_context(tmp_path: Pa
     root, units, _ = make_asset_fixture(tmp_path, [("Original context.", "math", "x=1")])
     duplicate = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1,fixture-asset-1"])
     assert duplicate.exit_code != 0
-    assert "unique" in str(duplicate.exception)
+    assert "unique" in duplicate.output
     result = runner.invoke(cli.app, ["assets", "packet", str(root), "--asset-ids", "fixture-asset-1"])
     assert result.exit_code == 0, result.output
-    packet = json.loads(result.output)
+    packet = json.loads(result.stdout)
     assert packet["asset_ids"] == ["fixture-asset-1"]
     assert any(item["unit_id"] == units[0].unit_id for item in packet["context_units"])
     assert packet["required_images"]

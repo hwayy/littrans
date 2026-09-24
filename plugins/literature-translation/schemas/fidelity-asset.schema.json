@@ -37,8 +37,16 @@
           "type": "string"
         },
         "pdf_path": {
-          "title": "Pdf Path",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pdf Path"
         },
         "glyph_ids": {
           "items": {
@@ -97,7 +105,6 @@
         "bbox",
         "png_path",
         "svg_path",
-        "pdf_path",
         "width",
         "height"
       ],

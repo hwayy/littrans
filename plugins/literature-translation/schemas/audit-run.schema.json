@@ -95,6 +95,22 @@
       "default": null,
       "title": "Shared Context Fingerprint"
     },
+    "shared_context_parts": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Shared Context Parts"
+    },
     "context_unit_ids": {
       "items": {
         "type": "string"
