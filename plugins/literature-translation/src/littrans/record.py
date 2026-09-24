@@ -41,7 +41,10 @@ RECORD_GLOBS = (
     "qa/*.md",
     ".littrans/work/**/*",
 )
-RECORD_FILES = ("project.yaml", "derived/units.jsonl", "derived/fidelity-assets.jsonl", "derived/provenance.json")
+# Initialization and rebuild always write these, so a missing one is a lost record file,
+# not a stage the project has not reached yet.
+INITIAL_RECORD_FILES = ("project.yaml", "derived/provenance.json")
+RECORD_FILES = ("derived/units.jsonl", "derived/fidelity-assets.jsonl")
 GAP_REPORT_LIMIT = 20
 
 
@@ -72,7 +75,7 @@ def git_toplevel(root: Path) -> Path:
 def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
     """The record and the excluded set, relative to the project root, plus the live source packets."""
     root = Path(root).resolve()
-    must_track: set[str] = set()
+    must_track: set[str] = set(INITIAL_RECORD_FILES)
     for relative in RECORD_FILES:
         if (root / relative).is_file():
             must_track.add(relative)
@@ -169,9 +172,10 @@ def record_tracking(root: Path) -> dict[str, Any]:
             path for directory in ("docs", "tools")
             for path in (record_root / directory).rglob("*") if path.is_file()
         )
-        shared_paths = {path.relative_to(toplevel).as_posix() for path in shared}
-        universe.update(shared_paths)
-        must_ignore.update(path for path in shared_paths if Path(path).suffix.lower() == ".pdf")
+        # A PDF there is not presumed private: the configured source is queried by name
+        # below, and one the repository's .gitignore excludes yet is tracked is reported
+        # like any other force-added file.
+        universe.update(path.relative_to(toplevel).as_posix() for path in shared)
     universe.update(path for path in scaffold_paths if (toplevel / path).is_file())
     # check-ignore only answers about what it is asked, so the whole universe goes in,
     # not just the declared sets, or every ignored scratch file reads as a gap.
@@ -193,14 +197,14 @@ def record_tracking(root: Path) -> dict[str, Any]:
     }
     optional.add(prefix + "output/.gitkeep")
     problems: list[str] = []
-    required_packet_paths = {
+    required_paths = scaffold_paths | {prefix + path for path in INITIAL_RECORD_FILES} | {
         prefix + f"packets/{name}/{filename}"
         for name in live_packets for filename in ("packet.json", "coverage.html")
     }
     for relative in sorted(must_track & must_ignore):
         problems.append(f"in both the record and the excluded set (a defect in this check, not the project): {relative}")
     for relative in sorted(must_track):
-        if (relative in scaffold_paths or relative in required_packet_paths) and not (toplevel / relative).is_file():
+        if relative in required_paths and not (toplevel / relative).is_file():
             problems.append(f"required record file is missing: {relative}")
         elif relative not in tracked:
             if relative in ignored:

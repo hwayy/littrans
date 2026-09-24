@@ -16,6 +16,29 @@ For QASC, keep the existing project as history and prepare an independent v6 pro
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
 
+## Projects on 0.6.1-dev.8 or earlier: record check, quoted terms and standalone factorials (0.6.1-dev.9)
+
+- **QA reports are recomputed once.** The deterministic QA version changed, so every batch's
+  `qa/<batch>.json` reads as stale until `qa` runs again; translations and receipts are untouched.
+- **Terms inside non-title quotations now count.** Terminology matching used to drop every
+  double-quoted phrase as a cited title; it now drops only a phrase set as a title (at least two
+  words, every word outside `a an and as at but by for from in into nor of on or over the to via
+  vs with` capitalised) and every quotation of a `bibliography` unit. A unit such as
+  `“discrete Itô formula”` or `“time average = ensemble average”` now receives its approved and
+  reference entries, and QA enforces the approved ones. Batches holding such units see their
+  audits go `context-changed` once, since the entries they receive changed. `glossary lookup
+  --pages …` shows what a batch receives before re-running it.
+- **`project tracked`:** `project.yaml` and `derived/provenance.json` are required even after
+  deletion (restore a lost provenance from git history). A PDF under a nested record root's top
+  level, `docs/` or `tools/` is no longer presumed private: the configured source is still
+  refused when tracked, and a PDF the repository's `.gitignore` excludes is reported as
+  `tracked despite .gitignore exclusion` if force-added.
+- **On re-preparation only:** a detector inline formula that is all the ink of its block keeps
+  a closing text-face `!` as its factorial (`n!` on a block of its own). A formula inside a
+  sentence reads a block-final `!` as the sentence's, as in 0.6.1-dev.8. Displayed formulas were
+  never trimmed. Measured on the 212-page book and the 7-page pilot with their recorded detector
+  results: no page changes.
+
 ## Projects prepared with 0.6.1-dev.7 or earlier: script spaces, `!` and list ends (0.6.1-dev.8)
 
 - **Nothing changes until a page is re-prepared, and every existing receipt keeps passing.**
@@ -46,7 +69,8 @@ After interruption, use status on the frozen new batch IDs, recover saved succes
   prose after a list belongs (the introducing paragraph's group, or a group of its own) and
   containers spanning pages or several upright paragraphs (Example, Step algorithms, proofs
   continued on the next page) stay `units` override decisions; a factorial `!` at the very end
-  of a block, or followed by a capital, reads as the sentence's. A capitalised sentence that
+  of a block, or followed by a capital, reads as the sentence's (since 0.6.1-dev.9, not when the
+  formula is the whole block). A capitalised sentence that
   continues across a page edge (`in the space of` / `Markov chains`) needs no override: the
   sender's `continued_to_next` joins it in rendering, batching and audit closure.
 

@@ -340,7 +340,8 @@ are looked up on the glyph's own native line, so a superscript MuPDF places in t
 punctuation at a run's edge (`.`, `,`, `;`, `:`, `?`, quotes) is prose — a text-face `!` is
 prose only when the block ends with it or a text-face capital follows it (on the line or the
 next line of the block), since a factorial is set in the same face and reads on (`n! ways`,
-`n!,`) — except a math-face `,` `;` `:` closing a line whose next
+`n!,`); a formula that is all the ink of its block (equation tags aside) keeps a block-final
+`!` — except a math-face `,` `;` `:` closing a line whose next
 line opens with notation on the same row (the comma of `x_1,` `x_2` across a line break stays
 in the run); a text-face `-` closing a line before a lowercase text-face letter is prose.
 
@@ -887,8 +888,11 @@ in effect:
   line); `glossary check PROJECT` loads every file and reports entries matching no prepared
   unit. Both are read-only.
 - The unit's source representations (text, Markdown, table cells, figure labels) minus quoted
-  titles are folded before matching, and so is `source`: precomposed, combining and TeX spacing
-  accents (`Hölder` ≡ `H¨older`, `Lévy` ≡ `L´evy`), ligatures, curly quotes and apostrophes
+  titles are folded before matching, and so is `source`. A quoted title is a double-quoted phrase
+  of at least two words whose words are capitalised except `a an and as at but by for from in
+  into nor of on or over the to via vs with` (`“Binding Theory”`); every quotation of a
+  `bibliography` unit counts as one. A quoted term (`“strict mode”`) is matched. Folding covers
+  precomposed, combining and TeX spacing accents (`Hölder` ≡ `H¨older`, `Lévy` ≡ `L´evy`), ligatures, curly quotes and apostrophes
   (`Chebyshev's` ≡ `Chebyshev’s`), dash variants, whitespace runs and case. QA and the
   `relevant_terms` packet injection share this folding, so a term shown to the translator is the
   term QA enforces.
@@ -1029,7 +1033,11 @@ and its `evidence.json`, review templates, the source packets page receipts name
 dependencies), reviews, external dry-run records, page evidence, audit ledgers, batch files,
 translations, QA reports and `.littrans/work/` payloads — and the excluded set (source PDFs,
 generated `output/` files, the layout runs' requests and logs, per-asset `original.pdf`,
-`.littrans/state.json`). Unreferenced packets' `packet.json` and `coverage.html`, and
+`.littrans/state.json`). `project.yaml` and `derived/provenance.json`, which initialization
+always writes, are required even once deleted, like the scaffold files and receipt-bound
+packets. A nested project's check also covers the record root's top-level files, `docs/` and
+`tools/`; a PDF there is excluded only when it is the configured source or the repository's
+`.gitignore` excludes it. Unreferenced packets' `packet.json` and `coverage.html`, and
 `output/.gitkeep`, are optional: they may be tracked or ignored. Git (`ls-files`,
 `check-ignore`) reports a required record file that is ignored or uncommitted, an excluded file
 that is tracked, and any file in neither state; the exit code is 1 on any problem. `project rebuild`
