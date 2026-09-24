@@ -21,19 +21,18 @@ images whenever LaTeX or another structured representation is unfinished or unve
 
 Role models are configured per host in each project's `agent_models`, seeded from the plugin's
 `profiles/host-models.yaml` (recommended: Codex `gpt-5.6-luna` at `max` effort, Claude Code `sonnet`
-at `high` effort). Each role — `translate`, `transcribe`, `audit`, `asset-audit` — sets its own model
-and reasoning effort. Leaving one unset dispatches on the host's own default, which is the only
-possibility on Cursor and Qoder; `project models PROJECT --host HOST` reports the resolved policy and
-the plugin advises rather than blocks when configuration and host capability disagree. Source preparation requires the
-isolated layout detector installed by `littrans layout install`. Existing projects rebuild into a new schema-6 directory
-with source/context/glossary/docs only. `project init` also grows the project's record structure (handbook,
-records, defect ledger, launcher, `.gitignore`, and a plugin-owned `docs/LITTRANS.md` stating what the installed
-build guarantees); `project scaffold --refresh` regenerates it after an upgrade and `project tracked` asks git
-whether exactly the record is tracked. See the [plugin workflow](plugins/literature-translation/README.md)
-and [rebuild guide](plugins/literature-translation/MIGRATING.md).
-
-The 0.6 development branch does not change the installed stable plugin. Stable installations move
-only through the checked, tagged release procedure.
+at `high` effort). Each role — `translate`, `transcribe`, `audit`, `asset-audit` — sets its own
+model and reasoning effort. Leaving one unset dispatches on the host's own default, which is the
+only possibility on Cursor and Qoder; `project models PROJECT --host HOST` reports the resolved
+policy and the plugin advises rather than blocks when configuration and host capability disagree.
+Source preparation requires the isolated layout detector installed by `littrans layout install`.
+Projects from 0.5 or earlier rebuild into a new schema-6 directory with source/context/glossary/docs
+only; projects from any 0.6 build upgrade in place. `project init` also grows the project's record
+structure (handbook, records, defect ledger, launcher, `.gitignore`, and a plugin-owned
+`docs/LITTRANS.md` stating what the installed build guarantees); `project scaffold --refresh`
+regenerates it after an upgrade and `project tracked` asks git whether exactly the record is
+tracked. See the [plugin workflow](plugins/literature-translation/README.md) and [migration
+guide](plugins/literature-translation/MIGRATING.md).
 
 ## Repository layout
 
@@ -104,6 +103,8 @@ codex plugin list --json
 
 Do not remove an older installed version while a running task still depends on it. Existing
 tasks should finish or reach a durable checkpoint before the client installation is migrated.
+After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 On the primary development client, reinstall directly from its configured local `littrans`
 marketplace without running `marketplace upgrade`.
 
@@ -173,7 +174,8 @@ A Teams or Enterprise plan may also import this repository as a Cursor team mark
 Published plugin changes always receive a new semantic version. Finish or checkpoint any running
 session first. Recopy the plugin directory into `~/.cursor/plugins/local/literature-translation`,
 reload the window, and start a new agent session. A leftover junction from an older install will
-be ignored.
+be ignored. After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 
 ## Install on Claude Code
 
@@ -217,7 +219,8 @@ source PDFs and translation workspaces on the local machine.
 
 Finish or checkpoint any running session first. Run `claude plugin marketplace update littrans`
 followed by `claude plugin update literature-translation@littrans` (a `--plugin-dir` session simply
-picks up the checkout on its next start), then start a new session.
+picks up the checkout on its next start), then start a new session. After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 
 ## Install on Qoder
 
@@ -284,7 +287,8 @@ start a new Qoder session. Keep source PDFs and translation workspaces on the lo
 
 Finish or checkpoint any running session first. Recopy the plugin directory into
 `~/.qoder-cn/plugins/literature-translation`, then start a new session. As on every host, a plugin
-update is only picked up when the version string changes.
+update is only picked up when the version string changes. After any upgrade, bring existing projects up to date with
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
 
 ## Development and release
 

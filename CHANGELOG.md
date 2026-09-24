@@ -1,7 +1,28 @@
 # Changelog
 
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
-versioning and correspond to Git tags named `v<version>`.
+versioning; releases correspond to Git tags named `v<version>`. Every version section uses the
+same headings, in this order and only when it has entries: **Added**, **Changed**, **Removed**,
+**Fixed**, **Compatibility**. Upgrade steps for existing projects are in
+[MIGRATING.md](plugins/literature-translation/MIGRATING.md).
+
+Between releases, every behaviour-changing commit receives a development version
+`<next>-dev.N`. The builds made after 0.6.0 was merged were named `0.6.0-dev.1` to
+`0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
+(`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
+0.6.2. Entries for 0.5.0 and earlier describe workflows that 0.6 replaced.
+
+## [0.6.2] - 2026-09-24
+
+The first tagged release of the 0.6 line. It contains the 0.6.0 fidelity-first workflow (merged
+into `main` on 2026-09-14, never tagged) and every development build listed below; 0.6.1 was
+never released. There are no behaviour changes since `0.6.1-dev.9`.
+
+### Changed
+
+- Plugin manifests, package metadata and `littrans.__version__` are `0.6.2`.
+- `MIGRATING.md` is one upgrade guide from each earlier version to 0.6.2 instead of a stack of
+  per-build notes, and this changelog lists every 0.6 development build separately.
 
 ## [0.6.1-dev.9] - 2026-09-24
 
@@ -75,8 +96,25 @@ versioning and correspond to Git tags named `v<version>`.
   or upgrading the same client's plugin while its old cache remains, no longer runs the
   stale build. `LITTRANS_PLUGIN_ROOT` remains an explicit override; when no current client
   installation is available, the recorded path remains the first fallback.
+- Preparation and review import mark the units of every dependency page whose receipt they
+  remove as unverified, as they already did for the re-prepared pages themselves.
+- `project init` refuses a `--repo-root` that does not contain the project before writing
+  anything, instead of leaving a half-initialized project.
+- `source rescope` reads and rewrites the structure profile under one write lock.
+- The CLI reports an existing batch or profile file as an error instead of a traceback.
+- QA looks for never-matched approved terms only when its cached report is stale, and review
+  import builds the audit context once for both its fingerprint and its parts.
 
 ## [0.6.1-dev.2] - 2026-09-23
+
+### Changed
+
+- Source review packets list each page's `structure_checks` — every heading, caption, run-in
+  label and overruled detector label (`roles`) and every native block joined into another unit
+  (`joins`) — and a decision must confirm each one (`confirmed_roles: [{unit_id, kind}]`,
+  `confirmed_joins: [{block}]`). A confirmed kind that differs from the recorded one is
+  rejected as `role-disputed` and corrected with an override. Packets made before this version
+  ask for neither list, so existing receipts keep passing.
 
 ### Fixed
 
@@ -93,15 +131,6 @@ versioning and correspond to Git tags named `v<version>`.
 - A paragraph indented from a list item's text column opens a paragraph of that item
   (`structure.list_items … {"continues", "paragraph": true}`) instead of being merged into the
   item's text; it stays in the list's container.
-
-### Changed
-
-- Source review packets list each page's `structure_checks` — every heading, caption, run-in
-  label and overruled detector label (`roles`) and every native block joined into another unit
-  (`joins`) — and a decision must confirm each one (`confirmed_roles: [{unit_id, kind}]`,
-  `confirmed_joins: [{block}]`). A confirmed kind that differs from the recorded one is
-  rejected as `role-disputed` and corrected with an override. Packets made before this version
-  ask for neither list, so existing receipts keep passing.
 
 ## [0.6.1-dev.1] - 2026-09-23
 
@@ -123,21 +152,56 @@ versioning and correspond to Git tags named `v<version>`.
   large sums, products and integrals from absorbing adjacent prose. Tall, narrow CMEX
   bracket glyphs remain supported alongside delimiter slots and control-character pieces.
 
-## [0.6.0] - Unreleased
+## [0.6.0-dev.17] - 2026-09-22
 
-Development builds on the way to 0.6.0 carry a semantic-versioning pre-release identifier
-(`0.6.0-dev.N`, through `0.6.0-dev.17`) that is bumped with every behaviour-changing commit, so
-plugin caches keyed by version no longer share a directory between builds and `claude plugin
-update` sees a change; the release drops the suffix.
+### Fixed
+
+- A rejected page no longer reads as verified after a rerun. `source prepare --replace` keeps
+  the receipt of a page it reproduced byte for byte, and marked that page's units verified
+  whatever the receipt decided, so re-preparing a page whose visual review had *failed* flipped
+  its units to `verified` in `derived/units.jsonl` and in the source packet a translator reads.
+  Only a receipt that passed now says the page is verified; a retained rejection leaves it
+  unverified, as the review import left it. `verify_fidelity` always refused such a page, so
+  no page was ever approved on this — the record simply disagreed with the gate.
+- Declared language is judged on the same geometry that declared it. The approval gate
+  re-derived a math crop's formula conditions from the ledger, which records PDF font-metric
+  boxes, while preparation derives them from measured glyph ink. A stretched CMEX delimiter's
+  metric rectangle sits on an adjacent line, so an upright operator name applied to a `\left(`
+  argument (`Prob(`, `vol(`) read as notation when it was declared and as undeclared language
+  when it was checked, and the page could not be approved or re-prepared out of it. The check
+  now reads the ledger in its own metric-box terms and keeps a bare operator name notation
+  there too; what preparation declares is unchanged, so no page fingerprint moves.
+- Crop directories are reclaimed while the project write lock is still held. `source prepare`
+  and `source import-review` pruned the asset directories no fragment refers to after
+  releasing the lock, using their own in-memory registry: a second run that acquired the lock
+  in that window and exported new crops could have them deleted, leaving its
+  `derived/fidelity-assets.jsonl` pointing at missing files. The authority transactions now
+  commit on a nested stack inside the lock, so the prune still runs after the new record is
+  durable but before another run can start.
+- `.gitignore` upgrades no longer leave the packet payloads outside the record. Adding the
+  `.littrans/*` / `!.littrans/work/` pair to a project created before it left the older
+  `/.littrans/` line in place; git never descends into an excluded directory, so the
+  re-include could not take effect and `project tracked` reported every packet payload as
+  excluded from the record. The whole-directory line is now removed when the pair is added.
+- Replaying a page of corrections renders the page once. Declaring the language of a
+  reviewer's math regions re-rendered and re-parsed the whole page SVG for each region; it now
+  reuses the ink the page already measured.
+
+## [0.6.0-dev.16] - 2026-09-22
+
+### Added
+
+- `project models PROJECT --host HOST` reports the resolved dispatch policy of every role and
+  any advisory.
 
 ### Changed
 
 - Every dispatch role carries its own model and reasoning effort, and an unset one is a
-  supported choice (0.6.0-dev.16). `agent_models.<host>` gave `translate` and `transcribe`
-  a bare model string and made them share one `reasoning_effort`, so a role could not pair a
-  cheaper model with a higher effort and the reviewer lenses could not be configured at all.
-  Each of `translate` (which also covers `revise`), `transcribe`, `audit` and `asset-audit`
-  now holds its own `model` and `reasoning_effort`:
+  supported choice. `agent_models.<host>` gave `translate` and `transcribe` a bare model
+  string and made them share one `reasoning_effort`, so a role could not pair a cheaper model
+  with a higher effort and the reviewer lenses could not be configured at all. Each of
+  `translate` (which also covers `revise`), `transcribe`, `audit` and `asset-audit` now holds
+  its own `model` and `reasoning_effort`:
 
       agent_models:
         claude:
@@ -152,111 +216,125 @@ update` sees a change; the release drops the suffix.
   host's own default, and the plugin reports the two mismatches as advisories instead:
   a value configured for a host whose launcher cannot take it (kept in the packet, never
   dropped) and an unset value on a host whose launcher can. Advisories appear on stderr, in
-  the `dispatch_advisories` field of `workflow next` and `workflow status`, and in the new
-  `project models PROJECT --host HOST`. Codex takes a per-dispatch model and effort, Claude
-  Code a model only (its effort comes from the writer agents' frontmatter), Cursor and Qoder
-  neither. `assets submit` still rejects an echo that differs from its packet, but a packet
-  recording no model has nothing to echo. A `project.yaml` written in the old flat form is
-  read unchanged and rewritten in the nested form on its next save; a misspelled host or role
-  key, previously silent, is now named.
-- The exponent of a text-face number is notation (0.6.0-dev.15). TeX sets digits in the
-  text face inside mathematics too, so `2^{19937}` or `10^6` carries no mathematical font at
-  all: nothing opened an inline run, and the `− 1` that followed opened one after a word
-  space, so the page read `a period of up to 219937 {{asset}}` with an asset holding only
-  `− 1`. A text-face digit that is smaller than the text-face digit before it, set on a
-  raised or lowered baseline and flush against it, is now a script digit — as are the digits
-  continuing it — and the number it is attached to joins the run, which then continues into
-  the notation after it (`2^{19937} − 1` is one inline asset). A superscript after a letter or
-  a punctuation mark (a footnote call) is untouched; a script MuPDF emits as a separate
-  native line is not recognised by this rule.
-- A detector table box takes the header rows set above it (0.6.0-dev.15). PP-DocLayoutV2
-  often starts a `table` box at the rule under the column headings, so the headings fell
-  to the paragraph around the table (`Class Spin Number of neighboring spin ups {{asset}}`)
-  and the asset lost the column–heading correspondence. A row directly above the box
-  (within two lines of its first row) whose ink lies inside the box's columns, that is not
-  a caption, and that either sits in the same native block as the rows below or is
-  separated from them by a rule of the table's width, is now part of the table; the box
-  grows over it and over the next such row above. The block that held only the headings
-  becomes the `table` unit itself.
+  the `dispatch_advisories` field of `workflow next` and `workflow status`, and in
+  `project models`. Codex takes a per-dispatch model and effort, Claude Code a model only (its
+  effort comes from the writer agents' frontmatter), Cursor and Qoder neither. `assets submit`
+  still rejects an echo that differs from its packet, but a packet recording no model has
+  nothing to echo. A `project.yaml` written in the old flat form is read unchanged and
+  rewritten in the nested form on its next save; a misspelled host or role key, previously
+  silent, is now named.
+
+## [0.6.0-dev.15] - 2026-09-22
+
+### Fixed
+
+- The exponent of a text-face number is notation. TeX sets digits in the text face inside
+  mathematics too, so `2^{19937}` or `10^6` carries no mathematical font at all: nothing
+  opened an inline run, and the `− 1` that followed opened one after a word space, so the page
+  read `a period of up to 219937 {{asset}}` with an asset holding only `− 1`. A text-face digit
+  that is smaller than the text-face digit before it, set on a raised or lowered baseline and
+  flush against it, is now a script digit — as are the digits continuing it — and the number
+  it is attached to joins the run, which then continues into the notation after it
+  (`2^{19937} − 1` is one inline asset). A superscript after a letter or a punctuation mark (a
+  footnote call) is untouched; a script MuPDF emits as a separate native line is not
+  recognised by this rule.
+- A detector table box takes the header rows set above it. PP-DocLayoutV2 often starts a
+  `table` box at the rule under the column headings, so the headings fell to the paragraph
+  around the table (`Class Spin Number of neighboring spin ups {{asset}}`) and the asset lost
+  the column–heading correspondence. A row directly above the box (within two lines of its
+  first row) whose ink lies inside the box's columns, that is not a caption, and that either
+  sits in the same native block as the rows below or is separated from them by a rule of the
+  table's width, is now part of the table; the box grows over it and over the next such row
+  above. The block that held only the headings becomes the `table` unit itself.
 - A correction's dependency pages are read from the graph after the correction as well as
-  before it (0.6.0-dev.15). `import` and `source prepare --replace` settled the receipts of
-  the pages the corrected page reached in the recorded graph only; an override that
-  re-parented a page's units to a container on the page before (a Solution continued
-  across the edge) reached that container's page only through the edge it added, so that
-  page kept a receipt whose fingerprint had moved and `invalidated_pages` was empty until a
-  full-range `source verify` found it. Both commands now settle, by name, every page the
-  change reaches in either graph and report it in `invalidated_pages`.
-- Workflow coordination checks batch coverage over its own scope (0.6.0-dev.14). `workflow
-  status --batch-ids …` and `workflow next` used to refuse to run while any renderable unit of
-  the record was outside every manifest, so a book whose later chapters were extracted but not
-  yet batched could not be coordinated chapter by chapter. The check now covers the pages of
-  the coordinated batches and the reading-order span between them — a unit recovered on a
+  before it. `import` and `source prepare --replace` settled the receipts of the pages the
+  corrected page reached in the recorded graph only; an override that re-parented a page's
+  units to a container on the page before (a Solution continued across the edge) reached that
+  container's page only through the edge it added, so that page kept a receipt whose
+  fingerprint had moved and `invalidated_pages` was empty until a full-range `source verify`
+  found it. Both commands now settle, by name, every page the change reaches in either graph
+  and report it in `invalidated_pages`.
+
+## [0.6.0-dev.14] - 2026-09-22
+
+### Changed
+
+- Workflow coordination checks batch coverage over its own scope. `workflow status
+  --batch-ids …` and `workflow next` used to refuse to run while any renderable unit of the
+  record was outside every manifest, so a book whose later chapters were extracted but not yet
+  batched could not be coordinated chapter by chapter. The check now covers the pages of the
+  coordinated batches and the reading-order span between them — a unit recovered on a
   coordinated page or between two coordinated batches still blocks the wave with the same
   message — and both commands report the pages outside that scope that no manifest covers as
   `unbatched_pages`. Formal rendering keeps its own page-scoped check.
-- The scaffolded launcher runs what the session's client installed (0.6.0-dev.14).
-  `tools/lt.py` tried the client caches in a fixed order and took the first one holding the
-  plugin, so a leftover `0.6.0` directory in the Claude Code cache outranked the
-  `0.6.0-dev.13` Codex had installed, and a cachebuster build (`0.6.0-dev.13+codex.<stamp>`)
-  did not sort as a version at all. A regenerated launcher reads the client running the
-  session from the same environment signals workflow coordination reads, prefers that client's
-  install (Claude Code's own `installed_plugins.json` record, otherwise the highest version in
-  the client's cache), then the highest installed version across clients; version order accepts
-  build metadata as a later build of the same version. `LITTRANS_PLUGIN_ROOT` and a recorded
-  root that still exists keep precedence. The launcher is user-owned: delete `tools/lt.py` and
-  run `project scaffold` to regenerate it.
-- A numerator, a denominator or a case row that holds words stays in its display
-  (0.6.0-dev.14). A row of a detector display box was judged by its share of prose words alone,
-  so `surface area(U)` over a fraction bar became a prose fragment and the fraction lost its
-  numerator; a row a rule spans directly above or below it is now the fraction's, whatever it
-  says, and a row bracketed by a stretched delimiter is judged against the whole delimiter
-  column, not the one extender piece its baseline happens to fall in. The prose margin the
-  decision reads is the pen origin of text-opened lines, not the first ink of every native
-  line: seven pieces of one brace, each a native line at one x, used to outvote the prose and
-  moved the margin into the formula, and the case rows of `(1.53)` (`X is discrete-valued,`)
-  were dropped as a paragraph the box had overshot into. The words a kept row carries are
-  declared as formula conditions, as before.
+- The scaffolded launcher runs what the session's client installed. `tools/lt.py` tried the
+  client caches in a fixed order and took the first one holding the plugin, so a leftover
+  `0.6.0` directory in the Claude Code cache outranked the `0.6.0-dev.13` Codex had installed,
+  and a cachebuster build (`0.6.0-dev.13+codex.<stamp>`) did not sort as a version at all. A
+  regenerated launcher reads the client running the session from the same environment signals
+  workflow coordination reads, prefers that client's install (Claude Code's own
+  `installed_plugins.json` record, otherwise the highest version in the client's cache), then
+  the highest installed version across clients; version order accepts build metadata as a
+  later build of the same version. `LITTRANS_PLUGIN_ROOT` and a recorded root that still
+  exists keep precedence. The launcher is user-owned: delete `tools/lt.py` and run
+  `project scaffold` to regenerate it.
+
+### Fixed
+
+- A numerator, a denominator or a case row that holds words stays in its display. A row of a
+  detector display box was judged by its share of prose words alone, so `surface area(U)` over
+  a fraction bar became a prose fragment and the fraction lost its numerator; a row a rule
+  spans directly above or below it is now the fraction's, whatever it says, and a row bracketed
+  by a stretched delimiter is judged against the whole delimiter column, not the one extender
+  piece its baseline happens to fall in. The prose margin the decision reads is the pen origin
+  of text-opened lines, not the first ink of every native line: seven pieces of one brace, each
+  a native line at one x, used to outvote the prose and moved the margin into the formula, and
+  the case rows of `(1.53)` (`X is discrete-valued,`) were dropped as a paragraph the box had
+  overshot into. The words a kept row carries are declared as formula conditions, as before.
 - A decorative rule never parents the prose after it, and the page-top continuation flag
-  means a continued sentence (0.6.0-dev.14). The running-head rule (an omitted `note` unit,
-  first in the reading order) opened the page's group, so the first paragraph of the page
-  hung from it; an omitted unit now takes the open group as its parent (its own at the page
-  top, as recorded before) and opens none. `continues_from_previous` is set only when the flush
-  first line also does not open a sentence — a first alphabetic character in upper case
-  (`This gives`, `Then`) reads as a new sentence, a lower-case one (`where the notation …`)
-  as a continuation; scripts without letter case keep the geometric reading, and the sender's
+  means a continued sentence. The running-head rule (an omitted `note` unit, first in the
+  reading order) opened the page's group, so the first paragraph of the page hung from it; an
+  omitted unit now takes the open group as its parent (its own at the page top, as recorded
+  before) and opens none. `continues_from_previous` is set only when the flush first line also
+  does not open a sentence — a first alphabetic character in upper case (`This gives`, `Then`)
+  reads as a new sentence, a lower-case one (`where the notation …`) as a continuation;
+  scripts without letter case keep the geometric reading, and the sender's
   `continued_to_next` still carries a sentence that ends mid-line whatever the receiver says.
   Container membership across a page edge (a proof or exercise that continues on the next
   page) remains a source-review decision recorded by override.
 - Enumerated items hang from the paragraph that introduces them wherever their label sits,
-  and a statement's italic continuation stays in the statement (0.6.0-dev.14). A bracketed
-  item (`(a)`, `(ii)`) set at a paragraph indent opened a group of its own — the rule that a
-  clause after white space belongs to its introducer applied only where the planner's margin
-  happened to be the list's text column — so `(a)`–`(c)` after "This can be used to compute
-  …" and the steps `(ii)`–`(v)` of a proof opened after `**Proof.** (i) …` were each a
-  container; they now join the introducing paragraph, statement or proof, and a sibling's
-  column is read from the planner's line start rather than a bbox a display widens. Items
-  that open a group of their own (at a page top) still leave their siblings their own. An
-  indented paragraph set in the statement's own italic face (`*Conversely, if …*` after a
-  theorem's clauses) continues the statement instead of ending it, and is never merged into
-  the unit before it; upright prose ends the statement as before. A chunk the planner
-  recorded as an item's continuation (`structure.list_items … continues`) returns to the
-  item's group whatever opened in between. Multi-paragraph upright containers (an Example
-  whose later paragraphs are indented plain prose) are not decidable from typography and
-  remain a review decision.
-- A proof's tombstone reads after the display it closes (0.6.0-dev.14). The `□` of a
-  `□ (1.50)` block kept the block's native position, which MuPDF orders before the display,
-  so it merged into the paragraph before the display (`… Then □`); the residue now follows
-  the display it labelled and is a paragraph of the proof's group.
-- A recorded `units` override whose asset moved is refused, not crashed on (0.6.0-dev.13).
-  The check that every page asset is referenced exactly once now runs before any unit is
-  built, so an override that names an asset the page no longer cuts (a display that gained a
-  space glyph on re-preparation) fails with the page and both IDs — `page 70: the recorded
-  source override cannot be replayed (unit overrides must reference each page asset exactly
-  once; not cut on this page any more: a-p0070-789080e39dd4; cut but unreferenced:
-  a-p0070-d3f4ee3efed5); re-import its review file or rerun with --discard-overrides` —
-  instead of a bare `KeyError` from inside the unit builder that named neither. The
-  transaction still rolls back whole. A review file imported with such a reference is refused
-  with its page number too.
+  and a statement's italic continuation stays in the statement. A bracketed item (`(a)`,
+  `(ii)`) set at a paragraph indent opened a group of its own — the rule that a clause after
+  white space belongs to its introducer applied only where the planner's margin happened to
+  be the list's text column — so `(a)`–`(c)` after "This can be used to compute …" and the
+  steps `(ii)`–`(v)` of a proof opened after `**Proof.** (i) …` were each a container; they
+  now join the introducing paragraph, statement or proof, and a sibling's column is read from
+  the planner's line start rather than a bbox a display widens. Items that open a group of
+  their own (at a page top) still leave their siblings their own. An indented paragraph set in
+  the statement's own italic face (`*Conversely, if …*` after a theorem's clauses) continues
+  the statement instead of ending it, and is never merged into the unit before it; upright
+  prose ends the statement as before. A chunk the planner recorded as an item's continuation
+  (`structure.list_items … continues`) returns to the item's group whatever opened in between.
+  Multi-paragraph upright containers (an Example whose later paragraphs are indented plain
+  prose) are not decidable from typography and remain a review decision.
+- A proof's tombstone reads after the display it closes. The `□` of a `□ (1.50)` block kept
+  the block's native position, which MuPDF orders before the display, so it merged into the
+  paragraph before the display (`… Then □`); the residue now follows the display it labelled
+  and is a paragraph of the proof's group.
+
+## [0.6.0-dev.13] - 2026-09-20
+
+### Fixed
+
+- A recorded `units` override whose asset moved is refused, not crashed on. The check that
+  every page asset is referenced exactly once now runs before any unit is built, so an
+  override that names an asset the page no longer cuts (a display that gained a space glyph on
+  re-preparation) fails with the page and both IDs — `page 70: the recorded source override
+  cannot be replayed (unit overrides must reference each page asset exactly once; not cut on
+  this page any more: a-p0070-789080e39dd4; cut but unreferenced: a-p0070-d3f4ee3efed5);
+  re-import its review file or rerun with --discard-overrides` — instead of a bare `KeyError`
+  from inside the unit builder that named neither. The transaction still rolls back whole. A
+  review file imported with such a reference is refused with its page number too.
 - Enumerated siblings share the parent their enumeration opened with. A `(2)` item that
   follows the `(1)` item's own indented continuation paragraph hung from that paragraph (the
   group the indent opened) and rendered in its row; it now returns to the paragraph that
@@ -264,16 +342,21 @@ update` sees a change; the release drops the suffix.
   paragraph or statement binds its siblings — items set as indented paragraphs of their own
   stay so — and a heading, statement, proof, run-in or numbered label, or prose back at the
   margin after white space closes it.
-- Asset boundaries are spaced by the printed ink, not by the text layer (0.6.0-dev.12).
-  TeX sets the glue around notation, and MuPDF reports it as a space glyph or not by its own
-  threshold — and reports the kern before a period as a space. At every boundary between an
-  inline asset and its native neighbour on one native line (same baseline, comparable size,
-  measured ink), a gap of at least 0.15 em is a word space and less is none; punctuation, a
-  closing bracket or quote after the asset and an opening one before it never take a space.
-  `{{F}}.` and `{{Φ}} the` come out right; a subscript, another baseline or an unmeasured
-  glyph leaves the text layer authoritative. A native line break inside a display block
-  whose next line continues the same baseline (a formula MuPDF split into two lines) is a
-  space, not a row break.
+
+## [0.6.0-dev.12] - 2026-09-20
+
+### Changed
+
+- Asset boundaries are spaced by the printed ink, not by the text layer. TeX sets the glue
+  around notation, and MuPDF reports it as a space glyph or not by its own threshold — and
+  reports the kern before a period as a space. At every boundary between an inline asset and
+  its native neighbour on one native line (same baseline, comparable size, measured ink), a
+  gap of at least 0.15 em is a word space and less is none; punctuation, a closing bracket or
+  quote after the asset and an opening one before it never take a space. `{{F}}.` and
+  `{{Φ}} the` come out right; a subscript, another baseline or an unmeasured glyph leaves the
+  text layer authoritative. A native line break inside a display block whose next line
+  continues the same baseline (a formula MuPDF split into two lines) is a space, not a row
+  break.
 - Printed equation labels are text, and a display that holds two of them is two displays. A
   native line that is a label and nothing else (`(3.11)`, at either margin) is never
   notation, seeded or not, never carries a formula across the line and is never owned by a
@@ -284,24 +367,6 @@ update` sees a change; the release drops the suffix.
   stretched-delimiter column is chained across such a cut, so `(3.23)`/`(3.24)` stacked in
   one box are two `equation` units; a box whose ink spans both labels (one tall matrix) stays
   whole. A block that holds several labels beside one formula keeps them in its text.
-- A line of prose that starts mid-row continues its printed row. MuPDF opens a new block
-  after a tall operator (`∑` with limits, a big radical) and after the limits of an inline
-  sum, and the text that follows starts an em or two in — where an indent would be — or far
-  to the right. The planner now finds the row's start by walking left through ink that shares
-  the line's vertical extent (a subscript joins through the operator it hangs from; the ink
-  decides, since MuPDF puts a radical's origin a text baseline away from its row) and, where
-  that row starts at the margin or at an open list item's column, reads the line as the
-  row's continuation: its x is the row's start where its own x would read as an indent, it
-  continues the item whose column the row starts at, and it never closes the item the row's
-  first line opened. The sentence around the operator stays one unit (`… and ∑_{|j−i|=1}
-  p_ij = 1, where i, j ∈ S` is one item), and a `(b)` item after a row MuPDF split at a
-  radical still opens. A line without a language word (the limits themselves, a piece of a
-  display) keeps its own x.
-- Structure assembly keeps parents and groups coherent. When a chunk is merged into the one
-  before it, any later chunk whose parent it was follows the survivor (no `parent_id` names a
-  unit that no longer exists), and the group an item hangs from is still the introducing
-  paragraph's when the item opens after paragraph white space (an enumerated item after a
-  spaced paragraph no longer opens a group of its own, siblings never hang from a sibling).
 - Page-edge continuation is read from both flags, as batching already does. A first body
   unit that opens with a bold run-in label, a theorem statement, `Proof` or a list label
   does not continue the previous page; the renderer merges a paragraph across the page edge
@@ -332,11 +397,6 @@ update` sees a change; the release drops the suffix.
   inked glyph's, its centre inside the padded fragment box) — the descenders of the line above
   no longer fire it — and `prose-boundary-in-math` skips a bracket pair whose words are all
   declared `formula_conditions` of that asset.
-- The explicit glyph export keeps a horizontal rule inside the fragment's box (± 2 pt) whenever
-  it overlaps the owned glyphs' extent, wherever the nearest glyph box lies (the lower rule of
-  a double rule, a table rule two lines below its header), and skips a degenerate path (empty
-  `d`, move-to only) instead of failing the whole page's precise export. Note the crop cache:
-  an asset whose export identity is unchanged keeps its earlier crop.
 - The override `units` channel hashes like the pipeline: a recorded unit is filled with the
   same eight optional keys structure assembly passes before its `source_hash` is computed, so
   identical content has one hash in both channels and a page's fingerprint no longer depends
@@ -344,6 +404,32 @@ update` sees a change; the release drops the suffix.
   channel too: a recorded override that references the coalesced asset (the pipeline's
   `(8.50)` as one ID) replays, and one that references its constituents replays as well —
   each coalesced asset the override does not name is restored to the assets it was made of.
+
+### Fixed
+
+- A line of prose that starts mid-row continues its printed row. MuPDF opens a new block
+  after a tall operator (`∑` with limits, a big radical) and after the limits of an inline
+  sum, and the text that follows starts an em or two in — where an indent would be — or far
+  to the right. The planner now finds the row's start by walking left through ink that shares
+  the line's vertical extent (a subscript joins through the operator it hangs from; the ink
+  decides, since MuPDF puts a radical's origin a text baseline away from its row) and, where
+  that row starts at the margin or at an open list item's column, reads the line as the
+  row's continuation: its x is the row's start where its own x would read as an indent, it
+  continues the item whose column the row starts at, and it never closes the item the row's
+  first line opened. The sentence around the operator stays one unit (`… and ∑_{|j−i|=1}
+  p_ij = 1, where i, j ∈ S` is one item), and a `(b)` item after a row MuPDF split at a
+  radical still opens. A line without a language word (the limits themselves, a piece of a
+  display) keeps its own x.
+- Structure assembly keeps parents and groups coherent. When a chunk is merged into the one
+  before it, any later chunk whose parent it was follows the survivor (no `parent_id` names a
+  unit that no longer exists), and the group an item hangs from is still the introducing
+  paragraph's when the item opens after paragraph white space (an enumerated item after a
+  spaced paragraph no longer opens a group of its own, siblings never hang from a sibling).
+- The explicit glyph export keeps a horizontal rule inside the fragment's box (± 2 pt) whenever
+  it overlaps the owned glyphs' extent, wherever the nearest glyph box lies (the lower rule of
+  a double rule, a table rule two lines below its header), and skips a degenerate path (empty
+  `d`, move-to only) instead of failing the whole page's precise export. Note the crop cache:
+  an asset whose export identity is unchanged keeps its earlier crop.
 - `project scaffold` reads a project `.gitignore` pattern by its path: `/.littrans/*` already
   present means the pair is present, no duplicate is appended.
 - Region merging on a page with hundreds of vector drawings finishes in seconds: overlapping
@@ -351,16 +437,11 @@ update` sees a change; the release drops the suffix.
   pairwise loop reaches one merge at a time) and the loop caches each region's inked glyphs
   and sorted baselines instead of recomputing them per pair. A 710-drawing page went from a
   timeout to under six seconds with identical regions.
-- Inline notation keeps its right half (0.6.0-dev.11). Inside a detector region, brackets
-  are balanced over the whole region while neighbours are still looked up on the glyph's own
-  native line, so a superscript MuPDF places in the next block (`O(n^{-1/2})`, its `2` and `)`
-  on a line of their own) no longer loses its closing bracket. A known operator name in the
-  text face (`log`, `lim`, `dim`, `max`, …) continues an open run when notation or an opening
-  bracket follows it (`lim_{ε→0} log c_ε / log d_ε` is one asset) and opens one across the
-  word space TeX sets after it, whether that space is a text-face or a math-face glyph
-  (`log c_ε`, `−log P(D)`); `the log of` and `a x` stay prose. Assets that gain such a name,
-  or the space glyphs a now-continuous run carries into a display region, change identity on
-  re-preparation.
+
+## [0.6.0-dev.11] - 2026-09-18
+
+### Changed
+
 - An inline math region owns the rows a stretched delimiter it holds brackets
   (`stretched-delimiter-rows`): a cases block or a matrix set in running text, which was one
   asset per row strung together by trimmed commas, is one crop with its `G(x) =` head, its
@@ -370,6 +451,19 @@ update` sees a change; the release drops the suffix.
   also recognised by shape when a re-encoded subset font maps it to a control character, and
   stacked pieces form a column only when each starts where the previous ends (two integral
   signs at one x on consecutive display lines no longer risk merging their lines).
+
+### Fixed
+
+- Inline notation keeps its right half. Inside a detector region, brackets are balanced over
+  the whole region while neighbours are still looked up on the glyph's own native line, so a
+  superscript MuPDF places in the next block (`O(n^{-1/2})`, its `2` and `)` on a line of
+  their own) no longer loses its closing bracket. A known operator name in the text face
+  (`log`, `lim`, `dim`, `max`, …) continues an open run when notation or an opening bracket
+  follows it (`lim_{ε→0} log c_ε / log d_ε` is one asset) and opens one across the word space
+  TeX sets after it, whether that space is a text-face or a math-face glyph (`log c_ε`,
+  `−log P(D)`); `the log of` and `a x` stay prose. Assets that gain such a name, or the space
+  glyphs a now-continuous run carries into a display region, change identity on
+  re-preparation.
 - The region-override channel changes only what the reviewer said. `"glyph_ids": []` on a
   region (a rule, a figure frame) is a raw crop that keeps the declared `kind`, not a failed
   explicit export that rewrote it to `mixed-region` and left it `grouping_pending`; the
@@ -382,37 +476,40 @@ update` sees a change; the release drops the suffix.
   ignored. An override that omits a block the page's ledger records (`regions`, `units`,
   `page_canvas_bbox`) is refused with the block and its size named — carry it forward or
   state `"units": null` to drop it — instead of retiring it without a word.
-- Source receipts bind the structure guidance of their own page, not the profile file
-  (0.6.0-dev.9). `context/source-structure.json` gains `page_rules`: blocks of
-  `handling_rules` scoped to a page spec (`{"label": "Chapter 2", "pages": "52-67",
-  "handling_rules": {...}}`) beside the base rules. The guidance of a page is, per key, the
-  base text followed by the covering blocks joined by a line break; `source verify` and
-  `source import-review` compare that between the packet's embedded profile and the current
-  one and refuse only a page whose guidance changed (`source structure guidance changed since
-  review for page N (handling_rules: lists, headings)`). Probing further pages, notes, status,
-  block labels and the file's formatting or line endings change nothing; a CRLF checkout, a
-  reformatted file or a new chapter's probe no longer voids every receipt. The `sha256` in
-  `document_structure` is a content digest, new page ledgers record
-  `structure.document_profile.guidance_sha256` (the page's guidance) instead of the file
-  hash, batch context carries the blocks covering the batch's pages, and `source probe` tells
-  the agent where a new scope's rules go. New `source rescope PROJECT --packet ID --pages SPEC`
-  restores the base rules to the text a packet embeds and moves the lines appended since into
-  a `page_rules` block, so a profile extended in place for a later chapter verifies both
-  chapters' receipts again.
+
+## [0.6.0-dev.10] - 2026-09-17
+
+### Added
+
+- `source rescope PROJECT --packet ID --pages SPEC` restores the base rules to the text a
+  packet embeds and moves the lines appended since into a `page_rules` block, so a profile
+  extended in place for a later chapter verifies both chapters' receipts again.
+
+## [0.6.0-dev.9] - 2026-09-17
+
+### Added
+
+- `scripts/check.sh` runs the release checks on Linux and macOS, and the `release-checks`
+  workflow runs them on `ubuntu-latest` beside `windows-latest`.
+
+### Changed
+
+- Source receipts bind the structure guidance of their own page, not the profile file.
+  `context/source-structure.json` gains `page_rules`: blocks of `handling_rules` scoped to a
+  page spec (`{"label": "Chapter 2", "pages": "52-67", "handling_rules": {...}}`) beside the
+  base rules. The guidance of a page is, per key, the base text followed by the covering
+  blocks joined by a line break; `source verify` and `source import-review` compare that
+  between the packet's embedded profile and the current one and refuse only a page whose
+  guidance changed (`source structure guidance changed since review for page N
+  (handling_rules: lists, headings)`). Probing further pages, notes, status, block labels and
+  the file's formatting or line endings change nothing; a CRLF checkout, a reformatted file or
+  a new chapter's probe no longer voids every receipt. The `sha256` in `document_structure`
+  is a content digest, new page ledgers record `structure.document_profile.guidance_sha256`
+  (the page's guidance) instead of the file hash, batch context carries the blocks covering
+  the batch's pages, and `source probe` tells the agent where a new scope's rules go.
 - Rendered checkpoints and editions link the page images, the source PDF and the original
   assets by relative, percent-encoded paths, so the same tree renders the same bytes on every
   host; only a PDF outside the project root keeps a `file:` URI.
-- The paragraph after a list item opens after the item's continuation line: a line starting
-  within 4.5 ems of the margin, or in a chunk the planner placed as a list item or its
-  continuation, is a text line for the paragraph-white-space rule (it used to count as a
-  display beyond 2.8 ems, so the paragraph following `b) …` was merged into the item).
-- An unreferenced figure keeps its reading position on a page whose page number was detached
-  from the running head: running material no longer anchors visual elements, so the figure
-  sorts between the paragraph above it and its caption and owns the caption again. The same
-  rule moves an omitted decorative rule (a running-head line) that the detached page number
-  pinned to the page end back to the top, where a page whose number is its own block already
-  had it; the reading output is unchanged, but such a page's unit order — and fingerprint —
-  changes when it is re-prepared.
 - Layout detector results are part of the record. `derived/fidelity-layout/<fingerprint>.json`
   is tracked (the generated `.gitignore` and `project tracked` keep only the run's
   `*.request.json` and `*.log` out); a result's `images` map names page images by file name.
@@ -437,8 +534,41 @@ update` sees a change; the release drops the suffix.
   `~/.cache` elsewhere), as the CLI environment already did. `fidelity-workflow.md` gains
   "Several hosts, one record" — the protocol for sharing a project through a git remote —
   and `runtime.md` the cache locations and environment variables per platform.
-- `scripts/check.sh` runs the release checks on Linux and macOS, and the `release-checks`
-  workflow runs them on `ubuntu-latest` beside `windows-latest`.
+
+### Fixed
+
+- The paragraph after a list item opens after the item's continuation line: a line starting
+  within 4.5 ems of the margin, or in a chunk the planner placed as a list item or its
+  continuation, is a text line for the paragraph-white-space rule (it used to count as a
+  display beyond 2.8 ems, so the paragraph following `b) …` was merged into the item).
+- An unreferenced figure keeps its reading position on a page whose page number was detached
+  from the running head: running material no longer anchors visual elements, so the figure
+  sorts between the paragraph above it and its caption and owns the caption again. The same
+  rule moves an omitted decorative rule (a running-head line) that the detached page number
+  pinned to the page end back to the top, where a page whose number is its own block already
+  had it; the reading output is unchanged, but such a page's unit order — and fingerprint —
+  changes when it is re-prepared.
+
+## [0.6.0-dev.8] - 2026-09-17
+
+### Fixed
+
+- Paragraph white space is a structure boundary. A document that spaces its paragraphs instead
+  of indenting them had every flush block of a page merged into one unit (the whole body of a
+  page as one `paragraph`, with its detector-labelled reference lines absorbed) because the
+  planner's gap rule never crossed PDF blocks and assembly re-merged every flush chunk of one
+  group. Preparation now flags a chunk that opens after white space wider than the page's
+  paragraph gap when the text line above it closes (ends in terminal punctuation or stops
+  short of the running text's right edge); assembly treats the flag like a paragraph indent —
+  a new group, never merged into the unit before it, closing an inferred statement unless the
+  prose resumes after the statement's enumerated clauses. A line a tall inline formula pushed
+  down, a formula row, a label or a tombstone beside a display never counts, so indented books
+  keep their units and page fingerprints. `footnote` and `bibliography` units open their own
+  group and never merge with prose (wrapped fragments of one footnote still merge).
+
+## [0.6.0-dev.7] - 2026-09-17
+
+### Added
 
 - Reference terminology is a channel of its own: `glossary/reference.yaml` (a `terms` list with
   the approved-term schema plus `kind` and `aliases`; `status` defaults to `reference-only`,
@@ -472,51 +602,49 @@ update` sees a change; the release drops the suffix.
   `project tracked PROJECT` derives the record from the data (assets, receipts and the source
   packets they name, batches, ledgers, packet payloads) and asks git whether exactly that set is
   tracked, exit 1 on any gap. `project rebuild` also copies `docs/` and reports what it copied.
-  `context/chapters/` is no longer created (nothing read it). `WORKFLOW_PACKET_STAGES`,
-  `AUDIT_STALE_REASONS` and `DETERMINISTIC_QA_VERSION` are named constants.
-- Inline notation keeps a text-face operator name set flush against its argument's bracket
-  (`Cov(`, `mean(`, `area(`) like a known operator; `MATH_OPERATORS` gains `limsup`, `liminf`,
-  `cov`, `var`, `corr`, `prob`, `vol` and the hyperbolic/inverse trigonometric names, so
-  `limsup` is no longer declared as a formula condition.
-- A text-face closing bracket is trimmed from an inline run only when the run's closers
-  outnumber its openers and prose follows it (`(the space L^p(Ω))`); intervals count every
-  bracket kind together and brackets at a line edge are kept.
-- An inline formula TeX broke after a relation or operator (`f(λ) >` / `0`, a summation sign
-  ending a block) is one asset with a fragment per line (`line-break-continued`); the digit or
-  bracket opening the next line is part of it.
-- A displayed formula box owns the rows a stretched delimiter it owns brackets (`0,
-  otherwise.`) and no longer returns a fraction denominator (`vol(B)`) to the paragraph as a
-  set-off phrase; the p33-style cases density exports complete.
-- Language tokens include letter-dot abbreviations (`i.o.`, `a.s.`, `i.e.`) everywhere one
-  predicate now serves: automatic conditions, condition validation and recoverable-prose
-  counting. `formula_conditions` may be declared on any math asset, inline or displayed, and
-  preparation declares them for inline crops and for reviewer regions that omit the key.
-- An equation label sharing its PDF block with a proof tombstone (`□ (1.50)`) binds to its
-  display; the tombstone stays in the reading order. Structure assembly never merges a printed
-  label (`(1.50)`, `(A.4)`) into the preceding paragraph.
-- The build identity (`generator`) is recorded but never fingerprinted: page ledger
-  fingerprints, packet page fingerprints and packet identities exclude it, so re-preparing
-  identical content keeps the packet ID and the review receipt (`retained_receipt_pages`).
-  Pages prepared by the earlier 0.6.0 development build change fingerprint once.
-- `source prepare --replace` replays a page's recorded reviewer override instead of silently
-  re-deriving the page (`replayed_override_pages`); `--discard-overrides` re-derives
-  (`discarded_override_pages`). Ledgers record `source_overrides_origin` (packet, reviewer).
-- Layout results (`derived/fidelity-layout/*.json`) key their `pages` by page-image SHA-256
-  and their fingerprint binds image content, weights, runtime and worker — never a path of the
-  project — so a moved, cloned or restored tree finds and replays its own layout evidence
-  instead of silently re-cutting pages by the fallback rules (`layout_page_items`; results
-  written by earlier builds are still read by path or, once moved, by image file name).
-  Pages prepared without an override by an earlier development build change
-  `layout_fingerprint` (and so their page fingerprint) once when re-prepared.
-- The layout store is content-addressed: `detect_layout` takes the store directory and
-  writes `<fingerprint>.json` (plus `.request.json`/`.log`, `path` in the result), so a rerun
-  on another runtime writes a new file instead of overwriting the result the page ledgers
-  record; a whole-chapter `--replace` after an upgrade therefore replays every override page
-  on its recorded result and keeps its receipt, re-detecting only the pages without one.
-- A recorded layout result that `derived/fidelity-layout/` no longer holds stops an override
-  import with the missing fingerprint and the page to re-detect, instead of re-preparing the
-  reviewed page as `unavailable`; `source prepare --replace` replays such a page on the fresh
-  detection and lists it in `redetected_override_pages`.
+  `WORKFLOW_PACKET_STAGES`, `AUDIT_STALE_REASONS` and `DETERMINISTIC_QA_VERSION` are named
+  constants.
+
+### Removed
+
+- `context/chapters/` is no longer created; nothing read it.
+
+## [0.6.0-dev.6] - 2026-09-16
+
+### Added
+
+- Qoder is a supported coordinator host: `.qoder-plugin` manifest and marketplace, `QODER_*`
+  host detection with 3/6 waves, `--host qoder`, reused tool-restricted read-only reviewer agents
+  and host documentation. `agent_models.qoder` ships empty for explicit per-project configuration;
+  Qoder-hosted external review remains a later revision.
+
+## [0.6.0-dev.5] - 2026-09-16
+
+### Added
+
+- External reviewers (and their fallbacks) take an optional `model_identity`: the concrete id
+  host metadata must report when the configured `model` is a host alias routed to another model.
+  Verification compares host evidence with the identity (or with `model` when unset); a failed
+  verification names requested, expected and served models, and the failed run and attempt
+  keep the served label (`actual_model_label`, `actual_model`) with `model_verified: false`.
+
+### Changed
+
+- A packet's `model` and `reasoning_effort` are dispatch values: what the coordinator hands to
+  the host's task launcher (`agent_models.<host>`, an alias such as `sonnet` on Claude Code or a
+  concrete id), never a claim about the model the host served. `assets submit` still requires
+  the submission to echo them, but says so; a new optional `served_model_label` records the
+  model the writer's environment reported, verbatim and unverified, next to `model` in the
+  candidate record. The submission, packet-manifest and project schemas describe the fields.
+- The CLI reports a refused precondition (a stale audit packet, a missing batch, an invalid
+  submission, a path that does not exist) as its error message with exit code 1 instead of a
+  traceback; the stale audit packet messages say what changed and that the packet must be
+  rebuilt and re-reviewed.
+
+## [0.6.0-dev.4] - 2026-09-16
+
+### Changed
+
 - A printed list label opening a line — a closed number (`1.`, `1.11.`, `3.2.1.`, `2)`) or a
   bracketed clause marker (`(a)`, `(iv)`, `(2)`) set in a text face and followed by text on
   the same line — is a structure boundary. Preparation cuts a chunk at each label it can
@@ -534,6 +662,28 @@ update` sees a change; the release drops the suffix.
   numbered `1.11.` therefore become one unit each with their clauses and displays as
   children; pages carrying labelled lines change fingerprint on their next `--replace`
   preparation (chapter-1 clause lists keep their units; the Exercises pages change units).
+
+## [0.6.0-dev.3] - 2026-09-15
+
+### Changed
+
+- The layout store is content-addressed: `detect_layout` takes the store directory and
+  writes `<fingerprint>.json` (plus `.request.json`/`.log`, `path` in the result), so a rerun
+  on another runtime writes a new file instead of overwriting the result the page ledgers
+  record; a whole-chapter `--replace` after an upgrade therefore replays every override page
+  on its recorded result and keeps its receipt, re-detecting only the pages without one.
+
+## [0.6.0-dev.2] - 2026-09-15
+
+### Changed
+
+- Layout results (`derived/fidelity-layout/*.json`) key their `pages` by page-image SHA-256
+  and their fingerprint binds image content, weights, runtime and worker — never a path of the
+  project — so a moved, cloned or restored tree finds and replays its own layout evidence
+  instead of silently re-cutting pages by the fallback rules (`layout_page_items`; results
+  written by earlier builds are still read by path or, once moved, by image file name).
+  Pages prepared without an override by an earlier development build change
+  `layout_fingerprint` (and so their page fingerprint) once when re-prepared.
 - A `preserve_asset_id` region on a `math` asset without a declaration is declared
   automatically from the asset's own glyphs, like a region naming the same glyphs (provenance
   gains `auto-formula-conditions`), so a preserved crop no longer needs a hand-written copy of
@@ -542,6 +692,78 @@ update` sees a change; the release drops the suffix.
   export identity (`evidence.json`), the creation-time directory name and default ID (folded
   with the conditions declared at creation), `content_sha256`, and the preserved asset's
   frozen ID and directory.
+
+### Fixed
+
+- A recorded layout result that `derived/fidelity-layout/` no longer holds stops an override
+  import with the missing fingerprint and the page to re-detect, instead of re-preparing the
+  reviewed page as `unavailable`; `source prepare --replace` replays such a page on the fresh
+  detection and lists it in `redetected_override_pages`.
+
+## [0.6.0-dev.1] - 2026-09-15
+
+The first versioned development build. It also carries the three builds made after the 0.6.0
+merge that still reported version `0.6.0` (2026-09-14 and 2026-09-15).
+
+### Added
+
+- Development builds carry a semantic-versioning pre-release identifier (`<next>-dev.N`)
+  that is bumped with every behaviour-changing commit, so plugin caches keyed by version no
+  longer share a directory between builds and `claude plugin update` sees a change.
+- `provenance.json`, page ledgers and source packets record a `generator` block (plugin
+  version, package digest, time), and `littrans doctor` prints the installed `build`
+  (`plugin_version`, `build_digest`, `package_path`).
+- `source gc --dry-run|--apply` removes crop directories that no fragment references any more.
+
+### Changed
+
+- QA v6.15 folds glossary sources and unit source text alike before matching (TeX spacing and
+  combining accents, ligatures, curly quotes, dash variants, whitespace, case), so `Hölder`,
+  `Lévy's` or `Chebyshev's` gate the extracted `H¨older`, `L´evy’s` and `Chebyshev’s`. QA and
+  packet term injection share one `term_source_text`, including quoted-title removal. Entries
+  accept `match: substring|word|regex`; only `status: approved` (or absent) entries are enforced;
+  a source that matches no prepared unit is reported as the `approved-term-never-matched`
+  warning. `fidelity-workflow.md` documents the entry contract, including that `forbidden`
+  applies to every unit.
+- QA v6.16 folds the literal characters of `match: regex` glossary sources like substring
+  sources while keeping escape sequences verbatim, so `Hölder` or `Chebyshev’s` written in a
+  pattern no longer fails silently against the folded source text.
+- Displayed blocks that carry native prose keep their rows (`\n` in `source_text`); the HTML
+  editions stack them as `display-row` spans with a leading asset (a stretched brace) as a
+  column beside them, Markdown emits hard breaks, inline fragments coalesce along a row only,
+  and QA warns `display-rows-mismatch` when the translation's row count differs.
+- Words kept inside a displayed formula (`if`, `otherwise.`, `for all`, `is even`) are declared
+  automatically as `formula_conditions` (provenance `auto-formula-conditions`), making the unit
+  translatable and requiring an image-language companion; operator names applied to their
+  argument (`Prob(`) are not conditions. Condition `source_text` is compared ignoring
+  whitespace, so TeX word gaps may be written as spaces.
+- Language tokens include letter-dot abbreviations (`i.o.`, `a.s.`, `i.e.`) everywhere one
+  predicate now serves: automatic conditions, condition validation and recoverable-prose
+  counting. `formula_conditions` may be declared on any math asset, inline or displayed, and
+  preparation declares them for inline crops and for reviewer regions that omit the key.
+- Inline notation keeps a text-face operator name set flush against its argument's bracket
+  (`Cov(`, `mean(`, `area(`) like a known operator; `MATH_OPERATORS` gains `limsup`, `liminf`,
+  `cov`, `var`, `corr`, `prob`, `vol` and the hyperbolic/inverse trigonometric names, so
+  `limsup` is no longer declared as a formula condition.
+- An inline formula TeX broke after a relation or operator (`f(λ) >` / `0`, a summation sign
+  ending a block) is one asset with a fragment per line (`line-break-continued`); the digit or
+  bracket opening the next line is part of it.
+- A region override's `bbox` is the target box: only owned glyph ink is padded, so a
+  `fragment.bbox` echoed from the packet reproduces the asset (`bbox`, `width`, `height`,
+  `baseline`, `content_sha256`) unchanged; fragment dimensions derive from the rounded box.
+  Raw regions without owned glyphs lose their extra 0.5pt padding, which changes their
+  identities on the next `--replace` preparation.
+- Fragments no longer carry a per-region `original.pdf`; original links point at the SVG.
+  `source prepare --replace` and override imports stop writing it, remove it from the
+  directories they re-export and prune crop directories the committed registry no longer
+  references.
+- The build identity (`generator`) is recorded but never fingerprinted: page ledger
+  fingerprints, packet page fingerprints and packet identities exclude it, so re-preparing
+  identical content keeps the packet ID and the review receipt (`retained_receipt_pages`).
+  Pages prepared by the earlier 0.6.0 development build change fingerprint once.
+- `source prepare --replace` replays a page's recorded reviewer override instead of silently
+  re-deriving the page (`replayed_override_pages`); `--discard-overrides` re-derives
+  (`discarded_override_pages`). Ledgers record `source_overrides_origin` (packet, reviewer).
 - Review imports and preparation report pages outside the operation whose receipt depended on
   a changed page (`invalidated_pages`) and remove that receipt explicitly.
 - The approval gate and the checkpoint attention list share `page_review_findings`: an asset
@@ -555,376 +777,291 @@ update` sees a change; the release drops the suffix.
 - A receipt whose packet directory is missing fails with a message naming the packet as a
   live review dependency; `source verify` reports `receipt_packets` and `source gc` reports
   `live_source_packets`/`unreferenced_source_packets` without deleting packets.
-- `littrans doctor` prints the installed `build` (`plugin_version`, `build_digest`,
-  `package_path`).
-- QA v6.15 folds glossary sources and unit source text alike before matching (TeX spacing and
-  combining accents, ligatures, curly quotes, dash variants, whitespace, case), so `Hölder`,
-  `Lévy's` or `Chebyshev's` gate the extracted `H¨older`, `L´evy’s` and `Chebyshev’s`. QA and
-  packet term injection share one `term_source_text`, including quoted-title removal. Entries
-  accept `match: substring|word|regex`; only `status: approved` (or absent) entries are enforced;
-  a source that matches no prepared unit is reported as the `approved-term-never-matched`
-  warning. `fidelity-workflow.md` documents the entry contract, including that `forbidden`
-  applies to every unit.
-- QA v6.16 folds the literal characters of `match: regex` glossary sources like substring
-  sources while keeping escape sequences verbatim, so `Hölder` or `Chebyshev’s` written in a
-  pattern no longer fails silently against the folded source text.
-- An `equation` unit without asset placeholders whose text is native words (`Prob`,
-  `otherwise.`) renders as upright text — and shows its translation — in packets, Markdown and
-  bilingual HTML instead of a spaced, slanted MathML symbol sequence.
-- Displayed blocks that carry native prose keep their rows (`\n` in `source_text`); the HTML
-  editions stack them as `display-row` spans with a leading asset (a stretched brace) as a
-  column beside them, Markdown emits hard breaks, inline fragments coalesce along a row only,
-  and QA warns `display-rows-mismatch` when the translation's row count differs.
-- Control characters in a mathematical face are ink: the CMEX integral (CR) and big
-  parentheses (LF) are owned by their display region instead of being cut out as a separate
-  asset bound to the following unit. The review packet reports `math-ink-outside-ownership`
-  for symbol-face ink inside a displayed crop owned by another asset.
-- Words kept inside a displayed formula (`if`, `otherwise.`, `for all`, `is even`) are declared
-  automatically as `formula_conditions` (provenance `auto-formula-conditions`), making the unit
-  translatable and requiring an image-language companion; operator names applied to their
-  argument (`Prob(`) are not conditions. Condition `source_text` is compared ignoring
-  whitespace, so TeX word gaps may be written as spaces.
-- Pieces of a stretched delimiter set on several baselines (⎧ ⎪ ⎨ ⎪ ⎩) stay in one region
-  (`stretched-delimiter-merged`) instead of splitting the brace between the display asset and
-  the native runs of its rows.
-- A region override's `bbox` is the target box: only owned glyph ink is padded, so a
-  `fragment.bbox` echoed from the packet reproduces the asset (`bbox`, `width`, `height`,
-  `baseline`, `content_sha256`) unchanged; fragment dimensions derive from the rounded box.
-  Raw regions without owned glyphs lose their extra 0.5pt padding, which changes their
-  identities on the next `--replace` preparation.
 - The source checkpoint's attention list groups pending grouping decisions per page with the
   asset IDs collapsed in `<details>`, instead of one line per asset.
+
+### Fixed
+
 - Original glyph paths are measured and exported through the page-sized clip group MuPDF emits
   when a PDF CropBox differs from its MediaBox; such pages no longer degrade every asset to a
   nominal-box `raw-region` crop that truncates stretched delimiters. Regions whose glyph ink
   could not be measured record `ink-bounds-unmeasured`.
+- A negated relation (TeX `\not`, a zero-width U+0338 over the relation) is one glyph run and
+  exports precisely (`∉`) instead of falling back to a raw mixed-region crop.
 - Line-end hyphens are rejoined only when the document does not print the compound more often
   than the joined word (`well-` / `known` stays `well-known`); suspended hyphens inside a line are
   left alone. Re-preparing affected pages with `--replace` changes those units' text and
   invalidates their translations.
-- Preparation keeps footnote links on the prose chunk that still carries the call when a
-  native block is split around a display formula, and rejects an inconsistent footnote graph
-  inside the source transaction instead of publishing units that no packet can review.
-- QA v6.14 reports `empty-translation` when source prose beside `{{asset:ID}}` placeholders
-  has no target text; only asset-only source blocks may translate to placeholders alone.
-- A resubmission that changes only `image_evidence` updates the receipt in place; the record
-  keeps its revision/status and audit coverage, while the receipt-bound QA context goes stale.
-- `fidelity-workflow.md` is a structured reference (states, preparation, review decisions and
-  the full source `override` contract, batches, records, assets, QA, audits, coordination,
-  rendering, recovery) instead of an appended change log; the packet stage list includes
-  `source-review` and `revise`. The plugin README lists `batch create`/`batch refresh`, and
-  the translation-record example uses real evidence image paths.
-- `batch create --unit-ids` and `assets packet --asset-ids` trim whitespace and empty entries.
+- An `equation` unit without asset placeholders whose text is native words (`Prob`,
+  `otherwise.`) renders as upright text — and shows its translation — in packets, Markdown and
+  bilingual HTML instead of a spaced, slanted MathML symbol sequence.
+- Control characters in a mathematical face are ink: the CMEX integral (CR) and big
+  parentheses (LF) are owned by their display region instead of being cut out as a separate
+  asset bound to the following unit. The review packet reports `math-ink-outside-ownership`
+  for symbol-face ink inside a displayed crop owned by another asset.
+- Pieces of a stretched delimiter set on several baselines (⎧ ⎪ ⎨ ⎪ ⎩) stay in one region
+  (`stretched-delimiter-merged`) instead of splitting the brace between the display asset and
+  the native runs of its rows.
+- A text-face closing bracket is trimmed from an inline run only when the run's closers
+  outnumber its openers and prose follows it (`(the space L^p(Ω))`); intervals count every
+  bracket kind together and brackets at a line edge are kept.
+- A displayed formula box owns the rows a stretched delimiter it owns brackets (`0,
+  otherwise.`) and no longer returns a fraction denominator (`vol(B)`) to the paragraph as a
+  set-off phrase; the p33-style cases density exports complete.
+- An equation label sharing its PDF block with a proof tombstone (`□ (1.50)`) binds to its
+  display; the tombstone stays in the reading order. Structure assembly never merges a printed
+  label (`(1.50)`, `(A.4)`) into the preceding paragraph.
 
-- Removed the orphaned math-review, math-vision, math-packet, math-pilot-packet and
-  schema-migration modules together with their tests; their CLI commands and JSON schemas
-  were already retired. Existing `math_review_decision_id` layout overrides still apply.
-- QA v6.13 binds current required images and translation viewing receipts, including
-  dependent units; changed image bytes invalidate cached passes without semantic changes.
-- Share dollar-math boundaries across source, QA and HTML so ordinary currency amounts
-  do not hide real footnote calls; preserve explicit display math.
+## [0.6.0] - Not tagged
 
-- QA v6.12, Markdown and HTML share line-valid code-fence boundaries, including longer
-  closing fences and unclosed blocks. Inline code uses exact backtick runs.
-- Retry incomplete managed model downloads when READY is absent; handle whitespace-only
-  PDF lines before bold run-in labels without indexing an empty glyph list.
+Merged into `main` on 2026-09-14 (pull request #10) and installed from there as `0.6.0`, but
+never tagged or published as a release. Schema 6 and the fidelity-first workflow; its changes
+first ship in a tagged release with 0.6.2.
 
-- Freeze explicit/untranslated-only batch scopes across refreshes, and reject newly cut
-  logical groups. Keep footnote companions inside Markdown definitions.
-- Include shared MathJax files in edition rollback and publish each runtime file atomically.
+### Added
 
-- Revalidate source authority during workflow coordination and dispatch source-review
-  recovery when receipts fail. Route read-only review issues to editable owning batches.
-- Emit image companions after complete continuation chains; select current dependency
-  evidence before choosing a formal render cover. Require Pydantic 2.12 for identity serialization.
-
-- QA v6.11 rejects live footnote calls in image-language companions, including table cells
-  and both label fields; escaped and code-literal notation remains supported.
-
-- QA v6.10 binds dependency presence and source identities into cached results; new
-  untranslated-only batches retain stale records as editable work.
-- Repair interrupted candidate/review index publication without replacing newer valid
-  evidence. Recovery packets isolate damaged candidates and preserve valid revision context.
-- Publish and roll back source page canvases atomically; reject malformed layout predictions
-  and asset placeholders in image-language companions.
-
-- QA v6.9 rejects missing or stale dependency translations; refreshing a batch reopens
-  stale translated read-only units. Currency escapes no longer swallow footnote calls.
-- Source-review layout cache reuse requires a list-valued result for the current page.
-
-- Skip unreadable unrelated layout caches during source-review overrides, and retain
-  every fragment's image-language companions when rendering continued tables.
-
-- Publish isolated layout-worker results atomically and recompute unreadable caches;
-  reject incomplete worker results. HTML protects multiline backtick and tilde fences.
-
-- Render asset-bearing target tables once in Markdown and bilingual HTML, preserving
-  explicit empty target text. QA v6.8 ignores tilde-fenced literal footnote syntax.
-
-- Recover damaged candidate evidence through fresh transcription packets; schedule assets
-  across the same dependency closure as QA.
-- QA v6.7 counts real footnote calls with multiplicity while excluding literal syntax.
-- Retire translations of removed source units transactionally, and defer approvals made
-  stale by same-import overrides. Preserve source table structure around asset cells.
-
-- Corrupt indexed asset reviews require renewed verification and fresh packet identities.
-- Schedule uncertain fallback recovery before QA; QA v6.6 checks asset uncertainty across
-  all dependency units, including non-translatable formulas, and checks table-cell references.
-- Regenerate incomplete original asset caches when their evidence receipt is absent.
-
-- Keep reviewer semantic uncertainty across recovery candidates until a valid independent
-  audit supersedes it; dispatch recovery audits before QA and retain the block if review
-  evidence is damaged. Older recovery candidates inherit their recorded review context.
-
-- Validate explicit footnote numbers against unique referenced definitions, preserving
-  literal code/math syntax and repeated calls to one definition.
-- Expose recovery transcription for uncertain fallback assets, carrying review feedback;
-  QA blocked only by that uncertainty dispatches asset recovery instead of prose revision.
-- Restore source authority snapshots on KeyboardInterrupt as well as ordinary errors.
-
-- Generate batch output schemas from TranslationRecord, including image receipts and
-  asset companions; refreshing a batch updates its emitted schema.
-- Bind workflow packet identity and manifest to the selected host, model and effort.
-- Validate source override footnote relationships against the final combined graph,
-  rolling back invalid references before publishing source units.
-
-- Keep later asset-review decisions authoritative when an older review is replayed;
-  replay only restores an absent index entry or retains its existing mapping.
-
-- Protect escaped footnote literals and backslash-delimited math in source/bilingual
-  HTML; embed original PNG fallbacks alongside SVGs in standalone source checkpoints.
-
-- Dispatch dependency-only QA revision work to an editable owning batch, including
-  prerequisites outside a resumed wave; status uses the same dispatch and explicit host.
-- Keep table-cell footnote calls in QA and prevent image companions from satisfying
-  prose preservation checks. QA context version 6.5 requires rerunning existing QA.
-- Bind asset kind, display and grouping semantics into versioned content identities,
-  including final structure assembly, so source changes invalidate translation evidence.
-- Retain complete groups in untranslated-only batches with explicit read-only context
-  units excluded from submission, including after batch refresh.
-
-- Validate explicit asset IDs before either single- or multi-fragment region export.
-- Recognize spaced, punctuated and Unicode footnote-definition labels in detected regions.
-- Preserve historical rights status when rebuilding a project.
-- Serialize structure-profile extensions with the project write lock.
-- Route current failed deterministic QA to revision; missing/stale QA still runs first.
-
-- Reject unsafe override unit IDs and escape legacy IDs in Markdown anchors.
-- Preserve footnote-like literals inside backslash-delimited inline/display math.
-- Prepare numeric/symbol-only pages using usable-glyph font sizes or a default.
-
-- Carry explicit host selection into asset transcription/audit packets and the asset CLI.
-- Emit unique Markdown footnote calls/definitions, preserving code literals and expanded
-  note content; keep continued table fragments with scoped notes separate.
-- Reject source-unit ID collisions across pages and within a source-review import.
-
-- Bind source coverage HTML and its original-page images to review packets and receipts;
-  damaged reports require new packet identities and fresh visual review.
-- Resolve cross-page footnotes through source unit references, including page-scoped output;
-  recognize Computer Modern Roman note calls while excluding mathematical bases.
-- Support explicit coordination hosts in workflow packet creation and reject source override
-  asset ID collisions before replacing reviewed page data.
-
-- Bind layout caches to worker code, interpreter identity and installed package versions.
-- Validate source-review receipt digests, packet provenance and visual approval conditions
-  whenever source approval is consumed; legacy receipts require fresh review.
-- Preserve page and language footnote scopes inside table cells.
-
-- Enforce managed layout readiness before detector execution or cached evidence reuse.
-- Verify stored asset-review digests before consuming decisions or replaying imports; require
-  the manifest SHA-256 receipt in the public submission schema.
-
-- Keep bilingual HTML anchor targets visible below the fixed header on desktop and mobile.
-- Recognize explicit English/Chinese decade equivalents and numbered CHAPTER headings in deterministic QA while retaining number, unit and acronym protection.
-- Added document-specific `source probe` preparation with source-bound structure guidance in extraction records, review packets and batch context; stale profile imports are rejected.
-- Preserved complete parent groups and caller/footnote spans when batch budgets are exceeded, including intervening footnotes.
-- Unified source preparation around faithful native prose and original PDF/SVG/PNG assets,
-  with source-bound coverage review before parallel transcription and translation.
-- Separated structured-asset candidates and independent visual/render review from translation
-  approval; unfinished representations retain an explicit original-image reading fallback.
-- Moved per-host role model defaults out of code into `profiles/host-models.yaml`; `project init`
-  copies them into `agent_models` for per-project confirmation (recommended: Codex `gpt-5.6-luna`
-  at `max`, Claude Code `sonnet` at `high`), preserving the three translation audit lenses and
-  configured external review.
-- Added Claude Code as a supported coordinator host: `.claude-plugin` manifests and marketplace,
+- Claude Code is a supported coordinator host: `.claude-plugin` manifests and marketplace,
   `CLAUDECODE` host detection with 3/6 waves, `--host claude`, tool-restricted read-only reviewer
   agents and host documentation. Claude-hosted external review remains a later revision.
-- Added Qoder as a supported coordinator host: `.qoder-plugin` manifest and marketplace, `QODER_*`
-  host detection with 3/6 waves, `--host qoder`, reused tool-restricted read-only reviewer agents
-  and host documentation. `agent_models.qoder` ships empty for explicit per-project configuration;
-  Qoder-hosted external review remains a later revision.
-- Made the isolated layout detector (MinerU 3.4.5, PP-DocLayoutV2) a required preparation
-  component: `doctor` reports `layout_runtime`, `layout install` provisions it, and
-  `source prepare` refuses to run without it unless `--allow-missing-layout` is given.
-- Improved source structure recovery: wrapped headings stay one unit and never own the
-  following prose; figures/tables group with their captions and render as `<figure>`; bullet
-  lists become list items; displayed lines that mix notation and prose keep their own position;
-  page numbers merged into a text block are detached as omitted running material; bare vector
-  rules are omitted from reading; equation tags such as `(ODE)` bind like numbers.
-- Improved formula region ownership: bold single letters in prose are notation, quotation
-  marks, joining hyphens and sentence punctuation are trimmed from formula edges, detector
-  boxes shrink to the owned glyph ink, a trailing prose phrase is split off a displayed formula,
-  and the precise glyph exporter accepts empty clip groups and filled-rectangle rules.
-- Added `source render`, a readable HTML checkpoint of the verified source with the original
-  assets inline, as the last check before batching; `--standalone` embeds the images so the
-  single file can be shared with a reviewer.
-- Preserved typography in the extracted source: italic and slanted text faces (CMTI/CMSL as well
-  as style names) become emphasis, bold and italic runs continue across line breaks, whole-heading
-  markers are dropped, ligature glyphs expand to their letters, TeX spacing accents compose with
-  the letter they sit on (`ITÔ`, `Itô`), and kerns reported as narrow spaces are not word spaces.
-- Grouped list items with the paragraph that introduces them and with each other; a bold run-in
-  label (`EXAMPLE 1.`, `Proof.`, `2.1.4. Stochastic processes.`) or vertical white space opens a
-  new paragraph even inside one PDF text block, and statement labels in bold or capitals start a
-  statement group.
-- Kept a displayed formula and the prose set beside it on its line (`... for all times t > 0.`) as
-  one displayed unit with the formula asset and translatable text; words inside the notation
-  (`sup` conditions, braces annotations) stay in the formula image, while a prose line the
-  detector rectangle overshoots into returns to its paragraph.
-- Treated large TeX operators encoded as control characters as ink, end-of-proof tombstones and
-  plain numbers in the text face as text rather than notation, and gave displayed units the
-  formula's geometry.
-- `source probe` extends an existing structure profile with observations for pages not yet probed
-  instead of refusing, returning it to draft until the rules cover the new pages.
-- Cut the test suite from over twenty minutes on a machine with the layout detector to under two:
-  tests stub the detector unless marked `layout_runtime`, and the synthetic reviewed projects
-  are built once per session and copied.
-- Introduced schema 6 and rebuilding older projects into a new directory with source/context/glossary
-  only. Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
-- Added the transcription skill, asset review role and offline MathJax reading contract.
-- Added `workflow packet --stage revise`: the translate packet files plus the batch's current
+- The transcription skill, asset review role and offline MathJax reading contract.
+- Document-specific `source probe` preparation with source-bound structure guidance in
+  extraction records, review packets and batch context; stale profile imports are rejected.
+- `source render`, a readable HTML checkpoint of the verified source with the original assets
+  inline, as the last check before batching; `--standalone` embeds the images so the single
+  file can be shared with a reviewer.
+- `workflow packet --stage revise`: the translate packet files plus the batch's current
   translation records, its open review issues and revision instructions, so one fresh translator
   can consolidate an audit round; `revise` tasks use the translate model policy.
-- Reported why audit coverage is stale: `audit_coverage`, `review status` and
-  `workflow next|status` now carry `stale`/`stale_reasons`/`audit_stale` (`context-changed`,
+- Stale audit coverage reports its reasons: `audit_coverage`, `review status` and
+  `workflow next|status` carry `stale`/`stale_reasons`/`audit_stale` (`context-changed`,
   `dependency-changed`, `unit-changed`, `invalidated`, `closure-incomplete`,
   `context-units-removed`); audit runs record the shared brief/style/term fingerprint separately.
 - `review import-set` keeps the reviewer's own id as `source_issue_id` next to the canonical
   `audit-<hash>` id; `review resolve` accepts either id and several comma-separated ids at once,
   and `review issues PROJECT BATCH [--all] [--jsonl]` lists a batch's issues.
-- Allowed a packet or render batch set to mix batch series when their units do not overlap and
-  source order holds; batches within one series must still be consecutive.
+- Deterministic QA warnings `target-halfwidth-punctuation` (half-width `,.;:!?` after Chinese
+  text) and `asset-reference-spacing` (whitespace between Chinese text and `{{asset:ID}}`); the
+  QA context fingerprint became `v6.4`, so existing batches reported stage `qa` until `qa run`
+  was rerun (audit coverage was unaffected).
+- Recovery transcription for uncertain fallback assets, carrying review feedback; QA blocked
+  only by that uncertainty dispatches asset recovery instead of prose revision.
+
+### Changed
+
+- Source preparation is unified around faithful native prose and original PDF/SVG/PNG assets,
+  with source-bound coverage review before parallel transcription and translation.
+- Structured-asset candidates and independent visual/render review are separate from
+  translation approval; unfinished representations retain an explicit original-image reading
+  fallback.
+- The isolated layout detector (MinerU 3.4.5, PP-DocLayoutV2) is a required preparation
+  component: `doctor` reports `layout_runtime`, `layout install` provisions it, and
+  `source prepare` refuses to run without it unless `--allow-missing-layout` is given.
+- Per-host role model defaults moved out of code into `profiles/host-models.yaml`; `project init`
+  copies them into `agent_models` for per-project confirmation (recommended: Codex `gpt-5.6-luna`
+  at `max`, Claude Code `sonnet` at `high`), preserving the three translation audit lenses and
+  configured external review.
+- Source structure recovery: wrapped headings stay one unit and never own the following prose;
+  figures/tables group with their captions and render as `<figure>`; bullet lists become list
+  items; displayed lines that mix notation and prose keep their own position; page numbers
+  merged into a text block are detached as omitted running material; bare vector rules are
+  omitted from reading; equation tags such as `(ODE)` bind like numbers.
+- Formula region ownership: bold single letters in prose are notation, quotation marks, joining
+  hyphens and sentence punctuation are trimmed from formula edges, detector boxes shrink to the
+  owned glyph ink, a trailing prose phrase is split off a displayed formula, and the precise
+  glyph exporter accepts empty clip groups and filled-rectangle rules.
+- Typography is preserved in the extracted source: italic and slanted text faces (CMTI/CMSL as
+  well as style names) become emphasis, bold and italic runs continue across line breaks,
+  whole-heading markers are dropped, ligature glyphs expand to their letters, TeX spacing
+  accents compose with the letter they sit on (`ITÔ`, `Itô`), and kerns reported as narrow
+  spaces are not word spaces.
+- List items group with the paragraph that introduces them and with each other; a bold run-in
+  label (`EXAMPLE 1.`, `Proof.`, `2.1.4. Stochastic processes.`) or vertical white space opens a
+  new paragraph even inside one PDF text block, and statement labels in bold or capitals start a
+  statement group.
+- A displayed formula and the prose set beside it on its line (`... for all times t > 0.`) are
+  one displayed unit with the formula asset and translatable text; words inside the notation
+  (`sup` conditions, braces annotations) stay in the formula image, while a prose line the
+  detector rectangle overshoots into returns to its paragraph.
+- Large TeX operators encoded as control characters are ink, end-of-proof tombstones and plain
+  numbers in the text face are text rather than notation, and displayed units take the
+  formula's geometry.
+- `source probe` extends an existing structure profile with observations for pages not yet
+  probed instead of refusing, returning it to draft until the rules cover the new pages.
+- A packet or render batch set may mix batch series when their units do not overlap and source
+  order holds; batches within one series must still be consecutive.
 - `render` switches to originals-only automatically when the project holds no transcription
   candidate and records `originals_only_reason` in the render QA and command output.
 - The rendered edition's header, `*.quality.md` (now listing its batches and translation status)
   and `render-qa.json` (`rendered_status`, `review_batch_ids`) describe the rendered batches, not
   the project-wide status; QA report counts are scoped to those batches.
-- Added deterministic QA warnings `target-halfwidth-punctuation` (half-width `,.;:!?` after
-  Chinese text) and `asset-reference-spacing` (whitespace between Chinese text and
-  `{{asset:ID}}`); the QA context fingerprint is now `v6.4`, so existing batches report stage
-  `qa` until `qa run` is rerun (audit coverage is unaffected).
 - Writer, audit and revise packets carry a "Contracts" paragraph (renderer-owned list/heading/
   note markers, placeholder spacing, full-width punctuation, `language_present=false` with notes)
   so reviewers stop reporting the contract as defects; the `asset-language-untranslated` message
   names the notation-only alternative.
 - The CLI reconfigures stdout and stderr to UTF-8 with LF line endings, so piped output on a GBK
-  Windows console needs no `PYTHONIOENCODING` and carries no carriage returns; generated batch, context and
-  schema files are written with LF. PyMuPDF is imported as `pymupdf`, so its `fitz` deprecation
-  notice no longer lands in the CLI's stdout.
-- A packet's `model` and `reasoning_effort` are dispatch values: what the coordinator hands to
-  the host's task launcher (`agent_models.<host>`, an alias such as `sonnet` on Claude Code or a
-  concrete id), never a claim about the model the host served. `assets submit` still requires
-  the submission to echo them, but says so; a new optional `served_model_label` records the
-  model the writer's environment reported, verbatim and unverified, next to `model` in the
-  candidate record. The submission, packet-manifest and project schemas describe the fields.
-- External reviewers (and their fallbacks) take an optional `model_identity`: the concrete id
-  host metadata must report when the configured `model` is a host alias routed to another model.
-  Verification compares host evidence with the identity (or with `model` when unset); a failed
-  verification names requested, expected and served models, and the failed run and attempt
-  keep the served label (`actual_model_label`, `actual_model`) with `model_verified: false`.
-- The CLI reports a refused precondition (a stale audit packet, a missing batch, an invalid
-  submission, a path that does not exist) as its error message with exit code 1 instead of a
-  traceback; the stale audit packet messages say what changed and that the packet must be
-  rebuilt and re-reviewed.
+  Windows console needs no `PYTHONIOENCODING` and carries no carriage returns; generated batch,
+  context and schema files are written with LF. PyMuPDF is imported as `pymupdf`, so its `fitz`
+  deprecation notice no longer lands in the CLI's stdout.
+- QA v6.14 reports `empty-translation` when source prose beside `{{asset:ID}}` placeholders
+  has no target text; only asset-only source blocks may translate to placeholders alone.
+- QA v6.13 binds current required images and translation viewing receipts, including
+  dependent units; changed image bytes invalidate cached passes without semantic changes.
+- A resubmission that changes only `image_evidence` updates the receipt in place; the record
+  keeps its revision/status and audit coverage, while the receipt-bound QA context goes stale.
+- Batch output schemas are generated from `TranslationRecord`, including image receipts and
+  asset companions; refreshing a batch updates its emitted schema.
+- Workflow packet identity and manifest bind the selected host, model and effort.
+- Asset kind, display and grouping semantics are bound into versioned content identities,
+  including final structure assembly, so source changes invalidate translation evidence.
+- Source coverage HTML and its original-page images are bound to review packets and receipts;
+  damaged reports require new packet identities and fresh visual review.
+- Layout caches are bound to worker code, interpreter identity and installed package versions.
+- Source-review receipt digests, packet provenance and visual approval conditions are validated
+  whenever source approval is consumed; legacy receipts require fresh review.
+- Stored asset-review digests are verified before decisions are consumed or imports replayed;
+  the public submission schema requires the manifest SHA-256 receipt.
+- `fidelity-workflow.md` is a structured reference (states, preparation, review decisions and
+  the full source `override` contract, batches, records, assets, QA, audits, coordination,
+  rendering, recovery) instead of an appended change log; the packet stage list includes
+  `source-review` and `revise`. The plugin README lists `batch create`/`batch refresh`, and
+  the translation-record example uses real evidence image paths.
+- Weekly Dependabot minor and patch updates are grouped by ecosystem while major-version
+  updates stay separate for explicit compatibility review and maintainer-controlled merging.
+- The test suite runs in under two minutes instead of over twenty on a machine with the layout
+  detector: tests stub the detector unless marked `layout_runtime`, and the synthetic reviewed
+  projects are built once per session and copied.
+
+### Removed
+
+- The orphaned math-review, math-vision, math-packet, math-pilot-packet and schema-migration
+  modules and their tests; their CLI commands and JSON schemas were already retired. Existing
+  `math_review_decision_id` layout overrides still apply.
+- Earlier extraction modes and exact-LaTeX pretranslation gates are no longer the workflow.
 
 ### Fixed
 
-- Bound asset-review artifacts to every copied original and MathJax dependency; missing or
+- Preparation keeps footnote links on the prose chunk that still carries the call when a
+  native block is split around a display formula, and rejects an inconsistent footnote graph
+  inside the source transaction instead of publishing units that no packet can review.
+- `batch create --unit-ids` and `assets packet --asset-ids` trim whitespace and empty entries.
+- Dollar-math boundaries are shared across source, QA and HTML so ordinary currency amounts
+  do not hide real footnote calls; explicit display math is preserved.
+- QA v6.12, Markdown and HTML share line-valid code-fence boundaries, including longer
+  closing fences and unclosed blocks. Inline code uses exact backtick runs.
+- Incomplete managed model downloads are retried when READY is absent; whitespace-only PDF
+  lines before bold run-in labels no longer index an empty glyph list.
+- Explicit/untranslated-only batch scopes stay frozen across refreshes, and newly cut logical
+  groups are rejected. Footnote companions stay inside Markdown definitions.
+- Shared MathJax files are included in edition rollback and each runtime file is published
+  atomically.
+- Workflow coordination revalidates source authority and dispatches source-review recovery
+  when receipts fail. Read-only review issues are routed to editable owning batches.
+- Image companions are emitted after complete continuation chains; current dependency evidence
+  is selected before a formal render cover is chosen. Pydantic 2.12 is required for identity
+  serialization.
+- QA v6.11 rejects live footnote calls in image-language companions, including table cells
+  and both label fields; escaped and code-literal notation remains supported.
+- QA v6.10 binds dependency presence and source identities into cached results; new
+  untranslated-only batches retain stale records as editable work.
+- Interrupted candidate/review index publication is repaired without replacing newer valid
+  evidence. Recovery packets isolate damaged candidates and preserve valid revision context.
+- Source page canvases are published and rolled back atomically; malformed layout predictions
+  and asset placeholders in image-language companions are rejected.
+- QA v6.9 rejects missing or stale dependency translations; refreshing a batch reopens
+  stale translated read-only units. Currency escapes no longer swallow footnote calls.
+- Source-review layout cache reuse requires a list-valued result for the current page.
+- Unreadable unrelated layout caches are skipped during source-review overrides, and every
+  fragment's image-language companions are retained when rendering continued tables.
+- Isolated layout-worker results are published atomically, unreadable caches are recomputed
+  and incomplete worker results rejected. HTML protects multiline backtick and tilde fences.
+- Asset-bearing target tables render once in Markdown and bilingual HTML, preserving explicit
+  empty target text. QA v6.8 ignores tilde-fenced literal footnote syntax.
+- Damaged candidate evidence is recovered through fresh transcription packets; assets are
+  scheduled across the same dependency closure as QA.
+- QA v6.7 counts real footnote calls with multiplicity while excluding literal syntax.
+- Translations of removed source units are retired transactionally, and approvals made stale
+  by same-import overrides are deferred. Source table structure is preserved around asset cells.
+- Corrupt indexed asset reviews require renewed verification and fresh packet identities.
+- Uncertain fallback recovery is scheduled before QA; QA v6.6 checks asset uncertainty across
+  all dependency units, including non-translatable formulas, and checks table-cell references.
+- Incomplete original asset caches are regenerated when their evidence receipt is absent.
+- Reviewer semantic uncertainty is kept across recovery candidates until a valid independent
+  audit supersedes it; recovery audits are dispatched before QA and the block is retained if
+  review evidence is damaged. Older recovery candidates inherit their recorded review context.
+- Explicit footnote numbers are validated against unique referenced definitions, preserving
+  literal code/math syntax and repeated calls to one definition.
+- Source authority snapshots are restored on KeyboardInterrupt as well as ordinary errors.
+- Source override footnote relationships are validated against the final combined graph, and
+  invalid references are rolled back before source units are published.
+- Later asset-review decisions stay authoritative when an older review is replayed; replay
+  only restores an absent index entry or retains its existing mapping.
+- Escaped footnote literals and backslash-delimited math are protected in source/bilingual
+  HTML; standalone source checkpoints embed original PNG fallbacks alongside SVGs.
+- Dependency-only QA revision work is dispatched to an editable owning batch, including
+  prerequisites outside a resumed wave; status uses the same dispatch and explicit host.
+- Table-cell footnote calls stay in QA and image companions cannot satisfy prose preservation
+  checks. QA context version 6.5 requires rerunning existing QA.
+- Untranslated-only batches retain complete groups with explicit read-only context units
+  excluded from submission, including after batch refresh.
+- Explicit asset IDs are validated before either single- or multi-fragment region export.
+- Spaced, punctuated and Unicode footnote-definition labels are recognized in detected regions.
+- Rebuilding a project preserves its historical rights status.
+- Structure-profile extensions are serialized with the project write lock.
+- Current failed deterministic QA is routed to revision; missing/stale QA still runs first.
+- Unsafe override unit IDs are rejected and legacy IDs are escaped in Markdown anchors.
+- Footnote-like literals inside backslash-delimited inline/display math are preserved.
+- Numeric/symbol-only pages are prepared using usable-glyph font sizes or a default.
+- Explicit host selection is carried into asset transcription/audit packets and the asset CLI.
+- Markdown footnote calls/definitions are unique, preserving code literals and expanded note
+  content; continued table fragments with scoped notes stay separate.
+- Source-unit ID collisions are rejected across pages and within a source-review import.
+- Cross-page footnotes resolve through source unit references, including page-scoped output;
+  Computer Modern Roman note calls are recognized while mathematical bases are excluded.
+- Workflow packet creation supports explicit coordination hosts, and source override asset ID
+  collisions are rejected before reviewed page data is replaced.
+- Page and language footnote scopes are preserved inside table cells.
+- Managed layout readiness is enforced before detector execution or cached evidence reuse.
+- Bilingual HTML anchor targets stay visible below the fixed header on desktop and mobile.
+- Deterministic QA recognizes explicit English/Chinese decade equivalents and numbered CHAPTER
+  headings while retaining number, unit and acronym protection.
+- Complete parent groups and caller/footnote spans are preserved when batch budgets are
+  exceeded, including intervening footnotes.
+- Asset-review artifacts are bound to every copied original and MathJax dependency; missing or
   modified dependencies require a fresh audit packet and review, including for earlier approvals.
-- Restricted structured candidates to math/LaTeX, table/table and code/code. Figures and
+- Structured candidates are restricted to math/LaTeX, table/table and code/code. Figures and
   unclassified mixed regions retain originals until source review establishes a supported kind.
-- Preserved reviewed tables and code in Markdown with original-image references.
-- Sanitized source-checkpoint output names and made rebuilt projects own a portable source copy.
-- Exposed optional asset work after reading completion and recovered multi-digit footnote calls.
-- Required successful smoke-test readiness for managed layout runtimes and made failed installs retryable.
-
-- Reported an unresolved `{{asset:ID}}` reference by name during Markdown rendering, matching the
-  existing bilingual HTML behavior, instead of aborting the render with an unlabeled lookup error.
-- Reused the page's cached layout-detector result when a source review override re-prepares a
-  page, so corrections no longer lose heading and block structure.
-- Stopped treating every word of an all-caps heading as a protected acronym in deterministic QA;
+- Reviewed tables and code are preserved in Markdown with original-image references.
+- Source-checkpoint output names are sanitized and rebuilt projects own a portable source copy.
+- Optional asset work is exposed after reading completion and multi-digit footnote calls are
+  recovered.
+- Managed layout runtimes require successful smoke-test readiness, and failed installs are
+  retryable.
+- An unresolved `{{asset:ID}}` reference is reported by name during Markdown rendering, matching
+  the existing bilingual HTML behavior, instead of aborting the render with an unlabeled lookup
+  error.
+- A source review override that re-prepares a page reuses the page's cached layout-detector
+  result, so corrections no longer lose heading and block structure.
+- Deterministic QA no longer treats every word of an all-caps heading as a protected acronym;
   headings can be translated without appending the English words.
-- Stopped treating the words of a bold all-caps run-in statement label (`**EXAMPLE 1.**`,
-  `**WARNING ABOUT NOTATION.**`) as protected acronyms: new extractions no longer record them,
-  and QA accepts a localized bold label (`**例 1.**`) for already prepared units.
-- `workflow next` on a project without batches now says that batches must be created first
+- The words of a bold all-caps run-in statement label (`**EXAMPLE 1.**`, `**WARNING ABOUT
+  NOTATION.**`) are not protected acronyms: new extractions no longer record them, and QA
+  accepts a localized bold label (`**例 1.**`) for already prepared units.
+- `workflow next` on a project without batches says that batches must be created first
   instead of failing on an empty resume range.
-- Kept a displayed line that carries prose beside its formula (`... for all times t > 0.`)
+- A displayed line that carries prose beside its formula (`... for all times t > 0.`) stays
   translatable when the unit was rebuilt from a formula-only block; the quantifier phrase was
   being dropped from the translation as a non-translatable image.
-- Labelled non-translatable equation units explicitly in audit packets so reviewers do not report
+- Audit packets label non-translatable equation units explicitly so reviewers do not report
   the original-image reading content as an omission.
-- Kept inline formulas that fell back to a raw mixed region inline in the reading edition instead
-  of forcing block display and breaking the sentence.
-- Paragraph white space is a structure boundary. A document that spaces its paragraphs instead
-  of indenting them had every flush block of a page merged into one unit (the whole body of a
-  page as one `paragraph`, with its detector-labelled reference lines absorbed) because the
-  planner's gap rule never crossed PDF blocks and assembly re-merged every flush chunk of one
-  group. Preparation now flags a chunk that opens after white space wider than the page's
-  paragraph gap when the text line above it closes (ends in terminal punctuation or stops
-  short of the running text's right edge); assembly treats the flag like a paragraph indent —
-  a new group, never merged into the unit before it, closing an inferred statement unless the
-  prose resumes after the statement's enumerated clauses. A line a tall inline formula pushed
-  down, a formula row, a label or a tombstone beside a display never counts, so indented books
-  keep their units and page fingerprints. `footnote` and `bibliography` units open their own
-  group and never merge with prose (wrapped fragments of one footnote still merge).
-- A rejected page no longer reads as verified after a rerun (0.6.0-dev.17). `source prepare
-  --replace` keeps the receipt of a page it reproduced byte for byte, and marked that page's
-  units verified whatever the receipt decided, so re-preparing a page whose visual review had
-  *failed* flipped its units to `verified` in `derived/units.jsonl` and in the source packet a
-  translator reads. Only a receipt that passed now says the page is verified; a retained
-  rejection leaves it unverified, as the review import left it. `verify_fidelity` always
-  refused such a page, so no page was ever approved on this — the record simply disagreed
-  with the gate.
-- Declared language is judged on the same geometry that declared it (0.6.0-dev.17). The
-  approval gate re-derived a math crop's formula conditions from the ledger, which records PDF
-  font-metric boxes, while preparation derives them from measured glyph ink. A stretched CMEX
-  delimiter's metric rectangle sits on an adjacent line, so an upright operator name applied to
-  a `\left(` argument (`Prob(`, `vol(`) read as notation when it was declared and as undeclared
-  language when it was checked, and the page could not be approved or re-prepared out of it.
-  The check now reads the ledger in its own metric-box terms and keeps a bare operator name
-  notation there too; what preparation declares is unchanged, so no page fingerprint moves.
-- Reclaimed crop directories while the project write lock is still held (0.6.0-dev.17).
-  `source prepare` and `source import-review` pruned the asset directories no fragment refers
-  to after releasing the lock, using their own in-memory registry: a second run that acquired
-  the lock in that window and exported new crops could have them deleted, leaving its
-  `derived/fidelity-assets.jsonl` pointing at missing files. The authority transactions now
-  commit on a nested stack inside the lock, so the prune still runs after the new record is
-  durable but before another run can start.
-- `.gitignore` upgrades no longer leave the packet payloads outside the record
-  (0.6.0-dev.17). Adding the `.littrans/*` / `!.littrans/work/` pair to a project created
-  before it left the older `/.littrans/` line in place; git never descends into an excluded
-  directory, so the re-include could not take effect and `project tracked` reported every
-  packet payload as excluded from the record. The whole-directory line is now removed when the
-  pair is added.
-- Replaying a page of corrections renders the page once (0.6.0-dev.17). Declaring the language
-  of a reviewer's math regions re-rendered and re-parsed the whole page SVG for each region;
-  it now reuses the ink the page already measured.
-
-## Historical changes before 0.6
-
-The workflow descriptions below document released history, not current operating instructions.
-
-## [Unreleased before 0.6]
-
-### Changed
-
-- Grouped weekly Dependabot minor and patch updates by ecosystem while keeping major-version
-  updates separate for explicit compatibility review and maintainer-controlled merging.
-
-### Fixed
-
-- Made source continuation verification honor page geometry when a visually interposed block was
+- Inline formulas that fell back to a raw mixed region stay inline in the reading edition
+  instead of forcing block display and breaking the sentence.
+- Source continuation verification honors page geometry when a visually interposed block was
   appended later in unit storage order, while retaining reviewed-Markdown continuation checks.
+
+### Compatibility
+
+- Schema 6. Older projects are rebuilt into a new directory with `project rebuild OLD NEW`,
+  which copies source, context and glossary only; old approvals are not migrated.
 
 ## [0.5.0] - 2026-08-21
 
@@ -932,7 +1069,6 @@ The workflow descriptions below document released history, not current operating
 
 - Published LitTrans as an open-source GitHub marketplace under the MIT License, with Windows CI,
   issue and pull-request templates, a security policy, a code of conduct, and Dependabot upkeep.
-
 - Added Cursor host-subagent review imports with paired dry-run/result bindings, exact packet and
   page-evidence hashes, actual-model attestation, configured fallback matching, independent second
   opinions, durable reservations, and tamper/staleness rejection without nesting Cursor CLI.
