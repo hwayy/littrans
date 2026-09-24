@@ -6,6 +6,7 @@ import pytest
 from test_efficiency_v4 import _make_project
 
 from littrans.hosts import (
+    DISPATCH_ROLES,
     LENS_REVIEWER_BATCH_MAX,
     WAVE_BATCH_SET_MAX,
     WAVE_LIMITS,
@@ -90,10 +91,12 @@ def test_detect_qoder_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     defaults = host_model_defaults()
     # Every role carries its own model and effort; none is shared across roles.
-    assert defaults["codex"] == {"translate": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
-                                 "transcribe": {"model": "gpt-5.6-luna", "reasoning_effort": "max"}}
-    assert defaults["claude"] == {"translate": {"model": "sonnet", "reasoning_effort": "high"},
-                                  "transcribe": {"model": "sonnet", "reasoning_effort": "high"}}
+    writer = {"model": "gpt-6-luna", "reasoning_effort": "max"}
+    reviewer = {"model": "gpt-6-sol", "reasoning_effort": "high"}
+    assert defaults["codex"] == {"translate": writer, "transcribe": writer, "audit": reviewer,
+                                 "asset-audit": reviewer, "source-review": reviewer}
+    # Claude Code takes no per-dispatch effort: the agents' frontmatter sets it.
+    assert defaults["claude"] == {role: {"model": "sonnet"} for role in DISPATCH_ROLES}
     assert defaults["cursor"] == {}
     assert defaults["qoder"] == {}
     config = ProjectConfig(project_id="p", title="t", source_path="s.pdf", source_sha256="0" * 64,

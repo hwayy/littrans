@@ -8,7 +8,7 @@ import pytest
 from fidelity_fixtures import make_asset_fixture
 from typer.testing import CliRunner
 
-from littrans import cli, fidelity, representations
+from littrans import cli, fidelity, project, representations
 
 runner = CliRunner()
 
@@ -41,9 +41,11 @@ def test_source_review_packet_retains_requested_pages(tmp_path: Path, monkeypatc
         observed.append(args)
         return {"pages": [2, 3]}
     monkeypatch.setattr(fidelity, "build_source_review_packet", build)
-    result = runner.invoke(cli.app, ["source", "review-packets", str(tmp_path), "--pages", "2-3"])
+    monkeypatch.setattr(project, "role_dispatch", lambda root, host, role: {"host": host, "role": role})
+    result = runner.invoke(cli.app, ["source", "review-packets", str(tmp_path), "--pages", "2-3", "--host", "claude"])
     assert result.exit_code == 0, result.output
     assert observed == [(tmp_path, "2-3")]
+    assert json.loads(result.output)["dispatch"] == {"host": "claude", "role": "source-review"}
 
 
 @pytest.mark.parametrize("lane", ["source", "assets"])

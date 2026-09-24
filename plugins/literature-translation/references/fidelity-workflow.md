@@ -470,7 +470,8 @@ moved asset) and that hint, so re-import the review file with the new IDs or dis
 ### Packet and receipt bindings
 
 `source review-packets` writes `packets/source-<hash>/packet.json`, `review-template.json` and
-`coverage.html`. Coverage HTML and its referenced page images are bound by the packet
+`coverage.html`, and its output adds the `dispatch` (host, `source-review` role, model, effort) for
+the `literature-source-reviewer` subagent that reviews, corrects and imports the pages. Coverage HTML and its referenced page images are bound by the packet
 `visual_report` manifest; relative image URLs keep reports portable. A damaged report is rebuilt
 under a new packet identity and cannot silently restore prior approval.
 
@@ -938,7 +939,12 @@ dispatch source review.
 original image evidence; a translate packet does not consume unverified transcription candidates.
 New workflow packets record host/model/reasoning_effort in their manifest and identity, resolved from
 the stage's own role in `agent_models.<host>`; each role carries its own model and effort. Either may be
-absent, which dispatches on the host's default and is reported as an advisory, never refused. Legacy
+absent, which dispatches on the host's default and is reported as an advisory, never refused. The
+roles are `translate` (also `revise`), `transcribe`, `audit`, `asset-audit` and `source-review`; each
+stage runs in a fresh subagent of its agent (see host-runtimes.md). Source-review material carries
+its dispatch beside the packet, never inside it: `workflow packet --stage source-review`,
+`source review-packets --host HOST` and the `source-review` task of `workflow next` report the
+role's model and effort, while the source packet identity stays bound to content alone. Legacy
 manifests remain readable with absent policy fields; create fresh packets for an explicitly bound
 dispatch policy. `workflow status --host` uses the same override as next/packet, and
 `project models PROJECT --host HOST` reports the resolved policy with its advisories.

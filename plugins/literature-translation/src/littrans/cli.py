@@ -354,9 +354,16 @@ def source_render(
 
 
 @source_app.command("review-packets")
-def source_review_packets(project: PathArg, pages: str = typer.Option("all")) -> None:
+def source_review_packets(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+) -> None:
+    """Create a source-review packet and report the dispatch for its source-review subagent."""
     from littrans.fidelity import build_source_review_packet
-    emit(build_source_review_packet(project, pages))
+    from littrans.project import role_dispatch
+    emit({**build_source_review_packet(project, pages), "dispatch": role_dispatch(project, host, "source-review")})
+    advise_roles(project, host, "source-review")
 
 
 @source_app.command("import-review")

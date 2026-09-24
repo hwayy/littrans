@@ -1,13 +1,13 @@
-# Migrating to LitTrans 0.6.2
+# Migrating to LitTrans 0.7
 
-This guide takes an existing project to 0.6.2. Find the version that last wrote the project
+This guide takes an existing project to 0.7 (currently the development build `0.7.0-dev.1`). Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the section for it.
 
 | Project written by | Schema | What to do |
 | --- | --- | --- |
 | 0.5.x or earlier | 5 or older | [Rebuild into a new project](#from-05-or-earlier-rebuild) |
-| 0.6.0, any `0.6.0-dev.N` or `0.6.1-dev.N` | 6 | [Upgrade in place](#from-a-06-build-upgrade-in-place) |
+| 0.6.0, 0.6.2, any `0.6.0-dev.N` or `0.6.1-dev.N` | 6 | [Upgrade in place](#from-a-06-build-upgrade-in-place) |
 
 The repository's [CHANGELOG.md](../../CHANGELOG.md) describes each development build in detail. Where a step
 below applies only to older builds, it names the first build that no longer needs it.
@@ -45,8 +45,8 @@ on an older project tell you to rebuild it.
    model choices from historical output.
 2. Probe and prepare: `source probe`, complete `context/source-structure.json`, then
    `source prepare`.
-3. Verify: inspect `source review-packets`, import the source-bound visual review with
-   `source import-review` and run `source verify`.
+3. Verify with the `prepare-literature-source` skill: `literature-source-reviewer` subagents
+   review, correct and import page ranges, then `source verify` must pass.
 4. Create new batches (`batch create`). Then dispatch independent transcribe and translate
    packets. A formula with a faithful original image is ready for reading and translation
    while its structured candidate is still pending.
@@ -63,8 +63,11 @@ the pages you choose.
 
 ### 1. Install and check
 
-Install 0.6.2 on every host (see the repository README) and start a new agent session. Check
-that `littrans doctor` reports `0.6.2`.
+Install 0.7.0-dev.1 on every host (see the repository README) and start a new agent session.
+Check that `littrans doctor` reports `0.7.0-dev.1`. The skills `prepare-literature-translation`
+and `verify-literature-extraction` are gone: invoke `prepare-literature-source` instead, which
+dispatches source review to `literature-source-reviewer` subagents. Update any project notes
+(`AGENTS.md`, `CLAUDE.md`, handbook) that name the old skills.
 
 ### 2. Bring the project record up to date
 
@@ -112,11 +115,39 @@ that `littrans doctor` reports `0.6.2`.
 
 ### 3. Check the configuration
 
-`project.yaml` needs no edit. The old flat `agent_models.<host>` form (one model string per
+**Dispatch roles (0.7).** Every model stage now runs in a subagent, and source review has a
+role of its own. Existing projects keep working without an edit: a role they leave unset
+dispatches on the host's default and is reported as an advisory. To adopt the 0.7
+recommendations, edit `agent_models` in `project.yaml`:
+
+```yaml
+agent_models:
+  codex:
+    translate:     {model: gpt-6-luna, reasoning_effort: max}
+    transcribe:    {model: gpt-6-luna, reasoning_effort: max}
+    audit:         {model: gpt-6-sol,  reasoning_effort: high}
+    asset-audit:   {model: gpt-6-sol,  reasoning_effort: high}
+    source-review: {model: gpt-6-sol,  reasoning_effort: high}
+  claude:
+    translate:     {model: sonnet}
+    transcribe:    {model: sonnet}
+    audit:         {model: sonnet}
+    asset-audit:   {model: sonnet}
+    source-review: {model: sonnet}
+```
+
+Remove every `reasoning_effort` under `agent_models.claude` (0.6 projects carry `high` for
+`translate` and `transcribe`). Claude Code takes no per-dispatch effort, so the LitTrans agents
+fix it in their frontmatter (`effort: high`); a configured Claude effort is not applied, and
+every dispatch now reports it as an advisory. Replace `gpt-5.6-luna` with `gpt-6-luna` on
+Codex. Packets created after the edit record the new policy; packets already dispatched keep
+theirs.
+
+**Earlier builds.** The old flat `agent_models.<host>` form (one model string per
 role, one shared `reasoning_effort`) is still read and is rewritten in the per-role form
 (`translate: {model: sonnet, reasoning_effort: high}`) on the next save. A misspelled host or
 role key now fails loudly instead of being ignored; the roles are `translate`, `transcribe`,
-`audit` and `asset-audit`. An unset model or effort dispatches on the host's own default, so
+`audit`, `asset-audit` and `source-review`. An unset model or effort dispatches on the host's own default, so
 Cursor and Qoder projects that could not create packets before `0.6.0-dev.16` now create them.
 Run `littrans project models PROJECT --host HOST` to see the resolved policy and any
 advisories.

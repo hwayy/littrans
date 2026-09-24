@@ -40,7 +40,7 @@ from littrans.models import (
     UnitKind,
     WorkflowPacketManifest,
 )
-from littrans.project import dispatch_report, translation_map
+from littrans.project import dispatch_report, role_dispatch, translation_map
 from littrans.quality import (
     REQUIRED_AUDIT_LENSES,
     _apply_review_import_locked,
@@ -460,8 +460,13 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         stage = _batch_stage(root, bid, snapshot)
         if stage == "source-review":
             if not optional_assets:
-                tasks.append({"batch_id": bid, "stage": stage, "depends_on": [], "fresh_context": True,
-                              "instruction": "Repair source evidence and create a source-review packet; independently review before resuming."})
+                dispatch = config.dispatch(host, stage)
+                tasks.append({"batch_id": bid, "stage": stage, "depends_on": [],
+                              "model": dispatch.model,
+                              "reasoning_effort": dispatch.reasoning_effort,
+                              "fresh_context": True,
+                              "instruction": "Repair source evidence, create a source-review packet and dispatch a "
+                                             "fresh literature-source-reviewer subagent for its pages before resuming."})
             continue
         lane = _snapshot_lane(root, by_id[bid], snapshot)
         if stage != "complete" and not optional_assets:
@@ -1016,6 +1021,7 @@ def create_workflow_packet(
             for path in sorted((root / "reviews").glob("*.issues.jsonl"))
             for issue in read_jsonl(path, ReviewIssue)
             if issue.status is IssueStatus.OPEN and issue.unit_id in scope]
+        result["dispatch"] = role_dispatch(root, host, stage)
         return result
     if stage in {"transcribe", "asset-audit"}:
         if lens is not None:

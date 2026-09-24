@@ -12,6 +12,55 @@ Between releases, every behaviour-changing commit receives a development version
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
 0.6.2. Entries for 0.5.0 and earlier describe workflows that 0.6 replaced.
 
+## [0.7.0-dev.1] - 2026-09-25
+
+The first build of the 0.7 line: every model stage runs in a subagent, and source review
+becomes one.
+
+### Added
+
+- `source-review` dispatch role in `agent_models.<host>`, with its own model and reasoning
+  effort. `source review-packets --host HOST` and `workflow packet --stage source-review`
+  report it as a `dispatch` block beside the packet, and the `source-review` task of
+  `workflow next` carries it. The source packet itself stays host-independent, so its identity
+  and the receipts bound to it are unchanged.
+- `literature-source-reviewer` agent: a writer subagent that reviews one page range against
+  the original pages, corrects pages with overrides, imports with `source import-review`,
+  re-reviews corrected pages and returns a report (approved and blocked pages, proposed
+  `page_rules`, pages outside its range whose receipts it invalidated). It never edits the
+  structure profile.
+- `project models` reports `supports.agent_effort`: the effort that the plugin's agent
+  definitions fix on a host (`high` on Claude Code).
+
+### Changed
+
+- `prepare-literature-translation` and `verify-literature-extraction` are merged into one
+  coordinator skill, `prepare-literature-source`. The page-review procedure (checks,
+  decisions, corrections, report) lives in its `references/source-review.md` for the subagent.
+- Every stage skill states that the coordinator dispatches its packets to a fresh subagent of
+  the stage's agent, and falls back to a separate fresh session only when the host offers no
+  subagents. `host-runtimes.md` maps each stage to its role and agent. On Codex, the spawned
+  subagent follows the agent file.
+- Recommended role models (`profiles/host-models.yaml`): on Codex, `translate` and
+  `transcribe` use `gpt-6-luna` at `max`, and `audit`, `asset-audit` and `source-review` use
+  `gpt-6-sol` at `high`. On Claude Code every role uses `sonnet` with no effort value.
+- Claude Code effort comes only from agent frontmatter: every dispatch-role agent (including
+  the three audit lenses and the asset reviewer) declares `effort: high`. A configured
+  `agent_models.claude.<role>.reasoning_effort` is reported as not applied, telling you to
+  remove it. `validate_release.py` checks the frontmatter against the host constant.
+
+### Removed
+
+- Skills `prepare-literature-translation` and `verify-literature-extraction` (replaced by
+  `prepare-literature-source`).
+
+### Compatibility
+
+- Project schema, packets, receipts and translations are unchanged. 0.6 projects keep
+  working; unset new roles dispatch on the host's default with an advisory, and a Claude
+  `reasoning_effort` left in `project.yaml` produces an advisory until removed (see
+  MIGRATING.md).
+
 ## [0.6.2] - 2026-09-24
 
 The first tagged release of the 0.6 line. It contains the 0.6.0 fidelity-first workflow (merged

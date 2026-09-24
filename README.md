@@ -19,12 +19,16 @@ and translation tasks against that shared source context. Source coverage, trans
 structured-asset correctness have separate review states. Reviewed reading editions retain original
 images whenever LaTeX or another structured representation is unfinished or unverified.
 
-Role models are configured per host in each project's `agent_models`, seeded from the plugin's
-`profiles/host-models.yaml` (recommended: Codex `gpt-5.6-luna` at `max` effort, Claude Code `sonnet`
-at `high` effort). Each role — `translate`, `transcribe`, `audit`, `asset-audit` — sets its own
-model and reasoning effort. Leaving one unset dispatches on the host's own default, which is the
-only possibility on Cursor and Qoder; `project models PROJECT --host HOST` reports the resolved
-policy and the plugin advises rather than blocks when configuration and host capability disagree.
+Every model stage — source review and correction, translation, transcription, the three audit
+lenses and asset review — runs in a fresh subagent dispatched by the coordinating session. Role
+models are configured per host in each project's `agent_models`, seeded from the plugin's
+`profiles/host-models.yaml`. Recommended on Codex: `gpt-6-luna` at `max` effort for `translate`
+and `transcribe`, `gpt-6-sol` at `high` for `audit`, `asset-audit` and `source-review`. On Claude
+Code every role uses `sonnet`, and the effort is the `effort: high` each LitTrans agent declares,
+because Claude Code takes no per-dispatch effort. Leaving a role unset dispatches on the host's
+own default, which is the only possibility on Cursor and Qoder; `project models PROJECT --host
+HOST` reports the resolved policy and the plugin advises rather than blocks when configuration
+and host capability disagree.
 Source preparation requires the isolated layout detector installed by `littrans layout install`.
 Projects from 0.5 or earlier rebuild into a new schema-6 directory with source/context/glossary/docs
 only; projects from any 0.6 build upgrade in place. `project init` also grows the project's record

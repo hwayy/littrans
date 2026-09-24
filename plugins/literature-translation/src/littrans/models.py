@@ -317,7 +317,8 @@ class RoleDispatch(StrictModel):
         default=None,
         description=(
             "Dispatched reasoning effort for this role, independent of every other role. "
-            "Unset follows the host's default."
+            "Unset follows the host's default. Not applied on Claude Code, whose LitTrans "
+            "agents fix their effort in their frontmatter."
         ),
     )
 
@@ -343,12 +344,13 @@ class ProjectConfig(StrictModel):
         default_factory=host_model_defaults,
         validate_default=True,
         description=(
-            "Per-host role dispatch policy: translate, transcribe, audit and asset-audit, each "
-            "with its own model and reasoning_effort. Each model is the dispatch value handed "
-            "to that host's task launcher, a host alias or a concrete id as the host defines; "
-            "which model the host serves under it is the host's own configuration and is never "
-            "verified here. An unset role, model or effort is supported and follows the host's "
-            "own default subagent behaviour."
+            "Per-host role dispatch policy: translate, transcribe, audit, asset-audit and "
+            "source-review, each with its own model and reasoning_effort. Each model is the "
+            "dispatch value handed to that host's task launcher, a host alias or a concrete id "
+            "as the host defines; which model the host serves under it is the host's own "
+            "configuration and is never verified here. An unset role, model or effort is "
+            "supported and follows the host's own default subagent behaviour. Claude Code takes "
+            "no per-dispatch effort: the LitTrans agents' frontmatter sets it."
         ),
     )
     status: ProjectStatus = ProjectStatus.INITIALIZED

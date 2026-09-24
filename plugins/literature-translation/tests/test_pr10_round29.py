@@ -214,12 +214,9 @@ def test_fidelity_workflow_reference_documents_every_packet_stage_and_override_c
     for key in ("regions", "units", "page_canvas_bbox", "preserve_asset_id", "glyph_ids", "fragments",
                 "source_markdown", "footnote_refs", "exactly once"):
         assert key in text
-    assert "#narrow-original-glyph-corrections" in (
-        PLUGIN_ROOT / "skills/verify-literature-extraction/references/semantic-contract.md"
-    ).read_text(encoding="utf-8")
-    assert "#override-contract" in (
-        PLUGIN_ROOT / "skills/verify-literature-extraction/SKILL.md"
-    ).read_text(encoding="utf-8")
+    review = (PLUGIN_ROOT / "skills/prepare-literature-source/references/source-review.md").read_text(encoding="utf-8")
+    assert "#narrow-original-glyph-corrections" in review
+    assert "#override-contract" in review
 
 
 def test_readme_lists_batch_creation_and_example_record_uses_real_evidence_paths() -> None:

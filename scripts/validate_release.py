@@ -7,8 +7,10 @@ from pathlib import Path
 
 import yaml
 
+from littrans.hosts import SUBAGENT_DISPATCH
 from littrans.project import schema_mismatches
 
+CLAUDE_AGENT_EFFORT = SUBAGENT_DISPATCH["claude"].agent_effort
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "literature-translation"
@@ -259,6 +261,7 @@ def main() -> None:
     expected_agents = {
         "literature-translator.md": "writer",
         "literature-transcriber.md": "writer",
+        "literature-source-reviewer.md": "writer",
         "literature-asset-reviewer.md": "asset-json",
         "literature-fidelity-reviewer.md": "jsonl",
         "literature-technical-reviewer.md": "jsonl",
@@ -287,6 +290,15 @@ def main() -> None:
         tools_match = re.search(r"^tools:\s*(.+?)\s*$", frontmatter, re.MULTILINE)
         tools = set(yaml.safe_load(tools_match.group(1))) if tools_match else None
         contract = expected_agents[agent_path.name]
+        # Claude Code takes no per-dispatch effort: every dispatch-role agent fixes the
+        # effort the CLI reports for the host. The external reviewer is no dispatch role.
+        effort_match = re.search(r"^effort:\s*(\S+)\s*$", frontmatter, re.MULTILINE)
+        effort = effort_match.group(1) if effort_match else None
+        if contract != "bound-json" and effort != CLAUDE_AGENT_EFFORT:
+            raise ValueError(
+                f"Dispatch agent {agent_path.name} must declare effort: {CLAUDE_AGENT_EFFORT} "
+                f"(SUBAGENT_DISPATCH['claude'].agent_effort); found {effort}"
+            )
         if contract == "writer" and (readonly or tools is not None):
             raise ValueError(f"Production agent must not be read-only: {agent_path.name}")
         if contract != "writer" and not readonly:

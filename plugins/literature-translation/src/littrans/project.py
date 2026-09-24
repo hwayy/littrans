@@ -426,10 +426,24 @@ def dispatch_report(
         "supports": {
             "model": capability.model,
             "reasoning_effort": capability.reasoning_effort,
+            # The effort the plugin's agent definitions fix on this host, if any.
+            "agent_effort": capability.agent_effort,
         },
         "roles": roles,
         "advisories": advisories,
     }
+
+
+def role_dispatch(root: Path, host: str | None, role: str) -> dict[str, str | None]:
+    """The dispatch a coordinator hands to one role's subagent on the resolved host.
+
+    Source review uses it beside its packet rather than inside it: a source packet's
+    identity binds content only, so identical pages keep one packet on every host.
+    """
+    resolved = resolve_coordination_host(host)
+    dispatch = load_project(root).dispatch(resolved, role)
+    return {"host": resolved, "role": role, "model": dispatch.model,
+            "reasoning_effort": dispatch.reasoning_effort}
 
 
 def schema_mismatches(output: Path) -> list[str]:
