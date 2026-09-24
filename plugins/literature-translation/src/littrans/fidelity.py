@@ -250,10 +250,14 @@ def _bold_variable_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
 
 def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
                       balance: list[dict[str, Any]] | None = None,
-                      following: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                      following: dict[str, Any] | None = None,
+                      standalone: bool = False) -> list[dict[str, Any]]:
     """Drop quotation marks, sentence punctuation, unbalanced prose brackets and hyphens
     joining prose words from the ends of a mathematical run; those glyphs belong to the
     surrounding prose.
+
+    ``standalone`` says the expression is all the ink of its block: there is no sentence
+    for a ``!`` closing the block to end, so it is the formula's factorial.
 
     ``balance`` is the whole expression the run is part of when the run is only the part
     of it on one native line (a superscript MuPDF put in the next block splits ``O(n^{-1/2})``
@@ -301,12 +305,15 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
         if step == 1 and text == "!":
             # TeX sets a factorial in the text face too; only what follows tells them apart.
             # A factorial reads on (",", ".", a word, more notation); an exclamation ends
-            # its sentence: a capital opens the next one, or the block ends with it.
+            # its sentence: a capital opens the next one, or the block ends with it, unless
+            # the formula is the whole block (a standalone ``n!``).
             index = positions.get(glyph["id"])
             after = next((g for g in line[index + 1:] if inked_glyph(g)), None) if index is not None else None
             if after is None:
                 after = following
-            return after is None or (after["text"][:1].isupper() and not MATH_FONT.search(after["font"]))
+            if after is None:
+                return not standalone
+            return after["text"][:1].isupper() and not MATH_FONT.search(after["font"])
         if text in EDGE_PROSE_PUNCTUATION:
             return True
         # TeX sets mathematical parentheses in the text face too, so only the balance of
@@ -1230,6 +1237,9 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                 word = []
     clean = []
     glyph_by_id = {g["id"]: g for g in glyphs}
+    block_lines: dict[str, list[str]] = {}
+    for key in lines:
+        block_lines.setdefault(key.rsplit("-l", 1)[0], []).append(key)
     pending = list(regions)
     regions = []
     cuts: list[float] = []
@@ -1278,7 +1288,14 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                 by_line: dict[str, list[dict[str, Any]]] = {}
                 for g in owned:
                     by_line.setdefault(g["line"], []).append(g)
-                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group), balance=owned, following=openers.get(key))]
+                # A formula that is all the ink of its block (tags aside) has no sentence around it.
+                owned_ids = {g["id"] for g in owned}
+                standalone = all(
+                    g["id"] in owned_ids or g["id"] in tags or not inked_glyph(g)
+                    for block in {key.rsplit("-l", 1)[0] for key in by_line}
+                    for key in block_lines.get(block, ()) for g in lines[key]
+                )
+                owned = [g for key, group in by_line.items() for g in _trim_prose_edges(group, lines.get(key, group), balance=owned, following=openers.get(key), standalone=standalone)]
             if not owned:
                 continue
             region["glyph_ids"] = [g["id"] for g in owned]

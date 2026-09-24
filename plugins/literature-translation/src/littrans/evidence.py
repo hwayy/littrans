@@ -565,14 +565,34 @@ def fold_regex_pattern(pattern: str) -> str:
     return result
 
 
-def without_quoted_titles(text: str) -> str:
-    """Drop quoted titles: cited work names are not translated terminology."""
-    return re.sub(r'["“][^"”]{2,}["”]', " ", text)
+# Words a title leaves in lower case; every other word of a quoted title is capitalised.
+TITLE_MINOR_WORDS = frozenset(
+    "a an and as at but by for from in into nor of on or over the to via vs with".split()
+)
+
+
+def _title_like(phrase: str) -> bool:
+    words = re.findall(r"[^\W\d_][\w'’-]*", phrase)
+    return (len(words) >= 2 and words[0][0].isupper()
+            and all(word[0].isupper() for word in words[1:] if word.casefold() not in TITLE_MINOR_WORDS))
+
+
+def without_quoted_titles(text: str, every_quote: bool = False) -> str:
+    """Drop quoted titles: cited work names are not translated terminology.
+
+    Quotation marks also set off a term or a phrase (“strict mode”, “discrete Itô
+    formula”), which is exactly where terminology matters, so only a phrase set as a
+    title (``“Binding Theory”``) is dropped; ``every_quote`` drops every quotation, for
+    a bibliography entry whose quotes are cited titles in whatever case.
+    """
+    return re.sub(r'["“]([^"”]{2,})["”]',
+                  lambda match: " " if every_quote or _title_like(match[1]) else match[0], text)
 
 
 def term_source_text(unit: SourceUnit) -> str:
     """The folded source representation every terminology check matches against."""
-    return fold_term_text(without_quoted_titles(source_representation_text(unit)))
+    text = source_representation_text(unit)
+    return fold_term_text(without_quoted_titles(text, every_quote=unit.kind is UnitKind.BIBLIOGRAPHY))
 
 
 def term_source_forms(term: dict[str, Any]) -> list[str]:

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pymupdf
 import pytest
@@ -16,7 +17,8 @@ from typer.testing import CliRunner
 import littrans
 from littrans.build_info import build_digest
 from littrans.cli import app
-from littrans.fidelity import _auto_formula_conditions
+from littrans.evidence import term_matches, term_source_text
+from littrans.fidelity import _auto_formula_conditions, _regions, _trim_prose_edges
 from littrans.glossary import glossary_check
 from littrans.models import SourceUnit, UnitKind
 from littrans.project import initialize_project
@@ -171,10 +173,20 @@ def test_nested_record_root_requires_repository_files(tmp_path: Path) -> None:
     assert not (root / "docs" / "LITTRANS.md").exists()
     assert record_tracking(root)["problems"] == []
 
+    # A repository document is not presumed to be the licensed source.
+    architecture = record_root / "docs" / "architecture.pdf"
+    architecture.write_bytes(b"repository document")
+    subprocess.run(["git", "-C", str(repo), "add", "records/docs/architecture.pdf"], check=True)
+    assert record_tracking(root)["problems"] == []
+    # One the repository's own .gitignore excludes is still caught when force-added.
+    (record_root / ".gitignore").write_text("docs/private.pdf\n", encoding="utf-8")
     private_doc = record_root / "docs" / "private.pdf"
     private_doc.write_bytes(b"private source")
-    subprocess.run(["git", "-C", str(repo), "add", "records/docs/private.pdf"], check=True)
-    assert "must never be tracked but is: records/docs/private.pdf" in record_tracking(root)["problems"]
+    subprocess.run(["git", "-C", str(repo), "add", "records/.gitignore"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-f", "records/docs/private.pdf"], check=True)
+    assert record_tracking(root)["problems"] == [
+        "tracked despite .gitignore exclusion: records/docs/private.pdf"
+    ]
     private_doc.unlink()
     subprocess.run(["git", "-C", str(repo), "rm", "-q", "--cached", "records/docs/private.pdf"], check=True)
     extra_record = record_root / "docs" / "EXTRA.md"
@@ -221,6 +233,62 @@ def test_nested_record_root_requires_repository_files(tmp_path: Path) -> None:
     assert "must never be tracked but is: records/books/one/source/extra/licensed.pdf" in problems
     assert "must never be tracked but is: records/books/one/output/final.md" in problems
     assert "tracked despite .gitignore exclusion: records/books/one/.littrans-write-lock/trace" in problems
+
+
+def test_initialization_provenance_stays_required_once_deleted(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    initialize_project(_pdf(tmp_path / "book.pdf"), root, "technical-book")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    assert record_tracking(root)["problems"] == []
+    (root / "derived" / "provenance.json").unlink()
+    assert record_tracking(root)["problems"] == ["required record file is missing: derived/provenance.json"]
+    subprocess.run(["git", "-C", str(root), "rm", "-q", "--cached", "derived/provenance.json"], check=True)
+    assert record_tracking(root)["problems"] == ["required record file is missing: derived/provenance.json"]
+
+
+def test_only_quoted_titles_leave_terminology_matching() -> None:
+    term = {"source": "strict mode"}
+    assert term_matches(term, term_source_text(_paragraph("The option is called “strict mode”.", page=1)))
+    assert term_matches({"source": "Itô"}, term_source_text(_paragraph('the "discrete Itô formula" reads', page=1)))
+    # A phrase set as a title is a cited work name, as before.
+    titled = _paragraph("See the book “Strict Mode for the Working Programmer”.", page=1)
+    assert not term_matches(term, term_source_text(titled))
+    # In a bibliography entry every quotation is a cited title, whatever its case.
+    entry = _paragraph("A. Author, “On strict mode in practice”, J. Examples 1 (2000).", page=1)
+    assert term_matches(term, term_source_text(entry))
+    assert not term_matches(term, term_source_text(entry.model_copy(update={"kind": UnitKind.BIBLIOGRAPHY})))
+
+
+class _EmptyPage:
+    def get_image_info(self) -> list[Any]:
+        return []
+
+    def get_drawings(self) -> list[Any]:
+        return []
+
+
+def _owned_by_inline_box(parts: list[tuple[str, str]], box_text: str) -> str:
+    chars = [(char, font) for text, font in parts for char in text]
+    glyphs = [
+        {"id": str(index), "text": char, "font": font, "line": "b1-l0", "size": 10, "baseline": 20,
+         "bbox": [index * 5, 10, index * 5 + 4, 20]}
+        for index, (char, font) in enumerate(chars)
+    ]
+    start = "".join(g["text"] for g in glyphs).rindex(box_text)
+    box = [2 * glyphs[start]["bbox"][0] - 1, 18, 2 * glyphs[start + len(box_text) - 1]["bbox"][2] + 1, 42]
+    regions = _regions(_EmptyPage(), glyphs, [{"label": "inline_formula", "bbox": box}])
+    owned = {gid for region in regions for gid in region.get("glyph_ids", [])}
+    return "".join(g["text"] for g in glyphs if g["id"] in owned).strip()
+
+
+def test_a_formula_that_is_its_whole_block_keeps_a_closing_factorial() -> None:
+    assert _owned_by_inline_box([("n", "CMMI10"), ("!", "CMR10")], "n!") == "n!"
+    # Inside a sentence, the block-final ! is still the sentence's.
+    assert _owned_by_inline_box([("The count is ", "CMR10"), ("n", "CMMI10"), ("!", "CMR10")], "n!") == "n"
+    run = [{"id": "n", "text": "n", "font": "CMMI10"}, {"id": "!", "text": "!", "font": "CMR10"}]
+    assert "".join(g["text"] for g in _trim_prose_edges(list(run), run, standalone=True)) == "n!"
+    assert "".join(g["text"] for g in _trim_prose_edges(list(run), run)) == "n"
 
 
 @pytest.mark.parametrize("word", ["Otherwise", "True", "Undefined"])

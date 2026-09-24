@@ -3,6 +3,20 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.9] - 2026-09-24
+
+### Fixed
+
+- `project tracked` requires `project.yaml` and `derived/provenance.json` whether or not they
+  still exist, so deleting the initialization provenance is reported.
+- `project tracked` no longer treats every PDF under a nested record root's top level, `docs/`
+  or `tools/` as the licensed source; the configured source and files the repository's
+  `.gitignore` excludes are still refused when tracked.
+- Terminology matching drops only quoted phrases set as titles (`“Binding Theory”`), and every
+  quotation of a bibliography entry; a quoted term (`“strict mode”`) now reaches packets and QA.
+  The deterministic QA version is bumped, so existing QA reports are recomputed once.
+- A detector inline formula that is all the ink of its block keeps a closing factorial (`n!`).
+
 ## [0.6.1-dev.8] - 2026-09-24
 
 ### Fixed

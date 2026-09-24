@@ -28,7 +28,9 @@ Matching: `match` is one of {% for mode in term_match_modes %}`{{ mode }}`{% if 
 `{{ term_match_modes[0] }}`); `aliases` are extra source forms located the same way; `scope` is
 `document`, `page:N` or a parent unit id. Source text and entries are both folded before
 matching (accents in every written form, ligatures, curly quotes, dash variants, whitespace
-runs, case); regex literals are folded too while escapes are kept. An approved entry that
+runs, case); regex literals are folded too while escapes are kept. A quoted phrase set as a
+title (`“Binding Theory”`), and any quotation in a bibliography entry, is left out of matching;
+a quoted term (`“strict mode”`) is matched. An approved entry that
 matches no prepared unit is reported once per QA run (`approved-term-never-matched`);
 `glossary check` reports the same for reference entries, and `glossary lookup` shows what a
 batch, page range or text will receive.

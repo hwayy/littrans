@@ -133,7 +133,7 @@ def batch_translation_fingerprint(root: Path, batch_id: str) -> str:
 
 
 # Bump when a deterministic QA rule changes, or cached qa/<batch>.json reports stay current.
-DETERMINISTIC_QA_VERSION = "deterministic-qa-v6.17-regex-syntax"
+DETERMINISTIC_QA_VERSION = "deterministic-qa-v6.18-quoted-titles"
 
 
 def _qa_context_fingerprint(approved_terms: list[dict[str, Any]]) -> str:
