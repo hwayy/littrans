@@ -15,7 +15,9 @@ point; `main` remains the development branch.
    - `plugins/literature-translation/.qoder-plugin/plugin.json`
    - `plugins/literature-translation/pyproject.toml`
    - `plugins/literature-translation/src/littrans/__init__.py`
-4. Update `CHANGELOG.md` with the release date and user-visible changes.
+4. Update `CHANGELOG.md` with the release date and user-visible changes, using the headings the
+   changelog introduction lists, and update `plugins/literature-translation/MIGRATING.md` so it
+   takes a project from every earlier version to the new one.
 5. Run `./scripts/check.ps1` (Windows) or `bash scripts/check.sh` (Linux, macOS) from the repository root; the `release-checks` workflow runs both.
 6. Review `git diff` and confirm that no PDFs, workspaces, generated artifacts, credentials, or
    local environments are tracked.
@@ -71,8 +73,8 @@ Test the wheel in a fresh isolated environment or `pip --target` directory. When
 interpreter already has the validated dependencies, an offline target installation can use:
 
 ```powershell
-python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke ..\littrans-build\littrans-0.6.0-py3-none-any.whl
-Expand-Archive -LiteralPath ..\littrans-build\literature-translation-0.6.0.zip -DestinationPath ..\littrans-zip-smoke
+python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke ..\littrans-build\littrans-0.6.2-py3-none-any.whl
+Expand-Archive -LiteralPath ..\littrans-build\literature-translation-0.6.2.zip -DestinationPath ..\littrans-zip-smoke
 python ..\littrans-zip-smoke\literature-translation\scripts\littrans.py doctor
 ```
 
@@ -91,7 +93,7 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Compatibility policy
 
 - Patch releases contain compatible fixes and workflow refinements.
-- During 0.x development, minor releases may change the project contract. LitTrans 0.6 requires a new schema-6 project via `project rebuild OLD NEW`; old approvals are not migrated.
+- During 0.x development, minor releases may change the project contract. LitTrans 0.6 requires a new schema-6 project via `project rebuild OLD NEW` for projects from 0.5 or earlier; old approvals are not migrated. Projects from any 0.6 build upgrade in place.
 - Major releases may require an explicit project migration.
 - Long-running translation projects should record the LitTrans version used for each formal
   processing stage.
@@ -101,7 +103,8 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Development versions
 
 Between releases the version is a semantic-versioning pre-release of the next release,
-`<next>-dev.N` (for example `0.6.0-dev.1`), set in the same six files as a release version.
+`<next>-dev.N` (for example `0.6.3-dev.1` after 0.6.2), set in the same six files as a release
+version, with a `CHANGELOG.md` section of its own.
 Bump `N` in every commit that changes behaviour on the development branch, whether or not it
 is installed anywhere: the version string is the only signal `claude plugin update` compares,
 and it names the cache directory, so two builds under one version share a directory and

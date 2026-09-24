@@ -764,8 +764,8 @@ dependencies outside the requested batch, matching QA.
 
 Asset-audit packets bind `render_manifest` (relative render-directory paths to SHA-256) and
 `render_manifest_sha256` into the packet identity. The manifest covers the comparison HTML,
-copied MathJax runtime and original SVG/PNG files (fragments prepared before 0.6.1 may also carry a
-per-region `original.pdf`; it is no longer written, linked or copied, and `source prepare --replace`
+copied MathJax runtime and original SVG/PNG files (fragments prepared by the 0.6.0 build may also
+carry a per-region `original.pdf`; it is no longer written, linked or copied, and `source prepare --replace`
 removes it from the directories it re-exports). Review submissions must echo both
 `render_artifact_sha256` and `render_manifest_sha256` from the packet after inspecting the actual
 artifact. Imports and subsequent status queries verify all dependencies. Old packets without this
