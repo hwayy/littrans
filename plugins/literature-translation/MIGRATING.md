@@ -16,6 +16,40 @@ For QASC, keep the existing project as history and prepare an independent v6 pro
 
 After interruption, use status on the frozen new batch IDs, recover saved successful responses, import them idempotently and schedule only missing work. A pending LaTeX candidate does not reset a completed translation; a changed source or semantic dependency does require current review.
 
+## Projects prepared with 0.6.1-dev.7 or earlier: script spaces, `!` and list ends (0.6.1-dev.8)
+
+- **Nothing changes until a page is re-prepared, and every existing receipt keeps passing.**
+  Recorded pages, assets, overrides and review findings stay as they are.
+- **On re-preparation these forms cut differently:**
+  - the word space after an inline asset that ends in a superscript or subscript
+    (`{{C^∞}} in`, `{{X^∗}} is`) is read from the printed ink gap (at least a quarter em at the
+    prose's size), where the text layer used to drop it; a hyphen after a script (`F_t-adapted`)
+    stays joined. Unit text changes, asset IDs do not;
+  - a text-face `!` that closes an inline formula leaves the crop when the block ends with it
+    or a capital follows (`I(f)!`); a factorial (`n! ways`, `n!,`, `n!.`) keeps it;
+  - prose that returns more than half an em left of a hanging labelled list's labels after a
+    closed sentence and opens with a capital is a unit of its own instead of the tail of the
+    last item's text (`(iii) … . It can be shown …`). Its parent is unchanged, the list's
+    introducing paragraph, as for such prose in a block of its own.
+  Measured on a 212-page book with the recorded detector results, prepared natively: 12 pages
+  change (8 restore a word space after a script, 1 returns a `!` to the prose, 3 split prose
+  from a list's last item), no asset ID moves except the one whose `!` left it, and replaying
+  the book's recorded overrides changes no page's fingerprint; a 7-page pilot is unchanged
+  either way. A page whose
+  recorded `units` override covers one of these forms replays as recorded; re-prepare it with
+  `--discard-overrides` only if the new native reading is wanted.
+- **Not changed (by decision):** a letter-dot abbreviation set in the mathematical face
+  (`$A_n\ i.o.$`, `a.s.`, `i.i.d.`) is notation the formula image carries; it is not declared as
+  a formula condition, and the unit stays untranslated like any pure formula.
+- **Not changed (documented limitations):** a display block that holds several labels beside
+  one formula keeps the extra labels in its text (`equation_number` holds one number); where
+  prose after a list belongs (the introducing paragraph's group, or a group of its own) and
+  containers spanning pages or several upright paragraphs (Example, Step algorithms, proofs
+  continued on the next page) stay `units` override decisions; a factorial `!` at the very end
+  of a block, or followed by a capital, reads as the sentence's. A capitalised sentence that
+  continues across a page edge (`in the space of` / `Markov chains`) needs no override: the
+  sender's `continued_to_next` joins it in rendering, batching and audit closure.
+
 ## Projects scaffolded with 0.6.1-dev.2 or earlier: launcher priority (0.6.1-dev.4)
 
 The generated `tools/lt.py` is project-owned, so `project scaffold --refresh` does not replace

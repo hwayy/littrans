@@ -3,6 +3,17 @@
 All notable distributed changes to LitTrans are recorded here. Versions follow semantic
 versioning and correspond to Git tags named `v<version>`.
 
+## [0.6.1-dev.8] - 2026-09-24
+
+### Fixed
+
+- The word space after an inline asset that ends in a superscript or subscript (`C^∞ in`)
+  is decided by the printed ink gap instead of the text layer.
+- A text-face `!` closing an inline formula returns to the prose when the block ends with it
+  or a capital follows; a factorial followed by a word, a comma or a period stays in the formula.
+- Prose returning left of a hanging labelled list's labels after a closed sentence no longer
+  merges into the list's last item.
+
 ## [0.6.1-dev.7] - 2026-09-24
 
 ### Fixed

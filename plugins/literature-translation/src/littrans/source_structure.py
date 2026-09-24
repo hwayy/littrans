@@ -544,6 +544,12 @@ def plan_structure(
     align = font_size * 0.15
     # Where each line starts for the planner: its own x, or its printed row's start.
     line_x: dict[str, float] = {}
+    # Text columns a list is seen to hang from (an item's own line wrapped to it, or labels
+    # of different widths aligned on it), the labels seen, and the page's previous line,
+    # whatever block it was in.
+    hanging: list[float] = []
+    labelled: list[tuple[float, float]] = []
+    prior_line: list[str] | None = None
     for b in blocks:
         gs = [gm[gid] for line in b["lines"] for gid in line]
         # A wrapped heading keeps its continuation line even though the wrap is indented; a
@@ -554,6 +560,7 @@ def plan_structure(
         chunks: list[list[list[str]]] = []
         current: list[list[str]] = []
         chunk_roles: list[dict[str, Any]] = [{}]
+        chunk_ends_item: list[bool] = [False]
         last_y: float | None = None
         last_x: float | None = None
         previous_display = False
@@ -612,6 +619,22 @@ def plan_structure(
                     or (bool(items) and x > items[-1][1] + font_size * 0.3)
                 ))
             )
+            # A labelled item's own lines never start left of its label: prose back there after
+            # the item's sentence closed, opening a new one, ends the item, as prose left of a
+            # bullet column does. Only a list the page shows hanging (``hanging``) is read so;
+            # items that wrap to the margin keep their wraps (LT-081).
+            item_end = (
+                bool(items) and not label_line and owner is None and not display_line and not mid_row
+                and prior_line is not None
+                and x < items[-1][1] - font_size * 0.5
+                and any(abs(items[-1][2] - column) <= align for column in hanging)
+                and re.search(r"[.!?][”’\"')\]]*$", "".join(
+                    str(gm[gid]["text"]) for gid in prior_line if inked_glyph(gm[gid]))) is not None
+                and next((str(gm[gid]["text"])[:1] for gid in line if str(gm[gid]["text"]).isalpha()
+                          and not MATH_FONT.search(gm[gid]["font"])), "").isupper()
+            )
+            if owner is not None and not label_line:
+                hanging.append(items[owner][2])
             continues: str | None = None
             resumes = False
             # A paragraph indent measured from an open item's text column is a new paragraph of
@@ -648,13 +671,18 @@ def plan_structure(
                 or display_line != previous_display
                 or bullet_line
                 or list_end
+                or item_end
                 or label_line
                 or resumes
             ):
                 chunks.append(current)
                 current = []
                 chunk_roles.append({})
+                chunk_ends_item.append(False)
                 bullet_x = None
+            if item_end and not current:
+                # The chunk opens after the list: never merged back into the item.
+                chunk_ends_item[-1] = True
             if bullet_line:
                 bullet_x = gm[inked[0]]["origin"][0]
             if not current:
@@ -665,7 +693,12 @@ def plan_structure(
             if label_line and label is not None:
                 chunk_id = b["id"] if not chunks else b["id"] + f"-s{len(chunks) + 1}"
                 items.append((chunk_id, x, label[1]))
+                # Labels of different widths aligned on one text column hang it, too.
+                if any(abs(label[1] - column) <= align and abs(x - label_x) > align for label_x, column in labelled):
+                    hanging.append(label[1])
+                labelled.append((x, label[1]))
             current.append(line)
+            prior_line = line
             last_y = y
             last_x = x
             previous_display = display_line
@@ -683,7 +716,7 @@ def plan_structure(
                 max(g["bbox"][2] for g in gg),
                 max(g["bbox"][3] for g in gg),
             ]
-            split.append({"id": bid, "bbox": box, "lines": lines})
+            split.append({"id": bid, "bbox": box, "lines": lines, **({"item_end": True} if chunk_ends_item[i] else {})})
             inked_ids = [gid for line in lines for gid in line if inked_glyph(gm[gid])]
             if inked_ids and sum(gid in display_glyph_ids for gid in inked_ids) >= len(inked_ids) * 0.8:
                 display_blocks.add(bid)
@@ -748,6 +781,8 @@ def assemble_structure(
     display_blocks = set(plan.get("display_blocks", ()))
     list_items: dict[str, dict[str, Any]] = plan.get("list_items", {})
     breaks = {chunk["id"] for chunk in plan.get("blocks", ()) if chunk.get("paragraph_break")}
+    # Prose the planner found back left of a hanging list's labels (LT-081).
+    item_ends = {chunk["id"] for chunk in plan.get("blocks", ()) if chunk.get("item_end")}
 
     def rebuild(u: SourceUnit, text: str | None = None, **changes: Any) -> SourceUnit:
         extra = {
@@ -817,8 +852,9 @@ def assemble_structure(
                 < x
                 < plan["margin"] + plan["font_size"] * 2.8
             )
-            # A paragraph indented from an item's text column opens a paragraph of that item.
-            opens_paragraph = indented or bool(list_items.get(bid, {}).get("paragraph"))
+            # A paragraph indented from an item's text column opens a paragraph of that item;
+            # prose after a hanging list is never merged into its last item.
+            opens_paragraph = indented or bool(list_items.get(bid, {}).get("paragraph")) or bid in item_ends
             starts_statement = _starts_statement(u.source_text)
             label = LIST_LABEL_START.match(u.source_text)
             # A bracketed clause ((a), (ii)) belongs to the paragraph or statement that
