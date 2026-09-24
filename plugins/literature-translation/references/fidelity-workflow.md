@@ -219,7 +219,14 @@ chunk; the key is absent on pages without labels. A line indented from an open i
 (0.8–2.8 em right of it, carrying a language word) opens a paragraph of that item: its chunk is
 recorded as `{"continues": <item>, "paragraph": true}`, stays in the item's group and is never
 merged into the item's text. Bullet items keep their own rule (a bullet
-always hangs, so prose returning left of the bullet column ends the item).
+always hangs, so prose returning left of the bullet column ends the item). A labelled list
+ends the same way where the page shows it hanging — a line of an item at its text column, or
+labels of different widths aligned on one column (`(i)`/`(ii)`/`(iii)`): a line that starts
+more than half an em left of the open item's label, after a line closing with `.`, `!` or `?`,
+and whose first text-face letter is a capital, opens a chunk of its own (in the item's block
+or as the next block) that assembly never merges into the item. Its group is the one it would
+have had anyway (the list's introducing paragraph). In a list whose items wrap to the margin,
+such a line stays the item's wrap.
 
 A line of prose that starts mid-row continues its printed row. MuPDF opens a new block after
 a tall operator (`∑` with limits, a big radical) and after the limits of an inline sum, and
@@ -330,8 +337,10 @@ line edge is never trimmed, since it may belong to an expression continuing on t
 and inside a detector region the brackets are balanced over the whole region while neighbours
 are looked up on the glyph's own native line, so a superscript MuPDF places in the next block
 (`O(n^{-1/2})`, its `2` and `)` on a line of their own) keeps its closing bracket. Sentence
-punctuation at a run's edge (`.`, `,`, `;`, `:`, `?`, quotes) is prose — `!` is not, since a
-factorial is set in the same face — except a math-face `,` `;` `:` closing a line whose next
+punctuation at a run's edge (`.`, `,`, `;`, `:`, `?`, quotes) is prose — a text-face `!` is
+prose only when the block ends with it or a text-face capital follows it (on the line or the
+next line of the block), since a factorial is set in the same face and reads on (`n! ways`,
+`n!,`) — except a math-face `,` `;` `:` closing a line whose next
 line opens with notation on the same row (the comma of `x_1,` `x_2` across a line break stays
 in the run); a text-face `-` closing a line before a lowercase text-face letter is prose.
 
@@ -347,8 +356,11 @@ a period as a space — so at every boundary between an asset and its native nei
 native line (same baseline, comparable size, measured ink) the gap between the asset's
 outermost inked glyph and the neighbour decides: 0.15 em or more is a word space, less is none
 (`{{Φ}} the`, `{{F}}.`); punctuation, a closing bracket or quote after the asset and an opening
-one before it never take a space. A subscript, another baseline or an unmeasured glyph leaves
-the text layer authoritative. Prose-to-prose spacing is the text layer's.
+one before it never take a space. A script of the asset at the boundary (`C^∞ in`, the `∗`
+of `X^∗ is`) is measured at the prose's size against a quarter em, since the script space and
+an italic side bearing alone can reach 0.15 em (`F_t-adapted` stays joined); a script on the prose side
+(`T_high`), another baseline at a comparable size or an unmeasured glyph leaves the text
+layer authoritative. Prose-to-prose spacing is the text layer's.
 
 The explicit export keeps a horizontal rule (a fraction bar, a table rule, an overline)
 whenever it lies inside the fragment's box (± 2 pt) and overlaps the owned glyphs' horizontal

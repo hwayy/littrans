@@ -197,7 +197,8 @@ def _line_bullet_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
             ids.add(inked[0]["id"])
     return ids
 # Prose punctuation that a detector rectangle or font-metric overlap can drag into a formula.
-# The exclamation mark is absent on purpose: TeX sets the factorial in the same text face.
+# The exclamation mark is absent on purpose: TeX sets the factorial in the same text face,
+# so ``_trim_prose_edges`` reads what follows a closing ``!`` instead.
 EDGE_PROSE_PUNCTUATION = set("\u201c\u201d\u2018\u2019\"',;:.? ")
 
 
@@ -297,6 +298,15 @@ def _trim_prose_edges(run: list[dict[str, Any]], line: list[dict[str, Any]],
             return after is None or after["text"].isspace() or after["text"].isalpha()
         if MATH_FONT.search(glyph["font"]) and not text.isspace():
             return False
+        if step == 1 and text == "!":
+            # TeX sets a factorial in the text face too; only what follows tells them apart.
+            # A factorial reads on (",", ".", a word, more notation); an exclamation ends
+            # its sentence: a capital opens the next one, or the block ends with it.
+            index = positions.get(glyph["id"])
+            after = next((g for g in line[index + 1:] if inked_glyph(g)), None) if index is not None else None
+            if after is None:
+                after = following
+            return after is None or (after["text"][:1].isupper() and not MATH_FONT.search(after["font"]))
         if text in EDGE_PROSE_PUNCTUATION:
             return True
         # TeX sets mathematical parentheses in the text face too, so only the balance of
@@ -1983,12 +1993,15 @@ def _rejoin_line_breaks(text: str, evidence: tuple[Counter[str], Counter[str]]) 
 
 # Ink gaps at an asset boundary: at least this many ems is a printed word space.
 BOUNDARY_SPACE_EM = 0.15
+# After a script the script space and an italic side bearing alone reach 0.15 em
+# (``F_t``-adapted); a word space there measures a third of an em or more.
+SCRIPT_BOUNDARY_SPACE_EM = 0.25
 NO_SPACE_BEFORE = set(".,;:?!)]}\u201d\u2019")
 NO_SPACE_AFTER = set("([{\u201c\u2018")
 
 
 def _boundary_space(left: dict[str, Any] | None, right: dict[str, Any] | None,
-                    ink: dict[str, Any]) -> bool | None:
+                    ink: dict[str, Any], *, notation: str | None = None) -> bool | None:
     """Whether the page prints a space between two inked glyphs on one native line.
 
     The text layer is not evidence here: TeX sets the gap around notation with glue,
@@ -1996,6 +2009,12 @@ def _boundary_space(left: dict[str, Any] | None, right: dict[str, Any] | None,
     before a period as a space. The printed ink decides: a gap of ``BOUNDARY_SPACE_EM``
     is a word space, less is none. None when the pair is not comparable (a subscript,
     another baseline, no measured ink) and the text layer stays authoritative.
+
+    ``notation`` names the side the asset is on (``"left"`` or ``"right"``). A script
+    of the asset beside full-size prose (``C^∞ in``) is comparable after all: TeX sets
+    only the script space after a script, and a word space is glue, so the gap measured
+    at the prose's size decides, against ``SCRIPT_BOUNDARY_SPACE_EM``. A script on the
+    prose side (``T_high``) is not comparable.
     """
     if left is None or right is None:
         return None
@@ -2007,9 +2026,12 @@ def _boundary_space(left: dict[str, Any] | None, right: dict[str, Any] | None,
     if lb is None or rb is None:
         return None
     size = max(left.get("size", 10), right.get("size", 10))
-    if abs(left.get("baseline", 0) - right.get("baseline", 0)) > size * 0.25:
-        return None
     if min(left.get("size", 10), right.get("size", 10)) < size * 0.8:
+        script = left if left.get("size", 10) < right.get("size", 10) else right
+        if notation is None or script is not (left if notation == "left" else right):
+            return None
+        return bool(rb[0] - lb[2] >= size * SCRIPT_BOUNDARY_SPACE_EM)
+    if abs(left.get("baseline", 0) - right.get("baseline", 0)) > size * 0.25:
         return None
     return bool(rb[0] - lb[2] >= size * BOUNDARY_SPACE_EM)
 
@@ -2121,8 +2143,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                 # native order (a superscript may be emitted last).
                 leftmost = min(owned_here, key=lambda g: ink[g["id"]][0])
                 rightmost = max(owned_here, key=lambda g: ink[g["id"]][2])
-                boundary[f"before:{aid}"] = _boundary_space(previous, leftmost, ink)
-                boundary[f"after:{aid}"] = _boundary_space(rightmost, following, ink)
+                boundary[f"before:{aid}"] = _boundary_space(previous, leftmost, ink, notation="right")
+                boundary[f"after:{aid}"] = _boundary_space(rightmost, following, ink, notation="left")
             pending_space: tuple[str, str] | None = None
             after_asset: str | None = None
             for gid in line:
