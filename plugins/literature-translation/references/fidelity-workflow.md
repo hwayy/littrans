@@ -146,8 +146,11 @@ placeholders (a stray label glyph inside the figure) takes the union of its asse
 boxes as its `bbox`, as a `visual` unit does. The panels of one composite figure are one
 asset with a fragment per panel, read row by row: figure regions within 1.5 body-font ems of
 each other with no text between them join when exactly one detected figure caption adjoins
-them and none lies among them. Separately captioned figures, panels with sub-captions or prose
-between them, and pages without a detected caption keep one asset per region. A detector `table` box grows over the header
+them and none lies among them. When proximity glues separately captioned figures into
+one cluster, the cluster splits by caption ownership — each panel follows the caption
+it overlaps most — and each captioned group joins on its own. Panels that each carry a
+caption, panels with sub-captions or prose between them, and pages without a detected
+caption keep one asset per region. A detector `table` box grows over the header
 rows set above it: a row within two lines of the box's first row whose ink lies inside the
 box's columns, that is not a caption (`Table 4.1.`), and that either shares the rows' native
 block or is separated from them by a rule of the table's width belongs to the table, so the
@@ -187,7 +190,8 @@ binds to the neighbouring unnumbered display when the display's rows cover the l
 line. A label too wide to share a row is set on a line of its own. Set between two rows of
 its display, it joins them: when exactly one unlabelled display ends within an em above the
 label line and exactly one starts within an em below it, the two share columns and nothing
-else lies between them, they are one asset with a fragment per row. Set just above or below
+else — the label line of another display included — lies between them, they are one asset
+with a fragment per row. Set just above or below
 its display, it binds to the one unnumbered display within a line of it with nothing read
 between them. A detector box whose rows carry two labels is cut through the widest ink-free gap
 between the label rows, one display per label, and no stretched-delimiter column is chained

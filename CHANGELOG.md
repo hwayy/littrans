@@ -11,8 +11,26 @@ Between releases, every behaviour-changing commit receives a development version
 `0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
 0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`, `0.7.1-dev.2`,
-`0.7.2-dev.1` and `0.7.2-dev.2`; they all ship in 0.7.5, and 0.7.0 to 0.7.4 were never
-released. Entries for 0.5.0 and earlier describe workflows that 0.6 replaced.
+`0.7.2-dev.1`, `0.7.2-dev.2` and `0.7.5-dev.1`; they all ship in 0.7.5, and 0.7.0 to
+0.7.4 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
+replaced.
+
+## [0.7.5-dev.1] - 2026-09-26
+
+Review fixes to the 0.7.5 release candidate.
+
+### Fixed
+
+- The band check that rejoins a display around its own label line exempted every
+  equation label on the page, so an unrelated label set on a line of its own between
+  the rows did not prevent the merge, and two displays could join into one asset whose
+  equation number then bound only one way. Only the glyphs of the label line being
+  processed are exempt now (LT-098).
+- The panels of two separately captioned figures closer to each other than the panel
+  gap clustered into one proximity cluster that the panel join then abandoned whole,
+  leaving every panel a figure of its own. Such a cluster is split by caption
+  ownership — each panel follows the caption it overlaps most — and each captioned
+  group joins on its own (LT-099).
 
 ## [0.7.5] - 2026-09-25
 

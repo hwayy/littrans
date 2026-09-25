@@ -1617,8 +1617,10 @@ def _join_tag_split_display(regions: list[dict[str, Any]], glyphs: list[dict[str
     The detector then boxes the rows above and below that line separately. They are one
     display when the label line is all that separates them: exactly one unlabelled display
     ends within an em above it and exactly one starts within an em below it, the two
-    share columns, and no other ink sits between them. The joined region keeps a
-    fragment per row; the label binds to it as ``equation_number`` later.
+    share columns, and no other ink sits between them — the label line of another display
+    counts as such ink, so only the glyphs of the line being processed are exempt
+    (LT-098). The joined region keeps a fragment per row; the label binds to it as
+    ``equation_number`` later.
     """
     tag_lines: dict[str, list[dict[str, Any]]] = {}
     for glyph in glyphs:
@@ -1626,15 +1628,16 @@ def _join_tag_split_display(regions: list[dict[str, Any]], glyphs: list[dict[str
             tag_lines.setdefault(glyph["line"], []).append(glyph)
     if not tag_lines:
         return regions
-    boxes = [(_union([g["bbox"] for g in line]), max(g.get("size", 10) for g in line)) for line in tag_lines.values()]
+    boxes = [(_union([g["bbox"] for g in line]), max(g.get("size", 10) for g in line), {g["id"] for g in line})
+             for line in tag_lines.values()]
     result = list(regions)
-    for box, size in boxes:
+    for box, size, own in boxes:
         middle = (box[1] + box[3]) / 2
 
-        def labelled(region: dict[str, Any], own: list[float] = box) -> bool:
+        def labelled(region: dict[str, Any], this: list[float] = box) -> bool:
             # Another label line beside the region's rows numbers it already.
-            return any(other is not own and region["bbox"][1] - 2 <= (other[1] + other[3]) / 2 <= region["bbox"][3] + 2
-                       for other, _ in boxes)
+            return any(other is not this and region["bbox"][1] - 2 <= (other[1] + other[3]) / 2 <= region["bbox"][3] + 2
+                       for other, _, _ in boxes)
 
         displays = [r for r in result if r["kind"] == "math" and r["display"] and r.get("glyph_ids")]
         above = [r for r in displays if r["bbox"][3] <= middle and box[1] - r["bbox"][3] <= size]
@@ -1646,7 +1649,7 @@ def _join_tag_split_display(regions: list[dict[str, Any]], glyphs: list[dict[str
                 or labelled(upper) or labelled(lower)):
             continue
         band = [min(upper["bbox"][0], lower["bbox"][0]), upper["bbox"][3], max(upper["bbox"][2], lower["bbox"][2]), lower["bbox"][1]]
-        owned = set(upper["glyph_ids"]) | set(lower["glyph_ids"]) | tags
+        owned = set(upper["glyph_ids"]) | set(lower["glyph_ids"]) | own
         if any(inked_glyph(g) and g["id"] not in owned and _inside(g, band) for g in glyphs):
             continue
         if any(r is not upper and r is not lower and _intersects(r["bbox"], band) for r in result):
@@ -1669,8 +1672,11 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
     The detector boxes each plot of a multi-panel figure on its own. Figure regions
     within ``FIGURE_PANEL_GAP_EM`` of each other with no text between them form a
     cluster; a cluster is one figure when exactly one detected caption adjoins it and
-    none lies inside it. Panels that each carry a caption, or with sub-captions or prose
-    between them, stay apart. The joined region keeps one fragment per panel, row by row.
+    none lies inside it. A cluster several captions adjoin holds separately captioned
+    figures glued by proximity: it is split by caption ownership — each panel follows
+    the adjoining caption it overlaps most — and each owned group joins on its own
+    (LT-099). Panels that each carry a caption, or with sub-captions or prose between
+    them, stay apart. The joined region keeps one fragment per panel, row by row.
     """
     figures = [r for r in regions if r["kind"] == "figure"]
     captions = [[float(v) / 2 for v in item["bbox"]] for item in layout
@@ -1715,25 +1721,45 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
         adjoining = [c for c in captions
                      if min(c[2], union[2]) > max(c[0], union[0])
                      and max(c[1] - union[3], union[1] - c[3]) <= gap]
-        # Pairs were checked one union at a time; the cluster's union (an L of three
-        # panels, say) may still enclose text that none of them did.
-        if (len(adjoining) != 1 or any(_intersects(c, union) for c in captions)
-                or any(_inside(g, union) for g in free)):
-            continue
-        # Row by row: a panel whose top lies above the middle of the row's first panel
-        # shares its row; each row reads left to right.
-        rows: list[list[dict[str, Any]]] = []
-        for member in sorted(members, key=lambda m: m["bbox"][1]):
-            first = rows[-1][0]["bbox"] if rows else None
-            if first is not None and member["bbox"][1] < (first[1] + first[3]) / 2:
-                rows[-1].append(member)
-            else:
-                rows.append([member])
-        ordered = [m for row in rows for m in sorted(row, key=lambda m: m["bbox"][0])]
-        joined = _join_regions(ordered, glyphs, "figure-panels-joined")
-        index = min(i for i, r in enumerate(result) if any(r is m for m in members))
-        result = [r for r in result if not any(r is m for m in members)]
-        result.insert(index, joined)
+        groups: list[list[dict[str, Any]]] = []
+        if len(adjoining) == 1:
+            groups = [members]
+        elif len(adjoining) > 1:
+            # Separately captioned figures glued by proximity (LT-099): each panel
+            # follows the adjoining caption it overlaps most, and each owned group is
+            # tried on its own. A panel overlapping no caption, or two equally, keeps
+            # one asset per region.
+            owned: list[list[dict[str, Any]]] = [[] for _ in adjoining]
+            for member in members:
+                overlaps = [min(c[2], member["bbox"][2]) - max(c[0], member["bbox"][0]) for c in adjoining]
+                best = max(overlaps)
+                if best > 0 and overlaps.count(best) == 1:
+                    owned[overlaps.index(best)].append(member)
+            groups = [group for group in owned if len(group) >= 2]
+        for group in groups:
+            union = _union([m["bbox"] for m in group])
+            adjoining = [c for c in captions
+                         if min(c[2], union[2]) > max(c[0], union[0])
+                         and max(c[1] - union[3], union[1] - c[3]) <= gap]
+            # Pairs were checked one union at a time; the union of a whole group (an L
+            # of three panels, say) may still enclose text that none of them did.
+            if (len(adjoining) != 1 or any(_intersects(c, union) for c in captions)
+                    or any(_inside(g, union) for g in free)):
+                continue
+            # Row by row: a panel whose top lies above the middle of the row's first
+            # panel shares its row; each row reads left to right.
+            rows: list[list[dict[str, Any]]] = []
+            for member in sorted(group, key=lambda m: m["bbox"][1]):
+                first = rows[-1][0]["bbox"] if rows else None
+                if first is not None and member["bbox"][1] < (first[1] + first[3]) / 2:
+                    rows[-1].append(member)
+                else:
+                    rows.append([member])
+            ordered = [m for row in rows for m in sorted(row, key=lambda m: m["bbox"][0])]
+            joined = _join_regions(ordered, glyphs, "figure-panels-joined")
+            index = min(i for i, r in enumerate(result) if any(r is m for m in group))
+            result = [r for r in result if not any(r is m for m in group)]
+            result.insert(index, joined)
     return result
 
 
