@@ -23,7 +23,14 @@ from littrans.fidelity_models import (
     load_assets,
 )
 from littrans.layout_detector import detect_layout, layout_page_items, layout_result_path
-from littrans.models import AssetRef, SemanticStatus, SourceUnit, TranslationRecord, UnitKind
+from littrans.models import (
+    AssetRef,
+    RenderPolicy,
+    SemanticStatus,
+    SourceUnit,
+    TranslationRecord,
+    UnitKind,
+)
 from littrans.source_structure import (
     BOLD_FONT,
     EQUATION_LABEL,
@@ -1351,6 +1358,8 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             region.pop(key, None)
     regions = _join_line_break_runs(regions)
     regions = _absorb_delimited_rows(regions, glyphs, margin)
+    regions = _join_tag_split_display(regions, glyphs, tags)
+    regions = _join_figure_panels(regions, glyphs, layout)
     for region in regions:
         region.pop("_runs", None)
         region.pop("_continues", None)
@@ -1566,6 +1575,162 @@ def _absorb_delimited_rows(regions: list[dict[str, Any]], glyphs: list[dict[str,
             region["provenance"] = [*region["provenance"], "stretched-delimiter-rows"]
         result = [r for r in result if r is region or not any(r is other for other in merged)]
         index = next(i for i, r in enumerate(result) if r is region) + 1
+    return result
+
+
+def _region_fragments(region: dict[str, Any]) -> list[dict[str, Any]]:
+    """A region's crops: its recorded fragments, else its one box (with its glyphs)."""
+    if region.get("fragments"):
+        return [dict(f) for f in region["fragments"]]
+    fragment: dict[str, Any] = {"bbox": list(region["bbox"])}
+    if "glyph_ids" in region:
+        fragment["glyph_ids"] = list(region["glyph_ids"])
+    return [fragment]
+
+
+def _join_regions(members: list[dict[str, Any]], glyphs: list[dict[str, Any]], mark: str) -> dict[str, Any]:
+    """One region of ``members`` (in reading order), one fragment per member crop."""
+    joined: dict[str, Any] = {
+        "kind": members[0]["kind"],
+        "display": any(m["display"] for m in members),
+        "grouping_pending": any(m["grouping_pending"] for m in members),
+        "provenance": sorted({p for m in members for p in m["provenance"]} | {mark}),
+        "fragments": [f for m in members for f in _region_fragments(m)],
+        "bbox": _union([m["bbox"] for m in members]),
+    }
+    if any("glyph_ids" in m for m in members):
+        ids = {gid for m in members for gid in m.get("glyph_ids", [])}
+        joined["glyph_ids"] = [g["id"] for g in glyphs if g["id"] in ids]
+    for key in ("_runs", "_continues"):
+        if any(key in m for m in members):
+            joined[key] = [v for m in members for v in m.get(key, [])]
+    return joined
+
+
+def _join_tag_split_display(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]],
+                            tags: set[str]) -> list[dict[str, Any]]:
+    """Rejoin the rows of one display that its own equation label, set on a line of its
+    own between them, split into two regions (LT-095).
+
+    A label too wide to share a row of its display is set on a line of its own (above
+    the first row for left labels, below the last for right ones, or between two rows).
+    The detector then boxes the rows above and below that line separately. They are one
+    display when the label line is all that separates them: exactly one unlabelled display
+    ends within an em above it and exactly one starts within an em below it, the two
+    share columns, and no other ink sits between them. The joined region keeps a
+    fragment per row; the label binds to it as ``equation_number`` later.
+    """
+    tag_lines: dict[str, list[dict[str, Any]]] = {}
+    for glyph in glyphs:
+        if glyph["id"] in tags and inked_glyph(glyph):
+            tag_lines.setdefault(glyph["line"], []).append(glyph)
+    if not tag_lines:
+        return regions
+    boxes = [(_union([g["bbox"] for g in line]), max(g.get("size", 10) for g in line)) for line in tag_lines.values()]
+    result = list(regions)
+    for box, size in boxes:
+        middle = (box[1] + box[3]) / 2
+
+        def labelled(region: dict[str, Any], own: list[float] = box) -> bool:
+            # Another label line beside the region's rows numbers it already.
+            return any(other is not own and region["bbox"][1] - 2 <= (other[1] + other[3]) / 2 <= region["bbox"][3] + 2
+                       for other, _ in boxes)
+
+        displays = [r for r in result if r["kind"] == "math" and r["display"] and r.get("glyph_ids")]
+        above = [r for r in displays if r["bbox"][3] <= middle and box[1] - r["bbox"][3] <= size]
+        below = [r for r in displays if r["bbox"][1] >= middle and r["bbox"][1] - box[3] <= size]
+        if len(above) != 1 or len(below) != 1:
+            continue
+        upper, lower = above[0], below[0]
+        if (min(upper["bbox"][2], lower["bbox"][2]) <= max(upper["bbox"][0], lower["bbox"][0])
+                or labelled(upper) or labelled(lower)):
+            continue
+        band = [min(upper["bbox"][0], lower["bbox"][0]), upper["bbox"][3], max(upper["bbox"][2], lower["bbox"][2]), lower["bbox"][1]]
+        owned = set(upper["glyph_ids"]) | set(lower["glyph_ids"]) | tags
+        if any(inked_glyph(g) and g["id"] not in owned and _inside(g, band) for g in glyphs):
+            continue
+        if any(r is not upper and r is not lower and _intersects(r["bbox"], band) for r in result):
+            continue
+        joined = _join_regions([upper, lower], glyphs, "label-line-joined")
+        index = min(i for i, r in enumerate(result) if r is upper or r is lower)
+        result = [r for r in result if r is not upper and r is not lower]
+        result.insert(index, joined)
+    return result
+
+
+# Figure panels farther apart than this many body-font ems are separate figures.
+FIGURE_PANEL_GAP_EM = 1.5
+
+
+def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, Any]],
+                        layout: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join the panels of one composite figure into one region (LT-096).
+
+    The detector boxes each plot of a multi-panel figure on its own. Figure regions
+    within ``FIGURE_PANEL_GAP_EM`` of each other with no text between them form a
+    cluster; a cluster is one figure when exactly one detected caption adjoins it and
+    none lies inside it. Panels that each carry a caption, or with sub-captions or prose
+    between them, stay apart. The joined region keeps one fragment per panel, row by row.
+    """
+    figures = [r for r in regions if r["kind"] == "figure"]
+    captions = [[float(v) / 2 for v in item["bbox"]] for item in layout
+                if item.get("label") in {"figure_title", "figure_caption"}]
+    if len(figures) < 2 or not captions:
+        return regions
+    sizes = sorted(g.get("size", 10) for g in glyphs if inked_glyph(g))
+    gap = (sizes[len(sizes) // 2] if sizes else 10) * FIGURE_PANEL_GAP_EM
+
+    def loose(glyph: dict[str, Any]) -> bool:
+        return inked_glyph(glyph) and not any(_inside(glyph, f["bbox"]) for f in figures)
+
+    free = [g for g in glyphs if loose(g)]
+    parent = list(range(len(figures)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for i, left in enumerate(figures):
+        for j in range(i + 1, len(figures)):
+            right = figures[j]
+            a, b = left["bbox"], right["bbox"]
+            dx = max(a[0], b[0]) - min(a[2], b[2])
+            dy = max(a[1], b[1]) - min(a[3], b[3])
+            if dx > gap or dy > gap:
+                continue
+            union = _union([a, b])
+            if any(_inside(g, union) for g in free) or any(_intersects(c, union) for c in captions):
+                continue
+            parent[find(j)] = find(i)
+    clusters: dict[int, list[dict[str, Any]]] = {}
+    for index, figure in enumerate(figures):
+        clusters.setdefault(find(index), []).append(figure)
+    result = list(regions)
+    for members in clusters.values():
+        if len(members) < 2:
+            continue
+        union = _union([m["bbox"] for m in members])
+        adjoining = [c for c in captions
+                     if min(c[2], union[2]) > max(c[0], union[0])
+                     and max(c[1] - union[3], union[1] - c[3]) <= gap]
+        if len(adjoining) != 1 or any(_intersects(c, union) for c in captions):
+            continue
+        # Row by row: a panel whose top lies above the middle of the row's first panel
+        # shares its row; each row reads left to right.
+        rows: list[list[dict[str, Any]]] = []
+        for member in sorted(members, key=lambda m: m["bbox"][1]):
+            first = rows[-1][0]["bbox"] if rows else None
+            if first is not None and member["bbox"][1] < (first[1] + first[3]) / 2:
+                rows[-1].append(member)
+            else:
+                rows.append([member])
+        ordered = [m for row in rows for m in sorted(row, key=lambda m: m["bbox"][0])]
+        joined = _join_regions(ordered, glyphs, "figure-panels-joined")
+        index = min(i for i, r in enumerate(result) if any(r is m for m in members))
+        result = [r for r in result if not any(r is m for m in members)]
+        result.insert(index, joined)
     return result
 
 
@@ -1892,12 +2057,35 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
             if neighbour_index > index and all(c in QED_MARKERS or c.isspace() for c in body):
                 after_display.append((index, neighbour_index))
             break
+    def display_span(unit: SourceUnit) -> tuple[float, float] | None:
+        """The vertical extent of an unnumbered display unit's displayed rows."""
+        if unit.kind != UnitKind.EQUATION or unit.equation_number:
+            return None
+        boxes = [f.bbox for aid in asset_reference_ids(unit.source_text) if assets[aid].display for f in assets[aid].fragments]
+        return (min(b[1] for b in boxes), max(b[3] for b in boxes)) if boxes else None
+
     for index, unit in enumerate(result):
         label = re.fullmatch(tombstones + number_pattern + tombstones, unit.source_text.strip())
         if not label:
             continue
         y = (unit.bbox[1] + unit.bbox[3]) / 2
-        candidates = [(i, other) for i, other in enumerate(result) if other.kind == UnitKind.EQUATION and not other.equation_number and any(assets[aid].display and assets[aid].fragments[0].bbox[1] - 3 <= y <= assets[aid].fragments[0].bbox[3] + 3 for aid in asset_reference_ids(other.source_text))]
+        spans = {i: span for i, other in enumerate(result) if (span := display_span(other)) is not None}
+        candidates = [(i, result[i]) for i, (top, bottom) in spans.items() if top - 3 <= y <= bottom + 3]
+        if not candidates:
+            # A label too wide for its display's rows is set on a line of its own just
+            # above or below them (LT-095): the one unnumbered display within a line of it,
+            # with nothing read between them, is the one it numbers.
+            height = unit.bbox[3] - unit.bbox[1]
+            candidates = [
+                (i, result[i]) for i, (top, bottom) in spans.items()
+                if result[i].page == unit.page
+                and max(top - unit.bbox[3], unit.bbox[1] - bottom) <= height
+                and not any(
+                    other is not unit and j != i and other.render_policy == RenderPolicy.INCLUDE
+                    and min(unit.bbox[3], bottom) < (other.bbox[1] + other.bbox[3]) / 2 < max(unit.bbox[1], top)
+                    for j, other in enumerate(result)
+                )
+            ]
         if len(candidates) == 1:
             i, other = candidates[0]
             result[i] = _make_unit(other.page, other.unit_id, other.source_text, _union([unit.bbox, other.bbox]), assets, kind=other.kind.value, equation_number=label[1], footnote_refs=other.footnote_refs)

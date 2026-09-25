@@ -62,6 +62,11 @@ class UnitKind(StrEnum):
     BIBLIOGRAPHY = "bibliography"
 
 
+# Floating elements: typesetting places them at a page edge or between two lines of a
+# paragraph, so the prose a page ends or starts with may sit beyond them.
+FLOAT_KINDS = frozenset({UnitKind.FIGURE, UnitKind.TABLE, UnitKind.CAPTION})
+
+
 class SidebarRole(StrEnum):
     TITLE = "title"
     BODY = "body"

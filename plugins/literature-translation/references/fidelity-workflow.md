@@ -143,7 +143,11 @@ An asset no text block references becomes a `visual` unit of its own (`p<page>-v
 a `figure` unit for a figure and a paragraph otherwise, placed after the last body chunk that
 ends above it. A `figure` or `table` unit made from a native block that holds only
 placeholders (a stray label glyph inside the figure) takes the union of its assets' fragment
-boxes as its `bbox`, as a `visual` unit does. A detector `table` box grows over the header
+boxes as its `bbox`, as a `visual` unit does. The panels of one composite figure are one
+asset with a fragment per panel, read row by row: figure regions within 1.5 body-font ems of
+each other with no text between them join when exactly one detected figure caption adjoins
+them and none lies among them. Separately captioned figures, panels with sub-captions or prose
+between them, and pages without a detected caption keep one asset per region. A detector `table` box grows over the header
 rows set above it: a row within two lines of the box's first row whose ink lies inside the
 box's columns, that is not a caption (`Table 4.1.`), and that either shares the rows' native
 block or is separated from them by a rule of the table's width belongs to the table, so the
@@ -179,8 +183,13 @@ block, and structure assembly attaches it to the paragraph the proof ends in. A 
 never notation (seeded by a detector box or not), never carries a formula across the line
 end, and no display box owns its ink, so a crop never holds a label and a label cut into
 `(6.` + `14)` cannot happen. A label the paragraph is still left holding at its start or end
-binds to the neighbouring unnumbered display when the display's fragment covers the label's
-line. A detector box whose rows carry two labels is cut through the widest ink-free gap
+binds to the neighbouring unnumbered display when the display's rows cover the label's
+line. A label too wide to share a row is set on a line of its own. Set between two rows of
+its display, it joins them: when exactly one unlabelled display ends within an em above the
+label line and exactly one starts within an em below it, the two share columns and nothing
+else lies between them, they are one asset with a fragment per row. Set just above or below
+its display, it binds to the one unnumbered display within a line of it with nothing read
+between them. A detector box whose rows carry two labels is cut through the widest ink-free gap
 between the label rows, one display per label, and no stretched-delimiter column is chained
 across the cut; a box whose ink spans both labels (one tall matrix) stays whole. A block that
 holds several labels beside one formula keeps them in its text. A label that stays in prose
@@ -726,7 +735,9 @@ fragment; it must not be joined to the next extracted page across a gap.
 
 ## Batches
 
-`batch create PROJECT --pages PAGES` cuts verified pages into batches of about 900 source words
+Batches are cut when translation starts, at the user's request, never as the last step of source
+preparation: the user may still correct verified source, and a batch freezes the units it was cut
+from. `batch create PROJECT --pages PAGES` cuts verified pages into batches of about 900 source words
 and a soft limit of 60 assets at logical boundaries; `--unit-ids` selects an explicit complete
 unit set and `--untranslated-only` limits the editable scope to units without a current
 translation. Both record `frozen_scope: true`. Refresh keeps their selected IDs rather than
@@ -997,8 +1008,10 @@ that opens with a bold run-in label, a theorem statement, `Proof` or a list labe
 whose first letter is a capital (`This gives`, `Then` open a sentence; `where the notation …`
 continues one; a script without letter case keeps the geometric reading). The flags express
 a continued sentence; a container that continues on the next page (a proof, an exercise) is
-recorded by a reviewed `parent_id` override, never inferred. Batching
-and audit closure read the same pair of flags.
+recorded by a reviewed `parent_id` override, never inferred. A figure, table or caption set
+at the page top or bottom is a float: the flags are decided on the first body unit after the
+floats at the top and the last one before the floats at the bottom. Batching and audit
+closure read the same pair of flags, across any floats between the sender and the receiver.
 
 Reading output appends image-language companions after a complete continuation chain; footnote
 companions remain inside their Markdown definitions. Markdown footnote calls and definitions use

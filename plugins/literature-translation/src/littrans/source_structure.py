@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from littrans.fidelity_models import FidelityAsset
-from littrans.models import SourceUnit
+from littrans.models import FLOAT_KINDS, SourceUnit
 
 # Bold faces: style names and the TeX families (CMBX, CMB, SFBX, SFBI, ECBX, CMSSBX ...).
 BOLD_FONT = re.compile(r"bx|bold|heavy|black|semibold|demi|(?<![a-z])(?:cm|sf|ec|ae|lm|tc)(?:ss|tt)?b(?:i|x)?(?:ti|sl)?\d", re.I)
@@ -1062,10 +1062,13 @@ def assemble_structure(
             parent = merged_into[parent]
         survivor = by_id.get(parent)
         result[index] = rebuild(u, parent_id=(survivor.parent_id or survivor.unit_id) if survivor else u.unit_id)
+    # A figure, table or caption set at the page top or bottom is a float: the paragraph
+    # the page starts or ends with is the prose beyond it (LT-097).
     body = [
         i
         for i, u in enumerate(result)
         if u.render_policy.value == "include" and u.kind.value not in {"footnote", "note"}
+        and u.kind not in FLOAT_KINDS
     ]
     if body:
         first, last = body[0], body[-1]

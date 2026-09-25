@@ -10,8 +10,47 @@ Between releases, every behaviour-changing commit receives a development version
 `<next>-dev.N`. The builds made after 0.6.0 was merged were named `0.6.0-dev.1` to
 `0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
-0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`. Entries for 0.5.0 and
+0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1` and `0.7.2-dev.1`. Entries for 0.5.0 and
 earlier describe workflows that 0.6 replaced.
+
+## [0.7.2-dev.1] - 2026-09-25
+
+Fixes from the chapter 11 extraction of a real project (LT-094 to LT-097).
+
+### Changed
+
+- `prepare-literature-source` ends with the verified source, the translation context and the
+  `source render` checkpoint; it no longer creates batches (LT-094). The user may still correct
+  the source after reading the checkpoint, and a batch freezes the units it was cut from.
+  `continue-literature-translation` cuts batches (`batch create`) when the user asks to
+  translate pages that no batch covers yet.
+
+### Fixed
+
+- A display whose equation label is set on a line of its own is read as one numbered display
+  (LT-095). When exactly one unlabelled display row ends within an em above the label line and
+  exactly one starts within an em below it, the rows share columns and nothing else lies
+  between them, the two detector boxes become one asset with a fragment per row. A label line
+  directly above or below a single unnumbered display (nothing read between them) binds to it
+  as `equation_number`, and a label is compared with a display's whole height, not only its
+  first fragment.
+- The panels of one composite figure are one `figure` unit (LT-096). Figure regions within 1.5
+  body-font ems of each other with no text between them join into one asset (one fragment per
+  panel, row by row) when exactly one detected caption adjoins them and none lies among them.
+  Separately captioned figures, panels with sub-captions or prose between them, and pages
+  without a detected caption keep one unit per region.
+- The page-edge continuation flags skip floats (LT-097). `continues_from_previous` is decided
+  on the first body unit after the figures, tables and captions at the page top, and
+  `continued_to_next` on the last one before those at the page bottom. The audit dependency
+  closure and `batch create` connect a sender and a receiver across the floats between them,
+  so a sentence continued past a page-top figure is neither audited nor batched apart. A
+  receiver whose first letter is a capital still carries no flag of its own (LT-080); the
+  sender's flag connects it.
+
+### Compatibility
+
+- Recorded pages change only when re-prepared, and recorded overrides replay as recorded. A
+  native re-preparation reads differently only on pages these rules apply to.
 
 ## [0.7.1-dev.2] - 2026-09-25
 

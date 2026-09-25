@@ -1,6 +1,6 @@
 # Migrating to LitTrans 0.7
 
-This guide takes an existing project to 0.7 (currently the development build `0.7.1-dev.2`). Find the version that last wrote the project
+This guide takes an existing project to 0.7 (currently the development build `0.7.2-dev.1`). Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the section for it.
 
@@ -47,7 +47,7 @@ on an older project tell you to rebuild it.
    `source prepare`.
 3. Verify with the `prepare-literature-source` skill: `literature-source-reviewer` subagents
    review, correct and import page ranges, then `source verify` must pass.
-4. Create new batches (`batch create`). Then dispatch independent transcribe and translate
+4. When the user asks to start translating, create new batches (`batch create`). Then dispatch independent transcribe and translate
    packets. A formula with a faithful original image is ready for reading and translation
    while its structured candidate is still pending.
 
@@ -63,8 +63,8 @@ the pages you choose.
 
 ### 1. Install and check
 
-Install 0.7.1-dev.2 on every host (see the repository README) and start a new agent session.
-Check that `littrans doctor` reports `0.7.1-dev.2`. The skills `prepare-literature-translation`
+Install 0.7.2-dev.1 on every host (see the repository README) and start a new agent session.
+Check that `littrans doctor` reports `0.7.2-dev.1`. The skills `prepare-literature-translation`
 and `verify-literature-extraction` are gone: invoke `prepare-literature-source` instead, which
 dispatches source review to `literature-source-reviewer` subagents. Update any project notes
 (`AGENTS.md`, `CLAUDE.md`, handbook) that name the old skills.
@@ -258,11 +258,16 @@ What re-preparation reads differently, in outline (the changelog has each rule):
   A closing `!` is a factorial unless the sentence ends there.
 - **Displays:** printed equation labels leave the crop and bind as `equation_number`; one
   detector box over two labelled displays becomes two units; numerators, case rows and
-  connectives that hold words stay in the display as declared conditions.
+  connectives that hold words stay in the display as declared conditions. Since
+  `0.7.2-dev.1`, the rows of a display split around its own label line are one asset, and a
+  label line set just above or below its display binds to it.
+- **Figures (`0.7.2-dev.1`):** the panels of a composite figure under one caption are one
+  asset with a fragment per panel.
 - **Structure:** list labels, list continuations, paragraph white space, statement
   continuations, proof tombstones and page-top continuation flags follow the page's
-  typography. Detector heading and caption labels no longer decide a kind on their own. Table
-  boxes grow over their header rows.
+  typography; since `0.7.2-dev.1` the flags skip a figure, table or caption at the page edge.
+  Detector heading and caption labels no longer decide a kind on their own. Table boxes grow
+  over their header rows.
 
 ### 6. Re-render
 
