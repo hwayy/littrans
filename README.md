@@ -12,7 +12,7 @@ The implementation lives in [`plugins/literature-translation`](plugins/literatur
 Source PDFs, extracted assets, translation workspaces, credentials, and generated reading
 editions are intentionally kept outside version control.
 
-## Unified 0.6 workflow
+## Unified 0.7 workflow
 
 Preserve native prose and original complex-element images first, then run independent transcription
 and translation tasks against that shared source context. Source coverage, translated meaning and
@@ -31,7 +31,7 @@ HOST` reports the resolved policy and the plugin advises rather than blocks when
 and host capability disagree.
 Source preparation requires the isolated layout detector installed by `littrans layout install`.
 Projects from 0.5 or earlier rebuild into a new schema-6 directory with source/context/glossary/docs
-only; projects from any 0.6 build upgrade in place. `project init` also grows the project's record
+only; projects from any 0.6 or 0.7 build upgrade in place. `project init` also grows the project's record
 structure (handbook, records, defect ledger, launcher, `.gitignore`, and a plugin-owned
 `docs/LITTRANS.md` stating what the installed build guarantees); `project scaffold --refresh`
 regenerates it after an upgrade and `project tracked` asks git whether exactly the record is

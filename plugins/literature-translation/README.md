@@ -1,4 +1,4 @@
-# Literature Translation 0.6
+# Literature Translation 0.7
 
 LitTrans provides one resumable workflow for translating English technical books and research papers into Simplified Chinese on Codex, Cursor, Claude Code and Qoder:
 

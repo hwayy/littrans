@@ -240,12 +240,37 @@ def test_mupdf_warnings_reach_stderr_not_stdout(capfd: pytest.CaptureFixture[str
     pymupdf.TOOLS.mupdf_warnings()  # drop anything earlier tests stored
     with pymupdf.open(stream=DANGLING_USE, filetype="svg"):
         pass
+    # The command group relays after every command (0.7.2-dev.2), not `emit`.
     cli.emit({"ok": True})
+    cli.relay_mupdf_warnings()
     captured = capfd.readouterr()
     assert json.loads(captured.out) == {"ok": True}
     assert "LitTrans MuPDF warning: svg: cannot find linked symbol" in captured.err
-    cli.emit({"ok": True})
+    cli.relay_mupdf_warnings()
     assert "MuPDF" not in capfd.readouterr().err  # relayed once
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_every_command_relays_mupdf_warnings_to_stderr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                       fails: bool) -> None:
+    """The command group relays after a real command, whether it reports or fails."""
+    def verify_with_warning(*_args: Any) -> dict[str, bool]:
+        for _ in range(2):  # the same warning twice is relayed once
+            with pymupdf.open(stream=DANGLING_USE, filetype="svg"):
+                pass
+        if fails:
+            raise ValueError("refused")
+        return {"ok": True}
+
+    pymupdf.TOOLS.mupdf_warnings()  # drop anything earlier tests stored
+    monkeypatch.setattr(cli, "verify_extraction", verify_with_warning)
+    result = CliRunner().invoke(cli.app, ["source", "verify", str(tmp_path)])
+    assert result.exit_code == (1 if fails else 0)
+    assert "MuPDF" not in result.stdout
+    if not fails:
+        assert json.loads(result.stdout) == {"ok": True}
+    assert result.stderr.count("LitTrans MuPDF warning: svg: cannot find linked symbol") == 1
+    assert not str(pymupdf.TOOLS.mupdf_warnings()).strip()  # nothing left for the next command
 
 
 def test_layout_install_cli_forwards_repair(monkeypatch: pytest.MonkeyPatch) -> None:
