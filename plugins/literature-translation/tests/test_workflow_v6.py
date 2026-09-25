@@ -73,7 +73,7 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
     context = read_json(packet_dir / "original-images.json")
     assert context["candidate_access"] is False
     assert context["read_only_context"]
-    assert context["dispatch"] == {"model": "gpt-5.6-luna", "reasoning_effort": "max"}
+    assert context["dispatch"] == {"model": "gpt-6-luna", "reasoning_effort": "max"}
     transcription = create_workflow_packet(project, "transcribe", [bid])
     assert isinstance(transcription, dict)
     assert transcription["asset_ids"]
@@ -129,7 +129,7 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
 
     write_json(project / "candidate.json", {
         "packet_id": transcription["packet_id"], "author_task_id": "test-transcriber",
-        "model": "gpt-5.6-luna", "reasoning_effort": "max",
+        "model": "gpt-6-luna", "reasoning_effort": "max",
         "image_evidence": transcription["required_images"], "usage": None,
         "candidates": [{"asset_id": aid, "format": "latex", "content": "1+1=2"}
                        for aid in transcription["asset_ids"]],
@@ -151,7 +151,7 @@ def test_asset_submission_does_not_leak_into_translation_packet(project: Path) -
     assert isinstance(transcription, dict)
     write_json(project / "candidate.json", {
         "packet_id": transcription["packet_id"], "author_task_id": "test-transcriber",
-        "model": "gpt-5.6-luna", "reasoning_effort": "max",
+        "model": "gpt-6-luna", "reasoning_effort": "max",
         "image_evidence": transcription["required_images"], "usage": None,
         "candidates": [{"asset_id": aid, "format": "latex", "content": "1+1=2"}
                        for aid in transcription["asset_ids"]],

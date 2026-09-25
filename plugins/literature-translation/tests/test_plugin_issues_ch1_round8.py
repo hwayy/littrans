@@ -45,7 +45,7 @@ def _submission(packet: dict, **overrides: object) -> dict:
 def test_candidate_echoes_dispatch_model_and_records_served_label(tmp_path: Path) -> None:
     root, _, _ = make_asset_fixture(tmp_path, [("Original context.", "math", "x=1")])
     packet = build_asset_packet(root, ["fixture-asset-1"])
-    assert packet["model"] == "gpt-5.6-luna"  # the codex dispatch value copied from agent_models
+    assert packet["model"] == "gpt-6-luna"  # the codex dispatch value copied from agent_models
     write_json(root / "served.json", _submission(packet, model=SERVED))
     with pytest.raises(ValueError, match="echo the dispatched packet's model policy"):
         submit_candidates(root, root / "served.json")

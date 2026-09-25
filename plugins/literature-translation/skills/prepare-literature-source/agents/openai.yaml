@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Literature Source"
+  short_description: "Prepare and verify a PDF as faithful LitTrans source with review"
+  default_prompt: "Use $prepare-literature-source to preserve and verify this document faithfully before translation."

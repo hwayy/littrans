@@ -62,7 +62,7 @@ def project(tmp_path: Path) -> Path:
 def candidate_input(root: Path, content: str = "x=1") -> dict:
     packet = build_asset_packet(root, ["a1"])
     payload = {"packet_id": packet["packet_id"], "author_task_id": "transcriber-1",
-               "model": "gpt-5.6-luna", "reasoning_effort": "max",
+               "model": "gpt-6-luna", "reasoning_effort": "max",
                "image_evidence": packet["required_images"], "usage": None,
                "candidates": [{"asset_id": "a1", "format": "latex", "content": content}]}
     write_json(root / "candidate.json", payload)

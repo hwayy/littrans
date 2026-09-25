@@ -116,12 +116,13 @@ def test_host_model_defaults_leave_cursor_and_qoder_to_their_own_policy() -> Non
 
 def test_dispatch_advisories_report_both_directions_of_the_capability_gap() -> None:
     # Codex takes both, so a fully configured role has nothing to report.
-    assert dispatch_advisories("codex", "translate", "gpt-5.6-luna", "max") == ()
+    assert dispatch_advisories("codex", "translate", "gpt-6-luna", "max") == ()
     unset = dispatch_advisories("codex", "translate", None, None)
     assert len(unset) == 2 and all("is not set" in note for note in unset)
-    # Claude Code takes a model but no per-dispatch effort.
+    # Claude Code takes a model but no per-dispatch effort: a configured one is not applied.
     claude = dispatch_advisories("claude", "translate", "sonnet", "high")
-    assert len(claude) == 1 and "frontmatter" in claude[0]
+    assert len(claude) == 1 and "not applied" in claude[0] and "`effort: high`" in claude[0]
+    assert dispatch_advisories("claude", "translate", "sonnet", None) == ()
     assert dispatch_advisories("claude", "translate", None, None)[0].endswith(
         "default subagent model."
     )
@@ -141,7 +142,7 @@ def test_a_value_the_host_cannot_take_is_recorded_rather_than_dropped(project: P
     packet = create_workflow_packet(project, "translate", ["sample-one-b001"], host="qoder")
     assert (packet.model, packet.reasoning_effort) == ("qoder-model", "high")
     report = dispatch_report(project, "qoder")
-    assert report["supports"] == {"model": False, "reasoning_effort": False}
+    assert report["supports"] == {"model": False, "reasoning_effort": False, "agent_effort": None}
     assert any("qoder-model" in note for note in report["advisories"])
 
 
@@ -219,10 +220,11 @@ def test_project_models_reports_the_resolved_policy_and_its_advisories(project: 
     assert result.exit_code == 0, result.output
     report = json.loads(result.stdout)
     assert report["host"] == "claude"
-    assert report["supports"] == {"model": True, "reasoning_effort": False}
-    assert report["roles"]["translate"] == {"model": "sonnet", "reasoning_effort": "high"}
-    assert report["roles"]["audit"] == {"model": None, "reasoning_effort": None}
-    assert any("audit.model is not set" in note for note in report["advisories"])
+    assert report["supports"] == {"model": True, "reasoning_effort": False, "agent_effort": "high"}
+    # Every role ships a Claude model and no effort, so nothing is worth reporting.
+    assert report["roles"]["translate"] == {"model": "sonnet", "reasoning_effort": None}
+    assert report["roles"]["source-review"] == {"model": "sonnet", "reasoning_effort": None}
+    assert report["advisories"] == []
 
 
 def test_advisories_stay_on_stderr_so_the_json_contract_is_unchanged(project: Path) -> None:
@@ -230,6 +232,9 @@ def test_advisories_stay_on_stderr_so_the_json_contract_is_unchanged(project: Pa
 
     from littrans.cli import app
 
+    config = load_project(project)
+    config.agent_models["claude"]["translate"] = RoleDispatch(model="sonnet", reasoning_effort="high")
+    save_project(project, config)
     result = CliRunner().invoke(app, ["workflow", "next", str(project), "--host", "claude"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["host"] == "claude"

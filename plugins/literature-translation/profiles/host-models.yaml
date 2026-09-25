@@ -12,37 +12,50 @@
 # environment reports in the submission's `served_model_label`, unverified.
 #
 # Roles: `translate` (target-prose writer, also used for `revise`), `transcribe`
-# (structured asset candidate author), `audit` (the three translation lenses) and
-# `asset-audit` (independent candidate review). Each role sets its own `model` and
+# (structured asset candidate author), `audit` (the three translation lenses),
+# `asset-audit` (independent candidate review) and `source-review` (page-by-page
+# review and correction of prepared source). Each role sets its own `model` and
 # `reasoning_effort`; neither is shared across roles.
 #
 # Leaving a role, a model or an effort unset is supported: that dispatch then
 # follows the host's own default subagent behaviour. The CLI reports the mismatch
 # as an advisory — on stderr, in `workflow next`/`status` and in `project models` —
 # and never refuses a packet over it. Codex takes both a per-dispatch model and a
-# per-dispatch effort; Claude Code takes a model only (effort comes from the
-# `effort` frontmatter of the plugin's writer agents); Cursor and Qoder take
-# neither, so their own policy decides.
+# per-dispatch effort; Claude Code takes a model only, and its effort comes from the
+# `effort: high` frontmatter every LitTrans agent declares (a configured Claude
+# effort is not applied and is reported); Cursor and Qoder take neither, so their
+# own policy decides.
 #
 # The legacy flat form (a bare model string per role plus one host-level
 # `reasoning_effort`) is still read and normalized into this shape.
 codex:
   translate:
-    model: gpt-5.6-luna
+    model: gpt-6-luna
     reasoning_effort: max
   transcribe:
-    model: gpt-5.6-luna
+    model: gpt-6-luna
     reasoning_effort: max
+  audit:
+    model: gpt-6-sol
+    reasoning_effort: high
+  asset-audit:
+    model: gpt-6-sol
+    reasoning_effort: high
+  source-review:
+    model: gpt-6-sol
+    reasoning_effort: high
 claude:
   # Claude Code model alias passed to the Agent tool's `model` parameter. Effort is
-  # applied through the `effort` frontmatter of the writer agents, not per dispatch.
+  # not a dispatch value here: the agents' `effort: high` frontmatter applies.
   translate:
     model: sonnet
-    reasoning_effort: high
   transcribe:
     model: sonnet
-    reasoning_effort: high
+  audit:
+    model: sonnet
+  asset-audit:
+    model: sonnet
+  source-review:
+    model: sonnet
 cursor: {}  # No per-dispatch model selection on this host; configure it per project if the host gains one.
 qoder: {}  # No per-dispatch model selection on this host; configure it per project if the host gains one.
-# `audit` and `asset-audit` are deliberately unset: reviewer lenses run on the
-# host's own subagent defaults unless a project configures them.

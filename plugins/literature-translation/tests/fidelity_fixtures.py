@@ -211,3 +211,15 @@ def confirm_structure_checks(decision: dict) -> None:
     checks = decision.get("context", {}).get("structure_checks", {})
     decision["confirmed_roles"] = [{"unit_id": r["unit_id"], "kind": r["kind"]} for r in checks.get("roles", [])]
     decision["confirmed_joins"] = [{"block": j["block"]} for j in checks.get("joins", [])]
+
+
+def layout_probe_stdout(mineru: str | None = "3.4.5", **fields: object) -> str:
+    """What the layout runtime's stack probe prints for a healthy interpreter, with overrides."""
+    import json
+    import sys
+
+    info: dict[str, object] = {
+        "version": ".".join(map(str, sys.version_info[:3])), "executable": "python", "base_executable": "python",
+        "resolved_executable": "python", "mineru_version": mineru, "import_error": None,
+    }
+    return json.dumps({**info, **fields}) + "\n"

@@ -10,7 +10,222 @@ Between releases, every behaviour-changing commit receives a development version
 `<next>-dev.N`. The builds made after 0.6.0 was merged were named `0.6.0-dev.1` to
 `0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
-0.6.2. Entries for 0.5.0 and earlier describe workflows that 0.6 replaced.
+0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`, `0.7.1-dev.2`,
+`0.7.2-dev.1`, `0.7.2-dev.2` and `0.7.5-dev.1`; they all ship in 0.7.6, and 0.7.0 to
+0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
+replaced.
+
+## [0.7.6] - 2026-09-26
+
+The first release of the 0.7 line. It contains every 0.7 development build listed above; 0.7.0
+to 0.7.5 were never released.
+
+### Fixed
+
+- The band check that rejoins a display around its own label line exempted every
+  equation label on the page, so an unrelated label set on a line of its own between
+  the rows did not prevent the merge, and two displays could join into one asset whose
+  equation number then bound only one way. Only the glyphs of the label line being
+  processed are exempt now (LT-098).
+- The panels of two separately captioned figures closer to each other than the panel
+  gap clustered into one proximity cluster that the panel join then abandoned whole,
+  leaving every panel a figure of its own. Such a cluster is split by caption
+  ownership — each panel follows the caption it overlaps most — and each captioned
+  group joins on its own (LT-099).
+
+### Changed
+
+- Plugin manifests, package metadata and `littrans.__version__` are `0.7.6`.
+- `MIGRATING.md` takes a project to 0.7.6 from each earlier stage: 0.5 or earlier (rebuild),
+  a 0.6 development build, 0.6.2, and a 0.7 development build.
+
+## [0.7.2-dev.2] - 2026-09-25
+
+Review fixes to 0.7.2-dev.1 and the 0.7 runtime changes.
+
+### Fixed
+
+- `source prepare` refuses a layout interpreter reached through AppData redirection. The check
+  now uses the configured interpreter path; the resolved path it used before already named the
+  private copy and never matched. `layout status` also reports redirection when the interpreter
+  reports its own executable inside a package's private `LocalCache` while its configured path
+  is outside one.
+- MuPDF warnings reach stderr for every command, including one that fails and the JSONL
+  listings, not only for commands that end with a JSON report.
+- `source review-packets` refuses an unknown `--host` before it writes a packet.
+- The panels of a composite figure join only when the whole cluster's outline, not only each
+  pair of panels, encloses no text (LT-096).
+
+### Changed
+
+- `layout install --force` and `--repair` skip the runtime status probe, which imports the
+  detector stack, since they rebuild the environment anyway.
+- Re-preparing reviewed pages reads each review packet once per run, continuation links are
+  computed once per `batch create`, and display extents are computed once per page when
+  equation labels are bound.
+
+## [0.7.2-dev.1] - 2026-09-25
+
+Fixes from the chapter 11 extraction of a real project (LT-094 to LT-097).
+
+### Changed
+
+- `prepare-literature-source` ends with the verified source, the translation context and the
+  `source render` checkpoint; it no longer creates batches (LT-094). The user may still correct
+  the source after reading the checkpoint, and a batch freezes the units it was cut from.
+  `continue-literature-translation` cuts batches (`batch create`) when the user asks to
+  translate pages that no batch covers yet.
+
+### Fixed
+
+- A display whose equation label is set on a line of its own is read as one numbered display
+  (LT-095). When exactly one unlabelled display row ends within an em above the label line and
+  exactly one starts within an em below it, the rows share columns and nothing else lies
+  between them, the two detector boxes become one asset with a fragment per row. A label line
+  directly above or below a single unnumbered display (nothing read between them) binds to it
+  as `equation_number`, and a label is compared with a display's whole height, not only its
+  first fragment.
+- The panels of one composite figure are one `figure` unit (LT-096). Figure regions within 1.5
+  body-font ems of each other with no text between them join into one asset (one fragment per
+  panel, row by row) when exactly one detected caption adjoins them and none lies among them.
+  Separately captioned figures, panels with sub-captions or prose between them, and pages
+  without a detected caption keep one unit per region.
+- The page-edge continuation flags skip floats (LT-097). `continues_from_previous` is decided
+  on the first body unit after the figures, tables and captions at the page top, and
+  `continued_to_next` on the last one before those at the page bottom. The audit dependency
+  closure and `batch create` connect a sender and a receiver across the floats between them,
+  so a sentence continued past a page-top figure is neither audited nor batched apart. A
+  receiver whose first letter is a capital still carries no flag of its own (LT-080); the
+  sender's flag connects it.
+
+### Compatibility
+
+- Recorded pages change only when re-prepared, and recorded overrides replay as recorded. A
+  native re-preparation reads differently only on pages these rules apply to.
+
+## [0.7.1-dev.2] - 2026-09-25
+
+### Fixed
+
+- `layout install` and the launcher's first run no longer write installer output to stdout
+  ahead of the JSON (LT-093). The steps that create environments, run `pip` and fetch
+  weights now write to stderr, like the MuPDF warnings in 0.7.1-dev.1:
+  - in `layout install` (about 280 lines of venv and pip output);
+  - in `scripts/bootstrap.py`, when it builds the CLI environment on a build's first run
+    (several KB of pip output).
+
+## [0.7.1-dev.1] - 2026-09-25
+
+Fixes from the first trial of 0.7.0-dev.1 on a real project (LT-088 to LT-092): a layout
+runtime that two hosts saw differently, receipt reporting of `source prepare --replace`,
+MuPDF output on stdout and gaps in the source-review contract.
+
+### Added
+
+- `LITTRANS_CACHE_DIR` sets where the CLI and layout environments live, on every platform.
+- `layout install --repair` recreates the layout environment only and keeps the weights its
+  ready receipt verifies, so nothing is downloaded again.
+- `doctor` and `layout status` run the detector interpreter itself. It must import PyTorch and
+  the MinerU layout model, and it must be the Python its `pyvenv.cfg` records. The new
+  `identity` block reports the configured and resolved paths, the recorded `home` and
+  version, and the version and base executable that actually run. `cache_root`,
+  `packaged_app` and `legacy_cache` are reported as well. A mismatch or failed import makes
+  `ok` false with the reason; before, a ready receipt written at install time sufficed.
+
+### Changed
+
+- On Windows the cache moved from `%LOCALAPPDATA%\littrans` to `%USERPROFILE%\.littrans`.
+  An MSIX-packaged client (the Codex desktop app) sees `AppData` redirected into a private
+  copy merged with the real one. Two hosts then ran different layout runtimes, and a
+  "repair" from the packaged view corrupted the real environment. Linux and macOS keep
+  `$XDG_CACHE_HOME/littrans`.
+- A layout runtime that resolves into a packaged app's private copy is reported as `AppData
+  redirection`, and `source prepare` treats it as unavailable. `layout install` refuses to
+  install into `AppData` from a packaged app.
+- Source-review contract (`references/source-review.md`, `literature-source-reviewer`):
+  - a form that an existing rule or check decides is not new;
+  - a page covered by a proposed `page_rules` block is left out of the review file and never
+    approved;
+  - no package installs: measurements come from the packet's glyph and structure data;
+  - `REVIEW.json` resolves against the current directory;
+  - a review file may hold only some of the packet's pages;
+  - a worked second round for one page.
+  The coordinator treats a page that a report approves under its own proposed rule as
+  unreviewed.
+
+### Fixed
+
+- `source prepare --replace` lists in `invalidated_pages` every page whose receipt it
+  removed, including the re-prepared pages themselves. Before, it listed only pages outside
+  the run, so a coordinator following the skill missed every in-range page until
+  `source verify` failed.
+- `source prepare --replace` no longer removes a receipt that `source verify` accepts only
+  because the page ledger recorded a guidance digest older than the reviewed packet. When the
+  receipt's packet binds the page's current guidance, the re-prepared ledger keeps its
+  recorded guidance, so its fingerprint moves only when the page content does.
+- MuPDF warnings (for example `svg: cannot find linked symbol` from a glyph crop) no longer
+  reach stdout ahead of the CLI's JSON. They are relayed once each on stderr as
+  `LitTrans MuPDF warning: …`.
+
+### Compatibility
+
+- Windows hosts run `layout install` once after upgrading. It copies the detector weights
+  from the old cache when the old ready receipt verifies them, and builds a fresh
+  environment. The CLI environment rebuilds itself on first use. The old
+  `%LOCALAPPDATA%\littrans` is never deleted automatically: remove it once `doctor` reports
+  `ok`. Recorded layout results stay valid. Detections made on the new runtime get new
+  fingerprints.
+- Re-preparing pages on a newer build still removes receipts whose units, `source_hash` or
+  recomputed structure metadata changed. Only the stale guidance digest is exempt.
+
+## [0.7.0-dev.1] - 2026-09-25
+
+The first build of the 0.7 line: every model stage runs in a subagent, and source review
+becomes one.
+
+### Added
+
+- `source-review` dispatch role in `agent_models.<host>`, with its own model and reasoning
+  effort. `source review-packets --host HOST` and `workflow packet --stage source-review`
+  report it as a `dispatch` block beside the packet, and the `source-review` task of
+  `workflow next` carries it. The source packet itself stays host-independent, so its identity
+  and the receipts bound to it are unchanged.
+- `literature-source-reviewer` agent: a writer subagent that reviews one page range against
+  the original pages, corrects pages with overrides, imports with `source import-review`,
+  re-reviews corrected pages and returns a report (approved and blocked pages, proposed
+  `page_rules`, pages outside its range whose receipts it invalidated). It never edits the
+  structure profile.
+- `project models` reports `supports.agent_effort`: the effort that the plugin's agent
+  definitions fix on a host (`high` on Claude Code).
+
+### Changed
+
+- `prepare-literature-translation` and `verify-literature-extraction` are merged into one
+  coordinator skill, `prepare-literature-source`. The page-review procedure (checks,
+  decisions, corrections, report) lives in its `references/source-review.md` for the subagent.
+- Every stage skill states that the coordinator dispatches its packets to a fresh subagent of
+  the stage's agent, and falls back to a separate fresh session only when the host offers no
+  subagents. `host-runtimes.md` maps each stage to its role and agent. On Codex, the spawned
+  subagent follows the agent file.
+- Recommended role models (`profiles/host-models.yaml`): on Codex, `translate` and
+  `transcribe` use `gpt-6-luna` at `max`, and `audit`, `asset-audit` and `source-review` use
+  `gpt-6-sol` at `high`. On Claude Code every role uses `sonnet` with no effort value.
+- Claude Code effort comes only from agent frontmatter: every dispatch-role agent (including
+  the three audit lenses and the asset reviewer) declares `effort: high`. A configured
+  `agent_models.claude.<role>.reasoning_effort` is reported as not applied, telling you to
+  remove it. `validate_release.py` checks the frontmatter against the host constant.
+
+### Removed
+
+- Skills `prepare-literature-translation` and `verify-literature-extraction` (replaced by
+  `prepare-literature-source`).
+
+### Compatibility
+
+- Project schema, packets, receipts and translations are unchanged. 0.6 projects keep
+  working; unset new roles dispatch on the host's default with an advisory, and a Claude
+  `reasoning_effort` left in `project.yaml` produces an advisory until removed (see
+  MIGRATING.md).
 
 ## [0.6.2] - 2026-09-24
 

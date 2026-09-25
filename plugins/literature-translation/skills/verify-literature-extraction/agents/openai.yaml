@@ -1,4 +1,0 @@
-interface:
-  display_name: "Verify Literature Extraction"
-  short_description: "Verify source completeness, reading order and original-image bou"
-  default_prompt: "Use $verify-literature-extraction to verify source coverage and original image boundaries."

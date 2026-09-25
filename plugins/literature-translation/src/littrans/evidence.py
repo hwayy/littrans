@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from littrans.models import (
+    FLOAT_KINDS,
     PROJECT_SCHEMA_VERSION,
     BatchManifest,
     FigureLabel,
@@ -240,11 +241,14 @@ def changed_units(
 def continuation_neighbors(units: list[SourceUnit]) -> dict[str, set[str]]:
     """Connect real adjacent reading units, skipping omitted running material.
 
-    A page-edge flag alone never bridges missing PDF pages.
+    A page-edge flag alone never bridges missing PDF pages. Prose also connects across
+    the figures, tables and captions set between its two halves (LT-097): the sentence
+    a page ends continues after the float that opens the next page.
     """
     body = [unit for unit in units if unit.render_policy.value == "include" and unit.kind.value != "footnote"]
+    flow = [unit for unit in body if unit.kind not in FLOAT_KINDS]
     neighbors: dict[str, set[str]] = {}
-    for left, right in zip(body, body[1:], strict=False):
+    for left, right in [*zip(body, body[1:], strict=False), *zip(flow, flow[1:], strict=False)]:
         if (0 <= right.page - left.page <= 1
                 and (left.continued_to_next or right.continues_from_previous)):
             neighbors.setdefault(left.unit_id, set()).add(right.unit_id)

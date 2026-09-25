@@ -22,6 +22,7 @@ from jinja2 import Environment
 
 from littrans.build_info import build_identity
 from littrans.hosts import (
+    DISPATCH_ROLES,
     HOST_ENV_SIGNALS,
     LENS_REVIEWER_BATCH_MAX,
     SUBAGENT_DISPATCH,
@@ -112,9 +113,11 @@ def plugin_facts() -> dict[str, Any]:
         "lens_reviewer_batch_max": LENS_REVIEWER_BATCH_MAX,
         # What each host's task launcher lets the coordinator choose for one dispatch.
         "subagent_dispatch": {
-            host: {"model": spec.model, "reasoning_effort": spec.reasoning_effort}
+            host: {"model": spec.model, "reasoning_effort": spec.reasoning_effort,
+                   "agent_effort": spec.agent_effort}
             for host, spec in SUBAGENT_DISPATCH.items()
         },
+        "dispatch_roles": list(DISPATCH_ROLES),
         "audit_lenses": sorted(REQUIRED_AUDIT_LENSES),
         "status_order": [status.value for status in ProjectStatus],
         "qa_version": DETERMINISTIC_QA_VERSION,

@@ -200,16 +200,29 @@ def test_project_init_records_a_pdf_inside_the_project_relatively(tmp_path: Path
 
 @pytest.mark.parametrize("system", ["nt", "posix"])
 def test_layout_cache_root_follows_the_platform_convention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str) -> None:
-    # The platform is simulated on the module only: pathlib itself must keep this host's flavour.
-    monkeypatch.setattr(layout_detector, "os", SimpleNamespace(name=system, environ=os.environ))
+    # The platform is simulated on the modules only: pathlib itself must keep this host's flavour.
+    spec = importlib.util.spec_from_file_location("littrans_bootstrap", Path(__file__).parents[1] / "scripts/bootstrap.py")
+    assert spec is not None and spec.loader is not None
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    for module in (layout_detector, bootstrap):
+        monkeypatch.setattr(module, "os", SimpleNamespace(name=system, environ=os.environ))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.delenv("LITTRANS_CACHE_DIR", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
-    expected = tmp_path / ("local" if system == "nt" else "xdg")
-    assert layout_detector.layout_cache_root() == expected / "littrans/layout"
+    # Windows keeps out of AppData, which packaged clients see redirected (LT-088).
+    expected = tmp_path / "home" / ".littrans" if system == "nt" else tmp_path / "xdg" / "littrans"
+    assert layout_detector.cache_root() == bootstrap._cache_root() == expected
+    assert layout_detector.layout_cache_root() == expected / "layout"
+    assert layout_detector.legacy_cache_root() == (tmp_path / "local" / "littrans" if system == "nt" else None)
     monkeypatch.delenv("LOCALAPPDATA")
     monkeypatch.delenv("XDG_CACHE_HOME")
-    assert layout_detector.layout_cache_root() == tmp_path / "home" / ".cache" / "littrans/layout"
+    expected = tmp_path / "home" / (".littrans" if system == "nt" else ".cache/littrans")
+    assert layout_detector.cache_root() == bootstrap._cache_root() == expected
+    monkeypatch.setenv("LITTRANS_CACHE_DIR", str(tmp_path / "override"))
+    assert layout_detector.cache_root() == bootstrap._cache_root() == tmp_path / "override"
+    assert layout_detector.legacy_cache_root() is None
 
 
 def test_dry_run_packet_paths_resolve_relative_to_the_project(tmp_path: Path) -> None:

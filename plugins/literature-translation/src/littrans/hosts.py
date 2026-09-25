@@ -27,8 +27,9 @@ HOST_ENV_SIGNALS: dict[CoordinationHost, tuple[str, ...]] = {
 HOST_MODELS_FILE = "host-models.yaml"
 
 # The roles a project may give a dispatch model and a reasoning effort of their own.
-# `translate` also covers `revise`, which is translator work.
-DISPATCH_ROLES: tuple[str, ...] = ("translate", "transcribe", "audit", "asset-audit")
+# `translate` also covers `revise`, which is translator work; `source-review` is the
+# page-by-page review and correction of prepared source.
+DISPATCH_ROLES: tuple[str, ...] = ("translate", "transcribe", "audit", "asset-audit", "source-review")
 DISPATCH_FIELDS: tuple[str, ...] = ("model", "reasoning_effort")
 
 
@@ -50,18 +51,23 @@ LENS_REVIEWER_BATCH_MAX = 3
 
 @dataclass(frozen=True, slots=True)
 class SubagentDispatch:
-    """What a host's task launcher lets the coordinator choose for a single dispatch."""
+    """What a host's task launcher lets the coordinator choose for a single dispatch.
+
+    ``agent_effort`` is the effort the plugin's own agent definitions fix on a host
+    that applies their ``effort`` frontmatter, whatever a project configures.
+    """
 
     model: bool
     reasoning_effort: bool
+    agent_effort: str | None = None
 
 
 # Neither Cursor nor Qoder lets a coordinator choose the model of one dispatched task;
 # that host's own policy decides. A configured value is reported, never discarded.
 SUBAGENT_DISPATCH: dict[CoordinationHost, SubagentDispatch] = {
     "codex": SubagentDispatch(model=True, reasoning_effort=True),
-    # The Agent tool takes `model`; effort comes from the writer agents' frontmatter.
-    "claude": SubagentDispatch(model=True, reasoning_effort=False),
+    # The Agent tool takes `model` only; every LitTrans agent declares `effort: high`.
+    "claude": SubagentDispatch(model=True, reasoning_effort=False, agent_effort="high"),
     "cursor": SubagentDispatch(model=False, reasoning_effort=False),
     "qoder": SubagentDispatch(model=False, reasoning_effort=False),
 }
@@ -198,17 +204,18 @@ def dispatch_advisories(
             f"agent_models.{host}.{role}.model is not set; the {role} dispatch follows "
             f"{host}'s default subagent model."
         )
-    if reasoning_effort and not capability.reasoning_effort:
-        detail = (
-            " Claude Code applies effort through the `effort` frontmatter of the plugin's "
-            "writer agents, not per dispatch."
-            if host == "claude"
-            else ""
+    if reasoning_effort and capability.agent_effort:
+        notes.append(
+            f"agent_models.{host}.{role}.reasoning_effort is set to {reasoning_effort}, "
+            f"but it is not applied: {host} takes no reasoning effort per dispatch, and "
+            f"the LitTrans agents run at the `effort: {capability.agent_effort}` their "
+            f"frontmatter declares. Remove agent_models.{host}.{role}.reasoning_effort "
+            "from project.yaml."
         )
+    elif reasoning_effort and not capability.reasoning_effort:
         notes.append(
             f"agent_models.{host}.{role}.reasoning_effort is set to {reasoning_effort}, "
             f"but the plugin cannot choose a reasoning effort per dispatch on {host}."
-            f"{detail}"
         )
     elif not reasoning_effort and capability.reasoning_effort:
         notes.append(

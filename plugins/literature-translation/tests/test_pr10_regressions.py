@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from fidelity_fixtures import layout_probe_stdout
 from test_asset_representation import candidate_input, review_input
 from test_asset_representation import project as asset_project
 
@@ -86,7 +87,7 @@ def test_managed_layout_requires_ready_marker(tmp_path: Path, monkeypatch: pytes
     (model / 'model.safetensors').touch()
     monkeypatch.setattr(runtime, 'layout_cache_root', lambda: tmp_path)
     monkeypatch.setattr(runtime, 'runtime_paths', lambda: (python, model))
-    monkeypatch.setattr(runtime, '_run', lambda *args: subprocess.CompletedProcess([], 0, runtime.MINERU_VERSION, ''))
+    monkeypatch.setattr(runtime, '_run', lambda *args, **kwargs: subprocess.CompletedProcess([], 0, layout_probe_stdout(), ''))
     assert not runtime.layout_runtime_status()['ok']
     (tmp_path / 'venv' / runtime.READY_MARKER).write_text('ready\n')
     assert not runtime.layout_runtime_status()['ok']
@@ -225,7 +226,7 @@ def test_external_runtime_does_not_require_managed_marker(tmp_path: Path, monkey
         (model / name).touch()
     monkeypatch.setattr(runtime, 'layout_cache_root', lambda: tmp_path / 'managed')
     monkeypatch.setattr(runtime, 'runtime_paths', lambda: (python, model))
-    monkeypatch.setattr(runtime, '_run', lambda *args: subprocess.CompletedProcess([], 0, runtime.MINERU_VERSION, ''))
+    monkeypatch.setattr(runtime, '_run', lambda *args, **kwargs: subprocess.CompletedProcess([], 0, layout_probe_stdout(), ''))
     assert runtime.layout_runtime_status()['ok']
 
 

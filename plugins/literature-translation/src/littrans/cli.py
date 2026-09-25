@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any
 
+import pymupdf
 import typer
 from pydantic import BaseModel
 from typer.core import TyperGroup
@@ -67,6 +68,9 @@ class _GuardedGroup(TyperGroup):
         except FileExistsError as exc:
             # "Batch already exists" and similar refusals are raised with a message only.
             raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File exists'}: {exc.filename}") from exc
+        finally:
+            # Every command, including one that fails or streams JSONL without `emit`.
+            relay_mupdf_warnings()
 
 
 app = typer.Typer(cls=_GuardedGroup, no_args_is_help=True, help="Controlled literature translation tooling.")
@@ -111,7 +115,19 @@ def _configure_console_stream(stream: Any) -> None:
 for _stream in (sys.stdout, sys.stderr):
     _configure_console_stream(_stream)
 
+# MuPDF prints its warnings (an SVG `<use>` whose symbol a crop dropped, say) from C
+# straight to file descriptor 1, ahead of the JSON. Keep them in its store instead, and
+# relay them on stderr when the command reports.
+pymupdf.TOOLS.mupdf_display_warnings(False)
+
 PathArg = Annotated[Path, typer.Argument(resolve_path=True)]
+
+
+def relay_mupdf_warnings() -> None:
+    """Move the warnings MuPDF stored during the command to stderr, once each."""
+    stored = pymupdf.TOOLS.mupdf_warnings()
+    for line in dict.fromkeys(line.strip() for line in str(stored).splitlines() if line.strip()):
+        typer.echo(f"LitTrans MuPDF warning: {line}", err=True)
 
 
 def emit(payload: object) -> None:
@@ -177,10 +193,11 @@ def layout_install(
     python: Path | None = typer.Option(None, help="Python 3.10-3.13 base interpreter for the isolated MinerU environment."),
     force: bool = typer.Option(False, help="Recreate the environment and re-download the weights."),
     model_source: str = typer.Option("huggingface", help="huggingface or modelscope."),
+    repair: bool = typer.Option(False, help="Recreate the environment only, keeping the weights its ready receipt verifies."),
 ) -> None:
     """Create the isolated MinerU 3.4.5 environment and fetch PP-DocLayoutV2 weights."""
     from littrans.layout_runtime import install_layout_runtime
-    emit(install_layout_runtime(python, force, model_source))
+    emit(install_layout_runtime(python, force, model_source, repair))
 
 
 @project_app.command("init")
@@ -354,9 +371,18 @@ def source_render(
 
 
 @source_app.command("review-packets")
-def source_review_packets(project: PathArg, pages: str = typer.Option("all")) -> None:
+def source_review_packets(
+    project: PathArg,
+    pages: str = typer.Option("all"),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+) -> None:
+    """Create a source-review packet and report the dispatch for its source-review subagent."""
     from littrans.fidelity import build_source_review_packet
-    emit(build_source_review_packet(project, pages))
+    from littrans.project import role_dispatch
+    # Resolved first: an unknown host is refused before a packet is written.
+    dispatch = role_dispatch(project, host, "source-review")
+    emit({**build_source_review_packet(project, pages), "dispatch": dispatch})
+    advise_roles(project, host, "source-review")
 
 
 @source_app.command("import-review")
