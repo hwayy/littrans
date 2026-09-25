@@ -47,9 +47,18 @@ def ensure_runtime(plugin_root: Path) -> Path:
             str(plugin_root),
         ],
         check=True,
+        stdout=_stderr_target(),
     )
     marker.write_text("ready\n", encoding="utf-8")
     return python
+
+
+def _stderr_target() -> int:
+    """Where a setup step's output goes: stderr, because the CLI's stdout carries its JSON."""
+    try:
+        return sys.__stderr__.fileno() if sys.__stderr__ is not None else subprocess.DEVNULL
+    except (AttributeError, OSError, ValueError):
+        return subprocess.DEVNULL
 
 
 def main() -> None:

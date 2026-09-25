@@ -1,6 +1,6 @@
 # Migrating to LitTrans 0.7
 
-This guide takes an existing project to 0.7 (currently the development build `0.7.1-dev.1`). Find the version that last wrote the project
+This guide takes an existing project to 0.7 (currently the development build `0.7.1-dev.2`). Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the section for it.
 
@@ -63,8 +63,8 @@ the pages you choose.
 
 ### 1. Install and check
 
-Install 0.7.1-dev.1 on every host (see the repository README) and start a new agent session.
-Check that `littrans doctor` reports `0.7.1-dev.1`. The skills `prepare-literature-translation`
+Install 0.7.1-dev.2 on every host (see the repository README) and start a new agent session.
+Check that `littrans doctor` reports `0.7.1-dev.2`. The skills `prepare-literature-translation`
 and `verify-literature-extraction` are gone: invoke `prepare-literature-source` instead, which
 dispatches source review to `literature-source-reviewer` subagents. Update any project notes
 (`AGENTS.md`, `CLAUDE.md`, handbook) that name the old skills.

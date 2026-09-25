@@ -13,6 +13,17 @@ Between releases, every behaviour-changing commit receives a development version
 0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`. Entries for 0.5.0 and
 earlier describe workflows that 0.6 replaced.
 
+## [0.7.1-dev.2] - 2026-09-25
+
+### Fixed
+
+- `layout install` and the launcher's first run no longer write installer output to stdout
+  ahead of the JSON (LT-093). The steps that create environments, run `pip` and fetch
+  weights now write to stderr, like the MuPDF warnings in 0.7.1-dev.1:
+  - in `layout install` (about 280 lines of venv and pip output);
+  - in `scripts/bootstrap.py`, when it builds the CLI environment on a build's first run
+    (several KB of pip output).
+
 ## [0.7.1-dev.1] - 2026-09-25
 
 Fixes from the first trial of 0.7.0-dev.1 on a real project (LT-088 to LT-092): a layout

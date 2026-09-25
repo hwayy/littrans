@@ -1,9 +1,9 @@
-"""0.7.1-dev.1: LT-088..LT-091 from the 2026-09-25 trial of 0.7.0-dev.1.
+"""0.7.1-dev.1: LT-088..LT-091 from the 2026-09-25 trial of 0.7.0-dev.1; 0.7.1-dev.2: LT-093.
 
 The layout runtime lives outside AppData and proves its identity (LT-088); `source prepare
 --replace` names every receipt it removed (LT-089) and keeps the guidance record a receipt
-was reviewed under (LT-090); MuPDF warnings stay off stdout (LT-091). Synthetic pages and
-stubbed runtimes only.
+was reviewed under (LT-090); MuPDF warnings (LT-091) and installer output (LT-093) stay off
+stdout. Synthetic pages and stubbed runtimes only.
 """
 from __future__ import annotations
 
@@ -254,3 +254,39 @@ def test_layout_install_cli_forwards_repair(monkeypatch: pytest.MonkeyPatch) -> 
     result = CliRunner().invoke(cli.app, ["layout", "install", "--repair"])
     assert result.exit_code == 0, result.output
     assert observed == [(None, False, "huggingface", True)]
+
+
+# ---------------------------------------------------------------------------------------
+# LT-093 (0.7.1-dev.2): installer output leaves stdout to the JSON.
+# ---------------------------------------------------------------------------------------
+
+
+def test_layout_installer_steps_report_on_stderr(capfd: pytest.CaptureFixture[str]) -> None:
+    import sys
+
+    result = layout_runtime._run_to_stderr([sys.executable, "-c", "print('Collecting pip')"])
+    assert result.returncode == 0
+    layout_runtime._pip(Path(sys.executable), "--help")  # pip's own output, offline
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "Collecting pip" in captured.err and "pip install" in captured.err
+
+
+def test_bootstrap_installs_the_cli_environment_with_its_output_on_stderr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("littrans_bootstrap", Path(__file__).parents[1] / "scripts/bootstrap.py")
+    assert spec is not None and spec.loader is not None
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    root = tmp_path / "plugin"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    environment = Path(os.environ["LITTRANS_CACHE_DIR"]) / bootstrap._environment_key(root)
+    (environment / VENV_PYTHON).parent.mkdir(parents=True)
+    (environment / VENV_PYTHON).touch()
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda command, **kwargs: calls.append(kwargs))
+    assert bootstrap.ensure_runtime(root) == environment / VENV_PYTHON
+    assert calls == [{"check": True, "stdout": sys.__stderr__.fileno()}]

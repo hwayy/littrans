@@ -46,6 +46,19 @@ def _run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                           encoding="utf-8", errors="replace", **kwargs)
 
 
+def _run_to_stderr(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+    """Run an installer step with its progress on stderr: the command's stdout is its JSON."""
+    return subprocess.run(command, check=False, stdout=_stderr_target())
+
+
+def _stderr_target() -> int:
+    """The process's own stderr descriptor for a child's stdout, or DEVNULL without one."""
+    try:
+        return sys.__stderr__.fileno() if sys.__stderr__ is not None else subprocess.DEVNULL
+    except (AttributeError, OSError, ValueError):
+        return subprocess.DEVNULL
+
+
 def _interpreter_version(python: Path) -> tuple[int, int] | None:
     result = _run([str(python), "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"])
     if result.returncode:
@@ -220,7 +233,7 @@ def layout_runtime_status() -> dict[str, Any]:
 
 def _pip(python: Path, *args: str) -> None:
     command = [str(python), "-m", "pip", "install", "--disable-pip-version-check", *args]
-    result = subprocess.run(command, check=False)
+    result = _run_to_stderr(command)
     if result.returncode:
         raise RuntimeError(f"pip failed ({result.returncode}): {' '.join(args)}")
 
@@ -245,7 +258,7 @@ if target.exists():
 shutil.copytree(source, target)
 print(target)
 """
-    result = subprocess.run([str(python), "-c", script], check=False)
+    result = _run_to_stderr([str(python), "-c", script])
     if result.returncode:
         raise RuntimeError(f"model download failed ({result.returncode}) from {model_source}")
 
@@ -351,7 +364,7 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     if not venv_python.is_file():
         base = select_base_python(python)
         environment.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run([str(base), "-m", "venv", str(environment)], check=False)
+        result = _run_to_stderr([str(base), "-m", "venv", str(environment)])
         if result.returncode or not venv_python.is_file():
             raise RuntimeError(f"failed to create the layout environment with {base}")
     _pip(venv_python, "--upgrade", "pip")
