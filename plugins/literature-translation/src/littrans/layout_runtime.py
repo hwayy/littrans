@@ -14,6 +14,7 @@ from littrans.layout_detector import READY_MARKER as READY_MARKER
 from littrans.layout_detector import (
     REDIRECTED_REASON,
     cache_root,
+    in_package_cache,
     layout_cache_root,
     legacy_cache_root,
     model_weight_hashes,
@@ -157,7 +158,11 @@ def _minor(version: str) -> str:
 
 def _identity_problem(python: Path, identity: dict[str, Any]) -> str | None:
     """Why the interpreter is not the environment its path names, or None."""
-    if any(redirected(Path(path)) for path in (python, identity["resolved_executable"], identity["base_executable"]) if path):
+    # The interpreter reports its executables already resolved: one inside a package's
+    # private copy while the configured path is not shows the redirection as well.
+    reported = [Path(path) for path in (identity["resolved_executable"], identity["base_executable"]) if path]
+    if (redirected(python) or any(redirected(path) for path in reported)
+            or (not in_package_cache(python.absolute()) and any(in_package_cache(path) for path in reported))):
         return REDIRECTED_REASON
     # The recorded `home` is reported, not compared: a Store or aliased base interpreter
     # legitimately runs from another directory than the one pyvenv.cfg names.
@@ -340,9 +345,11 @@ def install_layout_runtime(python: Path | None = None, force: bool = False,
     risk = _redirection_risk(cache)
     if risk:
         raise RuntimeError(risk)
-    current = layout_runtime_status()
-    if current["ok"] and not force and not repair:
-        return {**current, "installed": False, "message": "layout runtime already available"}
+    if not force and not repair:
+        # The status probe imports the detector stack; --force and --repair rebuild anyway.
+        current = layout_runtime_status()
+        if current["ok"]:
+            return {**current, "installed": False, "message": "layout runtime already available"}
     environment = cache / "venv"
     model = cache / MODEL_NAME
     venv_python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")

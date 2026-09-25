@@ -68,6 +68,9 @@ class _GuardedGroup(TyperGroup):
         except FileExistsError as exc:
             # "Batch already exists" and similar refusals are raised with a message only.
             raise _ClickException(str(exc) if exc.filename is None else f"{exc.strerror or 'File exists'}: {exc.filename}") from exc
+        finally:
+            # Every command, including one that fails or streams JSONL without `emit`.
+            relay_mupdf_warnings()
 
 
 app = typer.Typer(cls=_GuardedGroup, no_args_is_help=True, help="Controlled literature translation tooling.")
@@ -130,7 +133,6 @@ def relay_mupdf_warnings() -> None:
 def emit(payload: object) -> None:
     if isinstance(payload, BaseModel):
         payload = payload.model_dump(mode="json")
-    relay_mupdf_warnings()
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
@@ -377,7 +379,9 @@ def source_review_packets(
     """Create a source-review packet and report the dispatch for its source-review subagent."""
     from littrans.fidelity import build_source_review_packet
     from littrans.project import role_dispatch
-    emit({**build_source_review_packet(project, pages), "dispatch": role_dispatch(project, host, "source-review")})
+    # Resolved first: an unknown host is refused before a packet is written.
+    dispatch = role_dispatch(project, host, "source-review")
+    emit({**build_source_review_packet(project, pages), "dispatch": dispatch})
     advise_roles(project, host, "source-review")
 
 

@@ -1715,7 +1715,10 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
         adjoining = [c for c in captions
                      if min(c[2], union[2]) > max(c[0], union[0])
                      and max(c[1] - union[3], union[1] - c[3]) <= gap]
-        if len(adjoining) != 1 or any(_intersects(c, union) for c in captions):
+        # Pairs were checked one union at a time; the cluster's union (an L of three
+        # panels, say) may still enclose text that none of them did.
+        if (len(adjoining) != 1 or any(_intersects(c, union) for c in captions)
+                or any(_inside(g, union) for g in free)):
             continue
         # Row by row: a panel whose top lies above the middle of the row's first panel
         # shares its row; each row reads left to right.
@@ -2064,12 +2067,13 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         boxes = [f.bbox for aid in asset_reference_ids(unit.source_text) if assets[aid].display for f in assets[aid].fragments]
         return (min(b[1] for b in boxes), max(b[3] for b in boxes)) if boxes else None
 
+    # Binding a label numbers its display, which then leaves the candidates.
+    spans = {i: span for i, other in enumerate(result) if (span := display_span(other)) is not None}
     for index, unit in enumerate(result):
         label = re.fullmatch(tombstones + number_pattern + tombstones, unit.source_text.strip())
         if not label:
             continue
         y = (unit.bbox[1] + unit.bbox[3]) / 2
-        spans = {i: span for i, other in enumerate(result) if (span := display_span(other)) is not None}
         candidates = [(i, result[i]) for i, (top, bottom) in spans.items() if top - 3 <= y <= bottom + 3]
         if not candidates:
             # A label too wide for its display's rows is set on a line of its own just
@@ -2089,6 +2093,7 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         if len(candidates) == 1:
             i, other = candidates[0]
             result[i] = _make_unit(other.page, other.unit_id, other.source_text, _union([unit.bbox, other.bbox]), assets, kind=other.kind.value, equation_number=label[1], footnote_refs=other.footnote_refs)
+            spans.pop(i)
             residue = "".join(c for c in unit.source_text if c in QED_MARKERS)
             if residue:
                 # The tombstone stays in the reading order, after the display it closes;
@@ -2717,7 +2722,8 @@ def _settle_receipts(root: Path, pages: Iterable[int], before: dict[int, str | N
 
 
 def _reviewed_profile_record(root: Path, page: int, old_ledger: dict[str, Any] | None, before: str | None,
-                             profile_context: dict[str, Any] | None) -> tuple[bool, dict[str, Any] | None]:
+                             profile_context: dict[str, Any] | None,
+                             packets: dict[tuple[str, str], dict[str, Any]] | None = None) -> tuple[bool, dict[str, Any] | None]:
     """The guidance record a re-prepared page keeps from its old ledger: ``(True, record)``.
 
     A ledger records the digest of the guidance that applied when the page was prepared;
@@ -2726,7 +2732,8 @@ def _reviewed_profile_record(root: Path, page: int, old_ledger: dict[str, Any] |
     packet whose guidance for the page is the current guidance, the old record stands for
     that same guidance and is kept (``None`` when the old ledger had none). Writing a fresh
     digest instead would void a receipt that `source verify` accepts. ``(False, None)``: no
-    such receipt, record the current guidance.
+    such receipt, record the current guidance. ``packets`` caches the packets already
+    loaded, since one packet usually covers every page of a rerun.
     """
     receipt_path = _receipt_path(root, page)
     if old_ledger is None or before is None or not receipt_path.is_file():
@@ -2735,8 +2742,13 @@ def _reviewed_profile_record(root: Path, page: int, old_ledger: dict[str, Any] |
         receipt = read_json(receipt_path)
         if receipt.get("fingerprint") != before:
             return False, None
-        packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"])
-    except (OSError, ValueError, KeyError):
+        key = (receipt["packet_id"], receipt["packet_sha256"])
+        packet = packets.get(key) if packets is not None else None
+        if packet is None:
+            packet = _load_source_packet(root, *key)
+            if packets is not None:
+                packets[key] = packet
+    except (OSError, ValueError, KeyError, TypeError):
         return False, None
     from littrans.structure_profile import guidance_difference
 
@@ -2824,11 +2836,13 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
         units = [u for u in old if u.page not in needed]
         registry = {aid: a for aid, a in registry.items() if not any(f.page in needed for f in a.fragments)}
         ledgers = []
+        review_packets: dict[tuple[str, str], dict[str, Any]] = {}
         for number in needed:
             recorded = old_ledgers.get(number, {})
             override = recorded.get("source_overrides")
             page_layout = recorded_layouts.get(number)
-            reviewed_profile = _reviewed_profile_record(root, number, old_ledgers.get(number), before.get(number), profile_context)
+            reviewed_profile = _reviewed_profile_record(root, number, old_ledgers.get(number), before.get(number), profile_context,
+                                                       review_packets)
             if page_layout is not None:
                 reused.append(number)
             else:

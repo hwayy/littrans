@@ -175,6 +175,7 @@ def create_batches(
         raise ValueError("max_words must be at least 100")
     pages = set(parse_page_spec(page_spec, config.source_pages))
     all_units = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
+    neighbors = continuation_neighbors(all_units)
     selected = [
         unit
         for unit in all_units
@@ -191,7 +192,6 @@ def create_batches(
         if any(unit.parent_id in parents and unit.unit_id not in requested for unit in selected):
             raise ValueError("Unit selection cuts a logical paragraph; include its prose and display equations")
         selected = [unit for unit in selected if unit.unit_id in requested]
-        neighbors = continuation_neighbors(all_units)
         for unit in selected:
             if any(other not in requested for other in neighbors.get(unit.unit_id, ())):
                 raise ValueError(f"Unit selection cuts a continuation at {unit.unit_id}")
@@ -232,7 +232,7 @@ def create_batches(
                 spans.setdefault("footnote:" + ref, []).extend([i, positions[ref]])
     # A sentence continued across a float (LT-097) is cut no more than one continued
     # across the page edge alone.
-    for unit_id, others in continuation_neighbors(all_units).items():
+    for unit_id, others in neighbors.items():
         for other in others:
             if unit_id in positions and other in positions:
                 spans.setdefault("continuation:" + unit_id, []).extend([positions[unit_id], positions[other]])

@@ -10,8 +10,33 @@ Between releases, every behaviour-changing commit receives a development version
 `<next>-dev.N`. The builds made after 0.6.0 was merged were named `0.6.0-dev.1` to
 `0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
-0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1` and `0.7.2-dev.1`. Entries for 0.5.0 and
+0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`, `0.7.2-dev.1` and `0.7.2-dev.2`. Entries for 0.5.0 and
 earlier describe workflows that 0.6 replaced.
+
+## [0.7.2-dev.2] - 2026-09-25
+
+Review fixes to 0.7.2-dev.1 and the 0.7 runtime changes.
+
+### Fixed
+
+- `source prepare` refuses a layout interpreter reached through AppData redirection. The check
+  now uses the configured interpreter path; the resolved path it used before already named the
+  private copy and never matched. `layout status` also reports redirection when the interpreter
+  reports its own executable inside a package's private `LocalCache` while its configured path
+  is outside one.
+- MuPDF warnings reach stderr for every command, including one that fails and the JSONL
+  listings, not only for commands that end with a JSON report.
+- `source review-packets` refuses an unknown `--host` before it writes a packet.
+- The panels of a composite figure join only when the whole cluster's outline, not only each
+  pair of panels, encloses no text (LT-096).
+
+### Changed
+
+- `layout install --force` and `--repair` skip the runtime status probe, which imports the
+  detector stack, since they rebuild the environment anyway.
+- Re-preparing reviewed pages reads each review packet once per run, continuation links are
+  computed once per `batch create`, and display extents are computed once per page when
+  equation labels are bound.
 
 ## [0.7.2-dev.1] - 2026-09-25
 

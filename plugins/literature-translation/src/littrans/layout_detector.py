@@ -93,14 +93,20 @@ def packaged_app() -> bool:
     return bool(result != APPMODEL_ERROR_NO_PACKAGE)
 
 
-def redirected(path: Path) -> bool:
-    """Whether ``path`` resolves into a packaged app's private ``Packages/<id>/LocalCache`` copy."""
-    def marked(candidate: Path) -> bool:
-        parts = [part.lower() for part in candidate.parts]
-        return any(parts[i] == "packages" and parts[i + 2] == "localcache" for i in range(len(parts) - 2))
+def in_package_cache(path: Path) -> bool:
+    """Whether ``path`` names a location inside a packaged app's ``Packages/<id>/LocalCache``."""
+    parts = [part.lower() for part in path.parts]
+    return any(parts[i] == "packages" and parts[i + 2] == "localcache" for i in range(len(parts) - 2))
 
+
+def redirected(path: Path) -> bool:
+    """Whether ``path`` resolves into a packaged app's private ``Packages/<id>/LocalCache`` copy.
+
+    Pass the path as configured: an already-resolved path names the private copy directly
+    and reads as not redirected.
+    """
     try:
-        return marked(path.resolve()) and not marked(path.absolute())
+        return in_package_cache(path.resolve()) and not in_package_cache(path.absolute())
     except OSError:
         return False
 
@@ -217,14 +223,16 @@ def detect_layout(images: list[Path], store: Path) -> dict[str, Any]:
     readiness_error = runtime_readiness_error(python, model, weights=weights)
     if readiness_error:
         return {"status": "unavailable", "reason": readiness_error, "pages": {}}
+    # The configured path, not its resolved form: a resolved path is already the private
+    # copy and no longer shows the redirection.
+    if redirected(python):
+        return {"status": "unavailable", "reason": REDIRECTED_REASON, "pages": {}}
     worker = Path(__file__).with_name("layout_worker.py")
     try:
         runtime = _runtime_identity(python)
         worker_sha = sha256_file(worker)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"status": "unavailable", "reason": str(exc), "pages": {}}
-    if runtime.get("resolved_python") and redirected(Path(str(runtime["resolved_python"]))):
-        return {"status": "unavailable", "reason": REDIRECTED_REASON, "pages": {}}
     image_sha256 = {str(p.resolve()): sha256_file(p) for p in images}
     request: dict[str, Any] = {"images": list(image_sha256), "image_sha256": image_sha256, "model": str(model.resolve()), "weights": weights}
     request.update(runtime=runtime, worker_sha256=worker_sha)
