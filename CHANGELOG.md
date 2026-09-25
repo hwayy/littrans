@@ -11,13 +11,14 @@ Between releases, every behaviour-changing commit receives a development version
 `0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
 0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`, `0.7.1-dev.2`,
-`0.7.2-dev.1`, `0.7.2-dev.2` and `0.7.5-dev.1`; they all ship in 0.7.5, and 0.7.0 to
-0.7.4 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
+`0.7.2-dev.1`, `0.7.2-dev.2` and `0.7.5-dev.1`; they all ship in 0.7.6, and 0.7.0 to
+0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
-## [0.7.5-dev.1] - 2026-09-26
+## [0.7.6] - 2026-09-26
 
-Review fixes to the 0.7.5 release candidate.
+The first release of the 0.7 line. It contains every 0.7 development build listed above; 0.7.0
+to 0.7.5 were never released.
 
 ### Fixed
 
@@ -32,15 +33,10 @@ Review fixes to the 0.7.5 release candidate.
   ownership — each panel follows the caption it overlaps most — and each captioned
   group joins on its own (LT-099).
 
-## [0.7.5] - 2026-09-25
-
-The first release of the 0.7 line. It contains every 0.7 development build listed below; 0.7.0
-to 0.7.4 were never released. There are no behaviour changes since `0.7.2-dev.2`.
-
 ### Changed
 
-- Plugin manifests, package metadata and `littrans.__version__` are `0.7.5`.
-- `MIGRATING.md` takes a project to 0.7.5 from each earlier stage: 0.5 or earlier (rebuild),
+- Plugin manifests, package metadata and `littrans.__version__` are `0.7.6`.
+- `MIGRATING.md` takes a project to 0.7.6 from each earlier stage: 0.5 or earlier (rebuild),
   a 0.6 development build, 0.6.2, and a 0.7 development build.
 
 ## [0.7.2-dev.2] - 2026-09-25

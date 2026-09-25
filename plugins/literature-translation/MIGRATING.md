@@ -1,6 +1,6 @@
-# Migrating to LitTrans 0.7.5
+# Migrating to LitTrans 0.7.6
 
-This guide takes an existing project to 0.7.5. Find the version that last wrote the project
+This guide takes an existing project to 0.7.6. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the path for it.
 
@@ -75,9 +75,9 @@ build applies only to projects written before that build.
 
 ### 1. Install and check
 
-Install 0.7.5 on every host that works on the project (see the repository README). Then start
+Install 0.7.6 on every host that works on the project (see the repository README). Then start
 a new agent session on each host: a running session keeps the skills and agents it loaded.
-Check that `littrans doctor` reports `0.7.5` and the same `build.build_digest` everywhere.
+Check that `littrans doctor` reports `0.7.6` and the same `build.build_digest` everywhere.
 
 ### 2. Switch to the 0.7 skills
 

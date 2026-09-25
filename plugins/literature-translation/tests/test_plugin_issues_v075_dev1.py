@@ -1,6 +1,6 @@
-"""LitTrans 0.7.5-dev.1: review fixes to the 0.7.5 candidate (LT-098, LT-099).
+"""LitTrans 0.7.5-dev.1 (ships in 0.7.6): review fixes to the 0.7 candidate (LT-098, LT-099).
 
-Codex review of the 0.7.5 release candidate reported two defects in the page region
+Codex review of the 0.7 release candidate reported two defects in the page region
 heuristics: the band check that rejoins a display around its own label line exempted
 every equation label on the page, not only the line being processed, so an unrelated
 label between the rows no longer prevented the merge (LT-098); and a proximity cluster

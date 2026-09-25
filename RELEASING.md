@@ -73,8 +73,8 @@ Test the wheel in a fresh isolated environment or `pip --target` directory. When
 interpreter already has the validated dependencies, an offline target installation can use:
 
 ```powershell
-python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke ..\littrans-build\littrans-0.7.5-py3-none-any.whl
-Expand-Archive -LiteralPath ..\littrans-build\literature-translation-0.7.5.zip -DestinationPath ..\littrans-zip-smoke
+python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke ..\littrans-build\littrans-0.7.6-py3-none-any.whl
+Expand-Archive -LiteralPath ..\littrans-build\literature-translation-0.7.6.zip -DestinationPath ..\littrans-zip-smoke
 python ..\littrans-zip-smoke\literature-translation\scripts\littrans.py doctor
 ```
 
@@ -103,7 +103,7 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Development versions
 
 Between releases the version is a semantic-versioning pre-release of the next release,
-`<next>-dev.N` (for example `0.7.6-dev.1` after 0.7.5), set in the same six files as a release
+`<next>-dev.N` (for example `0.7.7-dev.1` after 0.7.6), set in the same six files as a release
 version, with a `CHANGELOG.md` section of its own.
 Bump `N` in every commit that changes behaviour on the development branch, whether or not it
 is installed anywhere: the version string is the only signal `claude plugin update` compares,
