@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any
 
+import pymupdf
 import typer
 from pydantic import BaseModel
 from typer.core import TyperGroup
@@ -111,12 +112,25 @@ def _configure_console_stream(stream: Any) -> None:
 for _stream in (sys.stdout, sys.stderr):
     _configure_console_stream(_stream)
 
+# MuPDF prints its warnings (an SVG `<use>` whose symbol a crop dropped, say) from C
+# straight to file descriptor 1, ahead of the JSON. Keep them in its store instead, and
+# relay them on stderr when the command reports.
+pymupdf.TOOLS.mupdf_display_warnings(False)
+
 PathArg = Annotated[Path, typer.Argument(resolve_path=True)]
+
+
+def relay_mupdf_warnings() -> None:
+    """Move the warnings MuPDF stored during the command to stderr, once each."""
+    stored = pymupdf.TOOLS.mupdf_warnings()
+    for line in dict.fromkeys(line.strip() for line in str(stored).splitlines() if line.strip()):
+        typer.echo(f"LitTrans MuPDF warning: {line}", err=True)
 
 
 def emit(payload: object) -> None:
     if isinstance(payload, BaseModel):
         payload = payload.model_dump(mode="json")
+    relay_mupdf_warnings()
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
 
@@ -177,10 +191,11 @@ def layout_install(
     python: Path | None = typer.Option(None, help="Python 3.10-3.13 base interpreter for the isolated MinerU environment."),
     force: bool = typer.Option(False, help="Recreate the environment and re-download the weights."),
     model_source: str = typer.Option("huggingface", help="huggingface or modelscope."),
+    repair: bool = typer.Option(False, help="Recreate the environment only, keeping the weights its ready receipt verifies."),
 ) -> None:
     """Create the isolated MinerU 3.4.5 environment and fetch PP-DocLayoutV2 weights."""
     from littrans.layout_runtime import install_layout_runtime
-    emit(install_layout_runtime(python, force, model_source))
+    emit(install_layout_runtime(python, force, model_source, repair))
 
 
 @project_app.command("init")

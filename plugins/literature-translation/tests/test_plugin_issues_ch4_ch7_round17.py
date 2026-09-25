@@ -201,5 +201,6 @@ def test_re_preparation_that_adds_a_cross_page_edge_invalidates_the_page_it_reac
 
     monkeypatch.setattr(fidelity, "_page_prepare", linked)
     result = prepare_source(two_pages, "2", replace=True, allow_missing_layout=True)
-    assert result["invalidated_pages"] == [1] and result["retained_receipt_pages"] == []
+    # Page 2 (re-prepared, LT-089) and page 1 (the dependant it now reaches) both lost their receipts.
+    assert result["invalidated_pages"] == [1, 2] and result["retained_receipt_pages"] == []
     assert not (two_pages / "evidence/pages/fidelity-p0001.review.json").is_file()

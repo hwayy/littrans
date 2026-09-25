@@ -10,7 +10,72 @@ Between releases, every behaviour-changing commit receives a development version
 `<next>-dev.N`. The builds made after 0.6.0 was merged were named `0.6.0-dev.1` to
 `0.6.0-dev.17` although they came after 0.6.0; `0.6.1-dev.1` to `0.6.1-dev.9` followed
 (`0.6.1-dev.3` was skipped). They are listed newest first, like the releases, and all ship in
-0.6.2. Entries for 0.5.0 and earlier describe workflows that 0.6 replaced.
+0.6.2. The 0.7 line continued from `0.7.0-dev.1` with `0.7.1-dev.1`. Entries for 0.5.0 and
+earlier describe workflows that 0.6 replaced.
+
+## [0.7.1-dev.1] - 2026-09-25
+
+Fixes from the first trial of 0.7.0-dev.1 on a real project (LT-088 to LT-092): a layout
+runtime that two hosts saw differently, receipt reporting of `source prepare --replace`,
+MuPDF output on stdout and gaps in the source-review contract.
+
+### Added
+
+- `LITTRANS_CACHE_DIR` sets where the CLI and layout environments live, on every platform.
+- `layout install --repair` recreates the layout environment only and keeps the weights its
+  ready receipt verifies, so nothing is downloaded again.
+- `doctor` and `layout status` run the detector interpreter itself. It must import PyTorch and
+  the MinerU layout model, and it must be the Python its `pyvenv.cfg` records. The new
+  `identity` block reports the configured and resolved paths, the recorded `home` and
+  version, and the version and base executable that actually run. `cache_root`,
+  `packaged_app` and `legacy_cache` are reported as well. A mismatch or failed import makes
+  `ok` false with the reason; before, a ready receipt written at install time sufficed.
+
+### Changed
+
+- On Windows the cache moved from `%LOCALAPPDATA%\littrans` to `%USERPROFILE%\.littrans`.
+  An MSIX-packaged client (the Codex desktop app) sees `AppData` redirected into a private
+  copy merged with the real one. Two hosts then ran different layout runtimes, and a
+  "repair" from the packaged view corrupted the real environment. Linux and macOS keep
+  `$XDG_CACHE_HOME/littrans`.
+- A layout runtime that resolves into a packaged app's private copy is reported as `AppData
+  redirection`, and `source prepare` treats it as unavailable. `layout install` refuses to
+  install into `AppData` from a packaged app.
+- Source-review contract (`references/source-review.md`, `literature-source-reviewer`):
+  - a form that an existing rule or check decides is not new;
+  - a page covered by a proposed `page_rules` block is left out of the review file and never
+    approved;
+  - no package installs: measurements come from the packet's glyph and structure data;
+  - `REVIEW.json` resolves against the current directory;
+  - a review file may hold only some of the packet's pages;
+  - a worked second round for one page.
+  The coordinator treats a page that a report approves under its own proposed rule as
+  unreviewed.
+
+### Fixed
+
+- `source prepare --replace` lists in `invalidated_pages` every page whose receipt it
+  removed, including the re-prepared pages themselves. Before, it listed only pages outside
+  the run, so a coordinator following the skill missed every in-range page until
+  `source verify` failed.
+- `source prepare --replace` no longer removes a receipt that `source verify` accepts only
+  because the page ledger recorded a guidance digest older than the reviewed packet. When the
+  receipt's packet binds the page's current guidance, the re-prepared ledger keeps its
+  recorded guidance, so its fingerprint moves only when the page content does.
+- MuPDF warnings (for example `svg: cannot find linked symbol` from a glyph crop) no longer
+  reach stdout ahead of the CLI's JSON. They are relayed once each on stderr as
+  `LitTrans MuPDF warning: …`.
+
+### Compatibility
+
+- Windows hosts run `layout install` once after upgrading. It copies the detector weights
+  from the old cache when the old ready receipt verifies them, and builds a fresh
+  environment. The CLI environment rebuilds itself on first use. The old
+  `%LOCALAPPDATA%\littrans` is never deleted automatically: remove it once `doctor` reports
+  `ok`. Recorded layout results stay valid. Detections made on the new runtime get new
+  fingerprints.
+- Re-preparing pages on a newer build still removes receipts whose units, `source_hash` or
+  recomputed structure metadata changed. Only the stale guidance digest is exempt.
 
 ## [0.7.0-dev.1] - 2026-09-25
 

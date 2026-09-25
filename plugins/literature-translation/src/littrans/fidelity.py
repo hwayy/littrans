@@ -2054,7 +2054,8 @@ def _boundary_space(left: dict[str, Any] | None, right: dict[str, Any] | None,
 
 
 def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str, layout: dict[str, Any], override: dict[str, Any] | None = None,
-                  override_origin: dict[str, Any] | None = None) -> tuple[list[SourceUnit], list[FidelityAsset], dict[str, Any]]:
+                  override_origin: dict[str, Any] | None = None,
+                  reviewed_profile: tuple[bool, dict[str, Any] | None] = (False, None)) -> tuple[list[SourceUnit], list[FidelityAsset], dict[str, Any]]:
     page = doc[number - 1]
     original_page_bbox = list(page.rect)
     original_glyphs, original_blocks = _native(page)
@@ -2095,7 +2096,12 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                                display_glyph_ids=_display_line_glyph_ids(glyphs, items, _rule_boxes(page)), ink=ink)
     from littrans.structure_profile import guidance_digest, structure_context
     profile_context = structure_context(root)
-    if profile_context:
+    keep_record, kept_record = reviewed_profile
+    if keep_record:
+        # The record the page's receipt was reviewed under (`_reviewed_profile_record`).
+        if kept_record is not None:
+            structure["document_profile"] = kept_record
+    elif profile_context:
         # The guidance that applied to this page, not the profile file: extending the
         # profile for other pages leaves the page's ledger reproducible.
         structure["document_profile"] = {"path": profile_context["path"],
@@ -2522,6 +2528,38 @@ def _settle_receipts(root: Path, pages: Iterable[int], before: dict[int, str | N
     return retained, invalidated
 
 
+def _reviewed_profile_record(root: Path, page: int, old_ledger: dict[str, Any] | None, before: str | None,
+                             profile_context: dict[str, Any] | None) -> tuple[bool, dict[str, Any] | None]:
+    """The guidance record a re-prepared page keeps from its old ledger: ``(True, record)``.
+
+    A ledger records the digest of the guidance that applied when the page was prepared;
+    a review compares guidance by content, between the packet it read and the current
+    profile. When the page's current receipt (bound to ``before``) was reviewed from a
+    packet whose guidance for the page is the current guidance, the old record stands for
+    that same guidance and is kept (``None`` when the old ledger had none). Writing a fresh
+    digest instead would void a receipt that `source verify` accepts. ``(False, None)``: no
+    such receipt, record the current guidance.
+    """
+    receipt_path = _receipt_path(root, page)
+    if old_ledger is None or before is None or not receipt_path.is_file():
+        return False, None
+    try:
+        receipt = read_json(receipt_path)
+        if receipt.get("fingerprint") != before:
+            return False, None
+        packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"])
+    except (OSError, ValueError, KeyError):
+        return False, None
+    from littrans.structure_profile import guidance_difference
+
+    old_structure = old_ledger.get("structure")
+    if (not isinstance(old_structure, dict)
+            or guidance_difference(packet.get("document_structure"), profile_context, page) is not None):
+        return False, None
+    record = old_structure.get("document_profile")
+    return True, record if isinstance(record, dict) else None
+
+
 def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
                    allow_missing_layout: bool = False, discard_overrides: bool = False,
                    redetect: bool = False) -> dict[str, Any]:
@@ -2602,6 +2640,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
             recorded = old_ledgers.get(number, {})
             override = recorded.get("source_overrides")
             page_layout = recorded_layouts.get(number)
+            reviewed_profile = _reviewed_profile_record(root, number, old_ledgers.get(number), before.get(number), profile_context)
             if page_layout is not None:
                 reused.append(number)
             else:
@@ -2615,13 +2654,14 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
                         and page_layout.get("fingerprint") != recorded.get("layout_fingerprint")):
                     redetected.append(number)
                 try:
-                    page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, override, recorded.get("source_overrides_origin"))
+                    page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, override, recorded.get("source_overrides_origin"),
+                                                                    reviewed_profile=reviewed_profile)
                 except ValueError as exc:
                     raise ValueError(f"page {number}: the recorded source override cannot be replayed ({exc}); "
                                      "re-import its review file or rerun with --discard-overrides") from exc
                 replayed.append(number)
             else:
-                page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout)
+                page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, reviewed_profile=reviewed_profile)
                 if override:
                     discarded.append(number)
             units.extend(page_units)
@@ -2666,7 +2706,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
     return {"pages": pages, "prepared_pages": needed, "cached_pages": [p for p in pages if p not in needed], "assets": len(registry),
             "replayed_override_pages": replayed, "redetected_override_pages": redetected, "discarded_override_pages": discarded,
             "reused_layout_pages": reused, "detected_layout_pages": fresh,
-            "retained_receipt_pages": retained, "invalidated_pages": [p for p in invalidated if p not in needed],
+            "retained_receipt_pages": retained, "invalidated_pages": invalidated,
             "pruned_asset_directories": pruned["removed"], "layout_status": layout["status"], "requires_visual_review": True,
             "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context, "generator": build_identity()}
 

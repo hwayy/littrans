@@ -1,6 +1,6 @@
 # Migrating to LitTrans 0.7
 
-This guide takes an existing project to 0.7 (currently the development build `0.7.0-dev.1`). Find the version that last wrote the project
+This guide takes an existing project to 0.7 (currently the development build `0.7.1-dev.1`). Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the section for it.
 
@@ -63,11 +63,28 @@ the pages you choose.
 
 ### 1. Install and check
 
-Install 0.7.0-dev.1 on every host (see the repository README) and start a new agent session.
-Check that `littrans doctor` reports `0.7.0-dev.1`. The skills `prepare-literature-translation`
+Install 0.7.1-dev.1 on every host (see the repository README) and start a new agent session.
+Check that `littrans doctor` reports `0.7.1-dev.1`. The skills `prepare-literature-translation`
 and `verify-literature-extraction` are gone: invoke `prepare-literature-source` instead, which
 dispatches source review to `literature-source-reviewer` subagents. Update any project notes
 (`AGENTS.md`, `CLAUDE.md`, handbook) that name the old skills.
+
+**Windows: the cache moved (`0.7.1-dev.1`).** The CLI and layout environments now live in
+`%USERPROFILE%\.littrans` instead of `%LOCALAPPDATA%\littrans`, which a packaged client
+(Codex) sees redirected ([runtime.md](references/runtime.md#packaged-windows-clients)). The
+CLI environment rebuilds itself on first use (package-index access). Then, from an ordinary
+terminal rather than a Codex session, run on each Windows host:
+
+```text
+littrans layout install
+```
+
+It copies the detector weights from the old cache when the old ready receipt verifies them,
+so only PyTorch and MinerU are downloaded again, and builds a fresh environment. When
+`doctor` reports `layout_runtime.ok` on the new location, delete the directory it names as
+`legacy_cache`. Pages already prepared keep their recorded layout results; a new runtime only
+changes the fingerprint of detections made from now on. Set `LITTRANS_CACHE_DIR` to keep the
+cache elsewhere, outside `AppData`.
 
 ### 2. Bring the project record up to date
 
@@ -218,8 +235,13 @@ littrans source review-packets PROJECT --pages 30,41-43
   override for that page. The whole transaction rolls back, so no page is half-replaced.
 - **Fingerprints move once.** A re-prepared page from an older build usually gets a new
   fingerprint even if its text is unchanged: build identity, per-page guidance hash and
-  override hashing changed. It then needs a fresh receipt. `invalidated_pages` names the other
-  pages whose receipts the change removed; review those too.
+  override hashing changed. It then needs a fresh receipt. Since `0.7.1-dev.1`,
+  `invalidated_pages` names every page whose receipt the run removed, the re-prepared pages
+  included (earlier builds listed only pages outside the run: derive those from
+  `prepared_pages` minus `retained_receipt_pages`). A page whose ledger records an older
+  guidance digest while its receipt was reviewed under the current guidance keeps its receipt.
+  Pages whose units or structure metadata a newer build computes differently still lose
+  theirs.
 - **Documents that space rather than indent their paragraphs** (reports, papers) prepared
   before `0.6.0-dev.8` had each page merged into one unit. Re-prepare them entirely and review
   every page again. The new units have new IDs, and translations of the merged units are not

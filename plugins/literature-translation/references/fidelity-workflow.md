@@ -443,10 +443,14 @@ names the build that wrote it. The block is never fingerprinted: the page ledger
 computed without it, so re-preparing identical content keeps the page fingerprint, the packet
 ID (an existing valid packet is returned untouched rather than rewritten) and the review
 receipt. `source prepare --replace` reports such pages in `retained_receipt_pages`; a page
-whose fingerprint moved, or a page outside the run whose receipt depends on a re-prepared
-page (continuation or container closure, read from the record before the run and from the
-re-prepared units, so a page the run reaches only through an edge it added is found too),
-loses its receipt explicitly and is listed in `invalidated_pages`. `littrans doctor` prints the installed `build` (`plugin_version`,
+of the run whose fingerprint moved, or a page outside the run whose receipt depends on a
+re-prepared page (continuation or container closure, read from the record before the run and
+from the re-prepared units, so a page the run reaches only through an edge it added is found
+too), loses its receipt explicitly and is listed in `invalidated_pages`, in or outside the
+run. The ledger's `structure.document_profile.guidance_sha256` records the page guidance at
+preparation; when the page's receipt was reviewed from a packet whose guidance for the page
+equals the current guidance, a re-preparation keeps the old record instead of writing a new
+digest, so `--replace` retains exactly the receipts that `source verify` accepts. `littrans doctor` prints the installed `build` (`plugin_version`,
 `build_digest`, `package_path`) for comparison with an artifact's `generator`.
 
 ### Replaying reviewer overrides

@@ -39,6 +39,8 @@ Packets carry the resolved model and effort, and submissions echo them (`assets 
 
 Invoke `$skill-name`; UI metadata lives in each skill's `agents/openai.yaml`. Dispatch every stage to a subagent spawned with the packet's `model` and `reasoning_effort` (source review: the `dispatch` block `source review-packets` returns), whose instructions are the stage's agent file under `<plugin-root>/agents/`. Provide only the assigned packet and necessary original images. Start a new task after changing the installed plugin version; do not remove caches used by a running task.
 
+On Windows the Codex desktop app is an MSIX-packaged app, and Windows redirects what it creates under `AppData` into a private copy only Codex sees ([runtime.md](runtime.md#packaged-windows-clients)). The LitTrans cache therefore lives in `%USERPROFILE%\.littrans`. If `doctor` reports `AppData redirection` or an identity mismatch in a Codex session, stop and tell the user. Never repair the layout environment by hand: do not run `pip` against it and do not move or delete its files. The only repair is `layout install --repair`, which refuses a location that Codex sees redirected; in that case the user runs it from an ordinary terminal.
+
 ## Cursor
 
 Invoke `/skill-name` or its natural-language name. Plugin agents provide `literature-source-reviewer`, `literature-translator`, `literature-transcriber`, `literature-asset-reviewer`, the three translation audit lenses and `literature-external-reviewer`. Launch fresh local Task subagents; do not use Cursor Cloud Agents or `/in-cloud`.

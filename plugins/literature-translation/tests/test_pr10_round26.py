@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
-from fidelity_fixtures import confirm_structure_checks
+from fidelity_fixtures import confirm_structure_checks, layout_probe_stdout
 from test_fidelity_source import approve
 
 from littrans import fidelity, layout_detector, layout_runtime
@@ -138,7 +138,7 @@ def test_truncated_managed_weights_redownload(tmp_path, monkeypatch):
     monkeypatch.setattr(layout_runtime, "runtime_paths", lambda: (python, model))
     monkeypatch.setattr(
         layout_runtime, "_run",
-        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, layout_runtime.MINERU_VERSION, ""),
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, layout_probe_stdout(), ""),
     )
     assert layout_runtime.layout_runtime_status()["ok"]
     (model / "model.safetensors").write_bytes(b"truncated")

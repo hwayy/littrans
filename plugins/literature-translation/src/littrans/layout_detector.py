@@ -42,15 +42,67 @@ def write_ready_marker(marker: Path, model: Path) -> None:
                       encoding="utf-8")
 
 
-def layout_cache_root() -> Path:
-    """Managed location of the isolated layout environment and its weights.
+def cache_root() -> Path:
+    """Where the CLI and layout environments live — the same rule as ``scripts/bootstrap.py``.
 
-    ``%LOCALAPPDATA%/littrans/layout`` on Windows; ``$XDG_CACHE_HOME/littrans/layout``
-    (default ``~/.cache``) elsewhere — the same rule as the CLI's own environment.
+    ``LITTRANS_CACHE_DIR`` when set; otherwise ``%USERPROFILE%/.littrans`` on Windows and
+    ``$XDG_CACHE_HOME/littrans`` (default ``~/.cache``) elsewhere. Windows keeps out of
+    AppData because an MSIX-packaged client (Codex) is shown a redirected copy of it merged
+    with the real directory, so two hosts would see, and repair, different runtimes.
     """
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "littrans/layout"
-    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "littrans/layout"
+    if os.environ.get("LITTRANS_CACHE_DIR"):
+        return Path(os.environ["LITTRANS_CACHE_DIR"])
+    if os.name == "nt":
+        return Path.home() / ".littrans"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "littrans"
+
+
+def layout_cache_root() -> Path:
+    """Managed location of the isolated layout environment and its weights."""
+    return cache_root() / "layout"
+
+
+def legacy_cache_root() -> Path | None:
+    """The cache builds before 0.7.1 used on Windows (``%LOCALAPPDATA%/littrans``), or None."""
+    if os.name != "nt" or os.environ.get("LITTRANS_CACHE_DIR") or not os.environ.get("LOCALAPPDATA"):
+        return None
+    return Path(os.environ["LOCALAPPDATA"]) / "littrans"
+
+
+APPMODEL_ERROR_NO_PACKAGE = 15700
+REDIRECTED_REASON = (
+    "AppData redirection: this packaged app sees a private copy of the layout runtime, not the one "
+    "other hosts use; run LitTrans from a non-packaged shell, or set LITTRANS_CACHE_DIR outside AppData"
+)
+
+
+def packaged_app() -> bool:
+    """Whether this process runs with Windows package identity (an MSIX app such as Codex).
+
+    Such a process has AppData redirected to a private copy merged with the real one.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        length = ctypes.c_uint32(0)
+        result = ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(length), None)  # type: ignore[attr-defined,unused-ignore]
+    except (AttributeError, OSError):
+        return False
+    return bool(result != APPMODEL_ERROR_NO_PACKAGE)
+
+
+def redirected(path: Path) -> bool:
+    """Whether ``path`` resolves into a packaged app's private ``Packages/<id>/LocalCache`` copy."""
+    def marked(candidate: Path) -> bool:
+        parts = [part.lower() for part in candidate.parts]
+        return any(parts[i] == "packages" and parts[i + 2] == "localcache" for i in range(len(parts) - 2))
+
+    try:
+        return marked(path.resolve()) and not marked(path.absolute())
+    except OSError:
+        return False
 
 
 def runtime_paths() -> tuple[Path | None, Path | None]:
@@ -171,6 +223,8 @@ def detect_layout(images: list[Path], store: Path) -> dict[str, Any]:
         worker_sha = sha256_file(worker)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"status": "unavailable", "reason": str(exc), "pages": {}}
+    if runtime.get("resolved_python") and redirected(Path(str(runtime["resolved_python"]))):
+        return {"status": "unavailable", "reason": REDIRECTED_REASON, "pages": {}}
     image_sha256 = {str(p.resolve()): sha256_file(p) for p in images}
     request: dict[str, Any] = {"images": list(image_sha256), "image_sha256": image_sha256, "model": str(model.resolve()), "weights": weights}
     request.update(runtime=runtime, worker_sha256=worker_sha)

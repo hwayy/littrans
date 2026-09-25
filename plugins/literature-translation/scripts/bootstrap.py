@@ -9,9 +9,13 @@ from pathlib import Path
 
 
 def _cache_root() -> Path:
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "littrans"
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "littrans"
+    # Same rule as littrans.layout_detector.cache_root. Windows stays out of AppData: an
+    # MSIX-packaged client (Codex) sees a redirected, merged copy of it.
+    if os.environ.get("LITTRANS_CACHE_DIR"):
+        return Path(os.environ["LITTRANS_CACHE_DIR"])
+    if os.name == "nt":
+        return Path.home() / ".littrans"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "littrans"
 
 
 def _venv_python(root: Path) -> Path:

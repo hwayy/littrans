@@ -7,6 +7,7 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from fidelity_fixtures import layout_probe_stdout
 from typer.testing import CliRunner
 
 from littrans import cli, layout_runtime
@@ -64,12 +65,14 @@ def test_cli_prepare_forwards_allow_missing_layout(tmp_path: Path, monkeypatch: 
 def test_layout_status_reports_missing_interpreter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(layout_runtime, "runtime_paths", lambda: (None, None))
     status = layout_runtime.layout_runtime_status()
-    assert status == {"python": None, "model": None, "mineru_version": None, "ok": False,
-                      "reason": "layout interpreter missing", "install_command": "littrans layout install"}
+    assert {key: status[key] for key in ("python", "model", "mineru_version", "identity", "ok", "reason", "install_command")} == {
+        "python": None, "model": None, "mineru_version": None, "identity": None, "ok": False,
+        "reason": "layout interpreter missing", "install_command": "littrans layout install"}
+    assert status["cache_root"] and status["packaged_app"] is False
     monkeypatch.setattr(layout_runtime, "runtime_paths", lambda: (Path(__file__), tmp_path))
-    monkeypatch.setattr(layout_runtime, "_run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "3.4.4\n", ""))
+    monkeypatch.setattr(layout_runtime, "_run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, layout_probe_stdout("3.4.4"), ""))
     assert layout_runtime.layout_runtime_status()["reason"] == "expected mineru==3.4.5, found 3.4.4"
-    monkeypatch.setattr(layout_runtime, "_run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "3.4.5\n", ""))
+    monkeypatch.setattr(layout_runtime, "_run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, layout_probe_stdout(), ""))
     assert layout_runtime.layout_runtime_status()["reason"] == "PP-DocLayoutV2 weights missing"
     (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     (tmp_path / "model.safetensors").write_bytes(b"")
