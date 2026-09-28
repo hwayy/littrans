@@ -45,6 +45,9 @@ def package_version() -> str:
 
 def validate_instruction_links(root: Path) -> None:
     """Check maintained skill/role/reference links in the actual install tree."""
+    for directory in (root / "skills").iterdir():
+        if directory.is_dir() and not (directory / "SKILL.md").is_file():
+            raise ValueError(f"Skill directory has no SKILL.md: {directory}")
     documents = [*root.glob("skills/*/SKILL.md"), *root.glob("roles/*.md"),
                  *root.glob("references/*.md")]
     for document in documents:
@@ -66,7 +69,6 @@ def unexpected_plugin_workspaces() -> list[str]:
     """Find generated translation projects accidentally left in the plugin tree."""
 
     markers = {"source", "derived", "evidence", ".littrans", "overrides"}
-    allowed_marker_paths = {"project/.littrans"}
     ignored_top_levels = {".mypy_cache", ".pytest_cache", ".pytest-tmp", ".ruff_cache"}
     unexpected: list[str] = []
     for project_file in PLUGIN_ROOT.rglob("project.yaml"):
@@ -87,8 +89,7 @@ def unexpected_plugin_workspaces() -> list[str]:
             if relative_path.parts and relative_path.parts[0] in ignored_top_levels:
                 continue
             relative = relative_path.as_posix()
-            if relative not in allowed_marker_paths:
-                unexpected.append(relative)
+            unexpected.append(relative)
     return sorted(set(unexpected))
 
 

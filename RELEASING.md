@@ -41,15 +41,17 @@ point; `main` remains the development branch.
     `~/.qoder-cn/settings.json`, and verify the installed version.
 16. Start a new agent session for the updated plugin on each host.
 
-## 0.6 acceptance evidence
+## 0.8 acceptance evidence
 
-Before releasing 0.6, retain the source-coverage sample report, independent production/review
+Before releasing 0.8, retain the source-coverage sample report, independent production/review
 results, original-image fallback checks, offline renderer checks and installable build validation.
 Source PDFs and private results stay outside the tracked plugin. Report known omissions, cuts,
 translation defects, reliable structured coverage, fallback proportion and unavailable usage
 honestly. A sample with zero known omissions is not a whole-book guarantee.
 
-Validate all seven skills, local role prompts, schema contracts, packaging and all host manifests.
+Validate all four coordinator skills, seven portable role instructions, schema contracts,
+both wheel and plugin ZIP resources, and all host manifests. Complete real workflow pilots
+on Codex, Claude Code and OpenCode; record unavailable environments separately.
 Test rebuilding into a fresh directory without inheriting old approvals. Stable installation changes
 follow the release checklist, separately from implementing or testing the development branch.
 
@@ -73,13 +75,15 @@ Test the wheel in a fresh isolated environment or `pip --target` directory. When
 interpreter already has the validated dependencies, an offline target installation can use:
 
 ```powershell
-python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke ..\littrans-build\littrans-0.7.6-py3-none-any.whl
-Expand-Archive -LiteralPath ..\littrans-build\literature-translation-0.7.6.zip -DestinationPath ..\littrans-zip-smoke
+$wheel = Get-ChildItem ..\littrans-build\littrans-*-py3-none-any.whl | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+python -m pip install --no-index --no-deps --target ..\littrans-wheel-smoke $wheel.FullName
+$archive = Get-ChildItem ..\littrans-build\literature-translation-*.zip | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Expand-Archive -LiteralPath $archive.FullName -DestinationPath ..\littrans-zip-smoke
 python ..\littrans-zip-smoke\literature-translation\scripts\littrans.py doctor
 ```
 
-Use the release's actual version in those filenames. For the wheel check, set `PYTHONPATH` to its
-isolated target and verify the imported module path, version and all three bundled profiles. Create
+Verify that the selected filenames match the build manifest's version and hashes. For the wheel check, set `PYTHONPATH` to its
+isolated target and verify the imported module path, version, bundled profiles, four skills and seven roles. Create
 a synthetic PDF project, confirm source preparation produces a review packet while unavailable
 layout detection leaves approval pending, and verify every copied offline MathJax file against its
 vendored manifest. Run the plugin-creator `validate_plugin.py` against the extracted plugin too.
@@ -103,7 +107,7 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Development versions
 
 Between releases the version is a semantic-versioning pre-release of the next release,
-`<next>-dev.N` (for example `0.7.7-dev.1` after 0.7.6), set in the same six files as a release
+`<next>-dev.N` (for example `0.8.0-dev.1` after 0.7.6), set in the same six files as a release
 version, with a `CHANGELOG.md` section of its own.
 Bump `N` in every commit that changes behaviour on the development branch, whether or not it
 is installed anywhere: the version string is the only signal `claude plugin update` compares,

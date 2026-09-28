@@ -13,6 +13,27 @@ from littrans.models import ProjectConfig, ProjectStatus, SourceUnit, Translatio
 from littrans.storage import sha256_text, write_jsonl, write_yaml
 
 
+def test_distribution_contains_portable_roles_and_only_current_skills(tmp_path: Path) -> None:
+    pytest.importorskip("hatchling.build")
+    repository = Path(__file__).resolve().parents[3]
+    output = tmp_path / "distribution"
+    subprocess.run([sys.executable, str(repository / "scripts/build_distribution.py"),
+                    str(output)], cwd=repository, check=True, capture_output=True, text=True)
+    expected_skills = {"literature-translation", "source-processor", "context-manager",
+                       "translation-coordinator"}
+    expected_roles = {path.name for path in
+                      (repository / "plugins/literature-translation/roles").glob("*.md")}
+    for artifact, prefix in ((next(output.glob("*.zip")), "literature-translation/"),
+                             (next(output.glob("*.whl")), "littrans/")):
+        with zipfile.ZipFile(artifact) as archive:
+            names = archive.namelist()
+            assert {name.removeprefix(prefix + "roles/") for name in names
+                    if name.startswith(prefix + "roles/")} == expected_roles
+            assert {name.removeprefix(prefix + "skills/").split("/")[0] for name in names
+                    if name.startswith(prefix + "skills/")} == expected_skills
+            assert prefix + "references/task-protocol.md" in names
+
+
 def test_wheel_contains_template_and_installed_render_uses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

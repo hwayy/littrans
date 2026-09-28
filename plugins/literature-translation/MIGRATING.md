@@ -14,16 +14,16 @@ when the host cannot be detected (including OpenCode). Existing project role pol
 intact. Task envelopes use protocol 1 without changing project schema 6; their instruction
 snapshots and context bindings are additional execution records, not new approval levels.
 
-## Upgrading older projects through 0.7.6
+## Upgrading older projects to 0.8
 
-This guide takes an existing project to 0.7.6. Find the version that last wrote the project
+This guide takes an existing project to the current 0.8 development build. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the path for it.
 
 | Project last written by | Schema | What to do |
 | --- | --- | --- |
 | 0.5.x or earlier | 5 or older | [Rebuild into a new project](#from-05-or-earlier-rebuild) |
-| 0.6.0, 0.6.2, any `0.6.0-dev.N`, `0.6.1-dev.N`, `0.7.0-dev.N`, `0.7.1-dev.N` or `0.7.2-dev.N` | 6 | [Upgrade in place](#upgrade-in-place) |
+| Any 0.6 or 0.7 build, or an earlier 0.8 development build | 6 | [Upgrade in place](#upgrade-in-place) |
 
 The repository's [CHANGELOG.md](../../CHANGELOG.md) describes each development build in detail.
 
@@ -58,10 +58,10 @@ on an older project tell you to rebuild it.
    `project.yaml` explicitly (`project models NEW --host HOST`). Do not assume credentials or
    model choices from historical output.
 2. Probe and prepare: `source probe`, complete `context/source-structure.json`, then
-   `source prepare`.
-3. Verify with the `prepare-literature-source` skill: `literature-source-reviewer` subagents
-   review, correct and import page ranges, then `source verify` must pass.
-4. When you ask to translate, `continue-literature-translation` cuts batches for the pages and
+   `source extract`.
+3. Verify with the `source-processor` skill: independent source-review workers
+   return decisions for the coordinator to receive, then `source verify` must pass.
+4. When you ask to translate, `translation-coordinator` cuts batches for the pages and
    dispatches independent transcribe and translate packets. A formula with a faithful original
    image is ready for reading and translation while its structured candidate is still pending.
 
@@ -77,11 +77,14 @@ the pages you choose.
 
 Take the steps the column of your build marks, in order. Within a step, an item that names a
 build applies only to projects written before that build.
+For 0.7.6 and later, follow steps 1, 2 and 4; the remaining historical fixes apply only when
+the named older evidence is still present. The 0.8 command/skill reorganization alone does
+not require re-extraction or re-approval.
 
 | Step | 0.6.0, `0.6.0-dev.N`, `0.6.1-dev.N` | 0.6.2 | `0.7.0-dev.1` | `0.7.1-dev.N` | `0.7.2-dev.N` |
 | --- | --- | --- | --- | --- | --- |
 | [1. Install and check](#1-install-and-check) | yes | yes | yes | yes | yes |
-| [2. Switch to the 0.7 skills](#2-switch-to-the-07-skills) | yes | yes | batches only | batches only | — |
+| [2. Switch to the 0.8 skills](#2-switch-to-the-08-skills) | yes | yes | yes | yes | yes |
 | [3. Move the Windows cache](#3-move-the-windows-cache) | Windows | Windows | Windows | — | — |
 | [4. Bring the record up to date](#4-bring-the-record-up-to-date) | yes, with older-record items | yes | yes | yes | yes |
 | [5. Update the dispatch configuration](#5-update-the-dispatch-configuration) | yes | yes | — | — | — |
@@ -91,23 +94,22 @@ build applies only to projects written before that build.
 
 ### 1. Install and check
 
-Install 0.7.6 on every host that works on the project (see the repository README). Then start
+Install the selected 0.8 development build on every host that works on the project (see the repository README). Then start
 a new agent session on each host: a running session keeps the skills and agents it loaded.
-Check that `littrans doctor` reports `0.7.6` and the same `build.build_digest` everywhere.
+Check that `littrans doctor` reports the selected version and the same `build.build_digest` everywhere.
 
-### 2. Switch to the 0.7 skills
+### 2. Switch to the 0.8 skills
 
-- **Source preparation (`0.7.0-dev.1`).** The skills `prepare-literature-translation` and
-  `verify-literature-extraction` are gone: invoke `prepare-literature-source` instead. It
-  dispatches page review to `literature-source-reviewer` subagents, which review, correct and
-  import their page ranges and report proposed `page_rules`; the coordinator records the rules
+- **Source preparation.** Invoke `source-processor` for extraction and optional asset parsing. It
+  dispatches page review to fresh workers following `roles/source-reviewer.md`. Workers return
+  decisions and proposed `page_rules`; the coordinator receives results and records validated rules
   in the structure profile. Update any project notes (`AGENTS.md`, `CLAUDE.md`, handbook) that
   name the old skills.
-- **Subagents (`0.7.0-dev.1`).** Every model stage runs in a fresh subagent of its stage's
+- **Subagents.** Every model stage runs in a fresh subagent of its stage's
   agent. Only a host without subagents falls back to a separate fresh session.
-- **Batches (`0.7.2-dev.1`).** `prepare-literature-source` ends with the verified source, the
-  translation context and the `source render` checkpoint; it no longer creates batches.
-  `continue-literature-translation` cuts them when you ask to translate pages that no batch
+- **Batches.** `source-processor` ends with the verified source and the
+  `source render` checkpoint; it does not create batches. `context-manager` owns shared context.
+  `translation-coordinator` cuts batches when you ask to translate pages that no batch
   covers yet. Existing batches are unaffected.
 
 ### 3. Move the Windows cache
@@ -221,7 +223,7 @@ passing.
   asset-audit packets you dispatched. Their identities now include the per-role dispatch
   policy, so a worker that returns with an old `packet_id` fails its binding.
 - **Deterministic QA** (before `0.6.1-dev.9`). Every batch's `qa/<batch>.json` reads as stale
-  until you run `littrans qa run PROJECT BATCH` again. Translations and receipts are
+  until you run `littrans translation qa PROJECT BATCH` again. Translations and receipts are
   untouched.
 - **Audits reset once** (before `0.6.1-dev.9`). Audit context includes reference terminology
   (`0.6.0-dev.7`) and terms inside non-title quotations (`0.6.1-dev.9`). Batches whose units
@@ -249,7 +251,7 @@ passing.
 - **Review packets** made before `0.6.1-dev.2` carry no `structure_checks`, so their receipts
   keep passing. Every new packet asks the reviewer to confirm each role and join it lists; the
   `literature-source-reviewer` agent follows
-  [source-review.md](skills/prepare-literature-source/references/source-review.md).
+  [source-review.md](references/source-review.md).
 
 ### 7. Re-prepare pages only where the new reading is wanted
 
@@ -257,7 +259,7 @@ Nothing about a page changes until it is re-prepared. Re-prepare a reviewed chap
 the pages that need a fix, and review those pages again from fresh packets:
 
 ```text
-littrans source prepare PROJECT --replace --pages 30,41-43
+littrans source extract PROJECT --replace --pages 30,41-43
 littrans source review-packets PROJECT --pages 30,41-43
 ```
 

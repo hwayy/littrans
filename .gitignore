@@ -3,6 +3,7 @@ workspaces/
 .littrans-write-lock/
 tmp/
 .venv/
+/.idea/
 **/__pycache__/
 **/.pytest_cache/
 .pytest-tmp/

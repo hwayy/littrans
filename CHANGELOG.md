@@ -15,6 +15,21 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.0-dev.2] - 2026-09-28
+
+### Removed
+
+- Obsolete skill directories and reference redirects; active references now use shared paths.
+
+### Fixed
+
+- Plugin ZIP distributions now include portable role instructions, matching the wheel.
+  Artifact tests check both formats for current skills and required role resources.
+- Migration and release instructions now target 0.8 instead of retired skills and builds.
+- Release validation rejects skill directories without a `SKILL.md` entry.
+- Provider-lock tests now use temporary directories; release checks no longer exempt
+  a leftover `project/.littrans` directory inside the plugin source.
+
 ## [0.8.0-dev.1] - 2026-09-28
 
 ### Added

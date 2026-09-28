@@ -14,7 +14,7 @@ def _release_validator() -> ModuleType:
     return module
 
 
-def test_release_validation_rejects_generated_workspaces_but_allows_package_metadata(
+def test_release_validation_rejects_generated_workspaces_and_leftover_lock_directories(
     tmp_path: Path,
 ) -> None:
     module = _release_validator()
@@ -28,4 +28,5 @@ def test_release_validation_rejects_generated_workspaces_but_allows_package_meta
     assert module.unexpected_plugin_workspaces() == [
         "nested/mathvision-temp",
         "nested/mathvision-temp/evidence",
+        "project/.littrans",
     ]

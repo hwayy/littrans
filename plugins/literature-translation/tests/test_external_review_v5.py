@@ -842,6 +842,7 @@ def test_provider_lock_serializes_same_driver_but_not_different_drivers(
 
 def test_provider_lock_waits_without_an_early_queue_deadline(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     observed_timeouts: list[float | None] = []
 
@@ -853,7 +854,7 @@ def test_provider_lock_waits_without_an_early_queue_deadline(
         yield True
 
     monkeypatch.setattr(external_review, "_os_file_lock", capture_lock)
-    with external_review._provider_call_lock(Path("project"), _reviewer()):
+    with external_review._provider_call_lock(tmp_path, _reviewer()):
         pass
     assert observed_timeouts == [None]
 

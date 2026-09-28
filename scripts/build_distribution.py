@@ -29,7 +29,7 @@ def build(output: Path) -> dict[str, object]:
     if not wheels:
         raise ValueError(f"Hatchling did not produce a wheel in {output}")
     wheel = wheels[-1]
-    allowed = {".claude-plugin", ".codex-plugin", ".cursor-plugin", ".qoder-plugin", "agents", "profiles", "references", "schemas", "scripts", "skills", "src"}
+    allowed = {".claude-plugin", ".codex-plugin", ".cursor-plugin", ".qoder-plugin", "agents", "profiles", "references", "roles", "schemas", "scripts", "skills", "src"}
     standalone = {"pyproject.toml", "README.md", "MIGRATING.md"}
     archive = output / f"literature-translation-{version}.zip"
     source_hashes = {}
