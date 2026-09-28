@@ -9,10 +9,16 @@ provides a controlled, resumable workflow for translating English technical book
 papers into Simplified Chinese. It installs on Codex, Cursor, Claude Code and Qoder from the same plugin tree.
 
 The implementation lives in [`plugins/literature-translation`](plugins/literature-translation/).
+The `dev/0.8` branch introduces four coordinator skills, portable worker roles, canonical
+domain CLI groups and task/session handoffs. See the [0.8 implementation plan](docs/v0.8-plan.md)
+and [current plugin guide](plugins/literature-translation/README.md). Codex, Claude Code and
+OpenCode are targeted hosts; Cursor and Qoder retain general compatibility. The installation
+instructions below remain applicable to existing clients; OpenCode setup is described in the
+[OpenCode adapter](plugins/literature-translation/references/host-opencode.md).
 Source PDFs, extracted assets, translation workspaces, credentials, and generated reading
 editions are intentionally kept outside version control.
 
-## Unified 0.7 workflow
+## Coordinated 0.8 workflow
 
 Preserve native prose and original complex-element images first, then run independent transcription
 and translation tasks against that shared source context. Source coverage, translated meaning and
@@ -20,13 +26,13 @@ structured-asset correctness have separate review states. Reviewed reading editi
 images whenever LaTeX or another structured representation is unfinished or unverified.
 
 Every model stage — source review and correction, translation, transcription, the three audit
-lenses and asset review — runs in a fresh subagent dispatched by the coordinating session. Role
+lenses and asset review — runs in a fresh subagent or an independently handed-off session. Role
 models are configured per host in each project's `agent_models`, seeded from the plugin's
 `profiles/host-models.yaml`. Recommended on Codex: `gpt-6-luna` at `max` effort for `translate`
 and `transcribe`, `gpt-6-sol` at `high` for `audit`, `asset-audit` and `source-review`. On Claude
 Code every role uses `sonnet`, and the effort is the `effort: high` each LitTrans agent declares,
 because Claude Code takes no per-dispatch effort. Leaving a role unset dispatches on the host's
-own default, which is the only possibility on Cursor and Qoder; `project models PROJECT --host
+own default on OpenCode, Cursor, Qoder and generic hosts; `project models PROJECT --host
 HOST` reports the resolved policy and the plugin advises rather than blocks when configuration
 and host capability disagree.
 Source preparation requires the isolated layout detector installed by `littrans layout install`.

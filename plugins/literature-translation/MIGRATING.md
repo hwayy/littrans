@@ -1,4 +1,20 @@
-# Migrating to LitTrans 0.7.6
+# Migrating to LitTrans
+
+## 0.8.0-dev.1: canonical CLI entries
+
+The first 0.8 development build adds domain command groups. Existing commands remain
+compatible throughout 0.8.x and print a deprecation hint on stderr; stdout and exit codes
+keep their contract. See [the complete command mapping](references/cli-migration.md).
+No source rebuild, project schema migration or historical packet rewrite is needed for
+this routing change. The six former skills are replaced by four coordinator skills;
+worker guidance now lives in roles/. Restart the host session to refresh discovery.
+Optional project agents are generated explicitly with project agents --write; user edits
+are preserved. Unknown or mixed host environments now resolve to generic, so pass --host
+when the host cannot be detected (including OpenCode). Existing project role policies remain
+intact. Task envelopes use protocol 1 without changing project schema 6; their instruction
+snapshots and context bindings are additional execution records, not new approval levels.
+
+## Upgrading older projects through 0.7.6
 
 This guide takes an existing project to 0.7.6. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or

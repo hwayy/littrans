@@ -1,4 +1,0 @@
-interface:
-  display_name: "Translate Literature Section"
-  short_description: "Translate or revise one faithful LitTrans source batch into Simp"
-  default_prompt: "Use $translate-literature-section to translate this source packet using its original images."

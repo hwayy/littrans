@@ -30,10 +30,10 @@ def _box(bbox: list[float]) -> list[float]:
 # --- LT-094: source preparation ends before batches -------------------------------------
 
 def test_source_preparation_hands_over_without_creating_batches() -> None:
-    prepare = (PLUGIN / "skills/prepare-literature-source/SKILL.md").read_text(encoding="utf-8")
-    continue_ = (PLUGIN / "skills/continue-literature-translation/SKILL.md").read_text(encoding="utf-8")
-    assert "Run `batch create" not in prepare
-    assert "batch create" in continue_
+    prepare = (PLUGIN / "skills/source-processor/SKILL.md").read_text(encoding="utf-8")
+    continue_ = (PLUGIN / "skills/translation-coordinator/SKILL.md").read_text(encoding="utf-8")
+    assert "translation batch create" not in prepare
+    assert "translation batch create" in continue_
     assert "batches" not in prepare.split("---")[1].split("description:")[1].splitlines()[0]
 
 

@@ -121,7 +121,7 @@ def test_missing_recorded_layout_result_stops_the_import_and_is_reported_by_repl
     cached = _cached_layout(project, read_json(project / "derived/fidelity-pages/p0001.json"))
     assert cached["status"] == "unavailable" and "content-keyed" in cached["reason"] and "--replace" not in cached["reason"]
     # An override import never re-cuts the reviewed page by the fallback rules.
-    with pytest.raises(ValueError, match=r"page 1: the layout result the ledger records .*missing from derived/fidelity-layout/.*source prepare --pages 1 --replace"):
+    with pytest.raises(ValueError, match=r"page 1: the layout result the ledger records .*missing from derived/fidelity-layout/.*source extract --pages 1 --replace"):
         _override_page_one(project, {"preserve_asset_id": "kept-rule"})
     assert "kept-rule" in load_assets(project)
     # A rerun on the same runtime re-detects the recorded result itself (same fingerprint);

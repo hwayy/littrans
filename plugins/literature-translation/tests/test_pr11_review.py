@@ -64,7 +64,7 @@ def test_project_init_rolls_back_scaffold_failure_and_can_retry(tmp_path: Path) 
     (repo / "tools").unlink()
     retried = runner.invoke(app, args)
     assert retried.exit_code == 0, retried.output
-    payload = json.loads(retried.output)
+    payload = json.loads(retried.stdout)
     assert "tools/lt.py" in payload["scaffold"]["created"]
     assert (root / "project.yaml").is_file()
     assert load_project(root).record_root_relative == ".."
@@ -169,7 +169,7 @@ def test_nested_record_root_requires_repository_files(tmp_path: Path) -> None:
     assert record_tracking(root)["problems"] == []
     refreshed = CliRunner().invoke(app, ["project", "scaffold", str(root), "--refresh"])
     assert refreshed.exit_code == 0, refreshed.output
-    assert json.loads(refreshed.output)["repo_root"] == str(record_root)
+    assert json.loads(refreshed.stdout)["repo_root"] == str(record_root)
     assert not (root / "docs" / "LITTRANS.md").exists()
     assert record_tracking(root)["problems"] == []
 
@@ -208,7 +208,7 @@ def test_nested_record_root_requires_repository_files(tmp_path: Path) -> None:
     save_project(root, config)
     legacy_refresh = CliRunner().invoke(app, ["project", "scaffold", str(root), "--refresh"])
     assert legacy_refresh.exit_code == 0, legacy_refresh.output
-    assert json.loads(legacy_refresh.output)["repo_root"] == str(record_root)
+    assert json.loads(legacy_refresh.stdout)["repo_root"] == str(record_root)
     assert not (root / "docs" / "LITTRANS.md").exists()
     assert "meant for the record but not committed: records/PLUGIN-ISSUES.md" in record_tracking(root)["problems"]
 

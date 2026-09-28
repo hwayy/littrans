@@ -1,0 +1,53 @@
+# External review
+
+External review is an optional project-specific gate after deterministic QA, all three internal
+audit lenses, issue resolution, and machine approval. Reviewer configuration belongs in
+`project.yaml`; the plugin supplies no default provider or model.
+
+Set the optional `external_review.domain_expertise` string when a project needs an explicit
+subject-matter specialization. The value is included in the isolated review packet and therefore
+covered by its recorded SHA-256. When omitted, reviewers infer the required expertise from the
+document brief. Provider prompts remain domain-neutral.
+
+Run `translation review external <project> <batch-id>` for least-used assignment, or add `--reviewer <id>`
+to keep a revision with its original reviewer. Add `--dry-run` to inspect the isolated packet,
+prompt, and command without invoking a provider. When the coordinating host is Cursor, a
+`cursor-cli` review may be executed by a local host subagent against that dry-run packet and
+recorded with paired `--from-result RESULT.json --from-dry-run DRY_RUN.json --actual-model
+"ACTUAL MODEL LABEL"` inputs. Use the `dry_run_path` returned by the dry-run command. The trusted
+host coordinator obtains the actual label from Cursor task metadata; never accept the reviewer
+model's self-report as model evidence. The packet supplies a `review_binding` that the host reviewer
+must copy unchanged into its top-level result JSON; stale, tampered, unbound, mismatched, or
+incorrectly attested records are rejected. A required second opinion gets its own dry-run and
+paired import. Use `translation review external-status` to inspect the current translation fingerprint, actual
+model evidence, verdict, and open issues.
+
+Set `external_review.assignment_since` to a timezone-aware ISO 8601 timestamp when adding a new
+reviewer to an established project and a fresh balancing epoch is required. Historical telemetry
+remains intact, while least-used selection counts completed and active calls only from that time.
+Concurrent selections reserve their reviewer briefly so separate services can be used in parallel
+without choosing the same least-used reviewer in a race.
+
+A reviewer's `model` (and each fallback's) is the dispatch value passed to the provider CLI. Host
+metadata must report it: the `claude-code` and `antigravity` drivers accept a family match
+(`sonnet` against `claude-sonnet-5`), `cursor-cli` requires the exact identity. When the host
+routes an alias to another model, declare the served id in `model_identity` (per reviewer or
+fallback) and keep `model` as the alias; verification then compares host evidence with the
+identity. A run whose served model cannot be verified is recorded with `model_verified: false`,
+the served label in `actual_model_label` and `failure_type: model`; it never counts as accepted.
+
+For `cursor-cli`, use exact Cursor model IDs and omit separate `effort` and `fast` fields. Cursor
+first-party quota failures (including Grok, Composer, and Auto) and third-party quota failures
+(including Claude) are recorded separately per attempt. The CLI exhausts the reviewer's configured
+model chain before selecting a replacement reviewer.
+
+Each call receives only the current source, translation, checklist, style guide, approved terms,
+the reference entries matching the batch, and relevant PDF page images. Prior translation review issues and translator rationale are excluded. The
+CLI runs read-only in a temporary directory. Preserve the normalized result, raw response,
+actual-model evidence, CLI version, prompt version, and translation fingerprint; remove temporary
+provider logs after extracting model evidence.
+
+An inconclusive verdict, an unverified actual model, a blocker/major issue, or confidence below
+the configured threshold requires a second opinion from a different reviewer. Merge agreement.
+Leave conflicts inconclusive for high-level adjudication with a recorded evidence-based reason.
+Never convert external acceptance into human approval.

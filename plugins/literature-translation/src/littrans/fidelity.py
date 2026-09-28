@@ -2679,7 +2679,7 @@ def source_packet_liveness(root: Path) -> dict[str, list[str]]:
 
 
 def gc_asset_directories(root: Path, apply: bool = False) -> dict[str, Any]:
-    """Reclaim crop directories orphaned by earlier `source prepare --replace` runs.
+    """Reclaim crop directories orphaned by earlier `source extract --replace` runs.
 
     Source review packets are only reported, never removed: the ones receipts name are
     review dependencies.
@@ -3397,7 +3397,7 @@ def _complete_override(root: Path, page: int, override: dict[str, Any]) -> dict[
     complete = {key: value for key, value in override.items() if value is not None}
     if not complete:
         raise ValueError(f"page {page}: the override drops every block; to re-derive the page from the current rules run "
-                         f"`source prepare --pages {page} --replace --discard-overrides` and review a new packet")
+                         f"`source extract --pages {page} --replace --discard-overrides` and review a new packet")
     return complete
 
 
@@ -3482,7 +3482,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                     # The reviewer corrected a page cut with the recorded layout evidence;
                     # cutting it again by the fallback rules would change what they reviewed.
                     raise ValueError(f"page {p}: {layout['reason']}; restore the cache, or re-detect with "
-                                     f"`source prepare --pages {p} --replace` (the override is replayed on the fresh "
+                                     f"`source extract --pages {p} --replace` (the override is replayed on the fresh "
                                      "detection and reported in redetected_override_pages) and review a new packet")
                 with fitz.open(config.source(root)) as doc:
                     try:

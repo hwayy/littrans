@@ -138,7 +138,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     units = [unit for unit in all_units if unit.unit_id in selected_with_notes]
     pages = sorted(set(pages) | {unit.page for unit in units})
     if not units:
-        raise ValueError(f"No prepared source units for pages {page_spec}; run source prepare first")
+        raise ValueError(f"No prepared source units for pages {page_spec}; run source extract first")
     assets = load_assets(root)
     verification = verify_extraction(root, page_spec)
     output = root / "output"

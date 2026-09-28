@@ -1,4 +1,0 @@
-interface:
-  display_name: "Continue Literature Translation"
-  short_description: "Coordinate the LitTrans fidelity-first workflow with independent"
-  default_prompt: "Use $continue-literature-translation to continue the independent transcription and translation workflow."

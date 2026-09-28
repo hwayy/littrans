@@ -48,7 +48,7 @@ PLUGIN_NAME = "literature-translation"
 # The environment variables each client sets in its sessions, as the plugin reads them.
 HOST_SIGNALS = {
 {% for host, names in host_signals.items() %}
-    "{{ host }}": ({{ names | map('tojson') | join(', ') }},),
+    "{{ host }}": ({{ names | map('tojson') | join(', ') }}{% if names %},{% endif %}),
 {% endfor %}
 }
 # Where each client installs the plugin, relative to the home directory. A versioned cache

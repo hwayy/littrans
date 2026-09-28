@@ -539,7 +539,7 @@ def workflow_next(
     manifests = list(snapshot.manifests)
     if not manifests:
         raise ValueError(
-            "No batch manifests exist yet; run `batch create PROJECT --pages PAGES` "
+            "No batch manifests exist yet; run `translation batch create PROJECT --pages PAGES` "
             "on verified pages before workflow coordination"
         )
     all_manifests = list(manifests)
@@ -961,7 +961,7 @@ def _revise_packet_text(
         "same defect class so consistency does not depend on the reviewer having listed "
         "every instance.",
         "2. Resubmit the full batch with `translation submit` (unchanged records may be "
-        "resubmitted verbatim) and run `qa run` until it passes.",
+        "resubmitted verbatim) and run `translation qa` until it passes.",
         "3. Report the issue ids you addressed and, separately, any you deliberately left "
         "unchanged with the reason; the coordinator resolves them with `review resolve`. "
         "Do not resolve issues yourself.",

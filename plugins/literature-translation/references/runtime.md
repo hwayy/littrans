@@ -15,7 +15,7 @@ does not depend on the plugin source tree.
 ## Layout runtime
 
 Source preparation depends on an isolated CPU layout detector (MinerU 3.4.5 with the
-PP-DocLayoutV2 weights). It is a required component: `source prepare` refuses to run without it
+PP-DocLayoutV2 weights). It is a required component: `source extract` refuses to run without it
 unless `--allow-missing-layout` is passed at the user's explicit request, and pages prepared that
 way require full visual region review.
 
@@ -58,7 +58,7 @@ creates there land in a private copy under `%LOCALAPPDATA%\Packages\<package>\Lo
 which shadows the real directory for that client only. Two hosts then run two different
 runtimes, and a "repair" from the packaged view writes into the real one. That is why the cache
 lives outside `AppData`. `doctor` reports `packaged_app`, reports a runtime that resolves into
-such a private copy as `AppData redirection`, `source prepare` treats it as unavailable, and
+such a private copy as `AppData redirection`, `source extract` treats it as unavailable, and
 `layout install` refuses to install into `AppData` from a packaged client. Set
 `LITTRANS_CACHE_DIR` only to a directory outside `AppData`.
 

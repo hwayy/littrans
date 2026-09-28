@@ -201,11 +201,12 @@ def test_cli_batch_create_trims_unit_id_lists(project: Path) -> None:
     result = CliRunner().invoke(app, ["batch", "create", str(project), "--pages", "1", "--prefix", "trimmed",
                                       "--unit-ids", " " + ", ".join(units) + " ,"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)[0]["unit_ids"] == units
+    assert json.loads(result.stdout)[0]["unit_ids"] == units
 
 
 def test_fidelity_workflow_reference_documents_every_packet_stage_and_override_contract() -> None:
-    text = (PLUGIN_ROOT / "references/fidelity-workflow.md").read_text(encoding="utf-8")
+    text = (PLUGIN_ROOT / "references/translation-workflow.md").read_text(encoding="utf-8")
+    text += (PLUGIN_ROOT / "references/source-processing.md").read_text(encoding="utf-8")
     flat = " ".join(text.split())
     stages_sentence = flat[flat.index("`workflow packet` stages are"):].split(".", 1)[0]
     for stage in ("source-review", "translate", "revise", "audit", "transcribe", "asset-audit"):
@@ -214,14 +215,14 @@ def test_fidelity_workflow_reference_documents_every_packet_stage_and_override_c
     for key in ("regions", "units", "page_canvas_bbox", "preserve_asset_id", "glyph_ids", "fragments",
                 "source_markdown", "footnote_refs", "exactly once"):
         assert key in text
-    review = (PLUGIN_ROOT / "skills/prepare-literature-source/references/source-review.md").read_text(encoding="utf-8")
+    review = (PLUGIN_ROOT / "references/source-review.md").read_text(encoding="utf-8")
     assert "#narrow-original-glyph-corrections" in review
     assert "#override-contract" in review
 
 
 def test_readme_lists_batch_creation_and_example_record_uses_real_evidence_paths() -> None:
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "littrans batch create PROJECT --pages" in readme
+    assert "littrans translation batch create PROJECT --pages" in readme
     example = json.loads((PLUGIN_ROOT / "references/translation-record.example.jsonl").read_text(encoding="utf-8").strip())
     TranslationRecord.model_validate(example)
     assert any(path.startswith("evidence/pages/fidelity-p") for path in example["image_evidence"])

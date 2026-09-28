@@ -225,7 +225,7 @@ def project_init(
 @project_app.command("models")
 def project_models(
     project: PathArg,
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, claude, opencode, cursor, qoder, or generic."),
 ) -> None:
     """Report the resolved per-role dispatch policy for a host, with its advisories."""
     from littrans.project import dispatch_report
@@ -374,7 +374,7 @@ def source_render(
 def source_review_packets(
     project: PathArg,
     pages: str = typer.Option("all"),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, claude, opencode, cursor, qoder, or generic."),
 ) -> None:
     """Create a source-review packet and report the dispatch for its source-review subagent."""
     from littrans.fidelity import build_source_review_packet
@@ -403,7 +403,7 @@ def assets_packet(
     asset_ids: str = typer.Option(..., help="Comma-separated stable asset IDs."),
     stage: str = typer.Option("transcribe"),
     revision_notes: str | None = typer.Option(None, help="Explicit correction request bound to existing candidate/review evidence."),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, claude, opencode, cursor, qoder, or generic."),
 ) -> None:
     from littrans.context_packets import adjacent_source_units
     from littrans.fidelity_models import asset_reference_ids
@@ -646,7 +646,7 @@ def workflow_get_next(
     through: str | None = typer.Option(None),
     host: str = typer.Option(
         "auto",
-        help="Coordination host: auto, codex, cursor, claude, or qoder.",
+        help="Coordination host: auto, codex, claude, opencode, cursor, qoder, or generic.",
     ),
 ) -> None:
     wave = workflow_next(project, limit, start_at, through, host)
@@ -656,7 +656,7 @@ def workflow_get_next(
 
 @workflow_app.command("status")
 def workflow_get_status(project: PathArg, batch_ids: str = typer.Option(...),
-                        host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder.")) -> None:
+                        host: str = typer.Option("auto", help="Coordination host: auto, codex, claude, opencode, cursor, qoder, or generic.")) -> None:
     status = workflow_status(
         project,
         [value.strip() for value in batch_ids.split(",") if value.strip()],
@@ -675,7 +675,7 @@ def workflow_create_packet(
     ),
     batch_ids: str = typer.Option(...),
     lens: str | None = typer.Option(None),
-    host: str = typer.Option("auto", help="Coordination host: auto, codex, cursor, claude, or qoder."),
+    host: str = typer.Option("auto", help="Coordination host: auto, codex, claude, opencode, cursor, qoder, or generic."),
 ) -> None:
     result = create_workflow_packet(
         project,
@@ -727,6 +727,38 @@ def workflow_get_metrics(project: PathArg, batch_ids: str | None = typer.Option(
 @app.command()
 def status(project: PathArg) -> None:
     emit(project_status(project))
+
+
+def _register_v08_routes() -> None:
+    from littrans.cli_compat import move_command, move_group
+
+    context_app = typer.Typer(no_args_is_help=True, help="Translation context and terminology.")
+    app.add_typer(context_app, name="context")
+    from littrans.cli_tasks import register
+    register(app, context_app)
+    move_command(source_app, source_app, "prepare", "extract", "source prepare", "source extract")
+    move_group(batch_app, translation_app, "batch", "batch", "translation batch")
+    move_group(review_app, translation_app, "review", "review", "translation review")
+    move_group(glossary_app, context_app, "glossary", "glossary", "context glossary")
+    move_command(qa_app, translation_app, "run", "qa", "qa run", "translation qa")
+    move_command(app, translation_app, "approve", "approve", "approve", "translation approve")
+    move_command(app, translation_app, "render", "render", "render", "translation render")
+    for group in app.registered_groups:
+        if group.name in {"batch", "review", "glossary", "qa"}:
+            group.hidden = True
+
+
+_register_v08_routes()
+
+
+@project_app.command("agents")
+def project_agents(project: PathArg, host: str = "codex", workspace: Path | None = None,
+                   write: bool = False, check: bool = False) -> None:
+    """Check (default) or explicitly write optional project-native agents."""
+    from littrans.agent_config import configure_agents
+    if write and check:
+        raise typer.BadParameter("Choose --check or --write")
+    emit(configure_agents(project, host, workspace, write))
 
 
 if __name__ == "__main__":

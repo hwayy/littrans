@@ -15,6 +15,35 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.0-dev.1] - 2026-09-28
+
+### Added
+
+- Canonical domain CLI entries: `source extract`, `translation batch`,
+  `translation qa`, `translation review`, `translation approve`,
+  `translation render`, and `context glossary`.
+- A checked implementation contract for the 0.8 refactor in `docs/v0.8-plan.md`.
+- Four coordinator skills and seven portable worker roles, with thin native agent adapters.
+- Bound task envelopes, saved instruction snapshots, fresh-session handoffs, writer claims,
+  domain-validated result reception and replay. Task completion remains distinct from approval.
+- Context checks, immutable snapshots and change-impact explanations.
+- Optional conflict-aware project agent generation for Codex/OpenCode, including OpenCode
+  skill discovery files and managed record tracking.
+
+### Changed
+
+- Unknown/mixed host environments now use generic mode. OpenCode is explicitly selectable;
+  existing Codex, Claude Code, Cursor and Qoder model policies are preserved.
+- References are separated by domain; former worker skill references redirect to the
+  maintained shared references. Coordinator skills replace the six former skill entries.
+
+### Compatibility
+
+- Existing CLI entries keep their arguments, output and exit behavior throughout
+  0.8.x. Deprecated entries emit a replacement hint on stderr. No project data,
+  source extraction, historical packet or review-evidence migration is required
+  for these routing changes.
+
 ## [0.7.6] - 2026-09-26
 
 The first release of the 0.7 line. It contains every 0.7 development build listed above; 0.7.0

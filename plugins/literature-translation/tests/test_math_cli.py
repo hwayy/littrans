@@ -13,7 +13,7 @@ from littrans import cli, fidelity, project, representations
 runner = CliRunner()
 
 
-@pytest.mark.parametrize("command", ["extract", "math-candidates", "math-review-packets", "import-math-review", "repair-math-structural-ledger"])
+@pytest.mark.parametrize("command", ["math-candidates", "math-review-packets", "import-math-review", "repair-math-structural-ledger"])
 def test_previous_source_entrypoints_are_removed(command: str) -> None:
     result = runner.invoke(cli.app, ["source", command, "--help"])
     assert result.exit_code != 0
@@ -29,7 +29,7 @@ def test_source_prepare_preserves_page_scope_without_a_mode_selector(tmp_path: P
     result = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--pages", "2-3"])
     assert result.exit_code == 0, result.output
     assert observed == [(tmp_path, "2-3", False, False, False, False)]
-    assert json.loads(result.output)["prepared_pages"] == [2, 3]
+    assert json.loads(result.stdout)["prepared_pages"] == [2, 3]
     invalid = runner.invoke(cli.app, ["source", "prepare", str(tmp_path), "--mode", "visual"])
     assert invalid.exit_code != 0
     assert len(observed) == 1
@@ -45,7 +45,7 @@ def test_source_review_packet_retains_requested_pages(tmp_path: Path, monkeypatc
     result = runner.invoke(cli.app, ["source", "review-packets", str(tmp_path), "--pages", "2-3", "--host", "claude"])
     assert result.exit_code == 0, result.output
     assert observed == [(tmp_path, "2-3")]
-    assert json.loads(result.output)["dispatch"] == {"host": "claude", "role": "source-review"}
+    assert json.loads(result.stdout)["dispatch"] == {"host": "claude", "role": "source-review"}
 
 
 @pytest.mark.parametrize("lane", ["source", "assets"])

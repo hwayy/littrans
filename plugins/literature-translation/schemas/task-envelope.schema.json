@@ -1,0 +1,156 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "task_id": {
+      "pattern": "^task-[a-f0-9]{24}$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "stage": {
+      "enum": [
+        "source-review",
+        "translate",
+        "revise",
+        "audit",
+        "transcribe",
+        "asset-audit",
+        "scout",
+        "terminology"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "role": {
+      "title": "Role",
+      "type": "string"
+    },
+    "lens": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Lens"
+    },
+    "objective": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Objective"
+    },
+    "batch_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Batch Ids",
+      "type": "array"
+    },
+    "pages": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pages"
+    },
+    "asset_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Asset Ids",
+      "type": "array"
+    },
+    "packet": {
+      "additionalProperties": true,
+      "title": "Packet",
+      "type": "object"
+    },
+    "domain_manifest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Domain Manifest"
+    },
+    "inputs": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Inputs",
+      "type": "object"
+    },
+    "context": {
+      "additionalProperties": true,
+      "title": "Context",
+      "type": "object"
+    },
+    "instructions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Instructions",
+      "type": "object"
+    },
+    "dispatch": {
+      "additionalProperties": true,
+      "title": "Dispatch",
+      "type": "object"
+    },
+    "source_sha256": {
+      "title": "Source Sha256",
+      "type": "string"
+    },
+    "source_bindings": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Source Bindings",
+      "type": "object"
+    },
+    "batch_binding": {
+      "additionalProperties": true,
+      "title": "Batch Binding",
+      "type": "object"
+    }
+  },
+  "required": [
+    "task_id",
+    "stage",
+    "role",
+    "lens",
+    "objective",
+    "batch_ids",
+    "pages",
+    "asset_ids",
+    "packet",
+    "domain_manifest",
+    "inputs",
+    "context",
+    "instructions",
+    "dispatch",
+    "source_sha256"
+  ],
+  "title": "TaskEnvelope",
+  "type": "object"
+}

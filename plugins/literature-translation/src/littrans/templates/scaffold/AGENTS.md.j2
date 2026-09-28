@@ -54,6 +54,14 @@ may record none: that dispatch runs on the host's own default. Reviewer lenses r
 mutually blind tasks and are read-only; the parent imports their findings. Record here the
 host-specific dispatch rules this project uses.
 
+The four coordinator skills are `literature-translation`, `source-processor`,
+`context-manager` and `translation-coordinator`. Worker roles receive only their assigned
+task handoff. `task status` discovers saved results; `task receive` runs domain validation.
+An imported task is not approval. When native delegation is unavailable, use a fresh session
+with the same handoff; do not count same-context self-review as an independent lens.
+Optional `project agents --write` creates project-native Codex/OpenCode configuration and
+preserves user edits. Use explicit `--host opencode`; unknown hosts use generic.
+
 ## Editing terminology
 
 Three stores, and the difference is what the audit hash can see:

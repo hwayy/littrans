@@ -9,7 +9,7 @@ from typing import Literal, cast, get_args
 
 import yaml
 
-CoordinationHost = Literal["codex", "cursor", "claude", "qoder"]
+CoordinationHost = Literal["codex", "cursor", "claude", "qoder", "opencode", "generic"]
 COORDINATION_HOSTS: tuple[CoordinationHost, ...] = get_args(CoordinationHost)
 
 CURSOR_ENV_SIGNALS = ("CURSOR_TRACE_ID", "CURSOR_AGENT", "CURSOR_INVOKED_AS")
@@ -22,6 +22,9 @@ HOST_ENV_SIGNALS: dict[CoordinationHost, tuple[str, ...]] = {
     "codex": CODEX_ENV_SIGNALS,
     "cursor": CURSOR_ENV_SIGNALS,
     "qoder": QODER_ENV_SIGNALS,
+    # OpenCode can be selected explicitly; do not infer it from an unverified env signal.
+    "opencode": (),
+    "generic": (),
 }
 
 HOST_MODELS_FILE = "host-models.yaml"
@@ -44,6 +47,8 @@ WAVE_LIMITS: dict[CoordinationHost, WaveLimit] = {
     "cursor": WaveLimit(default=6, maximum=9),
     "claude": WaveLimit(default=3, maximum=6),
     "qoder": WaveLimit(default=3, maximum=6),
+    "opencode": WaveLimit(default=3, maximum=6),
+    "generic": WaveLimit(default=1, maximum=3),
 }
 WAVE_BATCH_SET_MAX = max(spec.maximum for spec in WAVE_LIMITS.values())
 LENS_REVIEWER_BATCH_MAX = 3
@@ -70,11 +75,14 @@ SUBAGENT_DISPATCH: dict[CoordinationHost, SubagentDispatch] = {
     "claude": SubagentDispatch(model=True, reasoning_effort=False, agent_effort="high"),
     "cursor": SubagentDispatch(model=False, reasoning_effort=False),
     "qoder": SubagentDispatch(model=False, reasoning_effort=False),
+    # OpenCode selects a configured agent; its model belongs to that agent configuration.
+    "opencode": SubagentDispatch(model=False, reasoning_effort=False),
+    "generic": SubagentDispatch(model=False, reasoning_effort=False),
 }
 
 
 def detect_coordination_host() -> CoordinationHost:
-    """Detect the host from its environment; mixed or unknown signals stay on Codex."""
+    """Detect unambiguous known environments; otherwise use portable handoff mode."""
     signals = {
         "cursor": any(os.environ.get(name) for name in CURSOR_ENV_SIGNALS),
         "codex": any(os.environ.get(name) for name in CODEX_ENV_SIGNALS),
@@ -82,9 +90,9 @@ def detect_coordination_host() -> CoordinationHost:
         "qoder": any(os.environ.get(name) for name in QODER_ENV_SIGNALS),
     }
     detected = [host for host, present in signals.items() if present]
-    if len(detected) == 1 and detected[0] in ("cursor", "claude", "qoder"):
+    if len(detected) == 1:
         return cast(CoordinationHost, detected[0])
-    return "codex"
+    return "generic"
 
 
 def resolve_coordination_host(host: str | None) -> CoordinationHost:
@@ -93,7 +101,7 @@ def resolve_coordination_host(host: str | None) -> CoordinationHost:
     for candidate in COORDINATION_HOSTS:
         if host == candidate:
             return candidate
-    raise ValueError("workflow host must be auto, codex, cursor, claude, or qoder")
+    raise ValueError("workflow host must be auto, " + ", ".join(COORDINATION_HOSTS))
 
 
 def resolve_wave_limit(host: CoordinationHost, limit: int | None) -> int:

@@ -59,3 +59,5 @@ claude:
     model: sonnet
 cursor: {}  # No per-dispatch model selection on this host; configure it per project if the host gains one.
 qoder: {}  # No per-dispatch model selection on this host; configure it per project if the host gains one.
+opencode: {}  # Provider/model selection belongs to the configured native agent.
+generic: {}  # Portable fresh-session handoff has no assumed model controls.

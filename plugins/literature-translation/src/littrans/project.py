@@ -380,7 +380,9 @@ def project_status(root: Path) -> dict[str, Any]:
 def schema_models() -> dict[str, type[BaseModel]]:
     from littrans.fidelity_models import FidelityAsset
     from littrans.representation_models import AssetReviewSubmission, AssetSubmission
+    from littrans.task_models import TaskEnvelope
     return {
+        "task-envelope.schema.json": TaskEnvelope,
         "project.schema.json": ProjectConfig,
         "source-unit.schema.json": SourceUnit,
         "translation-record.schema.json": TranslationRecord,

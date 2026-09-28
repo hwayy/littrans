@@ -27,6 +27,8 @@ from littrans.workflow import (
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # These legacy scenarios exercise the configured Codex role policy explicitly.
+    monkeypatch.setenv("CODEX_CI", "1")
     import littrans.fidelity as fidelity
     monkeypatch.setattr(fidelity, "detect_layout", lambda images, output: {
         "status": "unavailable", "reason": "Generated-source oracle", "pages": {},
@@ -169,8 +171,8 @@ def test_only_unified_source_commands_are_exposed() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["source", "--help"])
     assert result.exit_code == 0
-    assert "prepare" in result.stdout
-    for old in ("extract", "apply-overrides", "math-candidates", "import-math-review"):
+    assert "extract" in result.stdout
+    for old in ("apply-overrides", "math-candidates", "import-math-review"):
         assert runner.invoke(app, ["source", old]).exit_code != 0
         assert "No such command" in runner.invoke(app, ["source", old]).output
 

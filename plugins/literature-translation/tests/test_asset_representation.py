@@ -229,6 +229,7 @@ def test_cursor_dispatches_on_its_own_policy_without_imposing_codex_profile(proj
     from littrans.models import RoleDispatch
     from littrans.storage import load_project
 
+    monkeypatch.delenv("CODEX_CI", raising=False)
     monkeypatch.setenv("CURSOR_AGENT", "1")
     # Cursor has no per-dispatch model selection, so an empty policy is a supported
     # choice: the packet records no model and the host's own policy runs the task.

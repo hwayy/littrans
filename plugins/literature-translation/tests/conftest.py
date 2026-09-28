@@ -27,6 +27,10 @@ def isolate_coordination_host(monkeypatch: pytest.MonkeyPatch) -> None:
         "QODERCN_CLI",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Existing synthetic workflows use the shipped Codex model policy. Make that
+    # host explicit now that unknown production environments correctly use generic.
+    # Host-detection tests clear this signal and exercise the generic fallback.
+    monkeypatch.setenv("CODEX_CI", "1")
 
 
 @pytest.fixture(autouse=True)

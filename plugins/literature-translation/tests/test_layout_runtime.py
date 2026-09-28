@@ -83,11 +83,11 @@ def test_doctor_includes_layout_runtime(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(layout_runtime, "runtime_paths", lambda: (None, None))
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["layout_runtime"]["ok"] is False
     assert payload["layout_runtime"]["install_command"] == "littrans layout install"
     status = runner.invoke(cli.app, ["layout", "status"])
-    assert json.loads(status.output)["reason"] == "layout interpreter missing"
+    assert json.loads(status.stdout)["reason"] == "layout interpreter missing"
 
 
 def test_select_base_python_rejects_unsupported_versions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

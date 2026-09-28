@@ -315,5 +315,5 @@ def test_doctor_reports_the_build_identity() -> None:
 
     result = CliRunner().invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
-    build = json.loads(result.output)["build"]
+    build = json.loads(result.stdout)["build"]
     assert build["plugin_version"] == __version__ and len(build["build_digest"]) == 16 and "generated_at" not in build

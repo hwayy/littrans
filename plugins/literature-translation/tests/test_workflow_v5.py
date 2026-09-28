@@ -417,7 +417,7 @@ def test_packet_issue_ids_are_stable_on_idempotent_import(tmp_path: Path) -> Non
     runner = CliRunner()
     listed = runner.invoke(cli.app, ["review", "issues", str(root), batch.batch_id, "--jsonl"])
     assert listed.exit_code == 0, listed.output
-    lines = [json.loads(line) for line in listed.output.splitlines() if line.strip()]
+    lines = [json.loads(line) for line in listed.stdout.splitlines() if line.strip()]
     assert {line["issue_id"] for line in lines} == {canonical, other}
     resolved = runner.invoke(
         cli.app,
@@ -427,16 +427,16 @@ def test_packet_issue_ids_are_stable_on_idempotent_import(tmp_path: Path) -> Non
         ],
     )
     assert resolved.exit_code == 0, resolved.output
-    assert {item["issue_id"] for item in json.loads(resolved.output)} == {canonical, other}
+    assert {item["issue_id"] for item in json.loads(resolved.stdout)} == {canonical, other}
     assert list_issues(root, batch.batch_id) == []
     assert len(list_issues(root, batch.batch_id, open_only=False)) == 2
     empty = runner.invoke(cli.app, ["review", "issues", str(root), batch.batch_id])
-    assert empty.exit_code == 0 and json.loads(empty.output) == []
+    assert empty.exit_code == 0 and json.loads(empty.stdout) == []
     single = runner.invoke(
         cli.app,
         ["review", "issues", str(root), batch.batch_id, "--all"],
     )
-    assert len(json.loads(single.output)) == 2
+    assert len(json.loads(single.stdout)) == 2
 
 
 def test_non_seam_change_invalidates_only_its_batch(tmp_path: Path) -> None:

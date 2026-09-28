@@ -43,6 +43,25 @@ def package_version() -> str:
     return match.group(1)
 
 
+def validate_instruction_links(root: Path) -> None:
+    """Check maintained skill/role/reference links in the actual install tree."""
+    documents = [*root.glob("skills/*/SKILL.md"), *root.glob("roles/*.md"),
+                 *root.glob("references/*.md")]
+    for document in documents:
+        for link in re.findall(r"\]\(([^)\s]+)\)", document.read_text(encoding="utf-8")):
+            if "://" in link or link.startswith("mailto:"):
+                continue
+            filename, _, fragment = link.partition("#")
+            target = (document.parent / filename).resolve() if filename else document
+            if not target.is_file():
+                raise ValueError(f"Broken instruction link in {document}: {link}")
+            if fragment and target.suffix == ".md":
+                headings = re.findall(r"^#+ (.+)$", target.read_text(encoding="utf-8"), re.MULTILINE)
+                anchors = {re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-") for heading in headings}
+                if fragment not in anchors:
+                    raise ValueError(f"Broken instruction anchor in {document}: {link}")
+
+
 def unexpected_plugin_workspaces() -> list[str]:
     """Find generated translation projects accidentally left in the plugin tree."""
 
@@ -267,6 +286,8 @@ def main() -> None:
         "literature-technical-reviewer.md": "jsonl",
         "literature-chinese-style-reviewer.md": "jsonl",
         "literature-external-reviewer.md": "bound-json",
+        "literature-document-scout.md": "proposal-json",
+        "literature-terminology-researcher.md": "proposal-json",
     }
     actual_agents = {path.name for path in agent_files}
     if actual_agents != set(expected_agents):
@@ -341,6 +362,7 @@ def main() -> None:
                     "and rendered-candidate evidence"
                 )
 
+    validate_instruction_links(PLUGIN_ROOT)
     schema_dir = PLUGIN_ROOT / "schemas"
     mismatches = schema_mismatches(schema_dir)
     if mismatches:

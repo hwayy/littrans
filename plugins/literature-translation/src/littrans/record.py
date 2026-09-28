@@ -20,7 +20,7 @@ from typing import Any
 from littrans.fidelity import source_packet_liveness
 from littrans.fidelity_models import load_assets
 from littrans.scaffold import SCAFFOLD_FILES
-from littrans.storage import load_project
+from littrans.storage import load_project, read_json
 
 BATCH_FILES = ("manifest.yaml", "translation.jsonl", "source.md", "context.md", "output-schema.json")
 RECORD_GLOBS = (
@@ -72,10 +72,24 @@ def git_toplevel(root: Path) -> Path:
     return Path(result.stdout.decode("utf-8", "replace").strip()).resolve()
 
 
+def agent_record_files(root: Path) -> set[str]:
+    """Only files explicitly owned by our generated host manifests enter the record."""
+    result: set[str] = set()
+    for host in ("codex", "opencode"):
+        manifest = root / f".littrans/host-agents/{host}.json"
+        if not manifest.is_file():
+            continue
+        result.add(manifest.relative_to(root).as_posix())
+        for name in read_json(manifest).get("files", {}):
+            (root / name).resolve().relative_to(root.resolve())
+            result.add(name)
+    return result
+
+
 def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
     """The record and the excluded set, relative to the project root, plus the live source packets."""
     root = Path(root).resolve()
-    must_track: set[str] = set(INITIAL_RECORD_FILES)
+    must_track: set[str] = set(INITIAL_RECORD_FILES) | agent_record_files(root)
     for relative in RECORD_FILES:
         if (root / relative).is_file():
             must_track.add(relative)
@@ -157,7 +171,9 @@ def record_tracking(root: Path) -> dict[str, Any]:
         ((root if spec.at_project_root else record_root) / spec.relative).relative_to(toplevel).as_posix()
         for spec in SCAFFOLD_FILES
     }
-    must_track = {prefix + path for path in project_track} | scaffold_paths
+    managed_agents = {(base / name).relative_to(toplevel).as_posix()
+                      for base in {root, record_root} for name in agent_record_files(base)}
+    must_track = {prefix + path for path in project_track} | scaffold_paths | managed_agents
     must_ignore = {prefix + path for path in project_ignore}
     universe = {
         prefix + path.relative_to(root).as_posix()
@@ -197,7 +213,7 @@ def record_tracking(root: Path) -> dict[str, Any]:
     }
     optional.add(prefix + "output/.gitkeep")
     problems: list[str] = []
-    required_paths = scaffold_paths | {prefix + path for path in INITIAL_RECORD_FILES} | {
+    required_paths = scaffold_paths | managed_agents | {prefix + path for path in INITIAL_RECORD_FILES} | {
         prefix + f"packets/{name}/{filename}"
         for name in live_packets for filename in ("packet.json", "coverage.html")
     }

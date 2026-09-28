@@ -209,16 +209,16 @@ def test_glossary_lookup_and_check(tmp_path: Path) -> None:
     runner = CliRunner()
     listed = runner.invoke(cli.app, ["glossary", "lookup", str(root), "--batch-id", manifests[0].batch_id, "--jsonl"])
     assert listed.exit_code == 0, listed.output
-    lines = [json.loads(line) for line in listed.output.splitlines() if line.strip()]
+    lines = [json.loads(line) for line in listed.stdout.splitlines() if line.strip()]
     assert [(line["channel"], line.get("kind"), line["source"]) for line in lines] == [
         ("approved", None, "architecture"), ("reference", "sense", "framework"), ("reference", "reference", "template"),
     ]
     pretty = runner.invoke(cli.app, ["glossary", "lookup", str(root), "--pages", "1-2"])
-    assert pretty.exit_code == 0 and json.loads(pretty.output)["approved_total"] == 1
+    assert pretty.exit_code == 0 and json.loads(pretty.stdout)["approved_total"] == 1
     refused = runner.invoke(cli.app, ["glossary", "lookup", str(root)])
     assert refused.exit_code == 1 and "Traceback" not in refused.output and "exactly one selector" in refused.output
     checked = runner.invoke(cli.app, ["glossary", "check", str(root)])
-    assert checked.exit_code == 0 and json.loads(checked.output)["approved"]["total"] == 2
+    assert checked.exit_code == 0 and json.loads(checked.stdout)["approved"]["total"] == 2
 
 
 # --- LT-040: record scaffold -----------------------------------------------------------
@@ -361,7 +361,7 @@ def test_project_tracked_asks_git_and_reports_every_kind_of_gap(tmp_path: Path, 
     assert any("neither tracked nor ignored" in p and "notes.txt" in p for p in problems)
     runner = CliRunner()
     result = runner.invoke(cli.app, ["project", "tracked", str(root)])
-    assert result.exit_code == 1 and json.loads(result.output)["gap"] >= 1
+    assert result.exit_code == 1 and json.loads(result.stdout)["gap"] >= 1
 
 
 def test_project_tracked_allows_optional_packet_history_and_output_placeholder(

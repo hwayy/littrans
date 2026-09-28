@@ -24,6 +24,11 @@ from littrans.workflow import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_default_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODEX_CI", raising=False)
+
+
 def test_codex_wave_limits_remain_three() -> None:
     assert WAVE_LIMITS["codex"].default == 3
     assert WAVE_LIMITS["codex"].maximum == 3
@@ -49,7 +54,7 @@ def test_detect_cursor_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_coordination_host("auto") == "cursor"
     assert resolve_coordination_host("codex") == "codex"
     assert resolve_coordination_host("claude") == "claude"
-    with pytest.raises(ValueError, match="workflow host must be auto, codex, cursor, claude, or qoder"):
+    with pytest.raises(ValueError, match="workflow host must be auto"):
         resolve_coordination_host("antigravity")
 
 
@@ -67,7 +72,7 @@ def test_detect_claude_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert detect_coordination_host() == "claude"
     assert resolve_coordination_host("auto") == "claude"
     monkeypatch.setenv("CURSOR_TRACE_ID", "trace")
-    assert detect_coordination_host() == "codex"
+    assert detect_coordination_host() == "generic"
 
 
 def test_qoder_wave_limits_default_three_max_six() -> None:
@@ -85,7 +90,7 @@ def test_detect_qoder_host_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_coordination_host("auto") == "qoder"
     assert resolve_coordination_host("qoder") == "qoder"
     monkeypatch.setenv("CURSOR_TRACE_ID", "trace")
-    assert detect_coordination_host() == "codex"
+    assert detect_coordination_host() == "generic"
 
 
 def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
@@ -105,7 +110,8 @@ def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     custom = tmp_path / "host-models.yaml"
     custom.write_text("claude:\n  translate: opus\n", encoding="utf-8")
     assert host_model_defaults(custom) == {"claude": {"translate": {"model": "opus"}},
-                                           "codex": {}, "cursor": {}, "qoder": {}}
+                                           "codex": {}, "cursor": {}, "qoder": {},
+                                           "opencode": {}, "generic": {}}
     # The legacy flat form still reads: one host-level effort fills every role.
     custom.write_text("claude:\n  translate: opus\n  reasoning_effort: high\n", encoding="utf-8")
     assert host_model_defaults(custom)["claude"] == {
@@ -131,10 +137,10 @@ def test_workflow_next_auto_detects_cursor(
     assert len(manifests) == 9
 
 
-def test_mixed_host_signals_stay_on_codex(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mixed_host_signals_use_generic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CURSOR_TRACE_ID", "trace")
     monkeypatch.setenv("CODEX_THREAD_ID", "thread")
-    assert detect_coordination_host() == "codex"
+    assert detect_coordination_host() == "generic"
 
 
 def test_workflow_next_selects_host_sized_waves(tmp_path: Path) -> None:
