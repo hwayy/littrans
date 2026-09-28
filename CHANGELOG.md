@@ -15,6 +15,32 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.1] - 2026-09-29
+
+### Changed
+
+- OpenCode defaults match Codex: `openai/gpt-6-luna` / `max` for translation and transcription;
+  `openai/gpt-6-sol` / `high` for translation audits, asset audits and source review.
+- OpenCode project-agent generation applies project model/effort policies as native
+  `provider/model#variant` selectors. Existing empty policies retain parent-model inheritance.
+- All plugin manifests and Python package metadata use version 0.8.1, including the 0.8
+  coordinator skills, portable tasks and packaging changes from the development builds below.
+
+### Fixed
+
+- OpenCode 2.x read-only agents use `permissions:` rules; legacy `permission:` could silently
+  discard their configured model. Workers also deny nested subagent dispatch.
+- Worker instructions anchor role snapshots and packet paths to task handoffs, avoiding nested
+  project/Git-root ambiguity while keeping generated files portable.
+- OpenCode guidance distinguishes native model inheritance from new top-level session selection
+  and requires explicit completion tracking for background CLI work.
+
+### Compatibility
+
+- Generated OpenCode definitions target 2.x. Regenerate managed agents after upgrading or
+  changing project model policies; user-modified definitions are preserved as conflicts.
+- No schema-6 project rebuild is required. Existing project policies are not overwritten.
+
 ## [0.8.0-dev.2] - 2026-09-28
 
 ### Removed

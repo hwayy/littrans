@@ -65,6 +65,7 @@ class SubagentDispatch:
     model: bool
     reasoning_effort: bool
     agent_effort: str | None = None
+    project_agent_config: bool = False
 
 
 # Neither Cursor nor Qoder lets a coordinator choose the model of one dispatched task;
@@ -76,7 +77,7 @@ SUBAGENT_DISPATCH: dict[CoordinationHost, SubagentDispatch] = {
     "cursor": SubagentDispatch(model=False, reasoning_effort=False),
     "qoder": SubagentDispatch(model=False, reasoning_effort=False),
     # OpenCode selects a configured agent; its model belongs to that agent configuration.
-    "opencode": SubagentDispatch(model=False, reasoning_effort=False),
+    "opencode": SubagentDispatch(model=False, reasoning_effort=False, project_agent_config=True),
     "generic": SubagentDispatch(model=False, reasoning_effort=False),
 }
 
@@ -201,6 +202,21 @@ def dispatch_advisories(
     if capability is None:
         return ()
     notes: list[str] = []
+    if capability.project_agent_config:
+        if model:
+            notes.append(
+                f"agent_models.{host}.{role} is applied through generated native agents, not "
+                "per-call model arguments. Run `project agents PROJECT --host opencode --check` "
+                "and --write after policy changes, then start a fresh OpenCode session. "
+                "Verify the child session's actual model/variant."
+            )
+        elif reasoning_effort:
+            notes.append(
+                f"agent_models.{host}.{role}.reasoning_effort requires an explicit provider/model "
+                "to select a native model variant; generation rejects effort-only policies. "
+                "Unset both fields to inherit the parent model and variant."
+            )
+        return tuple(notes)
     if model and not capability.model:
         notes.append(
             f"agent_models.{host}.{role}.model is set to {model}, but the plugin cannot "

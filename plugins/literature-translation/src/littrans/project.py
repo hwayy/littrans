@@ -430,6 +430,7 @@ def dispatch_report(
             "reasoning_effort": capability.reasoning_effort,
             # The effort the plugin's agent definitions fix on this host, if any.
             "agent_effort": capability.agent_effort,
+            **({"project_agent_config": True} if capability.project_agent_config else {}),
         },
         "roles": roles,
         "advisories": advisories,

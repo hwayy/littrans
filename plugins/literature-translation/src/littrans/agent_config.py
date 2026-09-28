@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,30 @@ from littrans.storage import (
 )
 
 READ_ONLY = {"document-scout", "terminology-researcher", "asset-reviewer", "translation-reviewer"}
+POLICY_ROLES = {"translator": "translate", "asset-transcriber": "transcribe",
+                "translation-reviewer": "audit", "asset-reviewer": "asset-audit",
+                "source-reviewer": "source-review"}
+
+
+def opencode_model(model: str | None, effort: str | None) -> str | None:
+    """Convert a project policy to OpenCode 2.x's provider/model#variant selector."""
+    if not model:
+        if effort:
+            raise ValueError("OpenCode reasoning_effort requires a provider/model; unset both to inherit")
+        return None
+    if not re.fullmatch(r"[^\s/#]+/[^\s#]+(?:#[^\s#]+)?", model):
+        raise ValueError("OpenCode model must be provider/model or provider/model#variant")
+    base, separator, variant = model.partition("#")
+    if effort and not re.fullmatch(r"[^\s#]+", effort):
+        raise ValueError("OpenCode reasoning_effort must be a model variant without whitespace or #")
+    if separator and effort and variant != effort:
+        raise ValueError("OpenCode model variant conflicts with reasoning_effort")
+    return f"{base}#{effort or variant}" if effort or variant else base
 
 
 def configure_agents(project: Path, host: str, workspace: Path | None = None,
                      write: bool = False) -> dict[str, Any]:
-    load_project(project)
+    config = load_project(project)
     root = (workspace or project).resolve()
     project.resolve().relative_to(root)
     if host not in {"codex", "opencode"}:
@@ -33,6 +53,7 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
     manifest_path = root / f"{prefix}.json"
     previous = read_json(manifest_path).get("files", {}) if manifest_path.exists() else {}
     planned: dict[str, str] = {}
+    models: dict[str, str | None] = {}
     for folder in ("roles", "references"):
         for path in sorted((resources / folder).glob("*.md")):
             planned[f"{prefix}/{folder}/{path.name}"] = path.read_text(encoding="utf-8")
@@ -54,9 +75,29 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
                 body += 'sandbox_mode = "read-only"\n'
             agent_path = f".codex/agents/{name}.toml"
         else:
+            # Resolve from the task/agent file, not the host's possibly different Git root.
+            instruction = (
+                "Use the assigned task handoff (start.md) as the path anchor. "
+                f"Read instructions/roles/{role.name} relative to that handoff's directory; "
+                "the task's saved instructions take precedence over installed role copies. "
+                "Resolve packet paths against the project root identified by the handoff, "
+                "never against the current working directory or a containing Git repository. "
+                "If no task handoff was supplied, locate this agent definition at "
+                f".opencode/agents/{name}.md and read ../../{prefix}/roles/{role.name} "
+                "relative to the definition file's directory. "
+                "References resolve relative to the role file actually read. "
+                "Follow only the assigned scope; task completion does not grant domain approval."
+            )
+            policy = config.dispatch(host, POLICY_ROLES.get(role.stem, role.stem))
+            model = opencode_model(policy.model, policy.reasoning_effort)
+            models[name] = model
             body = f"---\ndescription: LitTrans {role.stem}\nmode: subagent\n"
+            if model:
+                body += f"model: {json.dumps(model)}\n"
+            body += 'permissions:\n  - action: subagent\n    resource: "*"\n    effect: deny\n'
             if role.stem in READ_ONLY:
-                body += "permission:\n  edit: deny\n  bash: deny\n"
+                for action in ("edit", "shell"):
+                    body += f'  - action: {action}\n    resource: "*"\n    effect: deny\n'
             body += f"---\n\n{instruction}\n"
             agent_path = f".opencode/agents/{name}.md"
         planned[agent_path] = body
@@ -73,7 +114,13 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
                 conflicts.append(name)
     report = {"host": host, "workspace": str(root), "changed": changed,
               "conflicts": conflicts, "written": False,
-              "note": "No model/effort override is generated. Verify native agent discovery in a fresh host session."}
+              "note": ("OpenCode 2.x: project policy is written as provider/model#variant. "
+                       "Unset policies inherit the parent model in native child sessions. "
+                       "Restart the host after writing; verify actual child models."
+                       if host == "opencode" else
+                       "No model/effort override is generated. Verify native agent discovery in a fresh host session.")}
+    if host == "opencode":
+        report["models"] = models
     if not write:
         return report
     if conflicts:
@@ -81,7 +128,8 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
     with project_write_lock(root):
         # Detect an editor racing the initial check before replacing any files.
         checked = configure_agents(project, host, root, write=False)
-        if checked["conflicts"] or checked["changed"] != changed:
+        if (checked["conflicts"] or checked["changed"] != changed
+                or checked.get("models") != report.get("models")):
             raise ValueError("Agent files changed during preparation; check again")
         snapshots = snapshot_files([root / name for name in planned] + [manifest_path])
         try:

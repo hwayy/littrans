@@ -29,10 +29,14 @@ Every model stage — source review and correction, translation, transcription, 
 lenses and asset review — runs in a fresh subagent or an independently handed-off session. Role
 models are configured per host in each project's `agent_models`, seeded from the plugin's
 `profiles/host-models.yaml`. Recommended on Codex: `gpt-6-luna` at `max` effort for `translate`
-and `transcribe`, `gpt-6-sol` at `high` for `audit`, `asset-audit` and `source-review`. On Claude
+and `transcribe`, `gpt-6-sol` at `high` for `audit`, `asset-audit` and `source-review`.
+OpenCode uses the same defaults with the `openai/` prefix; `project agents PROJECT --host opencode
+--write` applies the project's policy to OpenCode 2.x native agents. Restart the host after changes.
+On Claude
 Code every role uses `sonnet`, and the effort is the `effort: high` each LitTrans agent declares,
 because Claude Code takes no per-dispatch effort. Leaving a role unset dispatches on the host's
-own default on OpenCode, Cursor, Qoder and generic hosts; `project models PROJECT --host
+own default on Cursor, Qoder and generic hosts, or inherits the parent model in OpenCode native
+children. New top-level OpenCode sessions need an explicit model selection. `project models PROJECT --host
 HOST` reports the resolved policy and the plugin advises rather than blocks when configuration
 and host capability disagree.
 Source preparation requires the isolated layout detector installed by `littrans layout install`.

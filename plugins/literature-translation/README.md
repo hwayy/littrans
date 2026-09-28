@@ -1,4 +1,4 @@
-# Literature Translation 0.8 development
+# Literature Translation 0.8.1
 
 LitTrans coordinates source preservation, context management, translation and independent
 review. The deterministic CLI stores evidence and resumes work; the host runs the models.
@@ -72,14 +72,17 @@ littrans project agents PROJECT --host codex --write
 littrans project agents PROJECT --host opencode --write
 ```
 
-Use `--workspace REPOSITORY` for a containing repository. Generation preserves user edits and
-omits fixed models. OpenCode generation also installs the four project-local skills with
-bound reference paths. Point `LITTRANS_PLUGIN_ROOT` to the installed plugin for custom paths.
+Use `--workspace REPOSITORY` for a containing repository. Generation preserves user edits.
+Codex definitions omit fixed models; OpenCode 2.x definitions apply the project's model/effort
+policy as `provider/model#variant` and install four project-local skills with bound references.
+Regenerate OpenCode agents after policy changes. Empty policies preserve native inheritance.
+Point `LITTRANS_PLUGIN_ROOT` to the installed plugin for custom paths.
 Check native discovery in a fresh host session; generated files do not prove runtime support.
 
-## Development acceptance
+## Validation scope
 
-This is a development build. Deterministic regression tests and host pilots are separate
-acceptance requirements. Claude Code/OpenCode live pilots remain pending until those clients
-and models are configured. See the repository [implementation contract](../../docs/v0.8-plan.md).
+Deterministic regression tests and host pilots are separate acceptance requirements.
+OpenCode 2.0.6 has a synthetic translation/review pilot; it does not establish full-book or
+complex-asset quality. Codex and Claude Code production pilots remain separate requirements.
+See the repository [implementation contract](../../docs/v0.8-plan.md).
 Keep private PDFs, translations, project state and model outputs outside the plugin repository.

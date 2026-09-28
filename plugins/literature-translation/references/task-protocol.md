@@ -10,6 +10,10 @@ technical or chinese-style). Scout/terminology requires --pages and --objective.
 Use an explicit --host on OpenCode; unknown or mixed environments resolve to generic.
 
 The returned handoff points to start.md beside task.json and its instruction snapshot.
+Pass its absolute path to the worker. Paths inside the handoff are relative to its directory;
+the project root is four parents above that directory, not necessarily the Git/workspace root.
+Packet paths resolve from that project root. Saved role snapshots take precedence over installed
+copies, so workers do not search another plugin version when running inside a nested project.
 The coordinator claims the task with task claim PROJECT TASK_ID --executor ID --mode subagent
 or fresh-session before dispatch. Give a worker the handoff, project location and necessary
 images, without conversation history, other workers' candidates or expected verdicts.

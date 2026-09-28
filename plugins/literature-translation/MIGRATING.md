@@ -1,5 +1,26 @@
 # Migrating to LitTrans
 
+## 0.8.1: OpenCode 2.x native configuration
+
+Schema-6 projects upgrade in place. Existing model policies, source data and approvals are
+preserved. New projects get OpenCode defaults matching Codex with the `openai/` provider prefix.
+For an existing project, copy the `opencode` section of `profiles/host-models.yaml` into
+`project.yaml` under `agent_models` only if you want those defaults. An existing empty policy
+continues to inherit; no automatic migration changes its model choice.
+
+Run `project agents PROJECT --host opencode --check` and then `--write` with the same
+`--workspace` used previously. Unmodified managed definitions upgrade to V2 `permissions:`
+and the project's `provider/model#variant` selectors. If files were manually changed, back
+them up and move the conflicting files out of `.opencode/agents/` before regenerating; reconcile
+customizations explicitly. Do not combine legacy `permission:` with the V2 rules.
+
+Start a fresh OpenCode session in the project/workspace, verify native agents and their model
+selectors, and pass absolute task handoffs when dispatching. OpenCode 1.x is not supported by
+the generated 0.8.1 adapter. The main session's model remains an OpenCode setting; new top-level
+CLI sessions require explicit model selection. See [OpenCode](references/host-opencode.md).
+Regenerate task handoffs when adopting the new path guidance; do not edit bound snapshots of
+running tasks. Completed source/translation data does not require re-extraction solely for this fix.
+
 ## 0.8.0-dev.1: canonical CLI entries
 
 The first 0.8 development build adds domain command groups. Existing commands remain
@@ -16,7 +37,7 @@ snapshots and context bindings are additional execution records, not new approva
 
 ## Upgrading older projects to 0.8
 
-This guide takes an existing project to the current 0.8 development build. Find the version that last wrote the project
+This guide takes an existing project to 0.8.1. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the path for it.
 
@@ -94,7 +115,7 @@ not require re-extraction or re-approval.
 
 ### 1. Install and check
 
-Install the selected 0.8 development build on every host that works on the project (see the repository README). Then start
+Install 0.8.1 on every host that works on the project (see the repository README). Then start
 a new agent session on each host: a running session keeps the skills and agents it loaded.
 Check that `littrans doctor` reports the selected version and the same `build.build_digest` everywhere.
 

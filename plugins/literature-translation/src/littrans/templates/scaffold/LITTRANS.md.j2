@@ -64,6 +64,10 @@ reported with one of: {% for reason in stale_reasons %}`{{ reason }}`{% if not l
   effort, and each dispatches to a fresh subagent. An unset one follows the host's default and is
   advised, never refused; an effort the host fixes through the agents' frontmatter is reported
   as not applied. See `project models PROJECT --host HOST`.
+- OpenCode 2.x applies model/effort via generated native agent `provider/model#variant` settings:
+  run `project agents PROJECT --host opencode --check`, then `--write` after policy changes and
+  restart the host. Unset pairs inherit the parent model; effort alone cannot select a variant.
+  Use the absolute task handoff as the worker path anchor and verify actual child model records.
 
 ## Structure guidance
 

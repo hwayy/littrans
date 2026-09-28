@@ -123,7 +123,10 @@ def test_project_agents_are_optional_and_preserve_user_edits(project: Path, host
     suffix = "toml" if host == "codex" else "md"
     agent = project / f".{host}/agents/littrans-translator.{suffix}"
     text = agent.read_text(encoding="utf-8")
-    assert "model =" not in text and "model:" not in text
+    if host == "opencode":
+        assert 'model: "openai/gpt-6-luna#max"' in text
+    else:
+        assert "model =" not in text and "model:" not in text
     agent.write_text(text + "\n# User edit\n", encoding="utf-8")
     with pytest.raises(ValueError, match="User-edited"):
         configure_agents(project, host, write=True)

@@ -165,7 +165,10 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
             write_json(directory / "state.json", {"state": "pending", "executor": None})
             atomic_write_text(directory / "start.md", (
                 f"# LitTrans {stage} task\n\n"
-                f"Open the project containing this task. Read task.json and "
+                "Resolve paths from this start.md file, not the shell's current directory or Git root. "
+                "Its directory is the task directory; the project root is ../../../.. relative to it "
+                "(the directory containing project.yaml). Resolve packet file paths from that project root. "
+                f"Read task.json and "
                 f"instructions/roles/{ROLES[stage]}.md. Read only the assigned evidence and scope.\n"
                 "Use a fresh context. Do not inherit expected verdicts or parallel candidates.\n"
                 "Save the native domain response as result.json (JSONL for translate/revise/audit). "
