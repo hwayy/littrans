@@ -1,4 +1,5 @@
 """Portable handoffs preserve the existing domain gates and durable evidence."""
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -145,3 +146,39 @@ def test_context_impact_preserves_snapshot(project: Path) -> None:
     with pytest.raises(ValueError, match="already exists"):
         save_context_snapshot(project, path)
     assert path.read_bytes() == original
+
+
+def test_relative_project_always_returns_absolute_handoff(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(project.parent)
+    relative = Path(project.name)
+    task = create_task(relative, "translate", batch_ids=["sample-one-b001"], host="codex")
+    claimed = claim_task(relative, task["task_id"], "writer", "subagent")
+    listed = task_status(relative)["tasks"][0]
+    assert task["handoff"] == claimed["handoff"] == listed["handoff"]
+    assert Path(claimed["handoff"]).is_absolute()
+    assert Path(claimed["handoff"]).is_file()
+
+
+@pytest.mark.parametrize("containing_workspace", [False, True])
+def test_codex_agents_anchor_snapshots_and_disable_delegation(project: Path, containing_workspace: bool) -> None:
+    root = project.parent if containing_workspace else project
+    configure_agents(project, "codex", workspace=root, write=True)
+    from littrans.agent_config import READ_ONLY
+
+    agents = list((root / ".codex/agents").glob("*.toml"))
+    assert len(agents) == 7
+    for path in agents:
+        definition = tomllib.loads(path.read_text(encoding="utf-8"))
+        role = path.stem.removeprefix("littrans-")
+        instructions = definition["developer_instructions"]
+        assert f"instructions/roles/{role}.md" in instructions
+        assert "saved instructions take precedence" in instructions
+        assert "project root identified by the handoff" in instructions
+        fallback = f"../../.littrans/host-agents/codex/roles/{role}.md"
+        assert fallback in instructions
+        assert (path.parent / fallback).is_file()
+        assert str(root) not in instructions
+        assert definition["agents"]["enabled"] is False
+        assert (definition.get("sandbox_mode") == "read-only") == (role in READ_ONLY)
+        assert "model" not in definition and "model_reasoning_effort" not in definition
+    assert configure_agents(project, "codex", workspace=root)["changed"] == []

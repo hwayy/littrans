@@ -64,15 +64,25 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
                 encoding="utf-8").replace("../../references/", f"../../../{prefix}/references/")
     for role in sorted((resources / "roles").glob("*.md")):
         name = "littrans-" + role.stem
-        instruction = (f"Read {prefix}/roles/{role.name} relative to the workspace root. "
-                       "Follow that role for the assigned LitTrans task packet only. "
-                       "References resolve relative to the saved role file. "
-                       "Do not assume task completion grants domain approval.")
         if host == "codex":
+            instruction = (
+                "Use the assigned task handoff (start.md) as the path anchor. "
+                f"Read instructions/roles/{role.name} relative to that handoff's directory; "
+                "the task's saved instructions take precedence over installed role copies. "
+                "Resolve packet paths against the project root identified by the handoff, "
+                "never against the current working directory or a containing Git repository. "
+                "If no task handoff was supplied, locate this agent definition at "
+                f".codex/agents/{name}.toml and read ../../{prefix}/roles/{role.name} "
+                "relative to the definition file's directory. "
+                "References resolve relative to the role file actually read. "
+                "Follow only the assigned scope; task completion does not grant domain approval. "
+                "Do not delegate. Read-only workers return result content for the coordinator to save."
+            )
             body = (f"name = {json.dumps(name)}\ndescription = {json.dumps('LitTrans ' + role.stem)}\n"
                     f"developer_instructions = {json.dumps(instruction)}\n")
             if role.stem in READ_ONLY:
                 body += 'sandbox_mode = "read-only"\n'
+            body += '\n[agents]\nenabled = false\n'
             agent_path = f".codex/agents/{name}.toml"
         else:
             # Resolve from the task/agent file, not the host's possibly different Git root.

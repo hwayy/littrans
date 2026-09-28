@@ -37,7 +37,7 @@ ROLES = {"source-review": "source-reviewer", "translate": "translator", "revise"
 def _directory(root: Path, task_id: str) -> Path:
     if not re.fullmatch(r"task-[a-f0-9]{24}", task_id):
         raise ValueError("Invalid task ID")
-    path = root / ".littrans/work/tasks" / task_id
+    path = root.resolve() / ".littrans/work/tasks" / task_id
     path.resolve().relative_to(root.resolve())
     return path
 

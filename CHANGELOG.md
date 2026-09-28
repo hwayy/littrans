@@ -15,6 +15,27 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.2-dev.1] - 2026-09-29
+
+### Changed
+
+- Codex worker definitions request disabling nested delegation and explain read-only result
+  return. Guidance records that host builds may still expose delegation tools.
+- Codex dispatch guidance explicitly requests a fresh context with `fork_turns="none"`
+  where supported, preserving configured model/effort and independent audit lenses.
+
+### Fixed
+
+- Codex native roles prefer task instruction snapshots and anchor fallback resources to
+  their agent definition, avoiding containing-workspace and nested-project path ambiguity.
+- Task claim, status and receive return absolute handoff paths even for relative project
+  arguments, matching task creation and the portable dispatch contract.
+
+### Compatibility
+
+- Regenerate unmodified managed Codex roles to adopt the changes; user edits remain protected.
+  Project schema, model defaults and OpenCode native configuration are unchanged.
+
 ## [0.8.1] - 2026-09-29
 
 ### Changed

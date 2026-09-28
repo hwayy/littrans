@@ -1,5 +1,19 @@
 # Migrating to LitTrans
 
+## 0.8.2-dev.1: Codex task isolation and path resolution
+
+Schema-6 projects upgrade in place. Run `project agents PROJECT --host codex --check`
+and then `--write`, preserving any previous `--workspace` selection. Managed definitions
+now prefer the task's saved role, resolve fallback paths from the agent file and request
+disabling nested delegation. Host enforcement must be verified. User-edited files still
+report conflicts rather than being overwritten.
+Restart the host if needed to discover the regenerated definitions.
+
+Ordinary Codex subagents need no generated agents. Follow [Codex](references/host-codex.md)
+to explicitly choose a fresh context and the task's configured model/effort. Existing tasks
+keep their snapshots; create fresh handoffs when adopting updated instructions. OpenCode
+model policies and permissions retain the 0.8.1 behavior. No source rebuild is required.
+
 ## 0.8.1: OpenCode 2.x native configuration
 
 Schema-6 projects upgrade in place. Existing model policies, source data and approvals are
@@ -37,7 +51,7 @@ snapshots and context bindings are additional execution records, not new approva
 
 ## Upgrading older projects to 0.8
 
-This guide takes an existing project to 0.8.1. Find the version that last wrote the project
+This guide takes an existing project to 0.8.2-dev.1. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the path for it.
 
