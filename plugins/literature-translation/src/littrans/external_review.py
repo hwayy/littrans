@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -1672,45 +1671,44 @@ def _runs_path(root: Path, batch_id: str) -> Path:
 def _os_file_lock(
     path: Path, timeout_seconds: float | None = 1.0
 ) -> Iterator[bool]:
-    """Acquire one byte with an OS lock; the kernel releases it after a crash."""
+    """Acquire an OS lock; the kernel releases it after a crash."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    if handle.seek(0, os.SEEK_END) == 0:
-        handle.write(b"\0")
-        handle.flush()
-    deadline = (
-        None if timeout_seconds is None else time.monotonic() + timeout_seconds
-    )
-    acquired = False
-    try:
-        while not acquired:
-            try:
+    # Windows byte-range locks can extend beyond EOF; POSIX flock locks the file.
+    # Neither needs a sentinel byte. Writing one before locking races with owners.
+    # Keep the same file in place so all participants lock the same object.
+    with path.open("a+b") as handle:
+        deadline = (
+            None if timeout_seconds is None else time.monotonic() + timeout_seconds
+        )
+        acquired = False
+        try:
+            while not acquired:
+                try:
+                    handle.seek(0)
+                    # A platform check mypy narrows on, so the Windows-only module type-checks on POSIX.
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl = importlib.import_module("fcntl")
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except OSError:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
+            yield acquired
+        finally:
+            if acquired:
                 handle.seek(0)
-                # A platform check mypy narrows on, so the Windows-only module type-checks on POSIX.
                 if sys.platform == "win32":
                     import msvcrt
 
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     fcntl = importlib.import_module("fcntl")
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except OSError:
-                if deadline is not None and time.monotonic() >= deadline:
-                    break
-                time.sleep(0.02)
-        yield acquired
-    finally:
-        if acquired:
-            handle.seek(0)
-            if sys.platform == "win32":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl = importlib.import_module("fcntl")
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager
