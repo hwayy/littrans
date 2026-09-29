@@ -268,16 +268,19 @@ def test_code_annotations_require_policy_permission(configured, kind, setting):
     assert record_errors(configured, unit, record) == []
 
 
-def test_external_references_and_machine_binding(configured):
+@pytest.mark.parametrize("relative", [False, True])
+def test_external_references_and_machine_binding(configured, relative):
     candidate = show(configured)["value"]
     candidate["external_review"].update(enabled=True, primary="primary", reviewers={
         "primary": {"driver": "codex-cli", "model": "review-model", "model_identity": None, "effort": "high"}}, timeout_seconds=42)
     apply(configured, candidate)
-    edit(configured, "commands.primary", "C:/Tools/provider.exe", local=True)
+    executable = configured.parent / "Tools" / "provider.exe"
+    binding = "../Tools/provider.exe" if relative else str(executable)
+    edit(configured, "commands.primary", binding, local=True)
     runtime = load_project(configured).external_review.reviewer
-    assert Path(runtime.command) == Path("C:/Tools/provider.exe")
+    assert Path(runtime.command) == executable.resolve()
     assert runtime._timeout_seconds == 42
-    assert "C:/Tools/provider.exe" not in (configured / "settings.yaml").read_text(encoding="utf-8")
+    assert "provider.exe" not in (configured / "settings.yaml").read_text(encoding="utf-8")
 
 
 def test_settings_can_repair_an_invalid_value(configured):
