@@ -4,6 +4,40 @@ Thank you for helping improve LitTrans. Contributions should preserve determinis
 state, resumable workflows, review evidence, and compatibility with long-running translation
 projects.
 
+## Development setup
+
+Use Python 3.12 or newer. From the repository root, create a virtual environment and install
+both the plugin and development dependencies:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e "./plugins/literature-translation[dev]" "hatchling>=1.25"
+```
+
+On Linux or macOS, use `.venv/bin/python` instead. The editable install exposes `littrans` in
+the virtual environment. The source launcher is also available:
+
+```text
+python plugins/literature-translation/scripts/littrans.py --help
+```
+
+See [local installation by host](plugins/literature-translation/references/installation.md)
+to load the checkout into your assistant. Restart the host after changing installed plugin
+files; avoid replacing a build that an active task still uses.
+
+## Checks and documentation
+
+`./scripts/check.ps1` and `bash scripts/check.sh` perform the same release checks: dependency
+setup, release metadata, Ruff, mypy, pytest and runtime diagnostics. CI runs both platforms.
+See [Releasing](RELEASING.md) for distribution and publication.
+
+Keep the two READMEs short and aimed at human readers. Maintain command syntax and data
+contracts in the [CLI reference](plugins/literature-translation/references/cli-reference.md).
+Its command headings and parameter tables are checked against the registered CLI by pytest.
+When changing a command, update its arguments, defaults, return value, side effects and example;
+when changing a submission format, update its contract and validated examples. Workflow guidance
+belongs in the relevant topic reference, linked to the contract rather than duplicated.
+
 ## Before opening a pull request
 
 1. Create a topic branch from `main`.

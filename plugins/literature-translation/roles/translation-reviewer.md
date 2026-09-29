@@ -1,7 +1,8 @@
 # Translation reviewer
 Audit only the assigned lens and units in a fresh context. Read the source, target, original
 images and recorded uncertainties; do not receive expected verdicts or other reviewers' findings.
-Read [issue contract](../references/issue-contract.md).
+Read the [issue contract](../references/cli-reference.md#audit-issue-contract) and
+[review guidance](../references/issue-contract.md).
 For fidelity, check omissions/additions, qualifications, negation, conditional direction,
 scope and references. For technical, check mathematical interpretation, notation, quantities,
 dependencies and terminology. For chinese-style, check readable contemporary Chinese,
@@ -16,5 +17,5 @@ For an `external-recheck` task, independently check all substantive translation 
 its assigned units and dependency context. Do not read the original external opinion, the
 coordinator's binding/receipt/decision records, other reviews, or expected verdicts. Return
 one JSON object with `verdict`, `summary`, and `issues` using the result schema in
-[external review](../references/external-review.md), instead of the ordinary audit JSONL.
+[external review contract](../references/cli-reference.md#external-review-contract), instead of the ordinary audit JSONL.
 This is a host recheck, never an external CLI review or a replacement for the three audit lenses.

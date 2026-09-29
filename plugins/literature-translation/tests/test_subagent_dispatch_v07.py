@@ -5,14 +5,15 @@ import json
 import re
 from pathlib import Path
 
+from test_workflow_v6 import project as workflow_project
+from typer.testing import CliRunner
+
 from littrans.cli import app
 from littrans.hosts import DISPATCH_ROLES, SUBAGENT_DISPATCH, dispatch_advisories
 from littrans.models import RoleDispatch
 from littrans.project import dispatch_report
 from littrans.storage import load_project, read_json, save_project
 from littrans.workflow import create_workflow_packet, workflow_next
-from test_workflow_v6 import project as workflow_project
-from typer.testing import CliRunner
 
 project = workflow_project
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]

@@ -205,8 +205,7 @@ def test_cli_batch_create_trims_unit_id_lists(project: Path) -> None:
 
 
 def test_fidelity_workflow_reference_documents_every_packet_stage_and_override_contract() -> None:
-    text = (PLUGIN_ROOT / "references/translation-workflow.md").read_text(encoding="utf-8")
-    text += (PLUGIN_ROOT / "references/source-processing.md").read_text(encoding="utf-8")
+    text = (PLUGIN_ROOT / "references/cli-reference.md").read_text(encoding="utf-8")
     flat = " ".join(text.split())
     stages_sentence = flat[flat.index("`workflow packet` stages are"):].split(".", 1)[0]
     for stage in ("source-review", "translate", "revise", "audit", "transcribe", "asset-audit"):
@@ -220,8 +219,8 @@ def test_fidelity_workflow_reference_documents_every_packet_stage_and_override_c
     assert "#override-contract" in review
 
 
-def test_readme_lists_batch_creation_and_example_record_uses_real_evidence_paths() -> None:
-    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+def test_cli_reference_lists_batch_creation_and_example_record_uses_real_evidence_paths() -> None:
+    readme = (PLUGIN_ROOT / "references/cli-reference.md").read_text(encoding="utf-8")
     assert "littrans translation batch create PROJECT --pages" in readme
     example = json.loads((PLUGIN_ROOT / "references/translation-record.example.jsonl").read_text(encoding="utf-8").strip())
     TranslationRecord.model_validate(example)

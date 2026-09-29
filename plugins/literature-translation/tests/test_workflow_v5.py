@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import littrans.external_review as external_review_module
-import littrans.workflow as workflow_module
 import pytest
 from fidelity_fixtures import review_fixture_metadata
+from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
+
+import littrans.external_review as external_review_module
+import littrans.workflow as workflow_module
 from littrans.batching import load_manifest, refresh_batch
 from littrans.models import (
     AuditRun,
@@ -39,7 +41,6 @@ from littrans.workflow import (
     prune_workflow_packets,
     workflow_status,
 )
-from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 
 def test_lens_all_skips_covered_lens_and_never_emits_empty_batch_run(
@@ -399,9 +400,10 @@ def test_packet_issue_ids_are_stable_on_idempotent_import(tmp_path: Path) -> Non
 
     # A second packet reusing the reviewer id makes the alias ambiguous while
     # the canonical ids stay resolvable.
+    from typer.testing import CliRunner
+
     from littrans import cli
     from littrans.quality import list_issues, resolve_issue
-    from typer.testing import CliRunner
 
     technical = create_workflow_packet(root, "audit", [batch.batch_id], "technical")
     assert not isinstance(technical, list)

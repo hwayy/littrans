@@ -15,6 +15,17 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.3-dev.2] - 2026-09-29
+
+### Changed
+
+- Shortened both READMEs into human-facing entry points and separated installation and development guidance.
+- Centralized CLI commands and data contracts in one reference, with automated command/parameter coverage checks.
+
+### Fixed
+
+- Resolved Ruff import-order violations in the test suite.
+
 ## [0.8.3-dev.1] - 2026-09-29
 
 ### Added

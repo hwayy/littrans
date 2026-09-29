@@ -2,6 +2,10 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from test_fidelity_source import approve
+from test_pr10_round8 import submit
+from test_workflow_v6 import project as workflow_project
+
 from littrans import rendering
 from littrans.batching import create_batches, refresh_batch
 from littrans.models import (
@@ -23,9 +27,6 @@ from littrans.storage import (
     write_jsonl,
 )
 from littrans.workflow import create_workflow_packet
-from test_fidelity_source import approve
-from test_pr10_round8 import submit
-from test_workflow_v6 import project as workflow_project
 
 project = workflow_project
 

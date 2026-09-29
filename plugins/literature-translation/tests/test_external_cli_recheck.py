@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
+
 from littrans import external_review as external
 from littrans.external_cli import (
     build_codex_command,
@@ -24,7 +26,6 @@ from littrans.models import (
 from littrans.storage import load_project, read_json, read_jsonl, save_project, write_json
 from littrans.tasks import claim_task, create_task, receive_task
 from littrans.workflow import workflow_next
-from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 
 def reviewer(driver: str = "codex-cli", identifier: str = "primary") -> ExternalReviewerConfig:

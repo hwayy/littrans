@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import posixpath
+import re
 import subprocess
 import sys
 import zipfile
@@ -31,7 +33,23 @@ def test_distribution_contains_portable_roles_and_only_current_skills(tmp_path: 
                     if name.startswith(prefix + "roles/")} == expected_roles
             assert {name.removeprefix(prefix + "skills/").split("/")[0] for name in names
                     if name.startswith(prefix + "skills/")} == expected_skills
-            assert prefix + "references/task-protocol.md" in names
+            for document in ("task-protocol.md", "cli-reference.md", "installation.md"):
+                assert prefix + "references/" + document in names
+            # References must remain navigable in both distributions, not just the checkout.
+            for name in names:
+                if not name.startswith(prefix + "references/") or not name.endswith(".md"):
+                    continue
+                text = archive.read(name).decode("utf-8")
+                for link in re.findall(r"\]\(([^)\s]+)\)", text):
+                    if "://" in link or link.startswith("mailto:"):
+                        continue
+                    filename, _, fragment = link.partition("#")
+                    target = posixpath.normpath(posixpath.join(posixpath.dirname(name), filename)) if filename else name
+                    assert target in names, (artifact, name, link)
+                    if fragment and target.endswith(".md"):
+                        headings = re.findall(r"^#+ (.+)$", archive.read(target).decode("utf-8"), re.M)
+                        anchors = {re.sub(r"[^\w -]", "", title.lower()).replace(" ", "-") for title in headings}
+                        assert fragment in anchors, (artifact, name, link)
 
 
 def test_wheel_contains_template_and_installed_render_uses_it(

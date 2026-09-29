@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pytest
 from fidelity_fixtures import make_asset_fixture
+from test_efficiency_v4 import _make_project, _packet_dir, _submit
+from typer.testing import CliRunner
+
 from littrans import cli, external_review
 from littrans.models import ExternalReviewerConfig, ProjectConfig, WorkflowPacketManifest
 from littrans.quality import run_qa
@@ -24,8 +27,6 @@ from littrans.representation_models import AssetSubmission
 from littrans.representations import build_asset_packet, submit_candidates
 from littrans.storage import atomic_write_text, read_json, write_json, write_jsonl
 from littrans.workflow import create_workflow_packet
-from test_efficiency_v4 import _make_project, _packet_dir, _submit
-from typer.testing import CliRunner
 
 SERVED = "deepseek-v4.1-flash[1M]"
 runner = CliRunner()

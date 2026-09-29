@@ -4,13 +4,9 @@ approval gates remain authoritative. The envelope snapshots role instructions an
 files; workers load only their role and the references it requests.
 
 ## Create and execute
-Use task create PROJECT --stage STAGE with exactly one selector: --batch-ids, --pages or
---asset-ids. Translation/revision owns one batch. Audit requires one --lens (fidelity,
-technical or chinese-style). Scout/terminology requires --pages and --objective.
-`external-recheck` takes exactly one batch and no lens; it reuses the audit model policy,
-requires a fresh native subagent claim, and returns structured review JSON. See
-[external review](external-review.md) for blind evidence and coordinator adjudication.
-Use an explicit --host on OpenCode; unknown or mixed environments resolve to generic.
+See the [task interface and result contracts](cli-reference.md#task-contract) for stages,
+selectors, command parameters and encodings. For blind external-review comparisons, see
+[external review](external-review.md).
 
 The returned handoff points to start.md beside task.json and its instruction snapshot.
 Pass its absolute path to the worker. Paths inside the handoff are relative to its directory;
@@ -23,10 +19,6 @@ images, without conversation history, other workers' candidates or expected verd
 Read-only native reviewers return content; the coordinator saves it as result.json.
 Writers may save it themselves. The coordinator receives it with task receive PROJECT TASK_ID.
 Source and asset reviews additionally require --confirm-visual-review after actual inspection.
-
-Result.json contains native JSON for source/asset tasks and JSONL for translate/revise/audit,
-including an empty audit result. Scout results contain findings, proposed_rules and unresolved
-lists; terminology results contain proposals and unresolved lists. Proposals are not approved.
 
 ## Recovery and authority
 Task status reports pending/claimed/imported and result_available separately. A saved result

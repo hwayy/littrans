@@ -64,14 +64,7 @@ such a private copy as `AppData redirection`, `source extract` treats it as unav
 
 ## Environment variables
 
-| Variable | Effect |
-| --- | --- |
-| `LITTRANS_LAYOUT_PYTHON`, `LITTRANS_LAYOUT_MODEL` | Use an externally managed detector interpreter and weight directory instead of the cache. |
-| `LITTRANS_LAYOUT_BASE_PYTHON` | The 3.10–3.13 interpreter `layout install` builds the detector environment from. |
-| `LITTRANS_PLUGIN_ROOT` | The plugin directory a project's `tools/lt.py` launcher runs (one containing `scripts/littrans.py`); otherwise the launcher tries the root recorded when it was generated (or the same path under this user's home) while it exists, the install of the client running the session (detected from the same environment signals as workflow coordination: Claude Code's `~/.claude/plugins/installed_plugins.json` record, otherwise the highest version in that client's cache), the newest sibling of a recorded root outside every cache, and then every client's install by version (`~/.claude/plugins/cache/littrans/literature-translation/<version>`, `~/.codex/plugins/cache/…`, `~/.cursor/plugins/local/literature-translation`, `~/.qoder-cn/plugins/literature-translation`; build metadata such as `+codex.<stamp>` sorts as a later build of the same version). |
-| `LITTRANS_LAUNCHER_VERBOSE` | `tools/lt.py` prints the plugin root it resolved. |
-| `LITTRANS_CACHE_DIR` | Where the CLI and layout environments live, on every platform. Keep it outside `AppData` on Windows. |
-| `XDG_CACHE_HOME` | The cache base on Linux and macOS when `LITTRANS_CACHE_DIR` is unset (Windows uses `%USERPROFILE%\.littrans`). |
+See the [CLI environment contract](cli-reference.md#environment-variables) for overrides and launcher discovery precedence.
 
 ## Hosts
 

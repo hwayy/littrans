@@ -19,6 +19,9 @@ from fidelity_fixtures import (
     record_fixture_source_issue,
     review_fixture_metadata,
 )
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
 from littrans import external_review
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
@@ -90,8 +93,6 @@ from littrans.workflow import (
     workflow_metrics,
     workflow_next,
 )
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 
 
 def _packet_dir(root: Path, packet: WorkflowPacketManifest) -> Path:

@@ -7,14 +7,17 @@ import threading
 import time
 from pathlib import Path
 
+import pymupdf as fitz
+import pytest
+from fidelity_fixtures import confirm_structure_checks, original_image_evidence
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
 import littrans.external_review as external_review
 import littrans.extractor as extractor_module
 import littrans.quality as quality_module
 import littrans.rendering as rendering_module
 import littrans.storage as storage_module
-import pymupdf as fitz
-import pytest
-from fidelity_fixtures import confirm_structure_checks, original_image_evidence
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
     batch_source_fingerprint,
@@ -118,8 +121,6 @@ from littrans.verification import (
     verify_extraction,
 )
 from littrans.workflow import _audit_unit_text, create_workflow_packet
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 
 
 def make_pdf(path: Path) -> None:

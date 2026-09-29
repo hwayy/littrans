@@ -1,5 +1,12 @@
 # Migrating to LitTrans
 
+## 0.8.3-dev.2: documentation organization
+
+No data migration is required from 0.8.3-dev.1. Reload the updated plugin to use the
+[central CLI reference](references/cli-reference.md) and [installation guide](references/installation.md).
+New task handoffs capture the updated references; existing task snapshots remain unchanged.
+For earlier versions, also follow the applicable migration steps below.
+
 ## 0.8.3-dev.1: external CLI review configuration v2
 
 Preview `translation review external-migrate PROJECT`, then apply with `--apply`.

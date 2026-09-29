@@ -6,50 +6,9 @@ run it through an external CLI process. Native host subagents never satisfy this
 
 ## Configuration
 
-Configure one fixed reviewer and an ordered, flat failure fallback chain in `project.yaml`:
-
-```yaml
-external_review:
-  schema_version: 2
-  enabled: true
-  reviewer:
-    id: primary
-    driver: codex-cli
-    command: codex
-    model: YOUR_MODEL
-    effort: high
-  fallbacks:
-    - id: backup
-      driver: opencode-cli
-      command: opencode
-      model: PROVIDER/MODEL
-      effort: high
-  recheck:
-    confidence_below: 0.9
-    severities: [blocker, major]
-```
-
-Each entry independently supports `model`, optional `model_identity` and `effort`.
-Choose models and supported effort levels from the local CLI/provider configuration; the
-plugin supplies no external provider/model default. Omitted effort uses the model's CLI
-default. Invalid or unsupported options must not be silently dropped.
-
-| Driver | Model and effort mapping |
-| --- | --- |
-| `codex-cli` | `--model MODEL`, `-c model_reasoning_effort="EFFORT"` |
-| `opencode-cli` | OpenCode 2.x: `--model provider/model#variant`; `effort` selects the variant |
-| `claude-code` | `--model MODEL --effort EFFORT`; fast mode must remain off |
-| `antigravity` | `--model MODEL --effort EFFORT`; some models do not accept effort |
-| `cursor-cli` | Exact model IDs encode effort; omit separate `effort` and `fast` |
-
-An embedded OpenCode `#variant` may replace `effort`; when both are supplied they must agree.
-Custom variants are supported. `--thinking` displays thinking and does not select effort.
-Use `model_identity` when a dispatch alias differs from the model reported by CLI metadata.
-Identity verification does not accept model self-reports or requested arguments as evidence.
-Requested and actual effort are separate; unavailable actual effort remains unknown.
-
-Set optional `domain_expertise` for project-specific subject expertise. It is part of the
-isolated packet and its fingerprint. Otherwise expertise follows the document brief.
+Set the fixed reviewer and ordered failure fallbacks using the
+[external review contract](cli-reference.md#external-review-contract). Model identity must come
+from CLI metadata, not model self-reports. Choose models available in your local provider setup.
 
 ## Run and migrate
 
@@ -94,17 +53,8 @@ Recheck triggered units and dependencies. Inconclusive verdicts without localize
 that external run's scope. Rechecks cannot modify translations, close findings, grant approval,
 or count as any of the three ordinary audit lenses.
 
-The recheck returns a JSON object with `verdict` (`accepted`, `changes-requested`, `inconclusive`),
-`summary`, and `issues`. Each issue requires `unit_id`, `severity` (`blocker`, `major`, `minor`,
-`suggestion`), `type` (`meaning`, `omission`, `addition`, `terminology`, `technical`, `style`,
-`reference`, `number-unit`, `format`), exact `source_span`, exact `target_span`, `explanation`,
-`suggested_revision` (empty string if none), and numeric `confidence` between 0 and 1.
-
-The coordinator decision JSON includes `run_id`, `task_id`, `verdict`, an evidence-based
-`reason`, and `issues`, mapping every external/recheck issue ID to an `action`
-(`accept`, `reject`, `inconclusive`) and evidence-based `reason`. Agreement also requires a
-recorded decision. Conflicts remain inconclusive until adjudicated by the coordinator.
-Accepting a finding keeps it open until corrected; rejecting an evidenced false positive closes it.
+Result fields and the coordinator decision object are defined in the
+[external review contract](cli-reference.md#external-review-contract).
 
 Missing, stale or inconclusive rechecks/decisions block external approval. Translation changes
 require fresh QA, internal audit and full/incremental external review. Resolving false positives

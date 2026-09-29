@@ -32,6 +32,10 @@ def test_translation_handoff_receive_and_replay_preserve_gates(project: Path) ->
     directory = task_directory(project, task)
     claim_task(project, task["task_id"], "fresh-writer", "fresh-session")
     envelope = read_json(directory / "task.json")
+    reference = directory / "instructions/references/cli-reference.md"
+    assert reference.is_file()
+    assert "references/cli-reference.md" in envelope["instructions"]
+    assert "### littrans translation submit" in reference.read_text(encoding="utf-8")
     packet = envelope["packet"]
     original = read_json(project / packet["files"]["original-images"])
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)

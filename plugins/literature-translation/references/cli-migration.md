@@ -4,24 +4,7 @@ Canonical commands group operations by domain. Skills coordinate tasks; commands
 deterministic operations. Extraction alone does not establish source fidelity, and task
 completion does not establish translation or asset approval.
 
-| Deprecated entry | Canonical entry |
-| --- | --- |
-| `source prepare` | `source extract` |
-| `batch create` | `translation batch create` |
-| `batch show` | `translation batch show` |
-| `batch refresh` | `translation batch refresh` |
-| `qa run` | `translation qa` |
-| `review import` | `translation review import` |
-| `review import-set` | `translation review import-set` |
-| `review resolve` | `translation review resolve` |
-| `review issues` | `translation review issues` |
-| `review status` | `translation review status` |
-| `review external` | `translation review external` |
-| `review external-status` | `translation review external-status` |
-| `approve` | `translation approve` |
-| `render` | `translation render` |
-| `glossary lookup` | `context glossary lookup` |
-| `glossary check` | `context glossary check` |
+See the complete [compatibility alias table](cli-reference.md#compatibility-aliases).
 
 Arguments, defaults, JSON/JSONL stdout and exit codes remain compatible. Deprecated entries
 print one replacement hint on stderr when executed and remain available throughout 0.8.x.

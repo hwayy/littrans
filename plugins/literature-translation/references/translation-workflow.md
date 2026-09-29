@@ -19,21 +19,9 @@ identify both scopes. Batch output schemas come from the submission model and in
 
 ## Translation records
 
-Translation records retain their unit's `source_hash`, references and an `image_evidence` map of
-inspected original image path to SHA-256 from `original-images.json`. Supplementary translations
-of image-contained language live in `asset_translations`, keyed by `asset_id`, using
-`target_text`, `target_table` or `figure_labels`. Declare `language_present: false` with
-explanatory `notes` only for an asset with no translatable natural language. Asset candidate
-content never replaces the source reference ID. Do not put raw LaTeX in translated image
-companions; preserve references and submit mathematical candidates through the independently
-reviewed asset channel. Companion text, table cells and label mappings cannot contain asset
-placeholders or live footnote calls; keep calls in the main translation and escape literal
-notation or use code literals.
-
-A resubmission that is semantically identical to the current record keeps its revision. When
-only the `source_hash` binding changed, the record is rebound as `revised` and its audits are
-invalidated. When only `image_evidence` changed, the receipt is updated in place: the translated
-content is untouched, audits stay valid, and QA (which binds the receipt) simply becomes stale.
+The [translation contract](cli-reference.md#translation-contract) defines submissions, image
+companions and revision behavior. Translate only the editable scope; retain the packet's source
+bindings and original-image evidence.
 
 ## Deterministic QA
 
@@ -65,66 +53,9 @@ Rules worth knowing when reading a report:
 
 ### Terminology
 
-Three glossary files share one entry schema — a `terms` list whose entries carry `source` and
-optionally `aliases` (other attested source forms), `match`, `scope` (`document`, `page:N` or a
-parent unit ID), `status`, `target`, `forbidden` and any project-defined key — and differ only
-in effect:
-
-| File | Effect | Reaches packets | In the audit hash |
-| --- | --- | --- | --- |
-| `approved.yaml`, `status` absent or `approved` | hard per-unit QA gate | entries matching the packet's units | those entries |
-| `approved.yaml`, `status: reference-only` | binding, never gated | same filter | same |
-| `reference.yaml` (`status` defaults to `reference-only`) | binding, never gated; grouped by `kind` | same filter | same |
-| `status: proposed` in either file | inert | no | no |
-| `candidates.yaml` | none: the record of promotion decisions | no | no |
-
-- Reference entries are the channel for data that grows with the chapters but must not gate:
-  proper names kept in source form, one-word-two-senses registers, chapter usage notes.
-  `kind` (default `reference`, e.g. `proper-name`, `sense`) groups them in packets; every other
-  key (`targets`, `rule`, `note`, `first_seen`, ...) is shown verbatim. `status: approved` inside
-  `reference.yaml` is refused: that file never gates. Because reference entries are filtered per
-  unit like approved terms, appending a chapter's names changes only the audit context of the
-  batches that mention them, and correcting an entry resets only the batches it matches — the
-  two context files, by contrast, are hashed whole.
-- Packets show the gated entries under `# Relevant approved terminology` (`approved_terms`)
-  and, only when at least one matches, the reference entries under
-  `# Relevant reference terminology (not gated)` (`reference_terms`, one list per `kind`); the
-  batch `context.md` and external-review packets carry the same two sections. A project without
-  reference entries keeps the audit context it had before the channel existed.
-- `candidates.yaml` entries without `status` (or `status: proposed`) are undecided and are
-  listed in the finalize unresolved report; entries whose status records a decision
-  (`reference-only`, `rejected`, ...) are only counted there.
-- `context glossary lookup PROJECT --batch-id ID | --pages SPEC | --unit-ids IDS | --text FILE`
-  lists the approved and reference entries a selection receives, with the packet's own scope
-  and folding rules (`--kind` narrows the reference groups, `--jsonl` emits one entry per
-  line); `context glossary check PROJECT` loads every file and reports entries matching no prepared
-  unit. Both are read-only.
-- The unit's source representations (text, Markdown, table cells, figure labels) minus quoted
-  titles are folded before matching, and so is `source`. A quoted title is a double-quoted phrase
-  of at least two words whose words are capitalised except `a an and as at but by for from in
-  into nor of on or over the to via vs with` (`“Binding Theory”`); every quotation of a
-  `bibliography` unit counts as one. A quoted term (`“strict mode”`) is matched. Folding covers
-  precomposed, combining and TeX spacing accents (`Hölder` ≡ `H¨older`, `Lévy` ≡ `L´evy`), ligatures, curly quotes and apostrophes
-  (`Chebyshev's` ≡ `Chebyshev’s`), dash variants, whitespace runs and case. QA and the
-  `relevant_terms` packet injection share this folding, so a term shown to the translator is the
-  term QA enforces.
-- `match` selects how `source` is located in the folded text: `substring` (default; `measure`
-  also hits `measurable`), `word` (no letter/digit on either side), or `regex` (a Python pattern
-  searched case-insensitively in the folded text, e.g. `\bpartition\b(?! function)`). The
-  literal characters of a regex are folded like a substring source (`Hölder`, `Chebyshev’s`
-  and `H¨older`, `Chebyshev's` are the same pattern) while escape sequences such as `\b`, `\B`
-  or `\s` are kept verbatim. Invalid modes or patterns fail loading.
-- When `source` occurs in a unit, `target` must appear in that unit's translation
-  (`approved-term-missing`). A `source` that matches no prepared unit at all is reported once per
-  QA run as the warning `approved-term-never-matched`; fix the spelling or narrow the entry.
-- `forbidden` wording is checked in **every** translated unit and asset companion, whether or
-  not that unit contains `source`. List only wording that is wrong in every context (a wrong
-  transliteration), never a rendering that is merely wrong for this term (`mean` → 意味着).
-- Editing a gated entry changes the QA context of every batch and the audit context of batches
-  whose relevant terms change (existing audits become `audit_stale`); finish the gate baseline
-  before `source extract`, or at the latest before the audit wave. Drafts belong in
-  `glossary/candidates.yaml`, which has no effect until an entry is moved into `approved.yaml`
-  or `reference.yaml`.
+See [glossary formats and matching](cli-reference.md#context-and-glossary). Use approved entries
+for terminology that should gate QA, reference entries for contextual conventions, and candidates
+for undecided proposals. Finish shared context changes before the audit wave.
 
 ## Audit coverage
 
@@ -145,8 +76,7 @@ dispatch source review.
 
 ## Workflow coordination
 
-`workflow packet` stages are `source-review`, `translate`, `revise`, `audit`, `transcribe` and
-`asset-audit`. Use the emitted schemas as the authority for exact fields. All model work reads
+See [workflow packet interfaces](cli-reference.md#workflow-contract) for stages, selectors and manifests. All model work reads
 original image evidence; a translate packet does not consume unverified transcription candidates.
 New workflow packets record host/model/reasoning_effort in their manifest and identity, resolved from
 the stage's own role in `agent_models.<host>`; each role carries its own model and effort. Either may be
