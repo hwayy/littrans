@@ -377,8 +377,11 @@ def _review_synthetic_workflow_source(root: Path) -> None:
 @pytest.fixture(scope="session")
 def _prepared_project_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the reviewed synthetic project once; tests receive private copies."""
+    from synthetic_fixtures import isolated_template
+
     base = tmp_path_factory.mktemp("prepared-template")
-    _build_prepared_project(base)
+    with isolated_template(base / "layout-cache"):
+        _build_prepared_project(base)
     return base
 
 

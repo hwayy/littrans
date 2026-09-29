@@ -4,6 +4,7 @@ from pathlib import Path
 import pymupdf as fitz
 import pytest
 from fidelity_fixtures import confirm_structure_checks
+from synthetic_fixtures import copy_workflow_template
 from typer.testing import CliRunner
 
 from littrans.batching import create_batches
@@ -26,13 +27,17 @@ from littrans.workflow import (
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workflow_v6_template: Path) -> Path:
     # These legacy scenarios exercise the configured Codex role policy explicitly.
     monkeypatch.setenv("CODEX_CI", "1")
     import littrans.fidelity as fidelity
     monkeypatch.setattr(fidelity, "detect_layout", lambda images, output: {
         "status": "unavailable", "reason": "Generated-source oracle", "pages": {},
     })
+    return copy_workflow_template(workflow_v6_template, tmp_path)
+
+
+def _build_workflow_project(tmp_path: Path) -> Path:
     source = tmp_path / "oracle.pdf"
     with fitz.open() as doc:
         for _ in range(2):

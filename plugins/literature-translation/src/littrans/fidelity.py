@@ -1,6 +1,7 @@
 """A single evidence-first PDF preparation path, with explicit visual-review gates."""
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import re
@@ -3121,7 +3122,10 @@ def _source_packet_identity(payload: dict[str, Any]) -> str:
     return _hash({k: v for k, v in payload.items() if k != "generator"})[:20]
 
 
-def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[str, Any]:
+def _load_source_packet(
+    root: Path, packet_id: str, packet_sha256: str,
+    *, parsed_packets: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not isinstance(packet_id, str) or not re.fullmatch(r"source-[a-f0-9]{20}", packet_id):
         raise ValueError("invalid source packet ID")
     packet_path = root / "packets" / packet_id / "packet.json"
@@ -3130,11 +3134,18 @@ def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[
         # newer packets exist; deleting it as a leftover voids the review.
         raise ValueError(f"source review packet {packet_id} is a live dependency of a page receipt but is missing from packets/; "
                          "restore the directory or import a fresh visual review")
-    if sha256_file(packet_path) != packet_sha256:
+    # Read and hash current bytes on every use, even when parsing was cached.
+    content = packet_path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != packet_sha256:
         raise ValueError("source packet hash mismatch")
-    packet = read_json(packet_path)
-    if not isinstance(packet, dict) or "source-" + _source_packet_identity(packet) != packet_id:
-        raise ValueError("source packet identity mismatch")
+    key = (packet_id, packet_sha256)
+    packet = parsed_packets.get(key) if parsed_packets is not None else None
+    if packet is None:
+        packet = json.loads(content.decode("utf-8"))
+        if not isinstance(packet, dict):
+            raise ValueError(f"{packet_path} must contain a JSON object")
+        if "source-" + _source_packet_identity(packet) != packet_id:
+            raise ValueError("source packet identity mismatch")
     if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") != 6:
         raise ValueError("invalid source packet contract")
     artifact = packet.get("visual_report", {})
@@ -3148,6 +3159,9 @@ def _load_source_packet(root: Path, packet_id: str, packet_sha256: str) -> dict[
     for relative, expected in files.items():
         if sha256_file(_path(root, relative)) != expected:
             raise ValueError("source report image changed")
+    # Only successful loads are retained; dependency hashes above are never cached.
+    if parsed_packets is not None:
+        parsed_packets[key] = packet
     return packet
 
 
@@ -3340,13 +3354,17 @@ def _source_decision_passes(page: dict[str, Any], decision: dict[str, Any]) -> b
     return not _source_decision_failures(page, decision)
 
 
-def _verify_source_receipt(root: Path, current: dict[str, Any], receipt: Any, source_sha: str) -> None:
+def _verify_source_receipt(
+    root: Path, current: dict[str, Any], receipt: Any, source_sha: str,
+    *, parsed_packets: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> None:
     if not isinstance(receipt, dict):
         raise ValueError("invalid source review receipt")
     payload = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     if receipt.get("receipt_sha256") != _hash(payload):
         raise ValueError("source review receipt digest missing or changed; import a fresh visual review")
-    packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"])
+    packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"],
+                                 parsed_packets=parsed_packets)
     from littrans.structure_profile import guidance_difference, structure_context
     difference = guidance_difference(packet.get("document_structure"), structure_context(root), current["page"])
     if difference:
@@ -3615,6 +3633,7 @@ def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
     receipt_packets: dict[str, list[int]] = {}
     source_current = sha256_file(config.source(root)) == config.source_sha256
     loaded: tuple[list[SourceUnit], dict[str, FidelityAsset]] | None = None
+    parsed_packets: dict[tuple[str, str], dict[str, Any]] = {}
     for p in pages:
         try:
             if not source_current:
@@ -3627,7 +3646,8 @@ def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
                 raise ValueError("recoverable prose remains inside image assets; re-prepare or split source regions: " + ", ".join(opaque))
             receipt_path = root / f"evidence/pages/fidelity-p{p:04d}.review.json"
             receipt = read_json(receipt_path) if receipt_path.is_file() else {}
-            _verify_source_receipt(root, current, receipt, config.source_sha256)
+            _verify_source_receipt(root, current, receipt, config.source_sha256,
+                                   parsed_packets=parsed_packets)
             refs = Counter(aid for u in current["units"] for aid in asset_reference_ids(u["source_markdown"] or u["source_text"]))
             if refs != Counter({a["id"]: 1 for a in current["assets"]}):
                 raise ValueError("asset references are missing or duplicated")

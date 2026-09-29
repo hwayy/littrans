@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
@@ -53,3 +55,14 @@ def isolate_layout_runtime(request: pytest.FixtureRequest, monkeypatch: pytest.M
     monkeypatch.setenv("LITTRANS_CACHE_DIR", str(tmp_path_factory.mktemp("littrans-cache")))
     monkeypatch.setattr(layout_detector, "packaged_app", lambda: False)
     monkeypatch.setattr(layout_runtime, "packaged_app", lambda: False)
+
+
+@pytest.fixture(scope="session")
+def workflow_v6_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from synthetic_fixtures import isolated_template
+    from test_workflow_v6 import _build_workflow_project
+
+    base = tmp_path_factory.mktemp("workflow-v6-template")
+    with isolated_template(base / "layout-cache"):
+        _build_workflow_project(base)
+    return base

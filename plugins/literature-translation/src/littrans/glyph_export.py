@@ -8,6 +8,7 @@ The raw PDF region remains separate original evidence.
 from __future__ import annotations
 
 import copy
+import math
 import re
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -115,6 +116,41 @@ def _page_content(source: ET.Element, page_rect: Any) -> list[ET.Element]:
     return nodes
 
 
+def _origin_bucket(x: Any, y: Any) -> tuple[int, int] | None:
+    # Wider than the match tolerance, leaving room for floating-point rounding
+    # at cell edges. Unusual coordinates retain the original scan semantics.
+    if not all(isinstance(v, (int, float)) and abs(v) <= 1e9 for v in (x, y)):
+        return None
+    return math.floor(x / .06), math.floor(y / .06)
+
+
+class _GlyphOriginIndex:
+    def __init__(self, glyphs: list[dict[str, Any]]) -> None:
+        self.glyphs = glyphs
+        self.buckets: dict[tuple[int, int], list[int]] | None = {}
+        for index, glyph in enumerate(glyphs):
+            try:
+                key = _origin_bucket(glyph["origin"][0], glyph["origin"][1])
+            except (KeyError, TypeError, IndexError):
+                key = None
+            if key is None:
+                self.buckets = None
+                break
+            self.buckets.setdefault(key, []).append(index)
+
+    def matches(self, x: float, y: float) -> list[dict[str, Any]]:
+        key = _origin_bucket(x, y)
+        if key is None or self.buckets is None:
+            candidates = self.glyphs
+        else:
+            # Preserve the input order, including multiple glyphs at one origin.
+            indices = sorted(index for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                             for index in self.buckets.get((key[0] + dx, key[1] + dy), ()))
+            candidates = [self.glyphs[index] for index in indices]
+        return [g for g in candidates if abs(g["origin"][0] - x) < .03
+                and abs(g["origin"][1] - y) < .03]
+
+
 def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, list[float]]:
     """Measure original glyph paths for grouping; font metrics are not ink bounds.
 
@@ -125,6 +161,7 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
     definitions = source.find(f"{{{SVG}}}defs")
     if definitions is None:
         return {}
+    origins = _GlyphOriginIndex(glyphs)
     cache: dict[tuple[Any, ...], fitz.Rect] = {}
     result: dict[str, list[float]] = {}
     for node in _page_content(source, page.rect):
@@ -134,7 +171,7 @@ def glyph_ink_boxes(page: fitz.Page, glyphs: list[dict[str, Any]]) -> dict[str, 
             matrix = _matrix(node)
         except ValueError:
             continue
-        matches = [g for g in glyphs if abs(g["origin"][0] - matrix[4]) < .03 and abs(g["origin"][1] - matrix[5]) < .03]
+        matches = origins.matches(matrix[4], matrix[5])
         if not matches:
             continue
         href = node.get(f"{{{XLINK}}}href", "")
