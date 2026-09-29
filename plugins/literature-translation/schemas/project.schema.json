@@ -1,45 +1,52 @@
 {
   "$defs": {
+    "ExternalRecheckConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_below": {
+          "default": 0.9,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence Below",
+          "type": "number"
+        },
+        "severities": {
+          "items": {
+            "$ref": "#/$defs/Severity"
+          },
+          "title": "Severities",
+          "type": "array"
+        }
+      },
+      "title": "ExternalRecheckConfig",
+      "type": "object"
+    },
     "ExternalReviewConfig": {
       "additionalProperties": false,
       "properties": {
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
         "enabled": {
           "default": true,
           "title": "Enabled",
           "type": "boolean"
         },
-        "assignment": {
-          "default": "least-used",
-          "title": "Assignment",
-          "type": "string"
+        "reviewer": {
+          "$ref": "#/$defs/ExternalReviewerConfig"
         },
-        "assignment_since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Assignment Since"
-        },
-        "reviewers_per_batch": {
-          "default": 1,
-          "minimum": 1,
-          "title": "Reviewers Per Batch",
-          "type": "integer"
-        },
-        "reviewers": {
+        "fallbacks": {
           "items": {
             "$ref": "#/$defs/ExternalReviewerConfig"
           },
-          "title": "Reviewers",
+          "title": "Fallbacks",
           "type": "array"
         },
-        "second_opinion": {
-          "$ref": "#/$defs/ExternalSecondOpinionConfig"
+        "recheck": {
+          "$ref": "#/$defs/ExternalRecheckConfig"
         },
         "domain_expertise": {
           "anyOf": [
@@ -55,7 +62,7 @@
         }
       },
       "required": [
-        "reviewers"
+        "reviewer"
       ],
       "title": "ExternalReviewConfig",
       "type": "object"
@@ -64,50 +71,12 @@
       "enum": [
         "claude-code",
         "antigravity",
-        "cursor-cli"
+        "cursor-cli",
+        "codex-cli",
+        "opencode-cli"
       ],
       "title": "ExternalReviewDriver",
       "type": "string"
-    },
-    "ExternalReviewFallback": {
-      "additionalProperties": false,
-      "properties": {
-        "model": {
-          "description": "Dispatch value passed to the provider CLI.",
-          "title": "Model",
-          "type": "string"
-        },
-        "model_identity": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Concrete model the host must report as served for `model`. Set it when `model` is a host alias (for example `sonnet`) that the host routes to another model; when unset, `model` itself is the identity that host evidence must match.",
-          "title": "Model Identity"
-        },
-        "effort": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Effort"
-        }
-      },
-      "required": [
-        "model"
-      ],
-      "title": "ExternalReviewFallback",
-      "type": "object"
     },
     "ExternalReviewerConfig": {
       "additionalProperties": false,
@@ -164,13 +133,6 @@
           ],
           "default": null,
           "title": "Fast"
-        },
-        "fallbacks": {
-          "items": {
-            "$ref": "#/$defs/ExternalReviewFallback"
-          },
-          "title": "Fallbacks",
-          "type": "array"
         }
       },
       "required": [
@@ -180,32 +142,6 @@
         "model"
       ],
       "title": "ExternalReviewerConfig",
-      "type": "object"
-    },
-    "ExternalSecondOpinionConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "default": "on-uncertainty",
-          "title": "Mode",
-          "type": "string"
-        },
-        "confidence_below": {
-          "default": 0.9,
-          "maximum": 1,
-          "minimum": 0,
-          "title": "Confidence Below",
-          "type": "number"
-        },
-        "severities": {
-          "items": {
-            "$ref": "#/$defs/Severity"
-          },
-          "title": "Severities",
-          "type": "array"
-        }
-      },
-      "title": "ExternalSecondOpinionConfig",
       "type": "object"
     },
     "ProjectStatus": {

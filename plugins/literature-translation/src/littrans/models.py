@@ -121,6 +121,8 @@ class ExternalReviewDriver(StrEnum):
     CLAUDE_CODE = "claude-code"
     ANTIGRAVITY = "antigravity"
     CURSOR_CLI = "cursor-cli"
+    CODEX_CLI = "codex-cli"
+    OPENCODE_CLI = "opencode-cli"
 
 
 class ExternalReviewVerdict(StrEnum):
@@ -191,17 +193,6 @@ def _nonempty_model_identity(value: str | None) -> str | None:
     return value
 
 
-class ExternalReviewFallback(StrictModel):
-    model: str = Field(description="Dispatch value passed to the provider CLI.")
-    model_identity: str | None = Field(default=None, description=_MODEL_IDENTITY_DESCRIPTION)
-    effort: str | None = None
-
-    @field_validator("model_identity")
-    @classmethod
-    def require_nonempty_fallback_model_identity(cls, value: str | None) -> str | None:
-        return _nonempty_model_identity(value)
-
-
 class ExternalReviewerConfig(StrictModel):
     id: str
     driver: ExternalReviewDriver
@@ -210,7 +201,6 @@ class ExternalReviewerConfig(StrictModel):
     model_identity: str | None = Field(default=None, description=_MODEL_IDENTITY_DESCRIPTION)
     effort: str | None = None
     fast: bool | None = None
-    fallbacks: list[ExternalReviewFallback] = Field(default_factory=list)
 
     @field_validator("id", "command", "model")
     @classmethod
@@ -234,74 +224,52 @@ class ExternalReviewerConfig(StrictModel):
             raise ValueError(
                 "cursor-cli model IDs encode effort; external reviewer effort must be omitted"
             )
-        for fallback in self.fallbacks:
-            if (
-                self.driver is ExternalReviewDriver.ANTIGRAVITY
-                and fallback.model == "claude-sonnet-4-6"
-                and fallback.effort is not None
-            ):
-                raise ValueError("Antigravity claude-sonnet-4-6 fallback cannot set effort")
-            if self.driver is ExternalReviewDriver.CURSOR_CLI and fallback.effort is not None:
-                raise ValueError(
-                    "cursor-cli fallback model IDs encode effort; fallback effort must be omitted"
-                )
+        if self.driver is ExternalReviewDriver.ANTIGRAVITY and self.model == "claude-sonnet-4-6" and self.effort is not None:
+            raise ValueError("Antigravity claude-sonnet-4-6 cannot set effort")
+        if self.effort is not None and not self.effort.strip():
+            raise ValueError("effort must not be empty")
+        if self.driver is ExternalReviewDriver.OPENCODE_CLI:
+            model, marker, variant = self.model.partition("#")
+            if "/" not in model or not all(model.split("/", 1)) or (marker and not variant):
+                raise ValueError("opencode-cli model must be provider/model[#variant]")
+            if marker and self.effort is not None and variant != self.effort:
+                raise ValueError("OpenCode model variant conflicts with effort")
+
         return self
 
 
-class ExternalSecondOpinionConfig(StrictModel):
-    mode: str = "on-uncertainty"
+class ExternalRecheckConfig(StrictModel):
     confidence_below: float = Field(default=0.9, ge=0, le=1)
     severities: list[Severity] = Field(default_factory=lambda: [Severity.BLOCKER, Severity.MAJOR])
 
-    @field_validator("mode")
-    @classmethod
-    def require_supported_second_opinion_mode(cls, value: str) -> str:
-        if value != "on-uncertainty":
-            raise ValueError("second_opinion.mode must be on-uncertainty")
-        return value
-
 
 class ExternalReviewConfig(StrictModel):
+    schema_version: Literal[2] = 2
     enabled: bool = True
-    assignment: str = "least-used"
-    assignment_since: str | None = None
-    reviewers_per_batch: int = Field(default=1, ge=1)
-    reviewers: list[ExternalReviewerConfig]
-    second_opinion: ExternalSecondOpinionConfig = Field(default_factory=ExternalSecondOpinionConfig)
+    reviewer: ExternalReviewerConfig
+    fallbacks: list[ExternalReviewerConfig] = Field(default_factory=list)
+    recheck: ExternalRecheckConfig = Field(default_factory=ExternalRecheckConfig)
     domain_expertise: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_config(cls, value: Any) -> Any:
+        if isinstance(value, dict) and any(key in value for key in (
+            "reviewers", "assignment", "assignment_since", "reviewers_per_batch", "second_opinion"
+        )):
+            raise ValueError("Legacy external review config; run `translation review external-migrate PROJECT --apply`")
+        return value
 
     @field_validator("domain_expertise")
     @classmethod
     def require_nonempty_domain_expertise(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        if not normalized:
+        if value is not None and not value.strip():
             raise ValueError("external_review.domain_expertise must not be empty")
-        return normalized
-
-    @field_validator("assignment_since")
-    @classmethod
-    def require_utc_assignment_since(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError("external_review.assignment_since must be ISO 8601") from exc
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise ValueError("external_review.assignment_since must include a UTC offset")
-        return value
+        return value.strip() if value else None
 
     @model_validator(mode="after")
     def validate_external_review_config(self) -> ExternalReviewConfig:
-        if self.assignment != "least-used":
-            raise ValueError("external_review.assignment must be least-used")
-        if self.reviewers_per_batch != 1:
-            raise ValueError("external_review.reviewers_per_batch must be 1")
-        if not self.reviewers:
-            raise ValueError("external_review.reviewers must contain at least one reviewer")
-        ids = [reviewer.id for reviewer in self.reviewers]
+        ids = [item.id for item in [self.reviewer, *self.fallbacks]]
         if len(ids) != len(set(ids)):
             raise ValueError("external reviewer IDs must be unique")
         return self
@@ -612,6 +580,8 @@ class ExternalReviewRun(StrictModel):
     actual_model_label: str | None = None
     model_verified: bool = False
     cli_version: str | None = None
+    execution: Literal["cli"] | None = None
+    actual_effort: str | None = None
     effort: str | None = None
     fast_mode: str | None = None
     translation_fingerprint: str

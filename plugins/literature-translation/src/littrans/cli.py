@@ -574,33 +574,23 @@ def glossary_check_command(project: PathArg) -> None:
 
 
 @review_app.command("external")
-def review_external(
-    project: PathArg,
-    batch_id: str,
-    reviewer: str | None = typer.Option(None),
-    second_opinion: bool = typer.Option(False),
-    dry_run: bool = typer.Option(False),
-    from_result: Path | None = typer.Option(None, "--from-result"),
-    from_dry_run: Path | None = typer.Option(None, "--from-dry-run"),
-    actual_model: str | None = typer.Option(
-        None,
-        "--actual-model",
-        help="Actual model label attested by the trusted Cursor host coordinator.",
-    ),
-) -> None:
-    """Run one isolated, read-only external translation review."""
-    emit(
-        run_external_review(
-            project,
-            batch_id,
-            reviewer,
-            second_opinion,
-            dry_run,
-            from_result=from_result,
-            from_dry_run=from_dry_run,
-            host_actual_model=actual_model,
-        )
-    )
+def review_external(project: PathArg, batch_id: str, dry_run: bool = typer.Option(False)) -> None:
+    """Run the fixed external CLI reviewer and ordered failure fallbacks."""
+    emit(run_external_review(project, batch_id, dry_run=dry_run))
+
+
+@review_app.command("external-migrate")
+def review_external_migrate(project: PathArg, apply: bool = typer.Option(False)) -> None:
+    """Preview the external-review configuration migration; --apply backs up and writes it."""
+    from littrans.external_recheck import migrate_external_config
+    emit(migrate_external_config(project, apply))
+
+
+@review_app.command("external-adjudicate")
+def review_external_adjudicate(project: PathArg, batch_id: str, input_file: PathArg) -> None:
+    """Record the coordinator's evidence-based comparison of external and host reviews."""
+    from littrans.external_recheck import adjudicate_recheck
+    emit(adjudicate_recheck(project, batch_id, input_file))
 
 
 @review_app.command("external-status")

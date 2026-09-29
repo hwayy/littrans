@@ -7,6 +7,9 @@ files; workers load only their role and the references it requests.
 Use task create PROJECT --stage STAGE with exactly one selector: --batch-ids, --pages or
 --asset-ids. Translation/revision owns one batch. Audit requires one --lens (fidelity,
 technical or chinese-style). Scout/terminology requires --pages and --objective.
+`external-recheck` takes exactly one batch and no lens; it reuses the audit model policy,
+requires a fresh native subagent claim, and returns structured review JSON. See
+[external review](external-review.md) for blind evidence and coordinator adjudication.
 Use an explicit --host on OpenCode; unknown or mixed environments resolve to generic.
 
 The returned handoff points to start.md beside task.json and its instruction snapshot.

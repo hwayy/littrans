@@ -1661,7 +1661,7 @@ def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> Non
         f"- External approval gate: {'PASS' if status['external_approvable'] else 'FAIL'}",
         "",
     ]
-    for heading, key in (("Primary review", "primary"), ("Second opinion", "second_opinion")):
+    for heading, key in (("External CLI review", "primary"),):
         run = status[key]
         lines.extend([f"## {heading}", ""])
         if run is None:
@@ -1682,6 +1682,9 @@ def _write_external_review_summary(path: Path, root: Path, batch_id: str) -> Non
                 "",
             ]
         )
+    if status.get("recheck"):
+        lines.extend(["## Host recheck and coordinator adjudication", "",
+                      "```json", json.dumps(status["recheck"], ensure_ascii=False, indent=2), "```", ""])
     lines.extend(["## Open substantive issues", ""])
     lines.extend(
         [f"- `{issue_id}`" for issue_id in status["open_substantive_issues"]]

@@ -30,7 +30,7 @@ from littrans.task_models import TaskEnvelope
 
 ROLES = {"source-review": "source-reviewer", "translate": "translator", "revise": "translator",
          "transcribe": "asset-transcriber", "asset-audit": "asset-reviewer",
-         "audit": "translation-reviewer", "scout": "document-scout",
+         "audit": "translation-reviewer", "external-recheck": "translation-reviewer", "scout": "document-scout",
          "terminology": "terminology-researcher"}
 
 
@@ -79,7 +79,12 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
     if revision_notes and (stage != "transcribe" or not asset_ids):
         raise ValueError("Revision notes require an explicit asset-ID transcription task")
     packet: dict[str, Any]
-    if batches:
+    if stage == "external-recheck":
+        if len(batches) != 1:
+            raise ValueError("An external recheck requires exactly one batch")
+        from littrans.external_recheck import create_recheck_packet
+        packet = create_recheck_packet(root, batches[0])
+    elif batches:
         if stage in {"scout", "terminology"}:
             raise ValueError("Scout and terminology tasks require a page scope")
         from littrans.workflow import create_workflow_packet
@@ -137,7 +142,7 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
                "packet": packet, "domain_manifest": manifest_path, "inputs": inputs,
                "context": context, "instructions": instructions,
                "dispatch": {"host": selected_host,
-                            **config.dispatch(selected_host, "translate" if stage == "revise" else stage).model_dump(mode="json")}
+                            **config.dispatch(selected_host, "translate" if stage == "revise" else "audit" if stage == "external-recheck" else stage).model_dump(mode="json")}
                if stage not in {"scout", "terminology"} else {"host": selected_host},
                "source_sha256": config.source_sha256}
     if stage in {"translate", "revise"}:
@@ -171,7 +176,7 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
                 f"Read task.json and "
                 f"instructions/roles/{ROLES[stage]}.md. Read only the assigned evidence and scope.\n"
                 "Use a fresh context. Do not inherit expected verdicts or parallel candidates.\n"
-                "Save the native domain response as result.json (JSONL for translate/revise/audit). "
+                "Save the native domain response as result.json (JSONL for translate/revise/audit; structured JSON for external-recheck). "
                 "Do not change task.json or instructions. Missing visual capability must be reported, "
                 "not replaced by copied image hashes. The coordinator receives the result through "
                 f"`task receive PROJECT {task_id}` and the domain validator.\n"
@@ -205,6 +210,8 @@ def claim_task(root: Path, task_id: str, executor: str, mode: str) -> dict[str, 
     with project_write_lock(directory.parent):
         task = _read_task(directory)
         state = read_json(directory / "state.json")
+        if task["stage"] == "external-recheck" and mode != "subagent":
+            raise ValueError("External rechecks require a fresh host subagent")
         if state["state"] == "imported":
             raise ValueError("Task already imported")
         if state.get("executor") not in {None, executor}:
@@ -220,9 +227,9 @@ def claim_task(root: Path, task_id: str, executor: str, mode: str) -> dict[str, 
             shared_assets = bool(set(task["packet"].get("asset_ids", []))
                                  & set(other["packet"].get("asset_ids", [])))
             if other_state.get("executor") == executor and (
-                task["stage"] == "audit" and shared_batches
+                task["stage"] in {"audit", "external-recheck"} and shared_batches
                 and (other["stage"] in {"translate", "revise"}
-                     or other["stage"] == "audit" and task["lens"] != other["lens"])
+                     or other["stage"] in {"audit", "external-recheck"} and (task["stage"] == "external-recheck" or task["lens"] != other["lens"]))
                 or task["stage"] == "asset-audit" and shared_assets and other["stage"] == "transcribe"
             ):
                 raise ValueError("Independent review requires a different executor context")
@@ -310,6 +317,11 @@ def receive_task(root: Path, task_id: str, result: Path | None = None,
                 raise ValueError("Task source or batch scope changed; create a fresh task")
             submit_translation(root, task["batch_ids"][0], saved)
             outcome = run_qa(root, task["batch_ids"][0]).model_dump(mode="json")
+        elif stage == "external-recheck":
+            from littrans.external_recheck import receive_recheck
+            if state.get("mode") != "subagent":
+                raise ValueError("External rechecks require a fresh host subagent")
+            outcome = receive_recheck(root, task, saved)
         elif stage == "audit":
             from littrans.workflow import import_review_set
             outcome = import_review_set(root, root / task["domain_manifest"], saved)

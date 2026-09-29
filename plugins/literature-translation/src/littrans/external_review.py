@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -78,9 +78,6 @@ from littrans.storage import (
 from littrans.verification import require_verified_extraction
 
 PROMPT_VERSION = "external-review-v3"
-CURSOR_HOST_SUBAGENT_VERSION = "cursor-host-subagent"
-CURSOR_HOST_DRY_RUN_SCHEMA_VERSION = 4
-ASSIGNMENT_RESERVATION_TTL_SECONDS = 7200.0
 EXTERNAL_CLI_TIMEOUT_SECONDS = 330
 # The 0.3.0 shadow gate showed excellent efficiency but missed a seeded major
 # technical defect. Keep the implementation available for future experiments,
@@ -150,16 +147,6 @@ RESULT_SCHEMA: dict[str, Any] = {
         },
     },
 }
-CURSOR_HOST_RESULT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["review_binding", *RESULT_SCHEMA["required"]],
-    "properties": {
-        "review_binding": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        **RESULT_SCHEMA["properties"],
-    },
-}
-
 FailureType = Literal[
     "authentication",
     "network",
@@ -755,7 +742,7 @@ def _render_packet(root: Path, packet_dir: Path, text: str, pages: list[int]) ->
     atomic_write_text(packet_path, text)
     config = load_project(root)
     image_dir = packet_dir / "pages"
-    image_dir.mkdir()
+    image_dir.mkdir(exist_ok=True)
     with fitz.open(config.source(root)) as document:
         for page_number in pages:
             page = document.load_page(page_number - 1)
@@ -767,7 +754,9 @@ def _render_packet(root: Path, packet_dir: Path, text: str, pages: list[int]) ->
 def _claude_prompt(packet_path: Path) -> str:
     return (
         "Act as an independent senior English-to-Simplified-Chinese technical translation "
-        f"reviewer. Read {packet_path} and its adjacent pages directory. Apply the expertise, "
+        f"reviewer. Read {packet_path}. Read each page image explicitly: "
+        + ", ".join(str(page) for page in sorted((packet_path.parent / "pages").glob("*.png")))
+        + ". Apply the expertise, "
         "including the subject-matter expertise declared in the review packet, "
         "quality criteria, severity rules, and representation contract in the packet. Work "
         "read-only, report only substantive defects with exact evidence, and return the JSON "
@@ -820,18 +809,6 @@ def _cursor_prompt(packet_path: Path) -> str:
     )
 
 
-def _cursor_host_prompt(packet_path: Path, review_binding: str) -> str:
-    return (
-        "Independently review the English-to-Simplified-Chinese technical translation in "
-        f"`{packet_path}` and its adjacent page PNGs. Apply the expertise, quality checks, "
-        "severity rules, representation contract, and Cursor host result-binding contract "
-        "in the packet. Work read-only and report only substantive defects with exact spans "
-        "and valid unit IDs. Return the packet binding exactly as "
-        f"`review_binding={review_binding}`. Return only one JSON object matching this schema: "
-        f"{json.dumps(CURSOR_HOST_RESULT_SCHEMA, ensure_ascii=False)}"
-    )
-
-
 def _cursor_file_prompt(prompt_path: Path) -> str:
     return (
         f"Read `{prompt_path}` and follow it exactly. Work read-only and return only the "
@@ -848,60 +825,6 @@ def _strip_json_wrapping(text: str) -> str:
     return value[start : end + 1] if start >= 0 and end > start else value
 
 
-def _cursor_host_review_binding(
-    reviewer: ExternalReviewerConfig,
-    *,
-    batch_id: str,
-    second_opinion: bool,
-    fingerprint: str,
-    scope: ReviewScope,
-    base_run: ExternalReviewRun | None,
-    covered_unit_ids: list[str],
-    read_only_context_ids: list[str],
-    packet_text: str,
-    page_sha256s: dict[str, str],
-    reservation_id: str,
-    context_fingerprint: str,
-) -> str:
-    material = {
-        "schema_version": CURSOR_HOST_DRY_RUN_SCHEMA_VERSION,
-        "role": "second-opinion" if second_opinion else "primary",
-        "batch_id": batch_id,
-        "reviewer_id": reviewer.id,
-        "driver": reviewer.driver.value,
-        "requested_model": reviewer.model,
-        "requested_effort": reviewer.effort,
-        "translation_fingerprint": fingerprint,
-        "scope": scope.value,
-        "base_run_id": base_run.run_id if base_run else None,
-        "covered_unit_ids": covered_unit_ids,
-        "read_only_context_unit_ids": read_only_context_ids,
-        "base_packet_sha256": sha256_text(packet_text),
-        "page_sha256s": page_sha256s,
-        "reservation_id": reservation_id,
-        "prompt_version": PROMPT_VERSION,
-        "context_fingerprint": context_fingerprint,
-    }
-    return sha256_text(
-        json.dumps(
-            material,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-
-
-def _cursor_host_packet_text(packet_text: str, review_binding: str) -> str:
-    return (
-        packet_text.rstrip()
-        + "\n\n# Cursor host result binding\n\n"
-        + "Return the following value unchanged as the top-level `review_binding` "
-        + "field in the review JSON. This binds the result to this exact packet:\n\n"
-        + f"`{review_binding}`\n"
-    )
-
-
 def _page_evidence_hashes(packet_dir: Path, pages: list[int]) -> dict[str, str]:
     image_dir = packet_dir / "pages"
     expected_names = {f"page-{page_number:04}.png" for page_number in pages}
@@ -910,7 +833,7 @@ def _page_evidence_hashes(packet_dir: Path, pages: list[int]) -> dict[str, str]:
     }
     if set(actual_paths) != expected_names:
         raise ValueError(
-            "Cursor host dry-run page evidence set has changed; regenerate it: "
+            "External dry-run page evidence set has changed; regenerate it: "
             f"expected={sorted(expected_names)}, actual={sorted(actual_paths)}"
         )
     return {
@@ -918,326 +841,10 @@ def _page_evidence_hashes(packet_dir: Path, pages: list[int]) -> dict[str, str]:
     }
 
 
-def _load_cursor_host_result(
-    reviewer: ExternalReviewerConfig,
-    from_result: Path,
-    evidence: dict[str, tuple[str, str]],
-    expected_review_binding: str,
-    host_actual_model: str,
-) -> tuple[
-    dict[str, Any],
-    str,
-    str,
-    str | None,
-    str | None,
-    str | None,
-    int,
-    PromptDelivery,
-    float,
-    ReviewUsage,
-    float | None,
-]:
-    if reviewer.driver is not ExternalReviewDriver.CURSOR_CLI:
-        raise ValueError("from-result is only supported for the cursor-cli driver")
-    actual_model = host_actual_model.strip()
-    configured_models = [reviewer.model, *[item.model for item in reviewer.fallbacks]]
-    configured_identities = [
-        _expected_identity(reviewer.model, reviewer.model_identity),
-        *[_expected_identity(item.model, item.model_identity) for item in reviewer.fallbacks],
-    ]
-    matched_model = next(
-        (
-            configured_model
-            for configured_model, identity in zip(
-                configured_models, configured_identities, strict=True
-            )
-            if _cursor_model_matches(identity, actual_model)
-        ),
-        None,
-    )
-    if matched_model is None:
-        raise ValueError(
-            "Cursor host actual model does not match any configured reviewer model "
-            f"identity: configured={configured_models}, "
-            f"expected={configured_identities}, actual={actual_model}"
-        )
-    raw = from_result.read_text(encoding="utf-8")
-    host_payload = json.loads(_strip_json_wrapping(raw))
-    if not isinstance(host_payload, dict):
-        raise ValueError("Cursor host reviewer result must be a JSON object")
-    expected_fields = {"review_binding", "verdict", "summary", "issues"}
-    if set(host_payload) != expected_fields:
-        raise ValueError(
-            f"Cursor host result fields must be exactly {sorted(expected_fields)}"
-        )
-    if host_payload["review_binding"] != expected_review_binding:
-        raise ValueError(
-            "Cursor host result binding does not match the paired dry-run packet"
-        )
-    payload = _validate_result(
-        {key: host_payload[key] for key in ("verdict", "summary", "issues")}
-    )
-    _validate_issue_evidence(payload, evidence)
-    return (
-        payload,
-        raw,
-        matched_model,
-        next(
-            (
-                item.effort
-                for item in reviewer.fallbacks
-                if item.model == matched_model
-            ),
-            reviewer.effort,
-        ),
-        actual_model,
-        None,
-        1,
-        PromptDelivery.FILE,
-        0.0,
-        ReviewUsage(),
-        None,
-    )
-
-
-def _load_cursor_host_dry_run(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise ValueError(f"Cursor host dry-run record does not exist: {path}") from None
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Cursor host dry-run record is invalid JSON: {path}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Cursor host dry-run record must be a JSON object")
-    required = {
-        "schema_version",
-        "role",
-        "batch_id",
-        "reviewer_id",
-        "driver",
-        "requested_model",
-        "requested_effort",
-        "translation_fingerprint",
-        "scope",
-        "base_run_id",
-        "covered_unit_ids",
-        "read_only_context_unit_ids",
-        "base_packet_sha256",
-        "packet_sha256",
-        "page_sha256s",
-        "reservation_id",
-        "review_binding",
-        "prompt_version",
-        "context_fingerprint",
-        "packet_path",
-    }
-    missing = sorted(required - set(payload))
-    if missing:
-        raise ValueError(
-            "Cursor host dry-run record is obsolete or incomplete; regenerate it: "
-            f"missing={missing}"
-        )
-    if payload["schema_version"] != CURSOR_HOST_DRY_RUN_SCHEMA_VERSION:
-        raise ValueError(
-            "Unsupported Cursor host dry-run schema; regenerate it: "
-            f"expected={CURSOR_HOST_DRY_RUN_SCHEMA_VERSION}, "
-            f"actual={payload['schema_version']}"
-        )
-    if not isinstance(payload["reviewer_id"], str) or not payload["reviewer_id"]:
-        raise ValueError("Cursor host dry-run reviewer_id must be a non-empty string")
-    return cast(dict[str, Any], payload)
-
-
 def _record_relative_path(root: Path, value: str) -> Path:
     """A path a record names: relative to the project root unless it was written absolute."""
     path = Path(value)
     return path if path.is_absolute() else root / path
-
-
-def _validate_cursor_host_dry_run(
-    record: dict[str, Any],
-    record_path: Path,
-    reviewer: ExternalReviewerConfig,
-    *,
-    root: Path,
-    batch_id: str,
-    second_opinion: bool,
-    fingerprint: str,
-    scope: ReviewScope,
-    base_run: ExternalReviewRun | None,
-    covered_unit_ids: list[str],
-    read_only_context_ids: list[str],
-    packet_text: str,
-    pages: list[int],
-    reservation_id: str,
-    context_fingerprint: str,
-) -> str:
-    expected_packet_path = (record_path.parent / "packet" / "review-packet.md").resolve()
-    packet_path_value = record.get("packet_path")
-    if not isinstance(packet_path_value, str):
-        raise ValueError("Cursor host dry-run packet_path must be a string")
-    # Recorded relative to the project root so the record imports on any host; a record
-    # written with an absolute path still imports on the host that wrote it.
-    if _record_relative_path(root, packet_path_value).resolve() != expected_packet_path:
-        raise ValueError("Cursor host dry-run packet_path does not belong to this record")
-    page_sha256s = _page_evidence_hashes(expected_packet_path.parent, pages)
-    if record.get("page_sha256s") != page_sha256s:
-        raise ValueError("Cursor host dry-run page evidence has changed; regenerate it")
-    review_binding = _cursor_host_review_binding(
-        reviewer,
-        batch_id=batch_id,
-        second_opinion=second_opinion,
-        fingerprint=fingerprint,
-        scope=scope,
-        base_run=base_run,
-        covered_unit_ids=covered_unit_ids,
-        read_only_context_ids=read_only_context_ids,
-        packet_text=packet_text,
-        page_sha256s=page_sha256s,
-        reservation_id=reservation_id,
-        context_fingerprint=context_fingerprint,
-    )
-    rendered_packet_text = _cursor_host_packet_text(packet_text, review_binding)
-    expected: dict[str, Any] = {
-        "schema_version": CURSOR_HOST_DRY_RUN_SCHEMA_VERSION,
-        "role": "second-opinion" if second_opinion else "primary",
-        "batch_id": batch_id,
-        "reviewer_id": reviewer.id,
-        "driver": reviewer.driver.value,
-        "requested_model": reviewer.model,
-        "requested_effort": reviewer.effort,
-        "translation_fingerprint": fingerprint,
-        "scope": scope.value,
-        "base_run_id": base_run.run_id if base_run else None,
-        "covered_unit_ids": covered_unit_ids,
-        "read_only_context_unit_ids": read_only_context_ids,
-        "base_packet_sha256": sha256_text(packet_text),
-        "packet_sha256": sha256_text(rendered_packet_text),
-        "page_sha256s": page_sha256s,
-        "reservation_id": reservation_id,
-        "review_binding": review_binding,
-        "prompt_version": PROMPT_VERSION,
-        "context_fingerprint": context_fingerprint,
-    }
-    mismatches = [
-        key for key, expected_value in expected.items() if record.get(key) != expected_value
-    ]
-    if mismatches:
-        raise ValueError(
-            "Cursor host dry-run record does not match the current external review: "
-            f"fields={mismatches}"
-        )
-    try:
-        rendered_packet = expected_packet_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise ValueError(
-            f"Cursor host dry-run packet does not exist: {expected_packet_path}"
-        ) from None
-    if sha256_text(rendered_packet) != expected["packet_sha256"]:
-        raise ValueError("Cursor host dry-run packet content has changed; regenerate it")
-    if rendered_packet != rendered_packet_text:
-        raise ValueError("Cursor host dry-run packet does not match the current review")
-    return review_binding
-
-
-def _create_external_review_dry_run(
-    root: Path,
-    batch_id: str,
-    reviewer: ExternalReviewerConfig,
-    *,
-    second_opinion: bool,
-    fingerprint: str,
-    scope: ReviewScope,
-    base_run: ExternalReviewRun | None,
-    covered_unit_ids: list[str],
-    read_only_context_ids: list[str],
-    packet_text: str,
-    pages: list[int],
-    context_fingerprint: str,
-    reservation_id: str | None,
-    prompt_builder: Callable[[Path], str],
-) -> dict[str, Any]:
-    work_dir = (
-        root
-        / "reviews"
-        / "external-dry-run"
-        / batch_id
-        / f"{reviewer.id}-{uuid.uuid4().hex[:8]}"
-    )
-    packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)
-    page_sha256s = _page_evidence_hashes(packet_path.parent, pages)
-    dry_run_review_binding: str | None = None
-    rendered_packet_text = packet_text
-    if reviewer.driver is ExternalReviewDriver.CURSOR_CLI:
-        if reservation_id is None:  # pragma: no cover - reserved by caller
-            raise AssertionError("Cursor host dry-run reviewer was not reserved")
-        dry_run_review_binding = _cursor_host_review_binding(
-            reviewer,
-            batch_id=batch_id,
-            second_opinion=second_opinion,
-            fingerprint=fingerprint,
-            scope=scope,
-            base_run=base_run,
-            covered_unit_ids=covered_unit_ids,
-            read_only_context_ids=read_only_context_ids,
-            packet_text=packet_text,
-            page_sha256s=page_sha256s,
-            reservation_id=reservation_id,
-            context_fingerprint=context_fingerprint,
-        )
-        rendered_packet_text = _cursor_host_packet_text(
-            packet_text, dry_run_review_binding
-        )
-        atomic_write_text(packet_path, rendered_packet_text)
-        prompt = _cursor_host_prompt(packet_path, dry_run_review_binding)
-    else:
-        prompt = prompt_builder(packet_path)
-    log_path = work_dir / "driver.log"
-    if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE:
-        command = build_claude_command(reviewer, prompt)
-    elif reviewer.driver is ExternalReviewDriver.ANTIGRAVITY:
-        command = build_antigravity_command(reviewer, prompt, log_path)
-    else:
-        cursor_prompt_path = work_dir / "cursor-prompt.md"
-        atomic_write_text(cursor_prompt_path, prompt)
-        command = build_cursor_command(
-            reviewer, _cursor_file_prompt(cursor_prompt_path)
-        )
-    dry_run_path = work_dir / "dry-run.json"
-    write_json(
-        dry_run_path,
-        {
-            "schema_version": CURSOR_HOST_DRY_RUN_SCHEMA_VERSION,
-            "role": "second-opinion" if second_opinion else "primary",
-            "batch_id": batch_id,
-            "reviewer_id": reviewer.id,
-            "driver": reviewer.driver.value,
-            "requested_model": reviewer.model,
-            "requested_effort": reviewer.effort,
-            "translation_fingerprint": fingerprint,
-            "scope": scope.value,
-            "base_run_id": base_run.run_id if base_run else None,
-            "covered_unit_ids": covered_unit_ids,
-            "read_only_context_unit_ids": read_only_context_ids,
-            "base_packet_sha256": sha256_text(packet_text),
-            "packet_sha256": sha256_text(rendered_packet_text),
-            "page_sha256s": page_sha256s,
-            "reservation_id": reservation_id,
-            "review_binding": dry_run_review_binding,
-            "prompt_version": PROMPT_VERSION,
-            "context_fingerprint": context_fingerprint,
-            "packet_path": packet_path.resolve().relative_to(root.resolve()).as_posix(),
-            "prompt": prompt,
-            "command": command,
-            "executed": False,
-            "prompt_delivery": PromptDelivery.FILE.value,
-        },
-    )
-    dry_run_payload = json.loads(dry_run_path.read_text(encoding="utf-8"))
-    if not isinstance(dry_run_payload, dict):
-        raise ValueError("External review dry-run record must be a JSON object")
-    dry_run_payload["dry_run_path"] = str(dry_run_path.resolve())
-    return cast(dict[str, Any], dry_run_payload)
 
 
 def _validate_result(payload: Any) -> dict[str, Any]:
@@ -1533,7 +1140,8 @@ def _command_version(command: str) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return (result.stdout or result.stderr).strip().splitlines()[0] or None
+    lines = (result.stdout or result.stderr).strip().splitlines()
+    return lines[0] if result.returncode == 0 and lines else None
 
 
 def _review_usage(raw: str, driver: ExternalReviewDriver) -> tuple[ReviewUsage, float | None]:
@@ -1659,7 +1267,7 @@ def _classify_invocation_failure(error: BaseException | str) -> FailureType:
         )
     ):
         return "quota"
-    if any(token in text for token in ("auth", "token expired", "unauthorized", "forbidden")):
+    if any(token in text for token in ("auth", "token expired", "unauthorized", "forbidden", "eligibility check failed", "account is not eligible")):
         return "authentication"
     if any(
         token in text
@@ -1680,6 +1288,9 @@ def _classify_invocation_failure(error: BaseException | str) -> FailureType:
             "actual model could not be verified",
             "model not found",
             "unsupported model",
+            "actual model effort mismatch",
+            "unknown variant",
+            "variant not found",
         )
     ):
         return "model"
@@ -1756,15 +1367,12 @@ def _invoke(
     ReviewUsage,
     float | None,
 ]:
+    if reviewer.driver in {ExternalReviewDriver.CODEX_CLI, ExternalReviewDriver.OPENCODE_CLI}:
+        from littrans.external_cli import invoke_cli
+        return invoke_cli(reviewer, packet_path, work_dir, evidence)
     if shutil.which(reviewer.command) is None:
         raise FileNotFoundError(f"External reviewer command not found: {reviewer.command}")
-    candidates = [
-        (reviewer.model, reviewer.effort, _expected_identity(reviewer.model, reviewer.model_identity)),
-        *[
-            (fallback.model, fallback.effort, _expected_identity(fallback.model, fallback.model_identity))
-            for fallback in reviewer.fallbacks
-        ],
-    ]
+    candidates = [(reviewer.model, reviewer.effort, _expected_identity(reviewer.model, reviewer.model_identity))]
     errors: list[str] = []
     attempts = 0
     last_raw = ""
@@ -1831,8 +1439,10 @@ def _invoke(
                         candidate, _cursor_file_prompt(cursor_prompt_path)
                     )
                 try:
+                    from littrans.external_cli import invocation_environment
                     result = subprocess.run(
                         command,
+                        env=invocation_environment(),
                         cwd=work_dir,
                         input=stdin_text,
                         capture_output=True,
@@ -2203,178 +1813,6 @@ def _append_fallback_lineage(
         _append_fallback_lineage_locked(root, batch_id, run_id, fallback_of)
 
 
-def _all_runs(root: Path) -> list[ExternalReviewRun]:
-    runs: list[ExternalReviewRun] = []
-    for path in (root / "reviews").glob("*.external-runs.jsonl"):
-        runs.extend(read_jsonl(path, ExternalReviewRun))
-    return runs
-
-
-def _timestamp(value: str) -> float:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-
-
-def _assignment_reservation_root(root: Path) -> Path:
-    return root / ".littrans" / "external-assignments"
-
-
-def _active_assignment_reservations(root: Path) -> list[dict[str, Any]]:
-    reservation_root = _assignment_reservation_root(root)
-    now = time.time()
-    reservations: list[dict[str, Any]] = []
-    for path in reservation_root.glob("*.json"):
-        try:
-            if now - path.stat().st_mtime >= ASSIGNMENT_RESERVATION_TTL_SECONDS:
-                continue
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(payload, dict):
-            reservations.append(cast(dict[str, Any], payload))
-    return reservations
-
-
-def _cleanup_stale_assignment_reservations(root: Path) -> None:
-    reservation_root = _assignment_reservation_root(root)
-    if not reservation_root.exists():
-        return
-    now = time.time()
-    for path in reservation_root.glob("*.json"):
-        try:
-            stale = now - path.stat().st_mtime >= ASSIGNMENT_RESERVATION_TTL_SECONDS
-        except OSError:
-            continue
-        if stale:
-            path.unlink(missing_ok=True)
-
-
-def _assignment_call_counts(root: Path) -> dict[str, int]:
-    config = _review_config(root)
-    counts = {reviewer.id: 0 for reviewer in config.reviewers}
-    since = _timestamp(config.assignment_since) if config.assignment_since else None
-    for run in _all_runs(root):
-        if run.reviewer_id not in counts:
-            continue
-        if since is not None and _timestamp(run.reviewed_at) < since:
-            continue
-        counts[run.reviewer_id] += 1
-    for reservation in _active_assignment_reservations(root):
-        reviewer_id = reservation.get("reviewer_id")
-        created_at = reservation.get("created_at")
-        if reviewer_id not in counts or not isinstance(created_at, str):
-            continue
-        if since is not None and _timestamp(created_at) < since:
-            continue
-        counts[reviewer_id] += 1
-    return counts
-
-
-def _reserve_reviewer(
-    root: Path,
-    requested_id: str | None,
-    exclude_id: str | None,
-    *,
-    reserve: bool,
-    reserve_cursor_dry_run: bool = False,
-) -> tuple[ExternalReviewerConfig, str | None]:
-    with project_write_lock(root):
-        _cleanup_stale_assignment_reservations(root)
-        reviewer = _select_reviewer(root, requested_id, exclude_id)
-        if not reserve and not (
-            reserve_cursor_dry_run
-            and reviewer.driver is ExternalReviewDriver.CURSOR_CLI
-        ):
-            return reviewer, None
-        reservation_id = uuid.uuid4().hex
-        reservation_root = _assignment_reservation_root(root)
-        reservation_root.mkdir(parents=True, exist_ok=True)
-        write_json(
-            reservation_root / f"{reservation_id}.json",
-            {
-                "reservation_id": reservation_id,
-                "reviewer_id": reviewer.id,
-                "driver": reviewer.driver.value,
-                "status": "reserved",
-                "created_at": utc_now(),
-            },
-        )
-        return reviewer, reservation_id
-
-
-def _claim_reviewer_reservation(
-    root: Path, reservation_id: str, reviewer: ExternalReviewerConfig
-) -> str:
-    with project_write_lock(root):
-        path = _assignment_reservation_root(root) / f"{reservation_id}.json"
-        try:
-            stale = time.time() - path.stat().st_mtime >= ASSIGNMENT_RESERVATION_TTL_SECONDS
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            raise ValueError(
-                "Cursor host dry-run assignment is missing; regenerate it"
-            ) from None
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                "Cursor host dry-run assignment is invalid; regenerate it"
-            ) from exc
-        if stale:
-            path.unlink(missing_ok=True)
-            raise ValueError("Cursor host dry-run assignment expired; regenerate it")
-        if not isinstance(payload, dict) or any(
-            payload.get(key) != value
-            for key, value in (
-                ("reservation_id", reservation_id),
-                ("reviewer_id", reviewer.id),
-                ("driver", reviewer.driver.value),
-            )
-        ):
-            raise ValueError(
-                "Cursor host dry-run assignment does not match its reviewer; regenerate it"
-            )
-        if payload.get("status") != "reserved":
-            raise ValueError("Cursor host dry-run assignment is already being imported")
-        write_json(
-            path,
-            {**payload, "status": "importing", "claimed_at": utc_now()},
-        )
-    return reservation_id
-
-
-def _restore_reviewer_reservation(
-    root: Path, reservation_id: str | None, reviewer: ExternalReviewerConfig
-) -> None:
-    if reservation_id is None:
-        return
-    with project_write_lock(root):
-        path = _assignment_reservation_root(root) / f"{reservation_id}.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return
-        if not isinstance(payload, dict) or any(
-            payload.get(key) != value
-            for key, value in (
-                ("reservation_id", reservation_id),
-                ("reviewer_id", reviewer.id),
-                ("driver", reviewer.driver.value),
-                ("status", "importing"),
-            )
-        ):
-            return
-        payload.pop("claimed_at", None)
-        payload["status"] = "reserved"
-        write_json(path, payload)
-
-
-def _release_reviewer_reservation(root: Path, reservation_id: str | None) -> None:
-    if reservation_id is None:
-        return
-    with project_write_lock(root):
-        (_assignment_reservation_root(root) / f"{reservation_id}.json").unlink(
-            missing_ok=True
-        )
-
-
 def _snapshot_text_files(paths: list[Path]) -> dict[Path, str | None]:
     snapshots: dict[Path, str | None] = {}
     for path in paths:
@@ -2445,78 +1883,6 @@ def _require_review_snapshot_current_locked(
         )
 
 
-def external_reviewer_usage(root: Path) -> dict[str, dict[str, int]]:
-    config = _review_config(root)
-    usage = {
-        reviewer.id: {
-            "assigned_primary_batches": 0,
-            "successful_calls": 0,
-            "failed_calls": 0,
-            "second_opinion_calls": 0,
-            "attempts": 0,
-        }
-        for reviewer in config.reviewers
-    }
-    assigned_batches: set[str] = set()
-    for run in sorted(_all_runs(root), key=lambda item: item.reviewed_at):
-        if run.reviewer_id not in usage:
-            continue
-        item = usage[run.reviewer_id]
-        item["attempts"] += run.attempts
-        item["successful_calls" if run.success else "failed_calls"] += 1
-        if run.role == "second-opinion":
-            item["second_opinion_calls"] += 1
-        elif run.success and run.batch_id not in assigned_batches:
-            item["assigned_primary_batches"] += 1
-            assigned_batches.add(run.batch_id)
-    return usage
-
-
-def _select_reviewer(
-    root: Path,
-    requested_id: str | None,
-    exclude_id: str | None = None,
-) -> ExternalReviewerConfig:
-    config = _review_config(root)
-    by_id = {reviewer.id: reviewer for reviewer in config.reviewers}
-    if requested_id:
-        if requested_id not in by_id:
-            raise ValueError(f"Unknown external reviewer: {requested_id}")
-        if requested_id == exclude_id:
-            raise ValueError("A second opinion must use a different external reviewer")
-        return by_id[requested_id]
-    candidates = [reviewer for reviewer in config.reviewers if reviewer.id != exclude_id]
-    if not candidates:
-        raise ValueError("No different external reviewer is available for a second opinion")
-    call_counts = _assignment_call_counts(root)
-    return min(
-        candidates,
-        key=lambda reviewer: (
-            call_counts[reviewer.id],
-            config.reviewers.index(reviewer),
-        ),
-    )
-
-
-def _select_replacement_reviewer(
-    root: Path, excluded_ids: set[str]
-) -> ExternalReviewerConfig | None:
-    config = _review_config(root)
-    candidates = [
-        reviewer for reviewer in config.reviewers if reviewer.id not in excluded_ids
-    ]
-    if not candidates:
-        return None
-    call_counts = _assignment_call_counts(root)
-    return min(
-        candidates,
-        key=lambda reviewer: (
-            call_counts[reviewer.id],
-            config.reviewers.index(reviewer),
-        ),
-    )
-
-
 def _convert_issues(
     batch_id: str,
     reviewer: ExternalReviewerConfig,
@@ -2548,8 +1914,8 @@ def _convert_issues(
     return issues
 
 
-def _needs_second_opinion(root: Path, run: ExternalReviewRun) -> bool:
-    config = _review_config(root).second_opinion
+def _needs_recheck(root: Path, run: ExternalReviewRun) -> bool:
+    config = _review_config(root).recheck
     if run.verdict is ExternalReviewVerdict.INCONCLUSIVE or not run.model_verified:
         return True
     issues = {
@@ -2557,25 +1923,12 @@ def _needs_second_opinion(root: Path, run: ExternalReviewRun) -> bool:
         for issue in read_jsonl(root / "reviews" / f"{run.batch_id}.issues.jsonl", ReviewIssue)
     }
     return any(
-        issue_id in issues
-        and (
+        issue_id not in issues
+        or (
             issues[issue_id].confidence < config.confidence_below
             or issues[issue_id].severity in set(config.severities)
         )
         for issue_id in run.issue_ids
-    )
-
-
-def _matching_second_opinion(
-    runs: list[ExternalReviewRun], primary: ExternalReviewRun
-) -> ExternalReviewRun | None:
-    return next(
-        (
-            run
-            for run in reversed(runs)
-            if run.role == "second-opinion" and run.base_run_id == primary.run_id
-        ),
-        None,
     )
 
 
@@ -2588,7 +1941,7 @@ def _resolved_changes_requested_base(
     translations: dict[str, TranslationRecord] | None = None,
 ) -> bool:
     if (
-        base.role != "primary"
+        not _is_cli_run(base)
         or base.scope is not ReviewScope.FULL
         or not base.success
         or not base.model_verified
@@ -2614,22 +1967,14 @@ def _resolved_changes_requested_base(
     ]
     if not substantive or any(issue.status is not IssueStatus.RESOLVED for issue in substantive):
         return False
-    if _needs_second_opinion(root, base):
-        second = _matching_second_opinion(runs, base)
-        if (
-            second is None
-            or not second.success
-            or not second.model_verified
-            or second.verdict is not base.verdict
-            or not _external_review_context_is_current(
-                root, second, all_units=all_units, translations=translations
-            )
-        ):
+    if _needs_recheck(root, base):
+        from littrans.external_recheck import recheck_status
+        if not recheck_status(root, base)["complete"]:
             return False
     return True
 
 
-def _second_opinion_unit_ids(
+def _recheck_unit_ids(
     root: Path, primary: ExternalReviewRun
 ) -> list[str]:
     """Restrict an opinion to issue units and their real batch-local dependencies."""
@@ -2640,7 +1985,7 @@ def _second_opinion_unit_ids(
             root / "reviews" / f"{primary.batch_id}.issues.jsonl", ReviewIssue
         )
     }
-    config = _review_config(root).second_opinion
+    config = _review_config(root).recheck
     trigger_units = {
         issue.unit_id
         for issue_id in primary.issue_ids
@@ -2671,35 +2016,19 @@ def _primary_chain_approvable(
         return False
     visited.add(primary.run_id)
     if (
-        primary.role != "primary"
+        not _is_cli_run(primary)
         or not primary.success
         or not primary.model_verified
-        or primary.verdict is not ExternalReviewVerdict.ACCEPTED
+        or _effective_verdict(root, primary) != "accepted"
         or not primary.unit_fingerprints
         or not _external_review_context_is_current(
             root, primary, all_units=all_units, translations=translations
         )
     ):
         return False
-    if _needs_second_opinion(root, primary):
-        second = next(
-            (
-                run
-                for run in reversed(runs)
-                if run.role == "second-opinion"
-                and run.base_run_id == primary.run_id
-            ),
-            None,
-        )
-        if (
-            second is None
-            or not second.success
-            or not second.model_verified
-            or second.verdict is not primary.verdict
-            or not _external_review_context_is_current(
-                root, second, all_units=all_units, translations=translations
-            )
-        ):
+    if _needs_recheck(root, primary):
+        from littrans.external_recheck import recheck_status
+        if not recheck_status(root, primary)["complete"]:
             return False
     if primary.scope is ReviewScope.INCREMENTAL:
         inherited = next(
@@ -2778,78 +2107,51 @@ def _require_machine_reviewed(
         )
 
 
+def _is_cli_run(run: ExternalReviewRun) -> bool:
+    return run.role == "primary" and "host-subagent" not in (run.cli_version or "") and (run.execution == "cli" or bool(
+        run.cli_version and "host-subagent" not in run.cli_version
+        and run.attempt_log_path
+    ))
+
+
+def _effective_verdict(root: Path, run: ExternalReviewRun) -> str:
+    from littrans.external_recheck import recheck_status
+    if _needs_recheck(root, run):
+        state = recheck_status(root, run)
+        if not state["complete"]:
+            return "inconclusive"
+        return str(state["verdict"])
+    return run.verdict.value
+
+
 def external_review_status(
-    root: Path,
-    batch_id: str,
-    *,
-    include_reviewer_usage: bool = True,
-    current_fingerprint: str | None = None,
+    root: Path, batch_id: str, *, current_fingerprint: str | None = None,
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
 ) -> dict[str, Any]:
+    from littrans.external_recheck import recheck_status
     _review_config(root)
     fingerprint = current_fingerprint or batch_translation_fingerprint(root, batch_id)
     all_runs = read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
-    runs = [
-        run
-        for run in all_runs
-        if run.translation_fingerprint == fingerprint
-        and _external_review_context_is_current(
-            root, run, all_units=all_units, translations=translations
-        )
-    ]
-    primary = next((run for run in reversed(runs) if run.role == "primary"), None)
-    second = next(
-        (
-            run
-            for run in reversed(runs)
-            if run.role == "second-opinion"
-            and primary is not None
-            and run.base_run_id == primary.run_id
-        ),
-        None,
-    )
-    needs_second = bool(primary and primary.success and _needs_second_opinion(root, primary))
-    if primary is None:
-        verdict = "missing"
-    elif not _primary_chain_approvable(
-        root,
-        all_runs,
-        primary,
-        all_units=all_units,
-        translations=translations,
-    ):
-        verdict = ExternalReviewVerdict.INCONCLUSIVE.value
-    elif not primary.model_verified:
-        verdict = ExternalReviewVerdict.INCONCLUSIVE.value
-    elif needs_second and second is None:
-        verdict = ExternalReviewVerdict.INCONCLUSIVE.value
-    elif needs_second and second:
-        verdict = (
-            primary.verdict.value
-            if primary.verdict is second.verdict
-            else ExternalReviewVerdict.INCONCLUSIVE.value
-        )
-    else:
-        verdict = primary.verdict.value
+    primary = next((run for run in reversed(all_runs)
+                    if _is_cli_run(run) and run.translation_fingerprint == fingerprint
+                    and _external_review_context_is_current(root, run, all_units=all_units,
+                                                           translations=translations)), None)
+    recheck = recheck_status(root, primary) if primary else None
+    verdict = "missing" if primary is None else "inconclusive"
+    if primary and primary.success and primary.model_verified:
+        verdict = _effective_verdict(root, primary)
+        if verdict == "accepted" and not _primary_chain_approvable(
+            root, all_runs, primary, all_units=all_units, translations=translations
+        ):
+            verdict = "inconclusive"
     issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)
-    open_substantive = [
-        issue.issue_id
-        for issue in issues
-        if issue.status is IssueStatus.OPEN and issue.severity is not Severity.SUGGESTION
-    ]
-    payload = {
-        "batch_id": batch_id,
-        "translation_fingerprint": fingerprint,
-        "verdict": verdict,
-        "primary": primary.model_dump(mode="json") if primary else None,
-        "second_opinion": second.model_dump(mode="json") if second else None,
-        "second_opinion_required": needs_second,
-        "open_substantive_issues": open_substantive,
-        "external_approvable": verdict == "accepted" and not open_substantive,
-        "reviewer_usage": external_reviewer_usage(root) if include_reviewer_usage else {},
-    }
-    return payload
+    open_issues = [issue.issue_id for issue in issues
+                   if issue.status is IssueStatus.OPEN and issue.severity is not Severity.SUGGESTION]
+    return {"batch_id": batch_id, "translation_fingerprint": fingerprint,
+            "verdict": verdict, "primary": primary.model_dump(mode="json") if primary else None,
+            "recheck": recheck, "open_substantive_issues": open_issues,
+            "external_approvable": verdict == "accepted" and not open_issues}
 
 
 def _primary_review_scope(
@@ -2859,9 +2161,9 @@ def _primary_review_scope(
     current_units = batch_unit_fingerprints(root, batch_id)
     current_source = batch_source_fingerprint(root, batch_id)
     current_structure = batch_structure_fingerprint(root, batch_id)
-    reviewer_ids = {reviewer.id for reviewer in _review_config(root).reviewers}
+    reviewer_ids = {reviewer.id for reviewer in [_review_config(root).reviewer, *_review_config(root).fallbacks]}
     runs = read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
-    latest_primary = next((run for run in reversed(runs) if run.role == "primary"), None)
+    latest_primary = next((run for run in reversed(runs) if _is_cli_run(run)), None)
     base = latest_primary
     if base is not None:
         chain_approvable = (
@@ -2894,443 +2196,139 @@ def _primary_review_scope(
     return ReviewScope.FULL, base, list(manifest.unit_ids), requested_reviewer
 
 
-def run_external_review(
-    root: Path,
-    batch_id: str,
-    reviewer_id: str | None = None,
-    second_opinion: bool = False,
-    dry_run: bool = False,
-    from_result: Path | None = None,
-    from_dry_run: Path | None = None,
-    host_actual_model: str | None = None,
-    *,
-    _fallback_of: str | None = None,
-    _attempted_reviewer_ids: frozenset[str] = frozenset(),
-) -> dict[str, Any]:
+def run_external_review(root: Path, batch_id: str, dry_run: bool = False) -> dict[str, Any]:
     require_current_project_schema(root, "External review")
-    if (from_result is None) != (from_dry_run is None):
-        raise ValueError("from-result and from-dry-run must be provided together")
-    if from_result is not None and dry_run:
-        raise ValueError("from-result cannot be combined with dry-run")
-    if from_result is None and host_actual_model is not None:
-        raise ValueError("actual-model is only supported with from-result")
-    if from_result is not None and (
-        host_actual_model is None or not host_actual_model.strip()
-    ):
-        raise ValueError("from-result requires a non-empty actual-model attestation")
-    dry_run_record: dict[str, Any] | None = None
-    dry_run_record_path: Path | None = None
-    dry_run_reservation_id: str | None = None
-    if from_dry_run is not None:
-        dry_run_record_path = (
-            from_dry_run if from_dry_run.is_absolute() else root / from_dry_run
-        )
-        dry_run_record = _load_cursor_host_dry_run(dry_run_record_path)
-        recorded_reviewer_id = cast(str, dry_run_record["reviewer_id"])
-        if reviewer_id is not None and reviewer_id != recorded_reviewer_id:
-            raise ValueError(
-                "Requested reviewer does not match the Cursor host dry-run record: "
-                f"requested={reviewer_id}, recorded={recorded_reviewer_id}"
-            )
-        reviewer_id = recorded_reviewer_id
-        recorded_reservation_id = dry_run_record.get("reservation_id")
-        if not isinstance(recorded_reservation_id, str) or not recorded_reservation_id:
-            raise ValueError(
-                "Cursor host dry-run reservation_id must be a non-empty string"
-            )
-        dry_run_reservation_id = recorded_reservation_id
+    config = _review_config(root)
     with project_write_lock(root):
-        _require_machine_reviewed(
-            root, batch_id, allow_external_issues=second_opinion
-        )
+        _require_machine_reviewed(root, batch_id, allow_external_issues=True)
+        current = external_review_status(root, batch_id)
+        if current["external_approvable"] and not dry_run:
+            return current
+        if current["recheck"] and current["recheck"]["required"] and not current["recheck"]["complete"] and not dry_run:
+            return current
+        _require_machine_reviewed(root, batch_id)
         fingerprint = batch_translation_fingerprint(root, batch_id)
-        if not second_opinion and not dry_run and from_result is None:
-            current_status = external_review_status(root, batch_id)
-            if current_status["external_approvable"]:
-                return current_status
-        primary_runs = [
-            run
-            for run in read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
-            if run.translation_fingerprint == fingerprint
-            and _external_review_context_is_current(root, run)
-        ]
-        latest_primary = next(
-            (run for run in reversed(primary_runs) if run.role == "primary"), None
-        )
-        if second_opinion and latest_primary is None:
-            raise ValueError("A second opinion requires a current primary external review")
-        base_run: ExternalReviewRun | None
-        if second_opinion and latest_primary:
-            scope = latest_primary.scope
-            base_run = latest_primary
-            covered_unit_ids = _second_opinion_unit_ids(root, latest_primary)
-            selected_reviewer_id = reviewer_id
-        else:
-            scope, base_run, covered_unit_ids, selected_reviewer_id = (
-                _primary_review_scope(root, batch_id, reviewer_id)
-            )
-        read_only_context_ids = _outer_seam_context_ids(
-            root, batch_id, covered_unit_ids
-        )
-        packet_text, pages = _packet_text(
-            root,
-            batch_id,
-            covered_unit_ids,
-            read_only_context_ids=read_only_context_ids,
-        )
-        current_unit_fingerprints = batch_unit_fingerprints(root, batch_id)
+        scope, base, covered, _ = _primary_review_scope(root, batch_id, config.reviewer.id)
+        context_ids = _outer_seam_context_ids(root, batch_id, covered)
+        packet_text, pages = _packet_text(root, batch_id, covered, read_only_context_ids=context_ids)
+        unit_fingerprints = batch_unit_fingerprints(root, batch_id)
         source_fingerprint = batch_source_fingerprint(root, batch_id)
         structure_fingerprint = batch_structure_fingerprint(root, batch_id)
-        context_fingerprint = _external_review_context_fingerprint(
-            root, batch_id, covered_unit_ids, scope
-        )
-        evidence_snapshot = _evidence_map(
-            root, batch_id, covered_unit_ids=covered_unit_ids
-        )
-    direct_workspace = (
-        tempfile.TemporaryDirectory(
-            prefix=f"littrans-{batch_id}-", ignore_cleanup_errors=True
-        )
-        if from_result is None and not dry_run
-        else None
-    )
-    try:
-        reviewer, reservation_id = _reserve_reviewer(
-            root,
-            selected_reviewer_id,
-            latest_primary.reviewer_id if second_opinion and latest_primary else None,
-            reserve=not dry_run and from_result is None,
-            reserve_cursor_dry_run=dry_run,
-        )
-    except BaseException:
-        if direct_workspace is not None:
-            direct_workspace.cleanup()
-        raise
-    reservation_from_dry_run = False
-    if reviewer.driver is ExternalReviewDriver.CLAUDE_CODE:
-        prompt_builder = (
-            _claude_minimal_file_prompt
-            if CLAUDE_MINIMAL_FILE_PROTOCOL_ENABLED
-            else _claude_prompt
-        )
-    elif reviewer.driver is ExternalReviewDriver.ANTIGRAVITY:
-        prompt_builder = _antigravity_prompt
-    else:
-        prompt_builder = _cursor_prompt
-    if from_result is not None:
-        if dry_run_record is None or dry_run_record_path is None:  # pragma: no cover
-            raise AssertionError("paired from-dry-run validation was skipped")
-        result_path = from_result if from_result.is_absolute() else root / from_result
-        try:
-            if dry_run_reservation_id is None:  # pragma: no cover - validated above
-                raise AssertionError("Cursor host dry-run reservation was not loaded")
-            reservation_id = _claim_reviewer_reservation(
-                root, dry_run_reservation_id, reviewer
-            )
-            reservation_from_dry_run = True
-            imported_review_binding = _validate_cursor_host_dry_run(
-                dry_run_record,
-                dry_run_record_path,
-                reviewer,
-                root=root,
-                batch_id=batch_id,
-                second_opinion=second_opinion,
-                fingerprint=fingerprint,
-                scope=scope,
-                base_run=base_run,
-                covered_unit_ids=covered_unit_ids,
-                read_only_context_ids=read_only_context_ids,
-                packet_text=packet_text,
-                pages=pages,
-                reservation_id=reservation_id,
-                context_fingerprint=context_fingerprint,
-            )
-            (
-                payload,
-                raw,
-                requested_model,
-                requested_effort,
-                actual_model,
-                fast_mode,
-                attempts,
-                prompt_delivery,
-                duration_seconds,
-                usage,
-                cost_usd,
-            ) = _load_cursor_host_result(
-                reviewer,
-                result_path,
-                evidence_snapshot,
-                imported_review_binding,
-                cast(str, host_actual_model),
-            )
-        except BaseException:
-            if reservation_from_dry_run:
-                _restore_reviewer_reservation(root, reservation_id, reviewer)
-            else:
-                _release_reviewer_reservation(root, reservation_id)
-            raise
-    elif dry_run:
-        try:
-            return _create_external_review_dry_run(
-                root,
-                batch_id,
-                reviewer,
-                second_opinion=second_opinion,
-                fingerprint=fingerprint,
-                scope=scope,
-                base_run=base_run,
-                covered_unit_ids=covered_unit_ids,
-                read_only_context_ids=read_only_context_ids,
-                packet_text=packet_text,
-                pages=pages,
-                context_fingerprint=context_fingerprint,
-                reservation_id=reservation_id,
-                prompt_builder=prompt_builder,
-            )
-        except BaseException:
-            _release_reviewer_reservation(root, reservation_id)
-            raise
-    # Some Windows reviewer CLIs briefly retain a handle to their working directory
-    # after the parent process exits. Cleanup must not discard an otherwise valid,
-    # fully parsed review result; any still-locked directory remains confined to the
-    # OS temporary root and can be reclaimed after the child releases its handle.
-    run_id = uuid.uuid4().hex
-    reviewed_packet_sha256 = sha256_text(packet_text)
-    if from_result is not None:
-        reviewed_packet_sha256 = cast(
-            str, cast(dict[str, Any], dry_run_record)["packet_sha256"]
-        )
-    if from_result is None:
-        if direct_workspace is None:  # pragma: no cover - established above
-            raise AssertionError("Direct external review workspace was not created")
-        with direct_workspace as temp_name:
-            work_dir = Path(temp_name)
-            try:
-                packet_path = _render_packet(
-                    root, work_dir / "packet", packet_text, pages
-                )
-                with _provider_call_lock(root, reviewer):
-                    (
-                        payload,
-                        raw,
-                        requested_model,
-                        requested_effort,
-                        actual_model,
-                        fast_mode,
-                        attempts,
-                        prompt_delivery,
-                        duration_seconds,
-                        usage,
-                        cost_usd,
-                    ) = _invoke(
-                        reviewer, packet_path, work_dir, evidence_snapshot
-                    )
-                _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
-            except ExternalInvocationError as exc:
-                try:
-                    failure_cli_version = _command_version(reviewer.command)
-                    _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
-                    with _external_persistence_lock(root, batch_id):
-                        with project_write_lock(root):
-                            response_dir = root / "reviews" / "external" / batch_id
-                            response_dir.mkdir(parents=True, exist_ok=True)
-                            raw_path = response_dir / f"{run_id}.raw.txt"
-                            atomic_write_text(raw_path, exc.raw)
-                            failed = ExternalReviewRun(
-                                run_id=run_id,
-                                batch_id=batch_id,
-                                reviewer_id=reviewer.id,
-                                driver=reviewer.driver,
-                                role=(
-                                    "second-opinion" if second_opinion else "primary"
-                                ),
-                                requested_model=reviewer.model,
-                                actual_model_label=exc.actual_model_label,
-                                model_verified=False,
-                                cli_version=failure_cli_version,
-                                effort=reviewer.effort,
-                                translation_fingerprint=fingerprint,
-                                packet_sha256=reviewed_packet_sha256,
-                                prompt_version=PROMPT_VERSION,
-                                scope=scope,
-                                base_run_id=base_run.run_id if base_run else None,
-                                covered_unit_ids=covered_unit_ids,
-                                unit_fingerprints=current_unit_fingerprints,
-                                source_fingerprint=source_fingerprint,
-                                structure_fingerprint=structure_fingerprint,
-                                context_fingerprint=context_fingerprint,
-                                prompt_delivery=exc.prompt_delivery,
-                                usage=exc.usage,
-                                cost_usd=exc.cost_usd,
-                                duration_seconds=exc.duration_seconds,
-                                verdict=ExternalReviewVerdict.INCONCLUSIVE,
-                                summary=f"[{exc.failure_type}] {exc}",
-                                response_path=str(
-                                    raw_path.relative_to(root)
-                                ).replace("\\", "/"),
-                                attempts=max(exc.attempts, 1),
-                                failure_type=exc.failure_type,
-                                fallback_of=_fallback_of,
-                                attempt_log_path=(
-                                    f"reviews/{batch_id}.external-attempts.jsonl"
-                                ),
-                                success=False,
-                                reviewed_at=utc_now(),
-                            )
-                            append_jsonl(_runs_path(root, batch_id), [failed])
-                            if _fallback_of:
-                                _append_fallback_lineage_locked(
-                                    root, batch_id, run_id, _fallback_of
-                                )
-                            status = external_review_status(root, batch_id)
-                            write_json(
-                                root / "reviews" / f"{batch_id}.external.json",
-                                status,
-                            )
-                finally:
-                    _release_reviewer_reservation(root, reservation_id)
-                    reservation_id = None
-                attempted = set(_attempted_reviewer_ids) | {reviewer.id}
-                replacement = (
-                    _select_replacement_reviewer(root, attempted)
-                    if not second_opinion
-                    else None
-                )
-                if replacement is not None:
-                    return run_external_review(
-                        root,
-                        batch_id,
-                        reviewer_id=replacement.id,
-                        second_opinion=False,
-                        _fallback_of=run_id,
-                        _attempted_reviewer_ids=frozenset(attempted),
-                    )
-                return status
-            except BaseException:
-                _release_reviewer_reservation(root, reservation_id)
-                reservation_id = None
-                raise
-    response_dir = root / "reviews" / "external" / batch_id
-    raw_path = response_dir / f"{run_id}.raw.json"
-    try:
-        cli_version = (
-            CURSOR_HOST_SUBAGENT_VERSION
-            if from_result is not None
-            else _command_version(reviewer.command)
-        )
-    except BaseException:
-        if reservation_from_dry_run:
-            _restore_reviewer_reservation(root, reservation_id, reviewer)
-        else:
-            _release_reviewer_reservation(root, reservation_id)
-        reservation_id = None
-        raise
-    persistence_paths = [
-        root / "reviews" / f"{batch_id}.issues.jsonl",
-        root / "reviews" / f"{batch_id}.audit.json",
-        root / "evidence" / "audits" / f"{batch_id}.jsonl",
-        _runs_path(root, batch_id),
-        root / "reviews" / f"{batch_id}.external.json",
-        raw_path,
-    ]
-    if _fallback_of:
-        persistence_paths.append(
-            root / "reviews" / f"{batch_id}.external-fallbacks.jsonl"
-        )
-    persistence_snapshots: dict[Path, str | None] = {}
-    import_path = root / "reviews" / f".external-import-{run_id}.jsonl"
-    try:
-        with _external_persistence_lock(root, batch_id):
+        context_fingerprint = _external_review_context_fingerprint(root, batch_id, covered, scope)
+        evidence = _evidence_map(root, batch_id, covered_unit_ids=covered)
+        full_fallback = None
+        if scope is ReviewScope.INCREMENTAL and config.fallbacks:
+            full_covered = list(load_manifest(root, batch_id).unit_ids)
+            full_context_ids = _outer_seam_context_ids(root, batch_id, full_covered)
+            full_text, full_pages = _packet_text(root, batch_id, full_covered, read_only_context_ids=full_context_ids)
+            full_context = _external_review_context_fingerprint(root, batch_id, full_covered, ReviewScope.FULL)
+            full_evidence = _evidence_map(root, batch_id, covered_unit_ids=full_covered)
+            full_fallback = (full_covered, full_text, full_pages, full_context, full_evidence)
+    chain = [config.reviewer, *config.fallbacks]
+    if dry_run:
+        from littrans.external_cli import preview_command
+        directory = root / "reviews/external-dry-run" / batch_id / uuid.uuid4().hex
+        packet_path = _render_packet(root, directory / "packet", packet_text, pages)
+        write_json(directory / "result-schema.json", RESULT_SCHEMA)
+        preview: dict[str, Any] = {"schema_version": 5, "executed": False, "batch_id": batch_id,
+                   "translation_fingerprint": fingerprint, "scope": scope.value,
+                   "covered_unit_ids": covered, "read_only_context_unit_ids": context_ids,
+                   "packet_path": str(packet_path.resolve()), "packet_sha256": sha256_text(packet_text),
+                   "context_fingerprint": context_fingerprint,
+                   "page_sha256s": _page_evidence_hashes(packet_path.parent, pages),
+                   "prompt_version": PROMPT_VERSION,
+                   "calls": [preview_command(item, packet_path, directory) for item in chain]}
+        for call in preview["calls"]:
+            call["scope"] = scope.value
+        if full_fallback is not None:
+            full_packet = _render_packet(root, directory / "full-fallback-packet", full_fallback[1], full_fallback[2])
+            preview["calls"][1:] = [{**preview_command(item, full_packet, directory), "scope": "full"} for item in chain[1:]]
+        path = directory / "dry-run.json"
+        preview["dry_run_path"] = str(path.resolve())
+        write_json(path, preview)
+        return preview
+    fallback_of = None
+    for reviewer in chain:
+        if fallback_of and full_fallback is not None:
+            # A replacement reviewer has no accepted full review to inherit; recheck the whole batch.
             with project_write_lock(root):
-                _require_review_snapshot_current_locked(
-                    root,
-                    batch_id,
-                    covered_unit_ids,
-                    scope,
-                    fingerprint,
-                    current_unit_fingerprints,
-                    source_fingerprint,
-                    structure_fingerprint,
-                    context_fingerprint,
-                )
-                persistence_snapshots = _snapshot_text_files(persistence_paths)
+                _require_review_snapshot_current_locked(root, batch_id, covered, scope, fingerprint,
+                    unit_fingerprints, source_fingerprint, structure_fingerprint, context_fingerprint)
+            covered, packet_text, pages, context_fingerprint, evidence = full_fallback
+            scope, base, full_fallback = ReviewScope.FULL, None, None
+        run_id = uuid.uuid4().hex
+        common: dict[str, Any] = dict(run_id=run_id, batch_id=batch_id, reviewer_id=reviewer.id,
+                      driver=reviewer.driver, role="primary", execution="cli",
+                      translation_fingerprint=fingerprint, packet_sha256=sha256_text(packet_text),
+                      prompt_version=PROMPT_VERSION, scope=scope, base_run_id=base.run_id if base else None,
+                      covered_unit_ids=covered, unit_fingerprints=unit_fingerprints,
+                      source_fingerprint=source_fingerprint, structure_fingerprint=structure_fingerprint,
+                      context_fingerprint=context_fingerprint, fallback_of=fallback_of,
+                      attempt_log_path=f"reviews/{batch_id}.external-attempts.jsonl")
+        with tempfile.TemporaryDirectory(prefix=f"littrans-{batch_id}-", ignore_cleanup_errors=True) as temp:
+            work_dir = Path(temp)
+            packet_path = _render_packet(root, work_dir / "packet", packet_text, pages)
+            cli_version = _command_version(reviewer.command)
+            try:
+                with _provider_call_lock(root, reviewer):
+                    result = _invoke(reviewer, packet_path, work_dir, evidence)
+                payload, raw, model, effort, actual, fast, attempts, delivery, duration, usage, cost = result
+                _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
+            except (ExternalInvocationError, OSError) as error:
+                exc = error if isinstance(error, ExternalInvocationError) else ExternalInvocationError(
+                    str(error), 1, failure_type="provider")
+                _persist_attempt_telemetry(root, batch_id, run_id, work_dir)
+                with _external_persistence_lock(root, batch_id), project_write_lock(root):
+                    raw_path = root / "reviews/external" / batch_id / f"{run_id}.raw.txt"
+                    atomic_write_text(raw_path, exc.raw)
+                    failed = ExternalReviewRun(**common, requested_model=reviewer.model,
+                        actual_model_label=exc.actual_model_label, model_verified=False,
+                        cli_version=cli_version, effort=reviewer.effort, prompt_delivery=exc.prompt_delivery,
+                        usage=exc.usage, cost_usd=exc.cost_usd, duration_seconds=exc.duration_seconds,
+                        verdict=ExternalReviewVerdict.INCONCLUSIVE, summary=f"[{exc.failure_type}] {exc}",
+                        response_path=raw_path.relative_to(root).as_posix(), attempts=max(1, exc.attempts),
+                        failure_type=exc.failure_type, success=False)
+                    append_jsonl(_runs_path(root, batch_id), [failed])
+                    if fallback_of:
+                        _append_fallback_lineage_locked(root, batch_id, run_id, fallback_of)
+                    write_json(root / "reviews" / f"{batch_id}.external.json", external_review_status(root, batch_id))
+                fallback_of = run_id
+                continue
+            actual_effort_path = work_dir / "actual-effort.json"
+            actual_effort = json.loads(actual_effort_path.read_text())["effort"] if actual_effort_path.exists() else None
+        raw_path = root / "reviews/external" / batch_id / f"{run_id}.raw.json"
+        paths = [root / "reviews" / f"{batch_id}.issues.jsonl",
+                 root / "reviews" / f"{batch_id}.audit.json",
+                 root / "evidence/audits" / f"{batch_id}.jsonl", _runs_path(root, batch_id),
+                 root / "reviews" / f"{batch_id}.external.json", raw_path,
+                 root / "reviews" / f"{batch_id}.external-fallbacks.jsonl"]
+        import_path = root / "reviews" / f".external-import-{run_id}.jsonl"
+        try:
+            with _external_persistence_lock(root, batch_id), project_write_lock(root):
+                _require_review_snapshot_current_locked(root, batch_id, covered, scope, fingerprint,
+                    unit_fingerprints, source_fingerprint, structure_fingerprint, context_fingerprint)
+                snapshots = _snapshot_text_files(paths)
                 try:
-                    issues = _convert_issues(
-                        batch_id, reviewer, actual_model, fingerprint, run_id, payload
-                    )
+                    issues = _convert_issues(batch_id, reviewer, actual, fingerprint, run_id, payload)
                     write_jsonl(import_path, issues)
                     _import_review_locked(root, batch_id, import_path, reviewer.id)
-                    response_dir.mkdir(parents=True, exist_ok=True)
                     atomic_write_text(raw_path, raw)
-                    run = ExternalReviewRun(
-                        run_id=run_id,
-                        batch_id=batch_id,
-                        reviewer_id=reviewer.id,
-                        driver=reviewer.driver,
-                        role="second-opinion" if second_opinion else "primary",
-                        requested_model=requested_model,
-                        actual_model=actual_model,
-                        actual_model_label=actual_model,
-                        model_verified=True,
-                        cli_version=cli_version,
-                        effort=requested_effort,
-                        fast_mode=fast_mode,
-                        translation_fingerprint=fingerprint,
-                        packet_sha256=reviewed_packet_sha256,
-                        prompt_version=PROMPT_VERSION,
-                        scope=scope,
-                        base_run_id=base_run.run_id if base_run else None,
-                        covered_unit_ids=covered_unit_ids,
-                        unit_fingerprints=current_unit_fingerprints,
-                        source_fingerprint=source_fingerprint,
-                        structure_fingerprint=structure_fingerprint,
-                        context_fingerprint=context_fingerprint,
-                        duration_seconds=duration_seconds,
-                        usage=usage,
-                        cost_usd=cost_usd,
-                        prompt_delivery=prompt_delivery,
-                        verdict=ExternalReviewVerdict(payload["verdict"]),
-                        summary=payload["summary"],
+                    run = ExternalReviewRun(**common, requested_model=model, actual_model=actual,
+                        actual_model_label=actual, model_verified=True, cli_version=cli_version,
+                        effort=effort, actual_effort=actual_effort, fast_mode=fast,
+                        duration_seconds=duration, usage=usage, cost_usd=cost, prompt_delivery=delivery,
+                        verdict=ExternalReviewVerdict(payload["verdict"]), summary=payload["summary"],
                         issue_ids=[issue.issue_id for issue in issues],
-                        response_path=str(raw_path.relative_to(root)).replace(
-                            "\\", "/"
-                        ),
-                        attempts=attempts,
-                        fallback_of=_fallback_of,
-                        attempt_log_path=(
-                            None
-                            if from_result is not None
-                            else f"reviews/{batch_id}.external-attempts.jsonl"
-                        ),
-                        reviewed_at=utc_now(),
-                    )
+                        response_path=raw_path.relative_to(root).as_posix(), attempts=attempts)
                     append_jsonl(_runs_path(root, batch_id), [run])
-                    if _fallback_of:
-                        _append_fallback_lineage_locked(
-                            root, batch_id, run_id, _fallback_of
-                        )
+                    if fallback_of:
+                        _append_fallback_lineage_locked(root, batch_id, run_id, fallback_of)
                     status = external_review_status(root, batch_id)
-                    write_json(
-                        root / "reviews" / f"{batch_id}.external.json", status
-                    )
+                    write_json(root / "reviews" / f"{batch_id}.external.json", status)
                 except BaseException:
-                    _restore_text_files(persistence_snapshots)
+                    _restore_text_files(snapshots)
                     raise
-    except BaseException:
-        if reservation_from_dry_run:
-            _restore_reviewer_reservation(root, reservation_id, reviewer)
-        else:
-            _release_reviewer_reservation(root, reservation_id)
-        raise
-    finally:
-        import_path.unlink(missing_ok=True)
-    _release_reviewer_reservation(root, reservation_id)
-    reservation_id = None
-    if (
-        from_result is None
-        and not second_opinion
-        and status["second_opinion_required"]
-    ):
-        status = run_external_review(root, batch_id, second_opinion=True)
-    return status
+        finally:
+            import_path.unlink(missing_ok=True)
+        return status
+    return external_review_status(root, batch_id)

@@ -1,5 +1,20 @@
 # Migrating to LitTrans
 
+## 0.8.3-dev.1: external CLI review configuration v2
+
+Preview `translation review external-migrate PROJECT`, then apply with `--apply`.
+This backs up project.yaml byte-for-byte and replaces reviewer balancing with a fixed reviewer
+and a flat ordered fallback chain. Model/effort settings are retained. No global accounts or
+CLI configuration are changed. Projects without external review need no migration.
+
+External reviews now always run through provider CLIs, including on Cursor and Claude hosts.
+Codex and OpenCode 2.x are new drivers. The plugin's `literature-external-reviewer` agent and
+host-result import options are removed. Reload the plugin in a fresh host session; regenerate
+managed Codex/OpenCode project agents to update their saved role/reference resources.
+Historical results remain readable, but native host-subagent results and external second opinions
+no longer satisfy the external gate. Required second opinions become blind host rechecks followed
+by explicit coordinator adjudication. See [external review](references/external-review.md).
+
 ## 0.8.2-dev.2: Claude task paths
 
 Load the updated plugin in a fresh Claude Code session. Task workers now explicitly prefer
@@ -59,7 +74,7 @@ snapshots and context bindings are additional execution records, not new approva
 
 ## Upgrading older projects to 0.8
 
-This guide takes an existing project to 0.8.2-dev.2. Find the version that last wrote the project
+This guide takes an existing project to 0.8.3-dev.1. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the path for it.
 

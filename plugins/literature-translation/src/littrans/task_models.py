@@ -10,7 +10,7 @@ class TaskEnvelope(StrictModel):
     schema_version: Literal[1] = 1
     task_id: str = Field(pattern=r"^task-[a-f0-9]{24}$")
     stage: Literal["source-review", "translate", "revise", "audit", "transcribe",
-                   "asset-audit", "scout", "terminology"]
+                   "asset-audit", "scout", "terminology", "external-recheck"]
     role: str
     lens: str | None
     objective: str | None

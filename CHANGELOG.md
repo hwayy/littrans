@@ -15,6 +15,37 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.3-dev.1] - 2026-09-29
+
+### Added
+
+- External `codex-cli` and OpenCode 2.x `opencode-cli` drivers with explicit model/effort
+  dispatch, read-only evidence, CLI model metadata, and per-call telemetry.
+- Blind host `external-recheck` tasks and an evidence-based coordinator adjudication command.
+- Previewable, backed-up external-review configuration v2 migration retaining historical records.
+
+### Changed
+
+- All hosts use external CLI processes for the external gate, with one fixed reviewer and a
+  flat ordered failure fallback chain. Content uncertainty routes to host recheck instead.
+- Workflow guidance and rendered review summaries include pending rechecks and adjudications.
+
+### Removed
+
+- Native host external-review transport, the external reviewer agent, paired result imports,
+  least-used selection, reviewer reservations and external second-opinion scheduling.
+
+### Fixed
+
+- Pass actual page PNGs from the packet's pages directory to external CLIs and list each
+  Claude image path explicitly for its Read-only tool contract.
+- Classify Antigravity account eligibility denials as account-access/authentication failures.
+
+### Compatibility
+
+- Old external configurations require explicit migration; historical host-subagent and
+  second-opinion records remain inspectable but cannot satisfy the new external gate.
+
 ## [0.8.2-dev.2] - 2026-09-29
 
 ### Fixed

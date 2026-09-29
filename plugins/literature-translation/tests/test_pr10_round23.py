@@ -2,10 +2,6 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
-from test_fidelity_source import approve
-from test_pr10_round8 import submit
-from test_workflow_v6 import project as workflow_project
-
 from littrans import rendering
 from littrans.batching import create_batches, refresh_batch
 from littrans.models import (
@@ -27,6 +23,9 @@ from littrans.storage import (
     write_jsonl,
 )
 from littrans.workflow import create_workflow_packet
+from test_fidelity_source import approve
+from test_pr10_round8 import submit
+from test_workflow_v6 import project as workflow_project
 
 project = workflow_project
 
@@ -108,7 +107,7 @@ def test_render_rolls_back_shared_mathjax(project, monkeypatch, failure, missing
         monkeypatch.setattr(rendering, "_write_quality_summary", fail)
     elif failure == "external":
         config = load_project(project)
-        config.external_review = ExternalReviewConfig(reviewers=[ExternalReviewerConfig(id="test", driver="claude-code", command="claude", model="test")])
+        config.external_review = ExternalReviewConfig(reviewer=ExternalReviewerConfig(id="test", driver="claude-code", command="claude", model="test"))
         save_project(project, config)
         monkeypatch.setattr(rendering, "_write_external_review_summary_set", fail)
     with pytest.raises((RuntimeError, KeyboardInterrupt)):

@@ -26,7 +26,10 @@ definitions use effort: high; a configured per-dispatch effort remains advisory 
 adapter does not apply it. Read-only reviewers return content for the coordinator to save and
 receive. Writers are limited by role/scope and domain validators.
 
-Do not launch nested claude -p from a Claude Code session for external review. Preserve the
-existing external-review provider rules. Native discovery and model availability must be
+External review always runs through `translation review external`, including when its CLI
+provider is Claude Code. The adapter clears parent-session markers for the fresh read-only
+process. Do not substitute a native Agent result. For a blind `external-recheck` task, use a
+fresh namespaced `literature-technical-reviewer` Agent; the task stage overrides its ordinary
+technical lens and JSONL response with the saved recheck JSON contract. Native discovery and model availability must be
 verified in the user's configured client; deterministic tests do not certify a host pilot.
 Official reference: https://code.claude.com/docs/en/sub-agents

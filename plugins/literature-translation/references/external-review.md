@@ -1,53 +1,111 @@
-# External review
+# External CLI review and host recheck
 
-External review is an optional project-specific gate after deterministic QA, all three internal
-audit lenses, issue resolution, and machine approval. Reviewer configuration belongs in
-`project.yaml`; the plugin supplies no default provider or model.
+External review is an optional project gate after passing deterministic QA, the three
+internal audit lenses, issue resolution and machine approval. On every coordinating host,
+run it through an external CLI process. Native host subagents never satisfy this gate.
 
-Set the optional `external_review.domain_expertise` string when a project needs an explicit
-subject-matter specialization. The value is included in the isolated review packet and therefore
-covered by its recorded SHA-256. When omitted, reviewers infer the required expertise from the
-document brief. Provider prompts remain domain-neutral.
+## Configuration
 
-Run `translation review external <project> <batch-id>` for least-used assignment, or add `--reviewer <id>`
-to keep a revision with its original reviewer. Add `--dry-run` to inspect the isolated packet,
-prompt, and command without invoking a provider. When the coordinating host is Cursor, a
-`cursor-cli` review may be executed by a local host subagent against that dry-run packet and
-recorded with paired `--from-result RESULT.json --from-dry-run DRY_RUN.json --actual-model
-"ACTUAL MODEL LABEL"` inputs. Use the `dry_run_path` returned by the dry-run command. The trusted
-host coordinator obtains the actual label from Cursor task metadata; never accept the reviewer
-model's self-report as model evidence. The packet supplies a `review_binding` that the host reviewer
-must copy unchanged into its top-level result JSON; stale, tampered, unbound, mismatched, or
-incorrectly attested records are rejected. A required second opinion gets its own dry-run and
-paired import. Use `translation review external-status` to inspect the current translation fingerprint, actual
-model evidence, verdict, and open issues.
+Configure one fixed reviewer and an ordered, flat failure fallback chain in `project.yaml`:
 
-Set `external_review.assignment_since` to a timezone-aware ISO 8601 timestamp when adding a new
-reviewer to an established project and a fresh balancing epoch is required. Historical telemetry
-remains intact, while least-used selection counts completed and active calls only from that time.
-Concurrent selections reserve their reviewer briefly so separate services can be used in parallel
-without choosing the same least-used reviewer in a race.
+```yaml
+external_review:
+  schema_version: 2
+  enabled: true
+  reviewer:
+    id: primary
+    driver: codex-cli
+    command: codex
+    model: YOUR_MODEL
+    effort: high
+  fallbacks:
+    - id: backup
+      driver: opencode-cli
+      command: opencode
+      model: PROVIDER/MODEL
+      effort: high
+  recheck:
+    confidence_below: 0.9
+    severities: [blocker, major]
+```
 
-A reviewer's `model` (and each fallback's) is the dispatch value passed to the provider CLI. Host
-metadata must report it: the `claude-code` and `antigravity` drivers accept a family match
-(`sonnet` against `claude-sonnet-5`), `cursor-cli` requires the exact identity. When the host
-routes an alias to another model, declare the served id in `model_identity` (per reviewer or
-fallback) and keep `model` as the alias; verification then compares host evidence with the
-identity. A run whose served model cannot be verified is recorded with `model_verified: false`,
-the served label in `actual_model_label` and `failure_type: model`; it never counts as accepted.
+Each entry independently supports `model`, optional `model_identity` and `effort`.
+Choose models and supported effort levels from the local CLI/provider configuration; the
+plugin supplies no external provider/model default. Omitted effort uses the model's CLI
+default. Invalid or unsupported options must not be silently dropped.
 
-For `cursor-cli`, use exact Cursor model IDs and omit separate `effort` and `fast` fields. Cursor
-first-party quota failures (including Grok, Composer, and Auto) and third-party quota failures
-(including Claude) are recorded separately per attempt. The CLI exhausts the reviewer's configured
-model chain before selecting a replacement reviewer.
+| Driver | Model and effort mapping |
+| --- | --- |
+| `codex-cli` | `--model MODEL`, `-c model_reasoning_effort="EFFORT"` |
+| `opencode-cli` | OpenCode 2.x: `--model provider/model#variant`; `effort` selects the variant |
+| `claude-code` | `--model MODEL --effort EFFORT`; fast mode must remain off |
+| `antigravity` | `--model MODEL --effort EFFORT`; some models do not accept effort |
+| `cursor-cli` | Exact model IDs encode effort; omit separate `effort` and `fast` |
 
-Each call receives only the current source, translation, checklist, style guide, approved terms,
-the reference entries matching the batch, and relevant PDF page images. Prior translation review issues and translator rationale are excluded. The
-CLI runs read-only in a temporary directory. Preserve the normalized result, raw response,
-actual-model evidence, CLI version, prompt version, and translation fingerprint; remove temporary
-provider logs after extracting model evidence.
+An embedded OpenCode `#variant` may replace `effort`; when both are supplied they must agree.
+Custom variants are supported. `--thinking` displays thinking and does not select effort.
+Use `model_identity` when a dispatch alias differs from the model reported by CLI metadata.
+Identity verification does not accept model self-reports or requested arguments as evidence.
+Requested and actual effort are separate; unavailable actual effort remains unknown.
 
-An inconclusive verdict, an unverified actual model, a blocker/major issue, or confidence below
-the configured threshold requires a second opinion from a different reviewer. Merge agreement.
-Leave conflicts inconclusive for high-level adjudication with a recorded evidence-based reason.
-Never convert external acceptance into human approval.
+Set optional `domain_expertise` for project-specific subject expertise. It is part of the
+isolated packet and its fingerprint. Otherwise expertise follows the document brief.
+
+## Run and migrate
+
+Run `translation review external PROJECT BATCH`, or add `--dry-run` to inspect the packet,
+commands, models, effort settings and fallback order without provider calls.
+`translation review external-status PROJECT BATCH` reports authoritative gate state.
+
+Every fresh external call starts with the fixed reviewer. Only invocation failures, including
+missing commands, authentication, quota, timeout, invalid output or unverifiable model identity,
+advance to the next fallback. Valid findings and inconclusive verdicts do not rotate providers.
+No reviewer usage balancing, reservations or external second opinions are used.
+
+For old projects, preview `translation review external-migrate PROJECT`, then run it with
+`--apply`. It backs up `project.yaml`, selects the first old reviewer as primary, and flattens
+each reviewer's model fallbacks before the next reviewer. Historical records remain intact.
+Old host-subagent records and external second opinions are historical only; valid CLI primary
+records may still count, subject to current fingerprints and recheck requirements.
+
+Each external process receives only source, target, relevant images, checklist, style and
+approved/relevant terminology. Existing findings and translator rationale are excluded.
+Use fresh sessions and read-only execution. Keep normalized results, raw responses, CLI metadata,
+version, fingerprints and attempt telemetry. Never convert external acceptance into human approval.
+
+## Blind host recheck
+
+An inconclusive content verdict, blocker/major finding, or finding below the confidence threshold
+requires a fresh native host translation-reviewer subagent. Codex/OpenCode use the generated
+`littrans-translation-reviewer`; Claude/Cursor/Qoder reuse `literature-technical-reviewer`
+(with its discovered namespace). The external-recheck handoff overrides its ordinary lens
+and output format; no new external-review agent is installed. Failed or unverified CLI calls
+require CLI fallback/retry, not host recheck.
+
+1. Create `task create PROJECT --stage external-recheck --batch-ids BATCH --host HOST`.
+2. Claim with a new executor ID and `--mode subagent`, then dispatch the saved handoff.
+3. Give the worker only task instructions and isolated evidence. It must not read external
+   opinions, expected verdicts, or coordinator-side binding/receipt/decision records.
+4. Persist its JSON response and run `task receive PROJECT TASK_ID --result FILE`.
+5. Compare both opinions in the parent coordinator. Get the required issue IDs and result from
+   `external-status`; submit `translation review external-adjudicate PROJECT BATCH FILE`.
+
+Recheck triggered units and dependencies. Inconclusive verdicts without localized findings use
+that external run's scope. Rechecks cannot modify translations, close findings, grant approval,
+or count as any of the three ordinary audit lenses.
+
+The recheck returns a JSON object with `verdict` (`accepted`, `changes-requested`, `inconclusive`),
+`summary`, and `issues`. Each issue requires `unit_id`, `severity` (`blocker`, `major`, `minor`,
+`suggestion`), `type` (`meaning`, `omission`, `addition`, `terminology`, `technical`, `style`,
+`reference`, `number-unit`, `format`), exact `source_span`, exact `target_span`, `explanation`,
+`suggested_revision` (empty string if none), and numeric `confidence` between 0 and 1.
+
+The coordinator decision JSON includes `run_id`, `task_id`, `verdict`, an evidence-based
+`reason`, and `issues`, mapping every external/recheck issue ID to an `action`
+(`accept`, `reject`, `inconclusive`) and evidence-based `reason`. Agreement also requires a
+recorded decision. Conflicts remain inconclusive until adjudicated by the coordinator.
+Accepting a finding keeps it open until corrected; rejecting an evidenced false positive closes it.
+
+Missing, stale or inconclusive rechecks/decisions block external approval. Translation changes
+require fresh QA, internal audit and full/incremental external review. Resolving false positives
+without changing evidence can satisfy the gate without another paid CLI call.

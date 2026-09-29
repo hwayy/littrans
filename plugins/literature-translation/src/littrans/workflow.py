@@ -146,7 +146,6 @@ def _load_workflow_snapshot(
             external_review_status(
                 root,
                 batch_id,
-                include_reviewer_usage=False,
                 current_fingerprint=sha256_text(
                     "\n".join(
                         f"{unit_id}:{translation_unit_fingerprint(unit_map[unit_id], translations.get(unit_id))}"
@@ -353,6 +352,11 @@ def _post_audit_stage(
         for issue in open_issues
         if issue.severity is not Severity.SUGGESTION
     ]
+    external = snapshot.external_status.get(batch_id)
+    recheck = external.get("recheck") if external else None
+    if recheck and recheck["required"] and not recheck["complete"]:
+        if not any(not issue.reviewer.startswith(("external:", "host-recheck")) for issue in open_substantive):
+            return "external-adjudicate" if recheck["result"] else "external-recheck"
     open_blocking = [
         issue
         for issue in open_issues
@@ -471,12 +475,18 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         lane = _snapshot_lane(root, by_id[bid], snapshot)
         if stage != "complete" and not optional_assets:
             # Revision is translator work: it reuses the translate model policy.
-            role = "translate" if stage == "revise" else stage
+            role = "translate" if stage == "revise" else "audit" if stage == "external-recheck" else stage
             dispatch = config.dispatch(host, role)
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
                           "model": dispatch.model,
                           "reasoning_effort": dispatch.reasoning_effort,
                           "fresh_context": True})
+            if stage == "external-recheck":
+                tasks[-1].update(execution="host-subagent", instruction="Create an external-recheck task, claim with a new subagent executor, and dispatch only its blind evidence packet.")
+            elif stage == "external-adjudicate":
+                tasks[-1].update(execution="coordinator", fresh_context=False, instruction="Compare external-status opinions and submit an evidence-based external-adjudicate decision. Do not dispatch or rerun external CLI review.")
+            elif stage == "external-review":
+                tasks[-1].update(execution="external-cli", instruction="Run translation review external; never substitute a host subagent.")
             if stage == "transcribe" and lane["recovery"]:
                 tasks[-1].update(asset_ids=lane["recovery"], recovery=True)
         for role, ids in lane["pending"].items():
@@ -499,7 +509,7 @@ def _with_advisories(root: Path, host: str, payload: dict[str, Any]) -> dict[str
     replay identity and an asset packet's id hashes its whole payload.
     """
     roles = dict.fromkeys(
-        "translate" if task.get("stage") == "revise" else str(task.get("stage", ""))
+        "translate" if task.get("stage") == "revise" else "audit" if task.get("stage") == "external-recheck" else str(task.get("stage", ""))
         for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]
     )
     payload["dispatch_advisories"] = dispatch_report(root, host, roles)["advisories"]

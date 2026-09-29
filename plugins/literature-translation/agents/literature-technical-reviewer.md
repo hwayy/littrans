@@ -15,4 +15,4 @@ on other hosts resolve `../roles/translation-reviewer.md` relative to this agent
 Resolve references relative to the role file actually read. Use Read for instructions,
 packets and required page images when shell access is unavailable.
 
-Use the technical lens. Return JSONL content, including an empty result. Do not load coordinator skills or dispatch further workers.
+For an `external-recheck` handoff, follow the saved translation-reviewer role across all substantive concerns in the assigned scope and return its structured JSON result. Otherwise use the technical lens and return JSONL content, including an empty result. Do not load coordinator skills or dispatch further workers.

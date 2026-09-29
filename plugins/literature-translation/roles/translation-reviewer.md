@@ -11,3 +11,10 @@ Renderer-owned wrappers and original-image placeholders are not missing translat
 Return JSONL issues, including an empty result when there are no findings. Do not write target
 text, import reviews, close findings or approve. Revisions are reviewed over the packet's
 changed dependency closure; independent asset review remains separate.
+
+For an `external-recheck` task, independently check all substantive translation concerns in
+its assigned units and dependency context. Do not read the original external opinion, the
+coordinator's binding/receipt/decision records, other reviews, or expected verdicts. Return
+one JSON object with `verdict`, `summary`, and `issues` using the result schema in
+[external review](../references/external-review.md), instead of the ordinary audit JSONL.
+This is a host recheck, never an external CLI review or a replacement for the three audit lenses.

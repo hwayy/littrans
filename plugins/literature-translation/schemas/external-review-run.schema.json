@@ -4,7 +4,9 @@
       "enum": [
         "claude-code",
         "antigravity",
-        "cursor-cli"
+        "cursor-cli",
+        "codex-cli",
+        "opencode-cli"
       ],
       "title": "ExternalReviewDriver",
       "type": "string"
@@ -143,6 +145,31 @@
       ],
       "default": null,
       "title": "Cli Version"
+    },
+    "execution": {
+      "anyOf": [
+        {
+          "const": "cli",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution"
+    },
+    "actual_effort": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actual Effort"
     },
     "effort": {
       "anyOf": [

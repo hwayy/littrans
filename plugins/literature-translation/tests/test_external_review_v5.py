@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-
 from littrans import external_review
 from littrans.models import (
     ExternalReviewerConfig,
@@ -24,7 +23,6 @@ def _reviewer(driver: str = "claude-code") -> ExternalReviewerConfig:
             driver=driver,
             command="reviewer-cli",
             model="cursor-grok-4.6-high-fast",
-            fallbacks=[{"model": "claude-sonnet-5-high"}, {"model": "auto"}],
         )
     return ExternalReviewerConfig(
         id="reviewer",
@@ -347,52 +345,6 @@ def test_cursor_requires_model_and_final_result_evidence() -> None:
         )
 
 
-def test_cursor_quota_fallback_crosses_independent_pools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reviewer = _reviewer("cursor-cli")
-    packet = tmp_path / "review-packet.md"
-    packet.write_text("Review packet.", encoding="utf-8")
-    work = tmp_path / "work"
-    work.mkdir()
-    monkeypatch.setattr(external_review.shutil, "which", lambda command: command)
-    models: list[str] = []
-
-    def quota_then_success(
-        command: list[str], *args: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        model = command[command.index("--model") + 1]
-        models.append(model)
-        if model != "auto":
-            pool = "first-party" if model.startswith("cursor-") else "third-party"
-            return subprocess.CompletedProcess(
-                command, 1, "", f"Cursor {pool} usage limit reached"
-            )
-        payload = {
-            "verdict": "accepted",
-            "summary": "No substantive defects found.",
-            "issues": [],
-        }
-        return subprocess.CompletedProcess(command, 0, _cursor_stream(payload, "Auto"), "")
-
-    monkeypatch.setattr(external_review.subprocess, "run", quota_then_success)
-    result = external_review._invoke(reviewer, packet, work, {})
-    assert models == [
-        "cursor-grok-4.6-high-fast",
-        "claude-sonnet-5-high",
-        "auto",
-    ]
-    assert result[2] == "auto"
-    attempts = [
-        json.loads(line)
-        for line in (work / "attempts.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert [item["failure_type"] for item in attempts] == ["quota", "quota", None]
-    assert [item["quota_pool"] for item in attempts] == [
-        "cursor-first-party",
-        "cursor-third-party",
-        "cursor-first-party",
-    ]
 
 
 def test_cursor_create_plan_does_not_bypass_actual_model_verification(

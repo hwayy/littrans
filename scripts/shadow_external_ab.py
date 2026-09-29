@@ -198,7 +198,7 @@ def run_ab(
     if config is None:
         raise ValueError("Project has no external review configuration")
     reviewer = next(
-        (reviewer for reviewer in config.reviewers if reviewer.id == reviewer_id), None
+        (reviewer for reviewer in [config.reviewer, *config.fallbacks] if reviewer.id == reviewer_id), None
     )
     if reviewer is None:
         raise ValueError(f"Unknown reviewer: {reviewer_id}")

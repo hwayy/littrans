@@ -6,7 +6,6 @@ import tomllib
 from pathlib import Path
 
 import yaml
-
 from littrans.hosts import SUBAGENT_DISPATCH
 from littrans.project import schema_mismatches
 
@@ -286,7 +285,6 @@ def main() -> None:
         "literature-fidelity-reviewer.md": "jsonl",
         "literature-technical-reviewer.md": "jsonl",
         "literature-chinese-style-reviewer.md": "jsonl",
-        "literature-external-reviewer.md": "bound-json",
         "literature-document-scout.md": "proposal-json",
         "literature-terminology-researcher.md": "proposal-json",
     }
@@ -313,10 +311,10 @@ def main() -> None:
         tools = set(yaml.safe_load(tools_match.group(1))) if tools_match else None
         contract = expected_agents[agent_path.name]
         # Claude Code takes no per-dispatch effort: every dispatch-role agent fixes the
-        # effort the CLI reports for the host. The external reviewer is no dispatch role.
+        # effort the CLI reports for the host.
         effort_match = re.search(r"^effort:\s*(\S+)\s*$", frontmatter, re.MULTILINE)
         effort = effort_match.group(1) if effort_match else None
-        if contract != "bound-json" and effort != CLAUDE_AGENT_EFFORT:
+        if effort != CLAUDE_AGENT_EFFORT:
             raise ValueError(
                 f"Dispatch agent {agent_path.name} must declare effort: {CLAUDE_AGENT_EFFORT} "
                 f"(SUBAGENT_DISPATCH['claude'].agent_effort); found {effort}"
@@ -345,15 +343,6 @@ def main() -> None:
                     f"Read-only agent {agent_path.name} must return JSONL "
                     "content for the parent to persist"
                 )
-            if contract == "bound-json" and not all(
-                marker in lowered_body
-                for marker in ("json object", "review_binding", "verdict", "issues")
-            ):
-                raise ValueError(
-                    "External reviewer must return a bound JSON object with "
-                    "review_binding, verdict, and issues"
-                )
-
             if contract == "asset-json" and not all(
                 marker in lowered_body
                 for marker in ("json", "image_evidence", "render_artifact_sha256", "candidate")

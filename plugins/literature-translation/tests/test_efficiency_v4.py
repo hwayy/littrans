@@ -19,9 +19,6 @@ from fidelity_fixtures import (
     record_fixture_source_issue,
     review_fixture_metadata,
 )
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-
 from littrans import external_review
 from littrans.batching import create_batches, load_manifest, refresh_batch
 from littrans.evidence import (
@@ -93,6 +90,8 @@ from littrans.workflow import (
     workflow_metrics,
     workflow_next,
 )
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 
 def _packet_dir(root: Path, packet: WorkflowPacketManifest) -> Path:
@@ -148,7 +147,7 @@ def test_shadow_ab_forces_distinct_delivery_arms(
         globals_,
         "load_project",
         lambda root: SimpleNamespace(
-            external_review=ExternalReviewConfig(reviewers=[reviewer])
+            external_review=ExternalReviewConfig(reviewer=reviewer)
         ),
     )
     monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
@@ -217,7 +216,7 @@ def test_shadow_ab_validates_all_batches_before_provider_calls(
         globals_,
         "load_project",
         lambda root: SimpleNamespace(
-            external_review=ExternalReviewConfig(reviewers=[reviewer])
+            external_review=ExternalReviewConfig(reviewer=reviewer)
         ),
     )
     monkeypatch.setitem(globals_, "load_manifest", load_manifest)
@@ -265,7 +264,7 @@ def test_shadow_ab_validates_clean_baselines_before_provider_calls(
         globals_,
         "load_project",
         lambda root: SimpleNamespace(
-            external_review=ExternalReviewConfig(reviewers=[reviewer])
+            external_review=ExternalReviewConfig(reviewer=reviewer)
         ),
     )
     monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
@@ -320,7 +319,7 @@ def test_shadow_ab_rejects_vacuous_severe_recall_before_provider_calls(
         globals_,
         "load_project",
         lambda root: SimpleNamespace(
-            external_review=ExternalReviewConfig(reviewers=[reviewer])
+            external_review=ExternalReviewConfig(reviewer=reviewer)
         ),
     )
     monkeypatch.setitem(globals_, "load_manifest", lambda *args: SimpleNamespace())
@@ -470,7 +469,7 @@ def test_completed_benchmark_uses_effective_workflow_gates(tmp_path: Path) -> No
     _submit(root, complete.batch_id, suffix="修订")
     _submit(root, incomplete.batch_id)
     _audit_and_approve(root, complete.batch_id)
-    failed = ExternalReviewRun(
+    failed = ExternalReviewRun(execution="cli",
         run_id="failed-attempt",
         batch_id=incomplete.batch_id,
         reviewer_id="claude",
@@ -1020,8 +1019,7 @@ def test_failed_external_review_records_actual_prompt_delivery(
     _audit_and_approve(root, batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -1029,7 +1027,6 @@ def test_failed_external_review_records_actual_prompt_delivery(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
 
@@ -1069,7 +1066,7 @@ def test_failed_external_review_records_actual_prompt_delivery(
         tracked_context_fingerprint,
     )
     dry_run = external_review.run_external_review(root, batch_id, dry_run=True)
-    assert dry_run["prompt_delivery"] == PromptDelivery.FILE
+    assert dry_run["calls"][0]["prompt_delivery"] == PromptDelivery.FILE
     assert snapshot_calls == ["packet", "context"]
     monkeypatch.setattr(external_review, "project_write_lock", original_lock)
     monkeypatch.setattr(external_review, "_packet_text", original_packet_text)
@@ -1132,7 +1129,7 @@ def test_external_review_uses_a_per_run_import_file(
         effort="high",
         fast=False,
     )
-    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    config.external_review = ExternalReviewConfig(reviewer=reviewer)
     save_project(root, config)
     for manifest in manifests:
         _submit(root, manifest.batch_id)
@@ -1202,7 +1199,7 @@ def test_external_review_rejects_a_snapshot_changed_during_provider_call(
         fast=False,
     )
     config = load_project(root)
-    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    config.external_review = ExternalReviewConfig(reviewer=reviewer)
     save_project(root, config)
     _submit(root, batch_id)
     _audit_and_approve(root, batch_id)
@@ -1261,7 +1258,7 @@ def test_external_review_releases_reservation_on_packet_or_version_failure(
         fast=False,
     )
     config = load_project(root)
-    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    config.external_review = ExternalReviewConfig(reviewer=reviewer)
     save_project(root, config)
     _submit(root, batch_id)
     _audit_and_approve(root, batch_id)
@@ -1805,8 +1802,7 @@ def test_formal_render_requires_current_external_review_ledger(
     _audit_and_approve(root, batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -1814,7 +1810,6 @@ def test_formal_render_requires_current_external_review_ledger(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     config.status = ProjectStatus.EXTERNAL_REVIEWED
     save_project(root, config)
@@ -1846,8 +1841,7 @@ def test_internal_minor_requires_revision_before_external_review(
     _audit_and_approve(root, batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -1855,7 +1849,6 @@ def test_internal_minor_requires_revision_before_external_review(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
     minor = ReviewIssue(
@@ -1897,8 +1890,7 @@ def test_external_finding_requires_resolution_before_another_paid_review(
     _audit_and_approve(root, batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -1906,7 +1898,6 @@ def test_external_finding_requires_resolution_before_another_paid_review(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
     issue = ReviewIssue(
@@ -2157,8 +2148,7 @@ def test_external_review_does_not_reuse_approval_after_glossary_change(
     _audit_and_approve(root, batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -2166,10 +2156,9 @@ def test_external_review_does_not_reuse_approval_after_glossary_change(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
-    accepted = ExternalReviewRun(
+    accepted = ExternalReviewRun(execution="cli",
         run_id="accepted-before-glossary-change",
         batch_id=batch_id,
         reviewer_id="claude",
@@ -2226,7 +2215,7 @@ def test_external_review_context_change_requires_a_new_run(
         effort="high",
         fast=False,
     )
-    config.external_review = ExternalReviewConfig(reviewers=[reviewer])
+    config.external_review = ExternalReviewConfig(reviewer=reviewer)
     save_project(root, config)
     calls = 0
 
@@ -2291,8 +2280,7 @@ def test_stale_changes_requested_run_cannot_anchor_incremental_review(
     _submit(root, batch.batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -2300,7 +2288,6 @@ def test_stale_changes_requested_run_cannot_anchor_incremental_review(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
     issue = ReviewIssue(
@@ -2317,7 +2304,7 @@ def test_stale_changes_requested_run_cannot_anchor_incremental_review(
         resolved_at="2026-08-20T00:00:00Z",
     )
     write_jsonl(root / "reviews" / f"{batch.batch_id}.issues.jsonl", [issue])
-    base = ExternalReviewRun(
+    base = ExternalReviewRun(execution="cli",
         run_id="resolved-full-base",
         batch_id=batch.batch_id,
         reviewer_id="claude",
@@ -3687,8 +3674,7 @@ def test_memory_excludes_external_approval_with_open_minor_issue(
         _audit_and_approve(root, manifest.batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -3696,12 +3682,11 @@ def test_memory_excludes_external_approval_with_open_minor_issue(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
     for manifest in manifests:
         batch_id = manifest.batch_id
-        accepted = ExternalReviewRun(
+        accepted = ExternalReviewRun(execution="cli",
             run_id=f"accepted-{batch_id}",
             batch_id=batch_id,
             reviewer_id="claude",
@@ -3799,8 +3784,7 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
     write_jsonl(root / "translations" / "current.jsonl", records)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -3808,11 +3792,10 @@ def test_external_review_switches_between_incremental_and_full(tmp_path: Path) -
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
     snapshot = batch_unit_fingerprints(root, manifest.batch_id)
-    run = ExternalReviewRun(
+    run = ExternalReviewRun(execution="cli",
         run_id="base",
         batch_id=manifest.batch_id,
         reviewer_id="claude",
@@ -3859,23 +3842,20 @@ def test_incremental_external_review_rejects_inconclusive_base_chain(
     _submit(root, manifest.batch_id)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
                 model="claude-sonnet-5",
                 effort="high",
                 fast=False,
-            ),
-            ExternalReviewerConfig(
+            ), fallbacks=[ExternalReviewerConfig(
                 id="antigravity",
                 driver="antigravity",
                 command="antigravity",
                 model="gemini-3.1-pro",
                 effort="high",
-            ),
-        ]
+            )]
     )
     save_project(root, config)
     suggestion = ReviewIssue(
@@ -3892,7 +3872,7 @@ def test_incremental_external_review_rejects_inconclusive_base_chain(
         root / "reviews" / f"{manifest.batch_id}.issues.jsonl", [suggestion]
     )
     snapshot = batch_unit_fingerprints(root, manifest.batch_id)
-    primary = ExternalReviewRun(
+    primary = ExternalReviewRun(execution="cli",
         run_id="inconclusive-chain-primary",
         batch_id=manifest.batch_id,
         reviewer_id="claude",
@@ -3997,8 +3977,7 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     write_jsonl(units_path, units)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
+        reviewer=ExternalReviewerConfig(
                 id="claude",
                 driver="claude-code",
                 command="claude",
@@ -4006,11 +3985,10 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
                 effort="high",
                 fast=False,
             )
-        ]
     )
     save_project(root, config)
     snapshot = batch_unit_fingerprints(root, middle.batch_id)
-    base = ExternalReviewRun(
+    base = ExternalReviewRun(execution="cli",
         run_id="outer-seam-base",
         batch_id=middle.batch_id,
         reviewer_id="claude",
@@ -4123,89 +4101,6 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     )
 
 
-def test_external_status_does_not_reuse_an_old_second_opinion(
-    tmp_path: Path,
-) -> None:
-    root, manifests = _make_project(tmp_path, 1)
-    batch_id = manifests[0].batch_id
-    _submit(root, batch_id)
-    config = load_project(root)
-    config.external_review = ExternalReviewConfig(
-        reviewers=[
-            ExternalReviewerConfig(
-                id="claude",
-                driver="claude-code",
-                command="claude",
-                model="claude-sonnet-5",
-                fast=False,
-            )
-        ]
-    )
-    save_project(root, config)
-    fingerprint = external_review.batch_translation_fingerprint(root, batch_id)
-    suggestion = ReviewIssue(
-        issue_id="low-confidence-suggestion",
-        batch_id=batch_id,
-        unit_id=manifests[0].unit_ids[0],
-        severity=Severity.SUGGESTION,
-        type=IssueType.STYLE,
-        explanation="A low-confidence point requires an independent second opinion.",
-        confidence=0.2,
-        reviewer="external:claude",
-    )
-    write_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", [suggestion])
-    context_fingerprint = external_review._external_review_context_fingerprint(
-        root,
-        batch_id,
-        list(manifests[0].unit_ids),
-        ReviewScope.FULL,
-    )
-
-    def run(
-        run_id: str,
-        role: str,
-        *,
-        base_run_id: str | None = None,
-        issue_ids: list[str] | None = None,
-    ) -> ExternalReviewRun:
-        return ExternalReviewRun(
-            run_id=run_id,
-            batch_id=batch_id,
-            reviewer_id="claude",
-            driver="claude-code",
-            role=role,
-            requested_model="claude-sonnet-5",
-            actual_model="claude-sonnet-5",
-            model_verified=True,
-            translation_fingerprint=fingerprint,
-            packet_sha256="0" * 64,
-            prompt_version="test",
-            base_run_id=base_run_id,
-            verdict=ExternalReviewVerdict.ACCEPTED,
-            summary="No substantive defects found.",
-            issue_ids=issue_ids or [],
-            context_fingerprint=context_fingerprint,
-        )
-
-    append_jsonl(
-        root / "reviews" / f"{batch_id}.external-runs.jsonl",
-        [
-            run("primary-one", "primary"),
-            run("second-for-one", "second-opinion", base_run_id="primary-one"),
-            run(
-                "primary-two",
-                "primary",
-                issue_ids=[suggestion.issue_id],
-            ),
-        ],
-    )
-
-    status = external_review_status(root, batch_id)
-
-    assert status["second_opinion_required"] is True
-    assert status["second_opinion"] is None
-    assert status["verdict"] == ExternalReviewVerdict.INCONCLUSIVE
-    assert status["external_approvable"] is False
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])
@@ -4325,7 +4220,7 @@ def test_v3_migration_does_not_resurrect_superseded_external_acceptance() -> Non
     repo_root = Path(__file__).resolve().parents[3]
     namespace = runpy.run_path(str(repo_root / "scripts" / "benchmark_efficiency.py"))
     fingerprint = "legacy-fingerprint"
-    accepted = ExternalReviewRun(
+    accepted = ExternalReviewRun(execution="cli",
         schema_version=1,
         run_id="old-accepted",
         batch_id="legacy-batch",

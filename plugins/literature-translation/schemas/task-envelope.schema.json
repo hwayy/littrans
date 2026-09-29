@@ -21,7 +21,8 @@
         "transcribe",
         "asset-audit",
         "scout",
-        "terminology"
+        "terminology",
+        "external-recheck"
       ],
       "title": "Stage",
       "type": "string"

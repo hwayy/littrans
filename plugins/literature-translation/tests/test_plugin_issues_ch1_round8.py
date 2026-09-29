@@ -17,9 +17,6 @@ from pathlib import Path
 
 import pytest
 from fidelity_fixtures import make_asset_fixture
-from test_efficiency_v4 import _make_project, _packet_dir, _submit
-from typer.testing import CliRunner
-
 from littrans import cli, external_review
 from littrans.models import ExternalReviewerConfig, ProjectConfig, WorkflowPacketManifest
 from littrans.quality import run_qa
@@ -27,6 +24,8 @@ from littrans.representation_models import AssetSubmission
 from littrans.representations import build_asset_packet, submit_candidates
 from littrans.storage import atomic_write_text, read_json, write_json, write_jsonl
 from littrans.workflow import create_workflow_packet
+from test_efficiency_v4 import _make_project, _packet_dir, _submit
+from typer.testing import CliRunner
 
 SERVED = "deepseek-v4.1-flash[1M]"
 runner = CliRunner()
@@ -113,16 +112,6 @@ def test_model_identity_verifies_the_served_model_behind_an_alias(
         external_review._invoke(reviewer, packet, work, {})
 
 
-def test_cursor_host_import_matches_model_identity(tmp_path: Path) -> None:
-    reviewer = ExternalReviewerConfig(id="r", driver="cursor-cli", command="agent", model="cursor-grok-4.6-high-fast",
-                                      fallbacks=[{"model": "sonnet-high", "model_identity": "claude-sonnet-5-high"}])
-    result = tmp_path / "result.json"
-    result.write_text(json.dumps({"review_binding": "bind", "verdict": "accepted",
-                                  "summary": "No substantive defects found.", "issues": []}), encoding="utf-8")
-    loaded = external_review._load_cursor_host_result(reviewer, result, {}, "bind", "Sonnet 5 High")
-    assert (loaded[2], loaded[4]) == ("sonnet-high", "Sonnet 5 High")
-    with pytest.raises(ValueError, match="expected=\\['cursor-grok-4.6-high-fast', 'claude-sonnet-5-high'\\]"):
-        external_review._load_cursor_host_result(reviewer, result, {}, "bind", "Sonnet 4.6 High")
 
 
 def test_cli_reports_refused_preconditions_without_a_traceback(tmp_path: Path) -> None:
