@@ -37,7 +37,8 @@ def test_distribution_contains_portable_roles_and_only_current_skills(tmp_path: 
                 assert prefix + "references/" + document in names
             # References must remain navigable in both distributions, not just the checkout.
             for name in names:
-                if not name.startswith(prefix + "references/") or not name.endswith(".md"):
+                if not (name.startswith(prefix + "references/") or name in
+                        {prefix + "README.md", prefix + "MIGRATING.md"}) or not name.endswith(".md"):
                     continue
                 text = archive.read(name).decode("utf-8")
                 for link in re.findall(r"\]\(([^)\s]+)\)", text):

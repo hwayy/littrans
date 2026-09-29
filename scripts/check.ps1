@@ -32,11 +32,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to install LitTrans development dependencies."
 }
 
-& $VenvPython (Join-Path $PSScriptRoot "validate_release.py")
-if ($LASTEXITCODE -ne 0) {
-    throw "Release metadata validation failed."
-}
-
 $PreviousPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = if ($PreviousPythonPath) {
     "$SourcePath$([IO.Path]::PathSeparator)$PreviousPythonPath"
@@ -47,6 +42,11 @@ else {
 
 Push-Location $PluginRoot
 try {
+    & $VenvPython (Join-Path $PSScriptRoot "validate_release.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Release metadata validation failed."
+    }
+
     & $VenvPython -m ruff check .
     if ($LASTEXITCODE -ne 0) {
         throw "Ruff validation failed."

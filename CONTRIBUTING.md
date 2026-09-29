@@ -38,6 +38,10 @@ When changing a command, update its arguments, defaults, return value, side effe
 when changing a submission format, update its contract and validated examples. Workflow guidance
 belongs in the relevant topic reference, linked to the contract rather than duplicated.
 
+Keep `MIGRATING.md` focused on this branch's target version: preparation, supported project
+states, upgrade or rebuild, validation and recovery. Version-by-version changes belong only
+in `CHANGELOG.md`. Historical plans and validation reports are evidence, not current guarantees.
+
 ## Before opening a pull request
 
 1. Create a topic branch from `main`.

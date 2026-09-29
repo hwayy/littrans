@@ -17,7 +17,8 @@ point; `main` remains the development branch.
    - `plugins/literature-translation/src/littrans/__init__.py`
 4. Update `CHANGELOG.md` with the release date and user-visible changes, using the headings the
    changelog introduction lists, and update `plugins/literature-translation/MIGRATING.md` so it
-   takes a project from every earlier version to the new one.
+   describes only the current branch's target version. Organize migration by operations and
+   project state, not by historical release sections; keep version history in the changelog.
 5. Run `./scripts/check.ps1` (Windows) or `bash scripts/check.sh` (Linux, macOS) from the repository root; the `release-checks` workflow runs both.
 6. Review `git diff` and confirm that no PDFs, workspaces, generated artifacts, credentials, or
    local environments are tracked.

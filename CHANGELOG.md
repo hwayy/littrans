@@ -15,6 +15,24 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.3-dev.3] - 2026-09-30
+
+### Changed
+
+- Reorganized migration around the current target and project state; separated historical
+  plans from maintained operating guidance.
+- Reduced test setup and source-verification overhead without weakening review requirements.
+
+### Fixed
+
+- Eliminated the external-review lock initialization race.
+- Release checks select the current checkout before validating schemas and metadata.
+- Migration-guide history links remain usable in the standalone plugin ZIP.
+
+### Compatibility
+
+- Schema-6 projects retain the in-place upgrade path. Older projects require a fresh rebuild.
+
 ## [0.8.3-dev.2] - 2026-09-29
 
 ### Changed

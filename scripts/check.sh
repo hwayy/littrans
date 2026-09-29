@@ -29,9 +29,9 @@ fi
 
 "$VENV_PYTHON" -m pip install --quiet --disable-pip-version-check --no-build-isolation "$PLUGIN_ROOT[dev]"
 
-"$VENV_PYTHON" "$REPO_ROOT/scripts/validate_release.py"
-
 export PYTHONPATH="$SOURCE_PATH${PYTHONPATH:+:$PYTHONPATH}"
+
+"$VENV_PYTHON" "$REPO_ROOT/scripts/validate_release.py"
 
 cd "$PLUGIN_ROOT"
 "$VENV_PYTHON" -m ruff check .

@@ -2,6 +2,7 @@
 workspaces/
 .littrans-write-lock/
 tmp/
+/.tmp/
 .venv/
 /.idea/
 **/__pycache__/

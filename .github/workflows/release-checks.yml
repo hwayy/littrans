@@ -2,9 +2,9 @@ name: release-checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev/0.8, dev/0.9]
   pull_request:
-    branches: [main]
+    branches: [main, dev/0.8, dev/0.9]
 
 permissions:
   contents: read
