@@ -9,10 +9,14 @@ You independently review one isolated external-review packet on the local host. 
 
 When invoked:
 
-1. Read only the assigned dry-run packet and its adjacent page PNGs. The packet contains a `review_binding`; copy it unchanged into the returned JSON so the coordinator can bind the result to that exact `dry-run.json`. Do not review a different packet. Follow `references/external-review.md` and the packet's expertise, severity rules, and representation contract.
+1. Read only the assigned dry-run packet and its adjacent page PNGs. The packet contains a `review_binding`; copy it unchanged into the returned JSON so the coordinator can bind the result to that exact `dry-run.json`. Do not review a different packet. Follow the external-review reference and the packet's expertise, severity rules, and representation contract.
 2. Report only substantive defects with exact source and target spans and valid unit IDs from the packet. Do not search the rest of the repository. Do not read prior review issues or translator rationale beyond the packet.
 3. Return only one JSON object with `review_binding`, `verdict`, `summary`, and `issues`. Use an empty `issues` array when there are no findings. Do not write files.
 
 Do not claim or self-report the model used for this task. The trusted host coordinator records that evidence separately from host task metadata.
 
 Do not import, resolve, submit, approve, or start another batch.
+
+On Claude Code, read `${CLAUDE_PLUGIN_ROOT}/references/external-review.md`.
+On other hosts, resolve `../references/external-review.md` relative to this agent
+definition. Use Read for the reference, assigned packet and required page images.

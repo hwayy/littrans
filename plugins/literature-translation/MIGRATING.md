@@ -1,5 +1,13 @@
 # Migrating to LitTrans
 
+## 0.8.2-dev.2: Claude task paths
+
+Load the updated plugin in a fresh Claude Code session. Task workers now explicitly prefer
+the handoff's saved role instructions. Direct execution uses the expanded plugin root;
+other hosts resolve resources relative to the agent definition. No project migration or
+Codex/OpenCode agent regeneration is required. Model defaults are unchanged.
+See [Claude Code](references/host-claude.md) for dispatch and result persistence guidance.
+
 ## 0.8.2-dev.1: Codex task isolation and path resolution
 
 Schema-6 projects upgrade in place. Run `project agents PROJECT --host codex --check`
@@ -51,7 +59,7 @@ snapshots and context bindings are additional execution records, not new approva
 
 ## Upgrading older projects to 0.8
 
-This guide takes an existing project to 0.8.2-dev.1. Find the version that last wrote the project
+This guide takes an existing project to 0.8.2-dev.2. Find the version that last wrote the project
 (`plugin_version` in `derived/provenance.json`, or the `generator` block of a page ledger or
 packet; `littrans doctor` prints the installed build), then follow the path for it.
 

@@ -15,6 +15,21 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.8.2-dev.2] - 2026-09-29
+
+### Fixed
+
+- Claude plugin workers prefer task-bound role snapshots and resolve packet paths against
+  the handoff's project. Direct execution uses Claude's expanded plugin root, with an
+  agent-file-relative fallback for other hosts, including the external review reference.
+- Claude host guidance specifies namespaced agent discovery, read-only tool controls,
+  foreground completion and coordinator persistence when workers cannot save results.
+
+### Compatibility
+
+- No schema, model policy or generated Codex/OpenCode agent configuration changes.
+  Reload the plugin in a fresh Claude session. Existing task snapshots remain authoritative.
+
 ## [0.8.2-dev.1] - 2026-09-29
 
 ### Changed
