@@ -2,6 +2,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from config_fixtures import save_project
 from test_fidelity_source import approve
 from test_pr10_round8 import submit
 from test_workflow_v6 import project as workflow_project
@@ -18,14 +19,7 @@ from littrans.models import (
     UnitKind,
 )
 from littrans.representations import submit_candidates
-from littrans.storage import (
-    load_project,
-    read_json,
-    read_jsonl,
-    save_project,
-    write_json,
-    write_jsonl,
-)
+from littrans.storage import load_project, read_json, read_jsonl, write_json, write_jsonl
 from littrans.workflow import create_workflow_packet
 
 project = workflow_project

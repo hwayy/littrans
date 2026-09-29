@@ -44,6 +44,7 @@ TRANSLATION_PAYLOAD_FIELDS = {
     "target_table",
     "figure_labels",
     "reader_note",
+    "code_annotations",
     "term_proposals",
     "uncertainties",
 }
@@ -669,7 +670,7 @@ def reference_terms_yaml(terms: Iterable[dict[str, Any]]) -> str:
     return str(yaml.safe_dump({"reference_terms": grouped}, allow_unicode=True, sort_keys=False))
 
 
-AUDIT_CONTEXT_PARTS = ("document-brief", "style-guide", "approved-terms", "reference-terms")
+AUDIT_CONTEXT_PARTS = ("document-brief", "style-guide", "approved-terms", "reference-terms", "translation-policy")
 
 
 def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str, str]:
@@ -687,7 +688,19 @@ def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str,
         sort_keys=False,
     ).strip()
     reference = reference_terms_yaml(relevant_reference_terms(root, selected)).strip()
-    return {"document-brief": brief, "style-guide": style, "approved-terms": terms, "reference-terms": reference}
+    from littrans.configuration import read_settings
+    policy = read_settings(root).payload()
+    translation = policy["translation"]
+    translation.pop("equations")
+    translation["tables"].pop("presentation")
+    translation["tables"].pop("image_fallback_in_final")
+    translation["code"].pop("detect_language")
+    return {"document-brief": brief, "style-guide": style, "approved-terms": terms, "reference-terms": reference,
+            "translation-policy": json.dumps({"translation": translation,
+                                               "verification": policy["verification"],
+                                               "source_language": policy["document"]["source_language"],
+                                               "target_language": policy["document"]["target_language"]},
+                                              sort_keys=True, ensure_ascii=False)}
 
 
 def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
@@ -706,6 +719,7 @@ def _render_audit_context(parts: dict[str, str]) -> str:
     )
     if parts["reference-terms"]:
         text += f"\n# Relevant reference terminology (not gated)\n\n```yaml\n{parts['reference-terms']}\n```\n"
+    text += f"\n# Project translation policy\n\n```json\n{parts['translation-policy']}\n```\n"
     return text
 
 
@@ -772,7 +786,13 @@ def translation_memory(
             adjacent_ids.add(units[index + 1][0])
 
     ranked: list[tuple[float, int, str, str, str]] = []
+    from littrans.project import translation_map
+    minimum = config.settings.translation.memory_minimum_status
+    memory_levels = {"machine-reviewed": 0, "external-reviewed": 1, "human-approved": 2}
+    records = translation_map(root)
     for unit_id, source, target, tokens in candidates:
+        if unit_id not in records or memory_levels.get(records[unit_id].status.value, -1) < memory_levels[minimum]:
+            continue
         if unit_id in current_ids:
             continue
         adjacent = 1 if unit_id in adjacent_ids else 0
@@ -794,6 +814,7 @@ def translation_memory(
         + _memory_state_token(
             [
                 root / "project.yaml",
+                root / "settings.yaml",
                 units_path,
                 translations_path,
                 root / "glossary" / "approved.yaml",

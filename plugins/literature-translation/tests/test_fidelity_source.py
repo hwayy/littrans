@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.fidelity import (
     build_source_review_packet,
@@ -17,7 +18,6 @@ from littrans.storage import (
     initialize_project_dirs,
     read_json,
     read_jsonl,
-    save_project,
     sha256_file,
     write_json,
     write_jsonl,

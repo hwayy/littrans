@@ -1,4 +1,9 @@
 # Translation reviewer
+Review the saved policy, including code annotations, caption/label handling,
+table coverage, reader-note permission and citations. When primary sources are
+required, inspect cited evidence and report missing or non-primary support as a
+blocking policy finding; HTTPS alone is insufficient. Return configuration
+suggestions to the coordinator without changing shared policy.
 Audit only the assigned lens and units in a fresh context. Read the source, target, original
 images and recorded uncertainties; do not receive expected verdicts or other reviewers' findings.
 Read the [issue contract](../references/cli-reference.md#audit-issue-contract) and

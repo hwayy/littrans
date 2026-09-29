@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from config_fixtures import save_project
 from test_efficiency_v4 import _audit_and_approve, _make_project, _submit
 
 from littrans import external_review as external
@@ -23,7 +24,7 @@ from littrans.models import (
     PromptDelivery,
     ReviewUsage,
 )
-from littrans.storage import load_project, read_json, read_jsonl, save_project, write_json
+from littrans.storage import load_project, read_json, read_jsonl, write_json
 from littrans.tasks import claim_task, create_task, receive_task
 from littrans.workflow import workflow_next
 
@@ -113,7 +114,7 @@ def test_models_and_effort_are_mapped_without_silent_loss(tmp_path: Path) -> Non
         ExternalReviewerConfig(id="x", driver="codex-cli", command="codex", model="x", fallbacks=[])
 
 
-def test_explicit_migration_preserves_history_and_flattens_fallbacks(tmp_path: Path) -> None:
+def test_legacy_migration_refuses_to_change_historical_projects(tmp_path: Path) -> None:
     old = {
         "external_review": {
             "reviewers": [
@@ -135,16 +136,12 @@ def test_explicit_migration_preserves_history_and_flattens_fallbacks(tmp_path: P
     path = tmp_path / "project.yaml"
     path.write_text(yaml.safe_dump(old), encoding="utf-8")
     original = path.read_bytes()
-    preview = migrate_external_config(tmp_path)
-    assert path.read_bytes() == original
-    assert [item["model"] for item in preview["external_review"]["fallbacks"]] == [
-        "opus",
-        "p/m#high",
-    ]
-    applied = migrate_external_config(tmp_path, True)
-    assert Path(applied["backup"]).read_bytes() == original
-    assert not migrate_external_config(tmp_path, True)["changed"]
-    with pytest.raises(ValueError, match="external-migrate"):
+    for apply in (False, True):
+        with pytest.raises(ValueError, match="rebuild"):
+            migrate_external_config(tmp_path, apply)
+        assert path.read_bytes() == original
+    assert not list(tmp_path.glob("*.bak"))
+    with pytest.raises(ValueError, match="rebuild historical"):
         ExternalReviewConfig.model_validate(old["external_review"])
 
 

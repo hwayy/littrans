@@ -4,6 +4,7 @@ from threading import Event
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity, structure_profile
@@ -17,7 +18,6 @@ from littrans.storage import (
     project_write_lock,
     read_json,
     read_jsonl,
-    save_project,
     write_json,
     write_jsonl,
     write_yaml,

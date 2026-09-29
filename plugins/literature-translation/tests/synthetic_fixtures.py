@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from littrans import fidelity, layout_detector, layout_runtime
-from littrans.storage import load_project, save_project
+from littrans.configuration import edit
 
 
 @contextmanager
@@ -36,7 +36,5 @@ def copy_workflow_template(template: Path, destination: Path) -> Path:
     shutil.copy2(template / "oracle.pdf", destination / "oracle.pdf")
     root = destination / "project"
     shutil.copytree(template / "project", root)
-    config = load_project(root)
-    config.source_path = str(destination / "oracle.pdf")
-    save_project(root, config)
+    edit(root, "source_path", str(destination / "oracle.pdf"), local=True)
     return root

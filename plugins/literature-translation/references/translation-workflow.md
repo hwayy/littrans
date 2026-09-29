@@ -78,17 +78,16 @@ dispatch source review.
 
 See [workflow packet interfaces](cli-reference.md#workflow-contract) for stages, selectors and manifests. All model work reads
 original image evidence; a translate packet does not consume unverified transcription candidates.
-New workflow packets record host/model/reasoning_effort in their manifest and identity, resolved from
-the stage's own role in `agent_models.<host>`; each role carries its own model and effort. Either may be
-absent, which dispatches on the host's default and is reported as an advisory, never refused. The
-roles are `translate` (also `revise`), `transcribe`, `audit`, `asset-audit` and `source-review`; each
-stage runs in a fresh subagent of its agent (see host-runtimes.md). Source-review material carries
-its dispatch beside the packet, never inside it: `workflow packet --stage source-review`,
-`source review-packets --host HOST` and the `source-review` task of `workflow next` report the
-role's model and effort, while the source packet identity stays bound to content alone. Legacy
-manifests remain readable with absent policy fields; create fresh packets for an explicitly bound
-dispatch policy. `workflow status --host` uses the same override as next/packet, and
-`project models PROJECT --host HOST` reports the resolved policy with its advisories.
+New tasks save configured host/model/effort and a project policy snapshot. The shared resolver
+uses host defaults, role overrides and audit-lens overrides from `settings.yaml`; explicit null
+selects host behavior. Unsupported explicit overrides block dispatch. See
+[configuration](configuration.md) for inheritance and [host runtimes](host-runtimes.md) for
+execution support. Each model stage uses a fresh worker context.
+
+Source-review dispatch remains beside the content-bound source packet. `project models` and
+`config show --effective` use the same resolver; generated native agents use the same role policy.
+Policy changes affect task acceptance according to consumed domains. Keep old task records;
+create fresh handoffs when their policy or context is stale.
 
 Workflow coordination rechecks source authority across each selected batch's page-evidence
 closure before reusing QA. Failed authority returns `source-review`, suppresses optional asset

@@ -189,3 +189,23 @@ def test_document_navigation_and_readme_budget() -> None:
         assert_links(document, text)
     document = repository / "CONTRIBUTING.md"
     assert_links(document, document.read_text(encoding="utf-8"))
+
+
+def test_generated_configuration_contracts_and_single_target_migration() -> None:
+    from littrans import __version__
+    from littrans.configuration import yaml_read
+    from littrans.settings import preset, settings_schema
+
+    for name in ("technical-book", "research-paper"):
+        assert yaml_read(PLUGIN / "profiles" / f"{name}.yaml") == preset(name, "Example document").payload()
+    table = (PLUGIN / "references/settings-fields.md").read_text(encoding="utf-8")
+    expected = settings_schema()["x-fields"]
+    assert {row[0] for row in rows(table)} == set(expected)
+    for row in rows(table):
+        assert row[1:] == [expected[row[0]][key] for key in
+                           ("x-domain", "x-consumer", "x-change-effect")]
+    guide = PLUGIN / "MIGRATING.md"
+    text = guide.read_text(encoding="utf-8-sig")
+    assert text.startswith(f"# Migrating to LitTrans {__version__}\n")
+    assert set(re.findall(r"\b\d+\.\d+\.\d+(?:-dev\.\d+)?", text)) == {__version__}
+    assert_links(guide, text)

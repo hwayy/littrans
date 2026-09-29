@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 
+from config_fixtures import save_project
 from test_workflow_v6 import project as workflow_project
 from typer.testing import CliRunner
 
@@ -12,7 +13,7 @@ from littrans.cli import app
 from littrans.hosts import DISPATCH_ROLES, SUBAGENT_DISPATCH, dispatch_advisories
 from littrans.models import RoleDispatch
 from littrans.project import dispatch_report
-from littrans.storage import load_project, read_json, save_project
+from littrans.storage import load_project, read_json
 from littrans.workflow import create_workflow_packet, workflow_next
 
 project = workflow_project
@@ -57,11 +58,12 @@ def test_a_source_review_stage_carries_its_role_dispatch(project: Path) -> None:
 
 def test_a_configured_claude_effort_is_reported_as_not_applied(project: Path) -> None:
     assert SUBAGENT_DISPATCH["claude"].agent_effort == "high"
-    assert dispatch_report(project, "claude")["advisories"] == []
+    assert all("scout" in note or "terminology" in note for note in dispatch_report(project, "claude")["advisories"])
     config = load_project(project)
     config.agent_models["claude"]["translate"] = RoleDispatch(model="sonnet", reasoning_effort="max")
     save_project(project, config)
     notes = dispatch_report(project, "claude")["advisories"]
+    notes = [note for note in notes if "reasoning_effort" in note]
     assert len(notes) == 1
     assert "translate.reasoning_effort is set to max" in notes[0] and "not applied" in notes[0]
     assert "`effort: high`" in notes[0]

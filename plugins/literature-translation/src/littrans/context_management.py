@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from littrans.glossary import glossary_check
-from littrans.storage import load_project, read_json, sha256_file, write_json
+from littrans.storage import load_project, read_json, write_json
 
 CONTEXT_FILES = ("context/document-brief.md", "context/style-guide.md",
                  "context/source-structure.json", "glossary/approved.yaml",
@@ -14,9 +14,12 @@ CONTEXT_FILES = ("context/document-brief.md", "context/style-guide.md",
 
 def context_snapshot(root: Path) -> dict[str, Any]:
     config = load_project(root)
+    from littrans.context_config import RESOURCES, semantic
+    from littrans.settings import digest
+    values = semantic(root)
     return {"schema_version": 1, "source_sha256": config.source_sha256,
-            "files": {name: sha256_file(root / name) if (root / name).is_file() else None
-                      for name in CONTEXT_FILES}}
+            "files": {name: digest(values[key]) if values[key] is not None else None
+                      for key, name in RESOURCES.items()}}
 
 
 def check_context(root: Path) -> dict[str, Any]:

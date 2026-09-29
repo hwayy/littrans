@@ -42,6 +42,11 @@ Keep `MIGRATING.md` focused on this branch's target version: preparation, suppor
 states, upgrade or rebuild, validation and recovery. Version-by-version changes belong only
 in `CHANGELOG.md`. Historical plans and validation reports are evidence, not current guarantees.
 
+For configuration changes, run `scripts/update_configuration_reference.py` with the checkout's
+`src` on `PYTHONPATH`. It generates schemas, expanded preset examples, field ownership and
+configuration CLI tables from production models. Extend the contract and behavior tests;
+do not hand-maintain another table of defaults.
+
 ## Before opening a pull request
 
 1. Create a topic branch from `main`.

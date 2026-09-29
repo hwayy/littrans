@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.fidelity_models import FidelityAsset, FidelityFragment
 from littrans.models import AssetTranslation, ProjectConfig, SourceUnit, TranslationRecord
@@ -22,14 +23,7 @@ from littrans.representations import (
     validate_asset_references,
     validate_asset_translations,
 )
-from littrans.storage import (
-    load_project,
-    read_json,
-    read_jsonl,
-    save_project,
-    write_json,
-    write_jsonl,
-)
+from littrans.storage import load_project, read_json, read_jsonl, write_json, write_jsonl
 
 
 @pytest.fixture
@@ -56,6 +50,10 @@ def project(tmp_path: Path) -> Path:
     write_jsonl(root / "derived/fidelity-assets.jsonl", assets)
     write_jsonl(root / "derived/units.jsonl", [SourceUnit(unit_id="u1", kind="paragraph", page=1,
         bbox=(0, 0, 80, 40), source_text="For {{asset:a1}} and {{asset:a2}}.", source_hash="source-one", confidence=1)])
+    from littrans.configuration import edit
+    edit(root, "translation.equations.inline", "reviewed-transcription")
+    edit(root, "translation.equations.display", "reviewed-transcription")
+    edit(root, "translation.tables.presentation", "reviewed-transcription")
     return root
 
 
@@ -241,14 +239,8 @@ def test_cursor_dispatches_on_its_own_policy_without_imposing_codex_profile(proj
         "transcribe": RoleDispatch(model="host-configured-model", reasoning_effort="high")
     }
     save_project(project, config)
-    packet = build_asset_packet(project, ["a1"])
-    assert packet["host"] == "cursor"
-    assert packet["model"] == "host-configured-model"
-    payload = {"packet_id": packet["packet_id"], "author_task_id": "cursor-1", "model": "host-configured-model",
-               "reasoning_effort": "high",
-               "image_evidence": packet["required_images"], "candidates": [{"asset_id": "a1", "format": "latex", "content": "x=1"}]}
-    write_json(project / "candidate.json", payload)
-    assert submit_candidates(project, project / "candidate.json")["candidate_count"] == 1
+    with pytest.raises(ValueError, match="cannot apply"):
+        build_asset_packet(project, ["a1"])
 
 
 def test_image_language_cannot_be_satisfied_by_preserving_only_the_marker(project: Path) -> None:

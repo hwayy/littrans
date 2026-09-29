@@ -705,7 +705,10 @@ def validate_asset_translations(root: Path, source: str, supplements: list[Any],
         body = ASSET_RE.sub("", "\n".join(texts)).strip()
         if not body or (load_project(root).target_language == "zh-CN" and not re.search(r"[\u3400-\u9fff]", body)):
             errors.append({"code": "asset-language-untranslated", "message": "Source image language needs a translated companion, or language_present=false with notes when the image holds only notation: " + key})
+    preserve_labels = load_project(root).settings.translation.figures.internal_labels == "preserve"
     for key in ids & assets.keys():
+        if assets[key]["kind"] == "figure" and preserve_labels:
+            continue
         if (assets[key]["kind"] in {"mixed-region", "table", "figure"} or assets[key].get("formula_conditions")) and key not in mapped:
             # Old structured table records remain expressible; image-only table
             # records must use the explicit per-asset language contract.
@@ -899,9 +902,11 @@ def resolve_asset_html(root: Path, text: str, output: Path, *, originals_only: b
         if key not in assets:
             raise ValueError("Unknown asset reference: " + key)
         candidate = None
-        if not originals_only and status[key]["state"] == "verified":
+        from littrans.policy import wants_transcription
+        original = originals_only or not wants_transcription(root, assets[key])
+        if not original and status[key]["state"] == "verified":
             candidate = read_json(_directory(root) / "candidates" / f"{status[key]['candidate_sha256']}.json")
-        return _asset_html(root, assets[key], output, candidate, candidate is not None, originals_only=originals_only)
+        return _asset_html(root, assets[key], output, candidate, candidate is not None, originals_only=original)
 
     return ASSET_RE.sub(replace, text)
 
@@ -939,14 +944,16 @@ def resolve_asset_markdown(root: Path, text: str, output: Path, *, originals_onl
             raise ValueError("Unknown asset reference: " + key)
         asset = assets[key]
         pictures = " ".join(f'![原式 {key}](<{_href(root, fragment["png_path"], output)}>)' for fragment in asset["fragments"])
-        if not originals_only and status[key]["state"] == "verified":
+        from littrans.policy import wants_transcription
+        original = originals_only or not wants_transcription(root, asset)
+        if not original and status[key]["state"] == "verified":
             sha = status[key]["candidate_sha256"]
             candidate = read_json(_directory(root) / "candidates" / f"{sha}.json")
             if candidate["format"] == "latex":
                 delimiter = "$$" if asset.get("display", False) else "$"
                 return f'{delimiter}{candidate["content"]}{delimiter} {pictures}（已核验；原式备查）'
             return _candidate_markdown(candidate) + "\n\n" + pictures + "（已核验；原式备查）"
-        if originals_only:
+        if original:
             return pictures
         return pictures + "（转写未完成／待核验）"
 

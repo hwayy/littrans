@@ -1,0 +1,541 @@
+{
+  "$defs": {
+    "BatchSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "max_source_words": {
+          "minimum": 100,
+          "title": "Max Source Words",
+          "type": "integer"
+        },
+        "soft_max_assets": {
+          "minimum": 1,
+          "title": "Soft Max Assets",
+          "type": "integer"
+        },
+        "preserve_heading_boundaries": {
+          "title": "Preserve Heading Boundaries",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "max_source_words",
+        "soft_max_assets",
+        "preserve_heading_boundaries"
+      ],
+      "title": "BatchSettings",
+      "type": "object"
+    },
+    "CodeSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "translate_comments": {
+          "title": "Translate Comments",
+          "type": "boolean"
+        },
+        "translate_string_literals": {
+          "title": "Translate String Literals",
+          "type": "boolean"
+        },
+        "detect_language": {
+          "title": "Detect Language",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "translate_comments",
+        "translate_string_literals",
+        "detect_language"
+      ],
+      "title": "CodeSettings",
+      "type": "object"
+    },
+    "DispatchOverride": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Effort"
+        }
+      },
+      "title": "DispatchOverride",
+      "type": "object"
+    },
+    "DocumentSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "source_language": {
+          "minLength": 1,
+          "title": "Source Language",
+          "type": "string"
+        },
+        "target_language": {
+          "minLength": 1,
+          "title": "Target Language",
+          "type": "string"
+        },
+        "rights_status": {
+          "minLength": 1,
+          "title": "Rights Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source_language",
+        "target_language",
+        "rights_status"
+      ],
+      "title": "DocumentSettings",
+      "type": "object"
+    },
+    "EquationSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "inline": {
+          "enum": [
+            "original",
+            "reviewed-transcription"
+          ],
+          "title": "Inline",
+          "type": "string"
+        },
+        "display": {
+          "enum": [
+            "original",
+            "reviewed-transcription"
+          ],
+          "title": "Display",
+          "type": "string"
+        }
+      },
+      "required": [
+        "inline",
+        "display"
+      ],
+      "title": "EquationSettings",
+      "type": "object"
+    },
+    "ExternalSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "reviewers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReviewerSettings"
+          },
+          "title": "Reviewers",
+          "type": "object"
+        },
+        "primary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Primary"
+        },
+        "fallbacks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Fallbacks",
+          "type": "array"
+        },
+        "recheck": {
+          "$ref": "#/$defs/RecheckSettings"
+        },
+        "domain_expertise": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Domain Expertise"
+        },
+        "timeout_seconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "enabled",
+        "reviewers",
+        "primary",
+        "fallbacks",
+        "recheck",
+        "domain_expertise",
+        "timeout_seconds"
+      ],
+      "title": "ExternalSettings",
+      "type": "object"
+    },
+    "FigureSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "translate_caption": {
+          "title": "Translate Caption",
+          "type": "boolean"
+        },
+        "internal_labels": {
+          "enum": [
+            "preserve",
+            "explain-below"
+          ],
+          "title": "Internal Labels",
+          "type": "string"
+        }
+      },
+      "required": [
+        "translate_caption",
+        "internal_labels"
+      ],
+      "title": "FigureSettings",
+      "type": "object"
+    },
+    "HostPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "$ref": "#/$defs/DispatchOverride"
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DispatchOverride"
+          },
+          "title": "Roles",
+          "type": "object"
+        },
+        "audit_lenses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DispatchOverride"
+          },
+          "title": "Audit Lenses",
+          "type": "object"
+        },
+        "wave_size": {
+          "minimum": 1,
+          "title": "Wave Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "defaults",
+        "roles",
+        "audit_lenses",
+        "wave_size"
+      ],
+      "title": "HostPolicy",
+      "type": "object"
+    },
+    "PresetOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "sha256"
+      ],
+      "title": "PresetOrigin",
+      "type": "object"
+    },
+    "ReaderNoteSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_modernization": {
+          "title": "Allow Modernization",
+          "type": "boolean"
+        },
+        "require_primary_https_sources": {
+          "title": "Require Primary Https Sources",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allow_modernization",
+        "require_primary_https_sources"
+      ],
+      "title": "ReaderNoteSettings",
+      "type": "object"
+    },
+    "RecheckSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_below": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence Below",
+          "type": "number"
+        },
+        "severities": {
+          "items": {
+            "enum": [
+              "blocker",
+              "major",
+              "minor",
+              "suggestion"
+            ],
+            "type": "string"
+          },
+          "title": "Severities",
+          "type": "array"
+        }
+      },
+      "required": [
+        "confidence_below",
+        "severities"
+      ],
+      "title": "RecheckSettings",
+      "type": "object"
+    },
+    "ReviewerSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "driver": {
+          "enum": [
+            "claude-code",
+            "antigravity",
+            "cursor-cli",
+            "codex-cli",
+            "opencode-cli"
+          ],
+          "title": "Driver",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "model_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Identity"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Effort"
+        }
+      },
+      "required": [
+        "driver",
+        "model",
+        "model_identity",
+        "effort"
+      ],
+      "title": "ReviewerSettings",
+      "type": "object"
+    },
+    "TableSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "translation": {
+          "enum": [
+            "cells",
+            "cells-or-region"
+          ],
+          "title": "Translation",
+          "type": "string"
+        },
+        "presentation": {
+          "enum": [
+            "original",
+            "reviewed-transcription"
+          ],
+          "title": "Presentation",
+          "type": "string"
+        },
+        "image_fallback_in_final": {
+          "title": "Image Fallback In Final",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "translation",
+        "presentation",
+        "image_fallback_in_final"
+      ],
+      "title": "TableSettings",
+      "type": "object"
+    },
+    "TranslationSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/CodeSettings"
+        },
+        "equations": {
+          "$ref": "#/$defs/EquationSettings"
+        },
+        "figures": {
+          "$ref": "#/$defs/FigureSettings"
+        },
+        "tables": {
+          "$ref": "#/$defs/TableSettings"
+        },
+        "reader_notes": {
+          "$ref": "#/$defs/ReaderNoteSettings"
+        },
+        "memory_minimum_status": {
+          "enum": [
+            "machine-reviewed",
+            "external-reviewed",
+            "human-approved"
+          ],
+          "title": "Memory Minimum Status",
+          "type": "string"
+        },
+        "prose_punctuation": {
+          "enum": [
+            "chinese",
+            "preserve"
+          ],
+          "title": "Prose Punctuation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "equations",
+        "figures",
+        "tables",
+        "reader_notes",
+        "memory_minimum_status",
+        "prose_punctuation"
+      ],
+      "title": "TranslationSettings",
+      "type": "object"
+    },
+    "VerificationSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "block_unfinished_transcription": {
+          "title": "Block Unfinished Transcription",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "block_unfinished_transcription"
+      ],
+      "title": "VerificationSettings",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "preset": {
+      "$ref": "#/$defs/PresetOrigin"
+    },
+    "document": {
+      "$ref": "#/$defs/DocumentSettings"
+    },
+    "batch": {
+      "$ref": "#/$defs/BatchSettings"
+    },
+    "outline_source": {
+      "enum": [
+        "pdf-bookmarks",
+        "font-and-numbering",
+        "auto"
+      ],
+      "title": "Outline Source",
+      "type": "string"
+    },
+    "agents": {
+      "additionalProperties": {
+        "$ref": "#/$defs/HostPolicy"
+      },
+      "title": "Agents",
+      "type": "object"
+    },
+    "translation": {
+      "$ref": "#/$defs/TranslationSettings"
+    },
+    "verification": {
+      "$ref": "#/$defs/VerificationSettings"
+    },
+    "external_review": {
+      "$ref": "#/$defs/ExternalSettings"
+    }
+  },
+  "required": [
+    "schema_version",
+    "preset",
+    "document",
+    "batch",
+    "outline_source",
+    "agents",
+    "translation",
+    "verification",
+    "external_review"
+  ],
+  "title": "ProjectSettings",
+  "type": "object"
+}

@@ -79,9 +79,9 @@ def _unit(uid: str, text: str, bbox: list[float], page: int = 2, kind: str = "pa
 
 def test_scaffold_recognises_the_slashed_spelling_of_its_ignore_pair(tmp_path: Path) -> None:
     ignore = tmp_path / ".gitignore"
-    ignore.write_text("/.littrans/*\n!/.littrans/work/\noutput/\n", encoding="utf-8")
+    ignore.write_text("/.littrans/*\n!/.littrans/work/\noutput/\nsettings.local.yaml\n", encoding="utf-8")
     assert ensure_project_ignore(tmp_path) is False
-    assert ignore.read_text(encoding="utf-8") == "/.littrans/*\n!/.littrans/work/\noutput/\n"
+    assert ignore.read_text(encoding="utf-8") == "/.littrans/*\n!/.littrans/work/\noutput/\nsettings.local.yaml\n"
     ignore.write_text("output/\n", encoding="utf-8")
     assert ensure_project_ignore(tmp_path) is True
     assert ensure_project_ignore(tmp_path) is False
@@ -156,8 +156,10 @@ def test_a_rule_inside_the_box_is_kept_whatever_its_distance_from_the_glyph_boxe
 # --- LT-052 ------------------------------------------------------------------------------
 
 def test_a_figure_unit_from_a_native_label_block_takes_the_figure_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from config_fixtures import save_project
+
     from littrans.models import ProjectConfig
-    from littrans.storage import initialize_project_dirs, save_project, sha256_file
+    from littrans.storage import initialize_project_dirs, sha256_file
 
     monkeypatch.setattr(fidelity, "detect_layout", lambda images, output: {"status": "unavailable", "reason": "isolated test", "pages": {}})
     initialize_project_dirs(tmp_path)
@@ -485,8 +487,10 @@ def test_line_end_punctuation_reads_the_next_native_line() -> None:
 # --- LT-068 ------------------------------------------------------------------------------
 
 def test_the_override_channel_coalesces_adjacent_inline_fragments_too(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from config_fixtures import save_project
+
     from littrans.models import ProjectConfig
-    from littrans.storage import save_project, sha256_file
+    from littrans.storage import sha256_file
 
     pdf = project / "source/book.pdf"
     with fitz.open() as doc:
@@ -564,8 +568,10 @@ def test_bold_citation_keys_are_not_bold_variables() -> None:
 # --- LT-075 ------------------------------------------------------------------------------
 
 def test_an_override_naming_a_moved_asset_is_refused_with_the_page_and_both_ids(project: Path) -> None:
+    from config_fixtures import save_project
+
     from littrans.models import ProjectConfig
-    from littrans.storage import save_project, sha256_file
+    from littrans.storage import sha256_file
 
     pdf = project / "source/book.pdf"
     with fitz.open() as doc:

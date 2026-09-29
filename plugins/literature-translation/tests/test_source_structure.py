@@ -135,19 +135,22 @@ def test_header_is_omitted_when_only_part_of_block_overlaps_label():
 
 def test_partial_paragraph_selection_is_rejected_before_approval(tmp_path):
     import pytest
+    from config_fixtures import save_project
 
     from littrans.batching import create_batches
     from littrans.models import ProjectConfig
-    from littrans.storage import initialize_project_dirs, save_project, write_jsonl
+    from littrans.storage import initialize_project_dirs, write_jsonl
 
     initialize_project_dirs(tmp_path)
+    from littrans.storage import sha256_file
+    (tmp_path / "source.pdf").write_bytes(b"synthetic-source-binding")
     save_project(
         tmp_path,
         ProjectConfig(
             project_id="structure",
             title="Structure",
             source_path="source.pdf",
-            source_sha256="a" * 64,
+            source_sha256=sha256_file(tmp_path / "source.pdf"),
             source_pages=1,
             profile="technical-book",
         ),
@@ -288,18 +291,22 @@ def test_continuation_skips_omitted_headers_but_never_missing_pages(tmp_path):
 
 
 def test_batch_budget_cannot_split_theorem(tmp_path, monkeypatch):
+    from config_fixtures import save_project
+
     from littrans.batching import create_batches
     from littrans.models import ProjectConfig
-    from littrans.storage import initialize_project_dirs, save_project, write_jsonl
+    from littrans.storage import initialize_project_dirs, write_jsonl
 
     initialize_project_dirs(tmp_path)
+    from littrans.storage import sha256_file
+    (tmp_path / "source.pdf").write_bytes(b"synthetic-source-binding")
     save_project(
         tmp_path,
         ProjectConfig(
             project_id="statement",
             title="Statement",
             source_path="source.pdf",
-            source_sha256="a" * 64,
+            source_sha256=sha256_file(tmp_path / "source.pdf"),
             source_pages=1,
             profile="technical-book",
         ),

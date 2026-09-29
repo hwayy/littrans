@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from fidelity_fixtures import (
     correct_plain_fixture_units,
     make_asset_fixture,
@@ -78,7 +79,6 @@ from littrans.storage import (
     load_project,
     read_json,
     read_jsonl,
-    save_project,
     sha256_file,
     sha256_text,
     write_json,
@@ -536,7 +536,7 @@ def test_historical_benchmark_rejects_v3_and_rebuild_preserves_history(
     rebuilt = tmp_path / "rebuilt"
     result = rebuild_project(root, rebuilt)
 
-    assert result.schema_version == 6
+    assert result.schema_version == 7
     assert result.source_sha256 == config.source_sha256
     assert not read_jsonl(rebuilt / "translations" / "current.jsonl", TranslationRecord)
     assert not list((rebuilt / "batches").glob("*/manifest.yaml"))
@@ -4114,7 +4114,7 @@ def test_early_schemas_require_rebuild_and_preserve_original_configuration(tmp_p
     with pytest.raises(ValueError, match="project rebuild OLD NEW"):
         workflow_next(root)
     rebuilt = tmp_path / "rebuilt"
-    assert rebuild_project(root, rebuilt).schema_version == 6
+    assert rebuild_project(root, rebuilt).schema_version == 7
     assert (root / "project.yaml").read_bytes() == before
     assert not list((rebuilt / "batches").iterdir())
 
@@ -4272,7 +4272,7 @@ def test_rebuild_initialization_failure_preserves_history_and_allows_retry(tmp_p
     assert not rebuilt.exists()
     assert before == {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     monkeypatch.setattr(project_module, "initialize_project", original)
-    assert rebuild_project(root, rebuilt).schema_version == 6
+    assert rebuild_project(root, rebuilt).schema_version == 7
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

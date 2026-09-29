@@ -168,13 +168,13 @@ littrans project init SOURCE PROJECT [OPTIONS]
 
 | Parameter | Type | Required | Default | Choices | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `SOURCE` | `path` | yes | `required` | `[]` | Source PDF path. |
-| `PROJECT` | `path` | yes | `required` | `[]` | Project directory containing project.yaml. |
-| `--profile` | `str` | no | `"technical-book"` | `[]` | Document profile name or path. |
-| `--title` | `str` | no | `null` | `[]` | Document title; omitted uses source filename. |
-| `--source-language` | `str` | no | `"en"` | `[]` | Source language tag. |
-| `--target-language` | `str` | no | `"zh-CN"` | `[]` | Target language tag. |
-| `--repo-root` | `path` | no | `null` | `[]` | Containing repository for project records. |
+| `SOURCE` | `path` | yes | `required` | `[]` | Command parameter; see command description. |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `--preset/--profile` | `str` | no | `"technical-book"` | `[]` | Command parameter; see command description. |
+| `--title` | `str` | no | `null` | `[]` | Command parameter; see command description. |
+| `--source-language` | `str` | no | `"en"` | `[]` | Command parameter; see command description. |
+| `--target-language` | `str` | no | `"zh-CN"` | `[]` | Command parameter; see command description. |
+| `--repo-root` | `path` | no | `null` | `[]` | Where the handbook, records, ledger and launcher go when the project is nested in a larger repository (default: PROJECT). |
 
 Writes project.yaml, context, glossary and record scaffold; records the PDF path without copying it. Returns [ProjectConfig](#model-projectconfig) plus scaffold. Title defaults from the source filename; `--repo-root` must contain PROJECT. Refuses a destination that already contains project.yaml; use scaffold for missing record files and the migration guide for existing projects.
 
@@ -993,7 +993,7 @@ littrans translation review external PROJECT BATCH_ID --dry-run
 
 ### littrans translation review external-migrate
 
-Migrate legacy external-review configuration.
+Retained entry for older callers; no in-place migration is supported in this branch.
 
 ```text
 littrans translation review external-migrate PROJECT [OPTIONS]
@@ -1004,7 +1004,9 @@ littrans translation review external-migrate PROJECT [OPTIONS]
 | `PROJECT` | `path` | yes | `required` | `[]` | Project directory containing project.yaml. |
 | `--apply/--no-apply` | `boolean` | no | `false` | `[]` | Apply the operation. |
 
-Default previews only. `--apply` backs up and rewrites project.yaml, selecting the first reviewer and flattening ordered fallbacks. Returns changed/applied flags and details. Preserves historical review records.
+Unsupported project formats fail with a rebuild instruction, without writes. For v7 projects,
+returns changed=false and applied=false with config CLI next actions; `--apply` cannot rewrite
+the manifest. Manage reviewer definitions through `config apply`.
 
 Example:
 
@@ -1315,21 +1317,16 @@ Examples with placeholder fingerprints illustrate shape only and must be bound t
 
 ### Project configuration
 
-`project.yaml` serializes [ProjectConfig](#model-projectconfig). `source_path` can be absolute
-or project-relative; `source_sha256` binds the original PDF. Source changes are refused by
-consumers until a new project/source preparation establishes appropriate evidence. The current
-project schema is 6. `record_root_relative` is `.` or a slash-separated chain of `..` components.
+`project.yaml` is the immutable v7 source/project manifest. Shared policies are complete,
+versioned `settings.yaml` objects; `settings.local.yaml` holds ignored source and executable
+bindings. Runtime state is in `derived/project-state.json`. See [configuration](configuration.md)
+and the generated [field reference](settings-fields.md) for the authoritative settings contract.
+Older project versions are rejected. Source rebindings must match the manifest hash.
 
-`agent_models` maps host names to role maps. Roles are `translate`, `transcribe`, `audit`,
-`asset-audit`, `source-review`; each value is [RoleDispatch](#model-roledispatch). Models and efforts
-are dispatch values, not verified served identities. Defaults are seeded from the bundled host
-model profile at project creation; absent fields preserve host defaults. Legacy flat policies are
-normalized on load. `external_review` is absent/null or [ExternalReviewConfig](#model-externalreviewconfig).
-
-A document profile is a YAML object selected by built-in name or existing file path. Built-in
-profiles and their batching/quality/render settings live in the bundled `profiles` directory;
-the loader does not impose a separate closed profile schema. Batch word targets use
-`batch.max_source_words` (fallback 900). Keep custom profile files accessible when resuming.
+Presets expand at initialization and explicit reset; runtime never loads a profile file.
+Use `config apply` for related changes and `config show --effective --host HOST` to inspect
+inheritance, origins and unsupported overrides. `ProjectConfig` below is an internal resolved
+runtime view, not the on-disk settings format.
 
 ### Context and glossary
 
@@ -1855,33 +1852,36 @@ No packet creation or task-readiness report runs a model.
 
 **Configuration**
 
-Configure one fixed reviewer and an ordered, flat failure fallback chain in `project.yaml`:
+Configure reviewers by stable ID in `settings.yaml` through `config apply`:
 
 ```yaml
 external_review:
-  schema_version: 2
   enabled: true
-  reviewer:
-    id: primary
-    driver: codex-cli
-    command: codex
-    model: YOUR_MODEL
-    effort: high
-  fallbacks:
-    - id: backup
-      driver: opencode-cli
-      command: opencode
-      model: PROVIDER/MODEL
+  reviewers:
+    primary:
+      driver: codex-cli
+      model: YOUR_MODEL
+      model_identity: null
       effort: high
+    backup:
+      driver: opencode-cli
+      model: PROVIDER/MODEL
+      model_identity: null
+      effort: high
+  primary: primary
+  fallbacks: [backup]
+  domain_expertise: null
+  timeout_seconds: 330
   recheck:
     confidence_below: 0.9
     severities: [blocker, major]
 ```
 
-Each entry independently supports `model`, optional `model_identity` and `effort`.
-Choose models and supported effort levels from the local CLI/provider configuration; the
-plugin supplies no external provider/model default. Omitted effort uses the model's CLI
-default. Invalid or unsupported options must not be silently dropped.
+Apply this group as part of a complete candidate settings file. Bind executable paths using
+`config set PROJECT commands.primary PATH --local`; otherwise use the driver PATH command.
+Model identity comes from CLI metadata. Explicit null effort uses the driver's default.
+A finding requires recheck when confidence is below the threshold **or** severity belongs
+to the configured set. Inconclusive overall verdicts also require recheck.
 
 | Driver | Model and effort mapping |
 | --- | --- |
@@ -1972,7 +1972,7 @@ consumers should not require cache-hit output to contain fresh-run telemetry.
 | assets status | assets map with state, candidate_sha256 (or null), semantic_uncertainty, reviewer_uncertainty and conditional diagnostics; counts by state |
 | context glossary lookup | selection (selector, unit_count when unit-scoped, scope_applied), approved array, reference map of kind to entry arrays, approved_total, reference_total |
 | context glossary check | prepared_units; approved with total/never_matched; reference with total/by_kind/never_matched; candidates with total |
-| external-migrate | changed, applied; when changed, external_review configuration; when applied, backup path |
+| external-migrate | changed=false, applied=false and config next_actions for v7; rejects historical projects |
 | external review dry-run | schema_version=5, executed=false, batch_id, translation_fingerprint, scope, covered_unit_ids, read_only_context_unit_ids, packet_path, packet_sha256, context_fingerprint, page_sha256s, prompt_version, calls |
 
 Layout `identity` reports configured_python, resolved_python, pyvenv_home, pyvenv_version,
@@ -2027,9 +2027,13 @@ also apply. Models shown only as generated output are not writable approval inte
 
 ### Model ProjectConfig
 
+Internal runtime view, assembled from the v7 manifest, saved settings and state. This is not
+the `project.yaml` file format. See [configuration](configuration.md) and `config schema` for
+persistent settings; generated project schemas describe the separate manifest.
+
 | Field | Type | Required | Default | Constraints / meaning |
 | --- | --- | --- | --- | --- |
-| `schema_version` | integer | no | `6` | Serialized record schema version; distinct from the plugin release version. |
+| `schema_version` | integer | no | `7` | Runtime project schema version; distinct from the plugin release version. |
 | `project_id` | string | yes | `required` | Project identifier assigned at initialization. |
 | `title` | string | yes | `required` | Human-readable document title. |
 | `source_path` | string | yes | `required` | Absolute or project-relative PDF path. |
@@ -2212,6 +2216,7 @@ also apply. Models shown only as generated output are not writable approval inte
 | `asset_translations` | array of [AssetTranslation](#model-assettranslation) | no | `[]` | Image-language companions keyed by original asset ID. |
 | `revision` | integer | no | `1` | {"minimum": 1} |
 | `reader_note` | [ReaderNote](#model-readernote) or null | no | `null` | Optional supplemental note with source attribution. |
+| `code_annotations` | array | no | `[]` | Saved policy or supplemental code annotations; see configuration reference. |
 | `term_proposals` | array of [TermProposal](#model-termproposal) | no | `[]` | Unapproved terminology proposals from the translator. |
 | `uncertainties` | array of string | no | `[]` | Unresolved translation questions recorded with the submission. |
 | `status` | [ProjectStatus](#enum-projectstatus) | no | `"draft"` | Stored state; importers control approval transitions. |
@@ -2332,8 +2337,8 @@ also apply. Models shown only as generated output are not writable approval inte
 | `batch_ids` | array of string | yes | `required` | {"maxItems": 9, "minItems": 1} |
 | `lens` | string or null | no | `null` | Audit lens; required and validated for audit packets/runs. |
 | `host` | string or null | no | `null` | Resolved coordination host. |
-| `model` | string or null | no | `null` | Dispatch model for the stage from agent_models.<host>: the value passed to the host's task launcher (alias or concrete id, host-specific), echoed by submissions. Not the served model. |
-| `reasoning_effort` | string or null | no | `null` | Dispatched reasoning effort from agent_models.<host>, echoed by submissions. |
+| `model` | string or null | no | `null` | Dispatch model for the stage from saved settings agents.<host>: the value passed to the host's task launcher (alias or concrete id, host-specific), echoed by submissions. Not the served model. |
+| `reasoning_effort` | string or null | no | `null` | Dispatched reasoning effort from saved settings agents.<host>, echoed by submissions. |
 | `unit_ids` | array of string | yes | `required` | Source units in the record's selected scope. |
 | `unit_fingerprints` | map of string | yes | `required` | Unit IDs mapped to review-input fingerprints. |
 | `batch_unit_ids` | object | no | `{}` | {"patternProperties": {"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$": {"items": {"type": "string"}, "type": "array"}}} |
@@ -2365,6 +2370,8 @@ also apply. Models shown only as generated output are not writable approval inte
 | `instructions` | map of string | yes | `required` | Saved instruction paths and hashes. |
 | `dispatch` | object | yes | `required` | Resolved host/role policy and dispatch information. |
 | `source_sha256` | string | yes | `required` | Original PDF SHA-256. |
+| `policy_snapshot` | object | yes | `required` | Saved policy or supplemental code annotations; see configuration reference. |
+| `policy_domains` | object | yes | `required` | Saved policy or supplemental code annotations; see configuration reference. |
 | `source_bindings` | map of string | no | `{}` | Selected unit fingerprints for task receipt validation. |
 | `batch_binding` | object | no | `{}` | Snapshot of the translation batch manifest. |
 
@@ -2581,6 +2588,201 @@ values a particular command rejects; command-specific constraints still apply.
 ### Enum UnitKind
 
 `heading`, `paragraph`, `list_item`, `note`, `code`, `equation`, `figure`, `caption`, `table`, `footnote`, `bibliography`.
+
+## Configuration management
+
+### littrans config show
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `--local/--no-local` | `boolean` | no | `false` | `[]` | Select machine bindings; cannot override project policy. |
+| `--effective/--no-effective` | `boolean` | no | `false` | `[]` | Resolve host and role inheritance. |
+| `--host` | `str` | no | `"auto"` | `[]` | Coordination host or auto. |
+
+Example:
+
+```text
+littrans config show --help
+```
+
+### littrans config get
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `KEY` | `str` | yes | `required` | `[]` | Dot-separated configuration key. |
+| `--local/--no-local` | `boolean` | no | `false` | `[]` | Select machine bindings; cannot override project policy. |
+| `--effective/--no-effective` | `boolean` | no | `false` | `[]` | Resolve host and role inheritance. |
+| `--host` | `str` | no | `"auto"` | `[]` | Coordination host or auto. |
+
+Example:
+
+```text
+littrans config get --help
+```
+
+### littrans config schema
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `--local/--no-local` | `boolean` | no | `false` | `[]` | Select machine bindings; cannot override project policy. |
+
+Example:
+
+```text
+littrans config schema --help
+```
+
+### littrans config validate
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `--host` | `str` | no | `"auto"` | `[]` | Coordination host or auto. |
+
+Example:
+
+```text
+littrans config validate --help
+```
+
+### littrans config set
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `KEY` | `str` | yes | `required` | `[]` | Dot-separated configuration key. |
+| `VALUE` | `str` | yes | `required` | `[]` | String value unless --json is supplied. |
+| `--json` | `boolean` | no | `false` | `[]` | Parse VALUE as JSON. |
+| `--local/--no-local` | `boolean` | no | `false` | `[]` | Select machine bindings; cannot override project policy. |
+| `--dry-run/--no-dry-run` | `boolean` | no | `false` | `[]` | Validate and show changes without writing. |
+
+Example:
+
+```text
+littrans config set --help
+```
+
+### littrans config unset
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `KEY` | `str` | yes | `required` | `[]` | Dot-separated configuration key. |
+| `--local/--no-local` | `boolean` | no | `false` | `[]` | Select machine bindings; cannot override project policy. |
+| `--dry-run/--no-dry-run` | `boolean` | no | `false` | `[]` | Validate and show changes without writing. |
+
+Example:
+
+```text
+littrans config unset --help
+```
+
+### littrans config apply
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `FILE` | `path` | yes | `required` | `[]` | Complete candidate YAML file. |
+| `--local/--no-local` | `boolean` | no | `false` | `[]` | Select machine bindings; cannot override project policy. |
+| `--dry-run/--no-dry-run` | `boolean` | no | `false` | `[]` | Validate and show changes without writing. |
+| `--expect` | `str` | no | `null` | `[]` | Require this semantic SHA256 before writing. |
+
+Example:
+
+```text
+littrans config apply --help
+```
+
+### littrans config reset
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `--preset` | `str` | yes | `required` | `[]` | Initialization preset name. |
+| `--dry-run/--no-dry-run` | `boolean` | no | `false` | `[]` | Validate and show changes without writing. |
+
+Example:
+
+```text
+littrans config reset --help
+```
+
+### littrans config presets
+
+See [configuration](configuration.md) for semantics and effects.
+
+No command-specific parameters.
+
+Example:
+
+```text
+littrans config presets --help
+```
+
+### littrans context show
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `RESOURCE` | `str` | yes | `required` | `[]` | Fixed context resource name. |
+
+Example:
+
+```text
+littrans context show --help
+```
+
+### littrans context validate
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `--resource` | `str` | no | `null` | `[]` | Fixed context resource name. |
+
+Example:
+
+```text
+littrans context validate --help
+```
+
+### littrans context apply
+
+See [configuration](configuration.md) for semantics and effects.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory. |
+| `MANIFEST` | `path` | yes | `required` | `[]` | YAML mapping resources to candidate files, plus a decision reason. |
+| `--dry-run/--no-dry-run` | `boolean` | no | `false` | `[]` | Validate and show changes without writing. |
+| `--expect` | `str` | no | `null` | `[]` | Require this semantic SHA256 before writing. |
+
+Example:
+
+```text
+littrans context apply --help
+```
 
 ## Compatibility aliases
 

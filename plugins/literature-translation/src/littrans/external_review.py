@@ -354,6 +354,7 @@ def _external_review_context_fingerprint(
             if unit.unit_id in read_only_ids
         )
     )
+    from littrans.configuration import policy_domains
     return sha256_text(
         "external-review-context-v2|"
         + PROMPT_VERSION
@@ -363,6 +364,7 @@ def _external_review_context_fingerprint(
         + audit_context_fingerprint(root, selected_units)
         + "|"
         + read_only_fingerprint
+        + "|" + policy_domains(load_project(root).settings.payload())["external"]
     )
 
 
@@ -1448,7 +1450,7 @@ def _invoke(
                         text=True,
                         encoding="utf-8",
                         errors="replace",
-                        timeout=EXTERNAL_CLI_TIMEOUT_SECONDS,
+                        timeout=reviewer._timeout_seconds,
                         check=False,
                     )
                 except subprocess.TimeoutExpired as exc:

@@ -47,6 +47,46 @@
       "title": "AssetTranslation",
       "type": "object"
     },
+    "CodeAnnotation": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Id"
+        },
+        "kind": {
+          "enum": [
+            "comment",
+            "string"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "target"
+      ],
+      "title": "CodeAnnotation",
+      "type": "object"
+    },
     "FigureLabel": {
       "additionalProperties": false,
       "properties": {
@@ -253,6 +293,13 @@
         }
       ],
       "default": null
+    },
+    "code_annotations": {
+      "items": {
+        "$ref": "#/$defs/CodeAnnotation"
+      },
+      "title": "Code Annotations",
+      "type": "array"
     },
     "term_proposals": {
       "items": {

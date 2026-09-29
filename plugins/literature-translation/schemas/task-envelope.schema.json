@@ -122,6 +122,18 @@
       "title": "Source Sha256",
       "type": "string"
     },
+    "policy_snapshot": {
+      "additionalProperties": true,
+      "title": "Policy Snapshot",
+      "type": "object"
+    },
+    "policy_domains": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Policy Domains",
+      "type": "object"
+    },
     "source_bindings": {
       "additionalProperties": {
         "type": "string"
@@ -150,7 +162,9 @@
     "context",
     "instructions",
     "dispatch",
-    "source_sha256"
+    "source_sha256",
+    "policy_snapshot",
+    "policy_domains"
   ],
   "title": "TaskEnvelope",
   "type": "object"

@@ -8,11 +8,27 @@ from littrans.context_management import (
     context_impact,
     save_context_snapshot,
 )
+from littrans.settings import digest
 from littrans.tasks import claim_task, create_task, receive_task, release_task, task_status
 
 
 def register(app: typer.Typer, context_app: typer.Typer) -> None:
+    from littrans import context_config
     from littrans.cli import emit
+
+    @context_app.command("show")
+    def show_context(project: Path, resource: str) -> None:
+        emit({"resource": resource, "content": context_config.content(project, resource),
+              "sha256": digest(context_config.semantic(project))})
+
+    @context_app.command("validate")
+    def validate_context(project: Path, resource: str | None = None) -> None:
+        emit(context_config.validate(project, resource))
+
+    @context_app.command("apply")
+    def apply_context(project: Path, manifest: Path, dry_run: bool = False,
+                      expect: str | None = None) -> None:
+        emit(context_config.apply(project, manifest, dry_run, expect))
 
     task_app = typer.Typer(no_args_is_help=True, help="Bound tasks and fresh-session handoffs.")
     app.add_typer(task_app, name="task")

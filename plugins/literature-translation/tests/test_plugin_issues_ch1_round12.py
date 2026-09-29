@@ -17,6 +17,7 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from test_source_structure_v9 import GAP, MARGIN, OPENING, PITCH, _breaks, _page
 
 from littrans.fidelity import (
@@ -27,14 +28,7 @@ from littrans.fidelity import (
 )
 from littrans.models import ProjectConfig, SourceUnit, UnitKind
 from littrans.source_structure import plan_structure
-from littrans.storage import (
-    initialize_project_dirs,
-    read_json,
-    read_jsonl,
-    save_project,
-    sha256_file,
-    write_json,
-)
+from littrans.storage import initialize_project_dirs, read_json, read_jsonl, sha256_file, write_json
 from littrans.structure_profile import (
     PROFILE_PATH,
     guidance_difference,

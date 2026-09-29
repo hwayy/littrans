@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 import yaml
+from config_fixtures import save_project
 from test_asset_representation import project as asset_project
 from test_workflow_v6 import project as workflow_project
 
 from littrans.fidelity_models import load_assets
 from littrans.hosts import COORDINATION_HOSTS, dispatch_advisories, host_model_defaults
 from littrans.models import ProjectConfig, RoleDispatch
-from littrans.project import dispatch_report
 from littrans.representations import build_asset_packet, submit_candidates
-from littrans.storage import load_project, save_project, write_json
+from littrans.storage import load_project, write_json
 from littrans.workflow import create_workflow_packet, workflow_next
 
 project = workflow_project
@@ -62,25 +62,14 @@ def test_audit_and_asset_audit_take_their_own_policy(project: Path) -> None:
 
 
 def test_legacy_flat_policy_normalizes_and_rewrites_nested(project: Path) -> None:
-    payload = yaml.safe_load((project / "project.yaml").read_text(encoding="utf-8"))
-    payload["agent_models"] = {
-        "codex": {"translate": "legacy-model", "transcribe": "legacy-model",
-                  "reasoning_effort": "max"},
-        "claude": {"translate": "sonnet"},
-    }
-    (project / "project.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-    config = load_project(project)
-    # One shared effort becomes the default of every role that states none.
-    assert config.dispatch("codex", "translate") == RoleDispatch(model="legacy-model",
-                                                                 reasoning_effort="max")
-    assert config.dispatch("codex", "transcribe") == RoleDispatch(model="legacy-model",
-                                                                  reasoning_effort="max")
-    assert config.dispatch("claude", "translate") == RoleDispatch(model="sonnet")
-    save_project(project, config)
-    rewritten = yaml.safe_load((project / "project.yaml").read_text(encoding="utf-8"))
-    assert rewritten["agent_models"]["codex"]["translate"] == {"model": "legacy-model",
-                                                               "reasoning_effort": "max"}
-    assert rewritten["agent_models"]["claude"]["translate"] == {"model": "sonnet"}
+    path = project / "project.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload["agent_models"] = {"codex": {"translate": "legacy-model"}}
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        load_project(project)
+    assert path.read_bytes() == before
 
 
 def test_a_misspelled_role_or_host_is_named_rather_than_silently_unconfigured() -> None:
@@ -134,16 +123,13 @@ def test_dispatch_advisories_report_both_directions_of_the_capability_gap() -> N
 
 
 def test_a_value_the_host_cannot_take_is_recorded_rather_than_dropped(project: Path) -> None:
-    config = load_project(project)
-    config.agent_models["qoder"] = {
-        "translate": RoleDispatch(model="qoder-model", reasoning_effort="high")
-    }
-    save_project(project, config)
-    packet = create_workflow_packet(project, "translate", ["sample-one-b001"], host="qoder")
-    assert (packet.model, packet.reasoning_effort) == ("qoder-model", "high")
-    report = dispatch_report(project, "qoder")
-    assert report["supports"] == {"model": False, "reasoning_effort": False, "agent_effort": None}
-    assert any("qoder-model" in note for note in report["advisories"])
+    from littrans.configuration import edit, effective
+    edit(project, "agents.qoder.roles.translate.model", "qoder-model")
+    with pytest.raises(ValueError, match="cannot apply"):
+        create_workflow_packet(project, "translate", ["sample-one-b001"], host="qoder")
+    report = effective(project, "qoder")
+    assert report["roles"]["translate"]["model"] == "qoder-model"
+    assert report["errors"]
 
 
 def test_workflow_next_reports_the_advisories_of_the_roles_it_dispatches(project: Path) -> None:
@@ -220,23 +206,23 @@ def test_project_models_reports_the_resolved_policy_and_its_advisories(project: 
     assert result.exit_code == 0, result.output
     report = json.loads(result.stdout)
     assert report["host"] == "claude"
-    assert report["supports"] == {"model": True, "reasoning_effort": False, "agent_effort": "high"}
+    assert report["supports"] == {"model": True, "reasoning_effort": False,
+                                  "agent_effort": "high", "project_agent_config": False}
     # Every role ships a Claude model and no effort, so nothing is worth reporting.
     assert report["roles"]["translate"] == {"model": "sonnet", "reasoning_effort": None}
     assert report["roles"]["source-review"] == {"model": "sonnet", "reasoning_effort": None}
-    assert report["advisories"] == []
+    assert all("scout" in note or "terminology" in note for note in report["advisories"])
 
 
 def test_advisories_stay_on_stderr_so_the_json_contract_is_unchanged(project: Path) -> None:
     from typer.testing import CliRunner
 
     from littrans.cli import app
-
-    config = load_project(project)
-    config.agent_models["claude"]["translate"] = RoleDispatch(model="sonnet", reasoning_effort="high")
-    save_project(project, config)
-    result = CliRunner().invoke(app, ["workflow", "next", str(project), "--host", "claude"])
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["host"] == "claude"
-    assert "LitTrans advisory:" in result.stderr
-    assert "LitTrans advisory:" not in result.stdout
+    from littrans.configuration import edit
+    edit(project, "agents.claude.roles.translate.reasoning_effort", "high")
+    result = CliRunner().invoke(app, ["config", "validate", str(project), "--host", "claude"])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["errors"]
+    dispatch = CliRunner().invoke(app, ["workflow", "next", str(project), "--host", "claude"])
+    assert dispatch.exit_code == 1
+    assert "cannot apply" in dispatch.output

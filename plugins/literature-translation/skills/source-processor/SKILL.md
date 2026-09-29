@@ -5,6 +5,11 @@ description: Coordinate LitTrans source extraction and review, or optional struc
 
 # Source Processor
 
+Run `config validate PROJECT --host HOST` before creating source tasks. Source
+policy changes require fresh affected source evidence. Apply accepted structure
+guidance with `context apply`; this never certifies extraction or replaces visual
+review. Use the [configuration](../../references/configuration.md) impact report.
+
 You coordinate source work; assigned workers inspect pages and produce candidates.
 
 Read [source processing](../../references/source-processing.md), [runtime](../../references/runtime.md), and [task protocol](../../references/task-protocol.md).
@@ -18,6 +23,6 @@ Read [source processing](../../references/source-processing.md), [runtime](../..
 
 ## Parse
 
-For verified source, create transcribe tasks scoped by asset IDs or existing batches. Translation does not wait for transcription. Receive candidates, then create distinct asset-audit tasks with originals and actual candidate renders. Retain original-image fallback for pending, uncertain or rejected candidates. Revision requires a fresh packet and independent re-audit.
+For verified source, create transcribe tasks scoped by asset IDs or existing batches. Translation can proceed independently; configured transcription requirements must pass before final approval and delivery. Receive candidates, then create distinct asset-audit tasks with originals and actual candidate renders. Retain original-image fallback for pending, uncertain or rejected candidates. Revision requires a fresh packet and independent re-audit.
 
 Follow [asset representation](../../references/asset-representation.md) for evidence and fallback details. Context proposals go to Context Manager; meaningful language in table/figure assets remains translation work.

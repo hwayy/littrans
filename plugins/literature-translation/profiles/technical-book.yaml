@@ -1,41 +1,133 @@
-name: technical-book
-description: Faithful original assets with independent transcription and translation.
-outline_source: pdf-bookmarks
+# Generated expanded example; runtime uses settings.yaml, never this file.
+schema_version: 1
+preset:
+  name: technical-book
+  version: '1'
+  sha256: 06b0bb628304c4ec62c4a29ca4ad8bf8e028022e4d3f11823ec2b00c191473fe
+document:
+  title: Example document
+  source_language: en
+  target_language: zh-CN
+  rights_status: private-research-only
 batch:
   max_source_words: 900
   soft_max_assets: 60
   preserve_heading_boundaries: true
-  preserve_logical_elements: true
-code:
-  preserve_body: true
-  translate_comments: false
-  translate_string_literals: false
-  preserve_indentation: true
-  detect_language: true
-equations:
-  mode: original-preserved
-  inline: original-preserved
-  retain_original: true
-  preserve_numbers: true
-  protect_symbols: true
-figures:
-  preserve_image: true
-  translate_caption: true
-  internal_labels: explain-below
-  preserve_internal_math: true
-  require_visual_text_review: true
-tables:
-  mode: original-preserved
-  require_translated_cells: true
-  allow_corresponding_region_translation: true
-  image_fallback_in_final: true
+outline_source: auto
+agents:
+  codex:
+    defaults:
+      model:
+      reasoning_effort:
+    roles:
+      translate:
+        model: gpt-6-luna
+        reasoning_effort: max
+      transcribe:
+        model: gpt-6-luna
+        reasoning_effort: max
+      audit:
+        model: gpt-6-sol
+        reasoning_effort: high
+      asset-audit:
+        model: gpt-6-sol
+        reasoning_effort: high
+      source-review:
+        model: gpt-6-sol
+        reasoning_effort: high
+    audit_lenses: {}
+    wave_size: 3
+  cursor:
+    defaults:
+      model:
+      reasoning_effort:
+    roles: {}
+    audit_lenses: {}
+    wave_size: 6
+  claude:
+    defaults:
+      model:
+      reasoning_effort:
+    roles:
+      translate:
+        model: sonnet
+      transcribe:
+        model: sonnet
+      audit:
+        model: sonnet
+      asset-audit:
+        model: sonnet
+      source-review:
+        model: sonnet
+    audit_lenses: {}
+    wave_size: 3
+  qoder:
+    defaults:
+      model:
+      reasoning_effort:
+    roles: {}
+    audit_lenses: {}
+    wave_size: 3
+  opencode:
+    defaults:
+      model:
+      reasoning_effort:
+    roles:
+      translate:
+        model: openai/gpt-6-luna
+        reasoning_effort: max
+      transcribe:
+        model: openai/gpt-6-luna
+        reasoning_effort: max
+      audit:
+        model: openai/gpt-6-sol
+        reasoning_effort: high
+      asset-audit:
+        model: openai/gpt-6-sol
+        reasoning_effort: high
+      source-review:
+        model: openai/gpt-6-sol
+        reasoning_effort: high
+    audit_lenses: {}
+    wave_size: 3
+  generic:
+    defaults:
+      model:
+      reasoning_effort:
+    roles: {}
+    audit_lenses: {}
+    wave_size: 1
+translation:
+  code:
+    translate_comments: false
+    translate_string_literals: false
+    detect_language: true
+  equations:
+    inline: original
+    display: original
+  figures:
+    translate_caption: true
+    internal_labels: explain-below
+  tables:
+    translation: cells-or-region
+    presentation: original
+    image_fallback_in_final: true
+  reader_notes:
+    allow_modernization: true
+    require_primary_https_sources: true
+  memory_minimum_status: machine-reviewed
+  prose_punctuation: chinese
 verification:
-  require_visual_overlay_review: true
-  require_source_coverage: true
-  require_complete_asset_boundaries: true
-  block_unverified_source_fidelity: true
   block_unfinished_transcription: false
-reader_notes:
-  allow_modernization: true
-  require_primary_https_sources: true
-  keep_separate: true
+external_review:
+  enabled: false
+  reviewers: {}
+  primary:
+  fallbacks: []
+  recheck:
+    confidence_below: 0.9
+    severities:
+    - blocker
+    - major
+  domain_expertise:
+  timeout_seconds: 330

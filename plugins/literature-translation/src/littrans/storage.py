@@ -183,14 +183,25 @@ def initialize_project_dirs(root: Path) -> None:
 
 
 def load_project(root: Path) -> ProjectConfig:
-    payload = read_yaml(root / "project.yaml")
+    from littrans.configuration import bind, yaml_read
+    payload = yaml_read(root / "project.yaml")
     if payload.get("schema_version") != PROJECT_SCHEMA_VERSION:
         raise ValueError(
             f"Project schema v{payload.get('schema_version')} is historical; "
-            "run `littrans project rebuild OLD NEW` to create a separate v6 project. "
+            "run `littrans project rebuild OLD NEW` to create a separate v7 project. "
             "Existing source, translations and approvals will remain unchanged."
         )
-    return ProjectConfig.model_validate(payload)
+    from littrans.settings import ProjectManifest
+    payload = ProjectManifest.model_validate(payload).model_dump(mode="json")
+    from littrans.configuration import read_settings
+    settings = read_settings(root)
+    state = read_json(root / "derived/project-state.json")
+    if set(state) != {"status", "updated_at"}:
+        raise ValueError("Invalid project state fields")
+    config = ProjectConfig.model_validate({**payload, **settings.document.model_dump(),
+                                          "profile": settings.preset.name, "agent_models": {},
+                                          **state})
+    return bind(config, root)
 
 
 def require_current_project_schema(
@@ -207,8 +218,34 @@ def require_current_project_schema(
 
 
 def save_project(root: Path, config: ProjectConfig) -> None:
+    from littrans.configuration import yaml_text
+    from littrans.settings import preset
+    manifest_path = root / "project.yaml"
+    if manifest_path.exists():
+        # State updates must validate persisted policy, never recreate it from defaults.
+        load_project(root)
     config.updated_at = utc_now()
-    write_yaml(root / "project.yaml", config.model_dump(mode="json", exclude_none=True))
+    if not (root / "settings.yaml").exists():
+        settings = preset(config.profile, config.title, config.source_language, config.target_language)
+        settings.document.rights_status = config.rights_status
+        atomic_write_text(root / "settings.yaml", yaml_text(settings.payload()))
+    fields = {"schema_version", "project_id", "source_path", "source_sha256", "source_pages",
+              "record_root_relative", "extractor_version", "created_at"}
+    if not manifest_path.exists():
+        manifest = config.model_dump(mode="json", include=fields)
+        if Path(config.source_path).is_absolute():
+            manifest["source_path"] = "source/" + Path(config.source_path).name
+            atomic_write_text(root / "settings.local.yaml", yaml_text({"schema_version": 1,
+                              "source_path": config.source_path, "commands": {}}))
+        write_yaml(manifest_path, manifest)
+    else:
+        # A local source binding never leaks into the portable manifest.
+        manifest = read_yaml(manifest_path)
+        if manifest.get("record_root_relative") != config.record_root_relative:
+            manifest["record_root_relative"] = config.record_root_relative
+            write_yaml(manifest_path, manifest)
+    write_json(root / "derived/project-state.json", {"status": config.status.value,
+                                                     "updated_at": config.updated_at})
 
 
 def plugin_root() -> Path:

@@ -3,13 +3,14 @@ from pathlib import Path
 
 import pytest
 import yaml
+from config_fixtures import save_project
 from test_workflow_v6 import project as project_fixture
 
 from littrans.agent_config import configure_agents, opencode_model
 from littrans.hosts import host_model_defaults
 from littrans.models import RoleDispatch
 from littrans.project import dispatch_report
-from littrans.storage import load_project, save_project
+from littrans.storage import load_project
 from littrans.tasks import create_task
 
 project = project_fixture
@@ -63,7 +64,13 @@ def test_existing_empty_policy_stays_unset_and_policy_changes_regenerate(project
     assert all(value is None for value in configure_agents(project, "opencode")["models"].values())
     config.agent_models["opencode"]["audit"] = RoleDispatch(model="deepseek/deepseek-flash", reasoning_effort="max")
     save_project(project, config)
-    assert configure_agents(project, "opencode")["changed"] == [".opencode/agents/littrans-translation-reviewer.md"]
+    assert set(configure_agents(project, "opencode")["changed"]) == {
+        ".opencode/agents/littrans-translation-reviewer.md",
+        ".opencode/agents/littrans-translation-reviewer-fidelity.md",
+        ".opencode/agents/littrans-translation-reviewer-technical.md",
+        ".opencode/agents/littrans-translation-reviewer-chinese-style.md",
+        ".opencode/agents/littrans-external-recheck.md",
+    }
     configure_agents(project, "opencode", write=True)
     assert agent(project, "translation-reviewer")[0]["model"] == "deepseek/deepseek-flash#max"
     assert "model" not in agent(project, "translator")[0]

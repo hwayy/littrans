@@ -79,11 +79,11 @@ from pathlib import Path
 from littrans.models import ProjectConfig, SourceUnit, UnitKind
 from littrans.rendering import render_project
 from littrans.project import load_profile
-from littrans.storage import sha256_text, write_jsonl, write_yaml
+from littrans.storage import save_project, sha256_file, sha256_text, write_jsonl
 
 for profile in ('technical-book', 'research-paper'):
     settings = load_profile(profile)
-    assert settings['name'] == profile
+    assert settings['preset']['name'] == profile
     assert settings['batch']['max_source_words'] == 900
     assert settings['batch']['soft_max_assets'] == 60
 assert load_profile('en-zh-cn')
@@ -97,11 +97,11 @@ config = ProjectConfig(
     project_id='wheel-render',
     title='Wheel Render',
     source_path=str(source),
-    source_sha256='0' * 64,
+    source_sha256=sha256_file(source),
     source_pages=1,
     profile='technical-book',
 )
-write_yaml(root / 'project.yaml', config.model_dump(mode='json', exclude_none=True))
+save_project(root, config)
 text = 'Packaged template is available.'
 write_jsonl(
     root / 'derived' / 'units.jsonl',

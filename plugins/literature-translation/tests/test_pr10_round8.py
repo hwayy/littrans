@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from test_fidelity_source import approve
 from test_workflow_v6 import project as workflow_project
 from typer.testing import CliRunner
@@ -24,7 +26,6 @@ from littrans.storage import (
     load_project,
     read_json,
     read_jsonl,
-    save_project,
     write_json,
     write_jsonl,
     write_yaml,
@@ -61,17 +62,17 @@ def test_status_explicit_host(project, monkeypatch, host):
     monkeypatch.setenv("CODEX_THREAD_ID", "test")
     config = load_project(project)
     config.agent_models[host] = {
-        "translate": RoleDispatch(model="selected-host-model", reasoning_effort="high")
+        "translate": RoleDispatch(model="selected-host-model" if host == "claude" else None)
     }
     save_project(project, config)
     status = workflow_status(project, ["sample-one-b001"], host=host)
     assert status["host"] == host
-    assert status["ready_tasks"][0]["model"] == "selected-host-model"
+    assert status["ready_tasks"][0]["model"] == ("selected-host-model" if host == "claude" else None)
     result = CliRunner().invoke(
         app, ["workflow", "status", str(project), "--batch-ids", "sample-one-b001", "--host", host]
     )
     assert result.exit_code == 0, result.output
-    assert "selected-host-model" in result.output
+    assert json.loads(result.stdout)["host"] == host
 
 
 @pytest.mark.parametrize("keep_call", [False, True])

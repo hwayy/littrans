@@ -6,9 +6,9 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from littrans.hosts import (
     WAVE_BATCH_SET_MAX,
@@ -18,7 +18,7 @@ from littrans.hosts import (
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
-PROJECT_SCHEMA_VERSION = 6
+PROJECT_SCHEMA_VERSION = 7
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -194,6 +194,7 @@ def _nonempty_model_identity(value: str | None) -> str | None:
 
 
 class ExternalReviewerConfig(StrictModel):
+    _timeout_seconds: int = PrivateAttr(default=330)
     id: str
     driver: ExternalReviewDriver
     command: str
@@ -257,7 +258,7 @@ class ExternalReviewConfig(StrictModel):
         if isinstance(value, dict) and any(key in value for key in (
             "reviewers", "assignment", "assignment_since", "reviewers_per_batch", "second_opinion"
         )):
-            raise ValueError("Legacy external review config; run `translation review external-migrate PROJECT --apply`")
+            raise ValueError("Legacy external review config; rebuild historical projects, then use config apply PROJECT FILE")
         return value
 
     @field_validator("domain_expertise")
@@ -296,7 +297,12 @@ class RoleDispatch(StrictModel):
     )
 
 
+if TYPE_CHECKING:
+    from littrans.settings import ProjectSettings
+
+
 class ProjectConfig(StrictModel):
+    _settings: ProjectSettings | None = PrivateAttr(default=None)
     schema_version: int = PROJECT_SCHEMA_VERSION
     project_id: str
     title: str
@@ -339,8 +345,30 @@ class ProjectConfig(StrictModel):
             payload = {**payload, "agent_models": normalize_agent_models(payload["agent_models"])}
         return payload
 
-    def dispatch(self, host: str, role: str) -> RoleDispatch:
+    @property
+    def settings(self) -> ProjectSettings:
+        if self._settings is None:
+            raise ValueError("Project policy is not bound; load the persisted project first")
+        return self._settings
+
+    def dispatch(self, host: str, role: str, lens: str | None = None) -> RoleDispatch:
         """The configured policy for one role on one host; unset fields stay None."""
+        if self._settings is not None:
+            from littrans.hosts import SUBAGENT_DISPATCH, resolve_coordination_host
+            host = resolve_coordination_host(host)
+            if role in {"qa", "approve", "external", "external-review", "external-adjudicate", "render"}:
+                return RoleDispatch()
+            value = self._settings.agents[host].resolve(role, lens)
+            capability = SUBAGENT_DISPATCH[resolve_coordination_host(host)]
+            for key, item in value.items():
+                if item is not None and not (capability.project_agent_config or getattr(capability, key)):
+                    target = f"audit_lenses.{lens}" if lens is not None else f"roles.{role}"
+                    raise ValueError(f"Host {host} cannot apply {role}.{key}; use config set PROJECT "
+                                     f"agents.{host}.{target}.{key} null --json")
+            if host == "opencode":
+                from littrans.agent_config import opencode_model
+                opencode_model(value["model"], value["reasoning_effort"])
+            return RoleDispatch(**value)
         return self.agent_models.get(host, {}).get(role, RoleDispatch())
 
     def source(self, project_root: Path) -> Path:
@@ -513,6 +541,13 @@ class AssetTranslation(StrictModel):
         return self
 
 
+class CodeAnnotation(StrictModel):
+    asset_id: str | None = None
+    kind: Literal["comment", "string"]
+    source: str
+    target: str
+
+
 class TranslationRecord(StrictModel):
     schema_version: int = 2
     unit_id: str
@@ -524,6 +559,7 @@ class TranslationRecord(StrictModel):
     asset_translations: list[AssetTranslation] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
     reader_note: ReaderNote | None = None
+    code_annotations: list[CodeAnnotation] = Field(default_factory=list)
     term_proposals: list[TermProposal] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
     status: ProjectStatus = ProjectStatus.DRAFT

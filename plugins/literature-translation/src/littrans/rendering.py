@@ -982,6 +982,12 @@ def render_project(
     pages |= {unit.page for unit in units}
     if not allow_draft:
         require_verified_extraction(root, pages)
+        from littrans.fidelity_models import load_assets
+        from littrans.policy import delivery_errors
+        ids = sorted({key for unit in units for key in unit.asset_content_hashes} & load_assets(root).keys())
+        errors = delivery_errors(root, ids)
+        if errors:
+            raise ValueError("; ".join(errors))
     render_units, grouped_code_ids = _coalesce_code_units(units)
     render_units, grouped_table_ids = _coalesce_table_units(render_units)
     grouped_unit_ids = {**grouped_code_ids, **grouped_table_ids}
@@ -1212,7 +1218,9 @@ def render_project(
                 ]
             )
         record = translations.get(unit.unit_id) if unit.translatable else None
-        target = _render_target_text(unit, record.target_text if record else None)
+        target = record.target_text if record else None
+        if config.settings.translation.figures.translate_caption:
+            target = _render_target_text(unit, target)
         if target is not None:
             bilingual_target = target
         elif not unit.translatable and unit.source_text:
@@ -1224,6 +1232,10 @@ def render_project(
         render_unit = unit
         target_table = record.target_table if record else None
         reader_notes = [record.reader_note] if record and record.reader_note else []
+        if record and record.code_annotations:
+            from littrans.models import ReaderNote
+            reader_notes.extend(ReaderNote(text=f"代码{item.kind}对照：{item.source} → {item.target}")
+                                for item in record.code_annotations)
         companion_sources = [(record, unit)]
         if unit.unit_id in grouped_table_ids:
             table_records = [translations.get(unit_id) for unit_id in grouped_table_ids[unit.unit_id]]
@@ -1239,6 +1251,9 @@ def render_project(
         if unit.kind is UnitKind.TABLE and target_table:
             render_unit = unit.model_copy(update={"table": target_table})
         rendered_figure_labels = effective_figure_labels(unit, record)
+        if config.settings.translation.figures.internal_labels == "preserve":
+            rendered_figure_labels = []
+            render_unit = render_unit.model_copy(update={"figure_labels": []})
         if rendered_figure_labels:
             render_unit = unit.model_copy(
                 update={"figure_labels": rendered_figure_labels}

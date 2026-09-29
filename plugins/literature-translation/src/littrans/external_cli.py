@@ -223,7 +223,6 @@ def invoke_cli(
     reviewer: ExternalReviewerConfig, packet: Path, work: Path, evidence: dict[str, tuple[str, str]]
 ) -> InvokeResult:
     from littrans.external_review import (
-        EXTERNAL_CLI_TIMEOUT_SECONDS,
         RESULT_SCHEMA,
         ExternalInvocationError,
         _classify_invocation_failure,
@@ -274,7 +273,7 @@ def invoke_cli(
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=EXTERNAL_CLI_TIMEOUT_SECONDS,
+            timeout=reviewer._timeout_seconds,
             check=False,
         )
         raw = result.stdout + "\n" + result.stderr

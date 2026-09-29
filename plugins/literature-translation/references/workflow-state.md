@@ -9,18 +9,18 @@
 - **Asset representation**: original image, structured candidate, independent visual/render
   review, reliable candidate or original-image fallback.
 
-The second and third states advance independently after source fidelity. Transcription is
-optional enhancement and may be initiated at any later time, including after the reading edition
-is complete. `workflow next` and `ready_tasks` schedule translation work; `optional_asset_tasks`
-exposes the independent enhancement queue. `complete` means the reading workflow is complete,
-while `assets_complete` separately reports enhancement progress.
+Translation and asset work advance independently after source fidelity. `optional_asset_tasks`
+exposes enhancement work; `assets_complete` reports representation progress separately.
+Saved policy can require reviewed inline/display math, structured tables without image fallback,
+or completion of all applicable transcriptions. The scheduler promotes required asset work into
+`ready_tasks`, and approval/final rendering enforce the requirement. See
+[configuration](configuration.md) for the policy choices.
 
-Missing LaTeX never blocks an otherwise reviewed translation. Missing understanding or source
-content does: nonempty recorded translation `uncertainties` block QA for the affected unit and its
-semantic dependencies; resolve the actual understanding problem and resubmit before approval.
-Merely unfinished LaTeX belongs to asset progress and must not be recorded as an unresolved
-translation-understanding problem. Source/content/ownership changes invalidate affected translation
-dependencies; a display-only change invalidates rendering evidence rather than unrelated prose audits.
+Missing understanding or source content always blocks: recorded translation `uncertainties`
+block QA for the affected unit and dependencies. Merely unfinished transcription belongs to
+asset progress, not an invented translation-understanding problem. Source/content/ownership
+changes invalidate affected dependencies; presentation changes affect outputs and delivery
+requirements without invalidating unrelated prose audits.
 
 ## Resume and recovery
 

@@ -6,8 +6,8 @@ from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity
 from littrans.batching import create_batches, refresh_batch
-from littrans.models import RoleDispatch, TranslationRecord
-from littrans.storage import load_project, read_json, save_project, write_json
+from littrans.models import TranslationRecord
+from littrans.storage import read_json, write_json
 from littrans.workflow import create_workflow_packet
 
 project = workflow_project
@@ -29,30 +29,22 @@ def test_emitted_batch_schema_accepts_asset_evidence_shape(project):
 
 @pytest.mark.parametrize("stage", ["translate", "revise"])
 def test_packet_identity_binds_host_model_and_effort(project, stage):
+    from littrans.configuration import edit
     if stage == "revise":
         submit(project, "sample-one-b001")
-    config = load_project(project)
-    config.agent_models["claude"] = {
-        "translate": RoleDispatch(model="claude-test", reasoning_effort="high")
-    }
-    config.agent_models["cursor"] = {
-        "translate": RoleDispatch(model="cursor-test", reasoning_effort="max")
-    }
-    save_project(project, config)
-    first = create_workflow_packet(project, stage, ["sample-one-b001"], host="claude")
-    second = create_workflow_packet(project, stage, ["sample-one-b001"], host="cursor")
+    edit(project, "agents.codex.roles." + stage + ".model", "writer-one")
+    edit(project, "agents.codex.roles." + stage + ".reasoning_effort", "high")
+    first = create_workflow_packet(project, stage, ["sample-one-b001"], host="codex")
+    second = create_workflow_packet(project, stage, ["sample-one-b001"], host="generic")
     assert first.packet_id != second.packet_id
-    assert (first.host, first.model, first.reasoning_effort) == ("claude", "claude-test", "high")
-    assert (second.host, second.model, second.reasoning_effort) == ("cursor", "cursor-test", "max")
-    assert create_workflow_packet(project, stage, ["sample-one-b001"], host="claude") == first
-    config.agent_models["claude"]["translate"].reasoning_effort = "max"
-    save_project(project, config)
-    third = create_workflow_packet(project, stage, ["sample-one-b001"], host="claude")
+    assert (first.model, first.reasoning_effort) == ("writer-one", "high")
+    assert (second.model, second.reasoning_effort) == (None, None)
+    assert create_workflow_packet(project, stage, ["sample-one-b001"], host="codex") == first
+    edit(project, "agents.codex.roles." + stage + ".reasoning_effort", "max")
+    third = create_workflow_packet(project, stage, ["sample-one-b001"], host="codex")
     assert third.packet_id != first.packet_id
-    config.agent_models["claude"]["translate"].model = "another-model"
-    save_project(project, config)
-    fourth = create_workflow_packet(project, stage, ["sample-one-b001"], host="claude")
-    assert fourth.packet_id != third.packet_id
+    edit(project, "agents.codex.roles." + stage + ".model", "writer-two")
+    assert create_workflow_packet(project, stage, ["sample-one-b001"], host="codex").packet_id != third.packet_id
 
 
 @pytest.mark.parametrize("duplicate", [False, True])

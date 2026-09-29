@@ -110,7 +110,7 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
         inspection = inspect_source(root, pages or "all")
         inspection.pop("source", None)
         packet = {"stage": stage, "source": inspection,
-                  "source_locator": "Read source_path from the current project.yaml", "pages": pages}
+                  "source_locator": "Resolve source_path from settings.local.yaml, falling back to project.yaml; verify the manifest hash", "pages": pages}
     else:
         raise ValueError("This stage requires batch IDs or asset IDs")
 
@@ -136,15 +136,22 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
             if key in packet:
                 packet[key] = _relative(root, Path(packet[key]))
                 inputs[packet[key]] = sha256_file(root / packet[key])
-    payload = {"schema_version": 1, "stage": stage, "role": ROLES[stage], "lens": lens,
+    payload: dict[str, Any] = {"schema_version": 1, "stage": stage, "role": ROLES[stage], "lens": lens,
                "objective": objective,
                "batch_ids": batches, "pages": pages, "asset_ids": asset_ids or [],
                "packet": packet, "domain_manifest": manifest_path, "inputs": inputs,
                "context": context, "instructions": instructions,
                "dispatch": {"host": selected_host,
-                            **config.dispatch(selected_host, "translate" if stage == "revise" else "audit" if stage == "external-recheck" else stage).model_dump(mode="json")}
-               if stage not in {"scout", "terminology"} else {"host": selected_host},
+                            **config.dispatch(selected_host, stage, lens).model_dump(mode="json")},
                "source_sha256": config.source_sha256}
+    if selected_host == "opencode":
+        native = {"revise": "littrans-revise", "external-recheck": "littrans-external-recheck"}.get(stage, "littrans-" + ROLES[stage])
+        if stage == "audit" and lens:
+            native += "-" + lens
+        payload["dispatch"]["native_agent"] = native
+    from littrans.configuration import policy_domains
+    payload["policy_snapshot"] = config.settings.payload()
+    payload["policy_domains"] = policy_domains(payload["policy_snapshot"])
     if stage in {"translate", "revise"}:
         from littrans.batching import load_manifest
         from littrans.evidence import translation_unit_fingerprint
@@ -176,6 +183,9 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
                 f"Read task.json and "
                 f"instructions/roles/{ROLES[stage]}.md. Read only the assigned evidence and scope.\n"
                 "Use a fresh context. Do not inherit expected verdicts or parallel candidates.\n"
+                "Follow policy_snapshot in task.json, including the applicable translation and "
+                "verification rules. Propose policy changes to the coordinator; do not edit "
+                "shared configuration or substitute current settings for the saved snapshot.\n"
                 "Save the native domain response as result.json (JSONL for translate/revise/audit; structured JSON for external-recheck). "
                 "Do not change task.json or instructions. Missing visual capability must be reported, "
                 "not replaced by copied image hashes. The coordinator receives the result through "
@@ -276,6 +286,11 @@ def receive_task(root: Path, task_id: str, result: Path | None = None,
         if task["context"] != context_snapshot(root):
             raise ValueError("Task context changed; create a fresh task")
         config = load_project(root)
+        from littrans.configuration import policy_domains, task_policy_dependencies
+        current_policy = policy_domains(config.settings.payload())
+        relevant = task_policy_dependencies(task["stage"])
+        if any(task.get("policy_domains", {}).get(key) != current_policy[key] for key in relevant):
+            raise ValueError("Task policy changed; create a fresh task")
         if sha256_file(config.source(root)) != task["source_sha256"]:
             raise ValueError("Task source changed")
         for name, expected in task["inputs"].items():

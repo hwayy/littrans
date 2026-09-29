@@ -2,15 +2,10 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.models import ProjectConfig
-from littrans.storage import (
-    initialize_project_dirs,
-    read_json,
-    save_project,
-    sha256_file,
-    write_json,
-)
+from littrans.storage import initialize_project_dirs, read_json, sha256_file, write_json
 from littrans.structure_profile import probe_structure, structure_context
 
 

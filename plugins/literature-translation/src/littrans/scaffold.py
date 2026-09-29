@@ -31,7 +31,7 @@ from littrans.hosts import (
 from littrans.storage import atomic_write_text, plugin_root, write_text_if_missing
 
 PLUGIN_OWNED_FILE = "docs/LITTRANS.md"
-PROJECT_IGNORE_LINES = (".littrans/*", "!.littrans/work/")
+PROJECT_IGNORE_LINES = (".littrans/*", "!.littrans/work/", "settings.local.yaml")
 # Projects created before the pair above excluded the whole runtime directory. Such a line
 # hides `.littrans/work/` from the re-include, so it is removed when the pair is added.
 LEGACY_STATE_IGNORE_KEYS = frozenset({(False, ".littrans/"), (False, ".littrans")})

@@ -190,9 +190,12 @@ def current_qa_context_fingerprint(
     translation_uncertainty = {key: record.uncertainties for key, record in translations.items()
                                if (scoped_units is None or key in scoped_units)
                                and any(item.strip() for item in record.uncertainties)}
+    from littrans.configuration import policy_domains
+    domains = policy_domains(load_project(root).settings.payload())
     return sha256_text(_qa_context_fingerprint(load_terms(root)) + json.dumps(
         {"assets": uncertainty, "translations": translation_uncertainty, "dependencies": dependency_bindings,
-         "required_images": required_images}, sort_keys=True))
+         "required_images": required_images,
+         "policy": domains["translation"], "verification_policy": domains["verification"]}, sort_keys=True))
 
 
 def qa_report_is_current(root: Path, batch_id: str) -> bool:
@@ -381,6 +384,11 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
     translations = translation_map(root)
     errors: list[QAItem] = []
     warnings: list[QAItem] = []
+    from littrans.policy import record_errors
+    for unit_id in manifest.translatable_unit_ids:
+        if unit_id in translations:
+            errors.extend(QAItem(code="project-policy", severity="error", unit_id=unit_id, message=message)
+                          for message in record_errors(root, units[unit_id], translations[unit_id]))
     approved_terms = load_terms(root)
     fingerprint = batch_translation_fingerprint(root, batch_id)
     qa_context_fingerprint = current_qa_context_fingerprint(
@@ -478,6 +486,8 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                 )
             )
             rendered_figure_labels = unit.figure_labels
+        if config.settings.translation.figures.internal_labels == "preserve":
+            rendered_figure_labels = []
         if rendered_figure_labels:
             effective_target += "\n" + "\n".join(
                 label.target or "" for label in rendered_figure_labels
@@ -661,6 +671,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
             config.source_language == "en"
             and config.target_language == "zh-CN"
             and unit.kind is not UnitKind.CODE
+            and not (unit.kind is UnitKind.CAPTION and not config.settings.translation.figures.translate_caption)
         ):
             source_words = re.findall(r"[A-Za-z]{2,}", unit.source_text)
             chinese_characters = re.findall(r"[\u3400-\u9fff]", effective_target)
@@ -686,7 +697,8 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                         unit_id=unit_id,
                     )
                 )
-            if unit.kind not in {UnitKind.TABLE, UnitKind.EQUATION}:
+            if (config.settings.translation.prose_punctuation == "chinese"
+                    and unit.kind not in {UnitKind.TABLE, UnitKind.EQUATION}):
                 prose_targets = [record.target_text]
                 prose_targets.extend(label.target or "" for label in rendered_figure_labels)
                 punctuation_hits = [
@@ -1386,6 +1398,14 @@ def approve_batch(
     with project_write_lock(root):
         manifest = load_manifest(root, batch_id)
         require_verified_extraction(root, set(manifest.pages))
+        from littrans.fidelity_models import load_assets
+        from littrans.policy import delivery_errors
+        assets = load_assets(root)
+        asset_ids = sorted({key for unit in read_jsonl(root / "derived/units.jsonl", SourceUnit)
+                            if unit.unit_id in manifest.unit_ids for key in unit.asset_content_hashes} & assets.keys())
+        policy_errors = delivery_errors(root, asset_ids)
+        if policy_errors:
+            raise ValueError("; ".join(policy_errors))
         qa_path = root / "qa" / f"{batch_id}.json"
         if not qa_path.exists():
             raise ValueError("A passing QA report is required")

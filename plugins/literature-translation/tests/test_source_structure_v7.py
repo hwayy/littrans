@@ -10,6 +10,7 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.fidelity import (
     _bold_variable_ids,
@@ -21,13 +22,7 @@ from littrans.fidelity import (
 )
 from littrans.models import ProjectConfig, RenderPolicy, SourceUnit, UnitKind
 from littrans.source_structure import plan_structure
-from littrans.storage import (
-    initialize_project_dirs,
-    read_json,
-    read_jsonl,
-    save_project,
-    sha256_file,
-)
+from littrans.storage import initialize_project_dirs, read_json, read_jsonl, sha256_file
 
 
 class _Page:

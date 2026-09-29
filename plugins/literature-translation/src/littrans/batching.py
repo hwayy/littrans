@@ -22,7 +22,7 @@ from littrans.models import (
     TranslationRecord,
     validate_batch_identifier,
 )
-from littrans.project import load_profile, promote_status, translation_map
+from littrans.project import promote_status, translation_map
 from littrans.semantics import fenced_code, table_to_markdown
 from littrans.storage import (
     atomic_write_text,
@@ -154,6 +154,7 @@ def _context_text(
     return (
         f"{brief.rstrip()}\n\n{style.rstrip()}\n\n# Approved terminology\n\n"
         f"```yaml\n{term_text}```\n\n# Approved translation memory\n\n{memory_text}"
+        f"\n\n# Project translation policy\n\n{load_project(root).settings.translation.model_dump_json(indent=2)}"
         f"\n\n# Adjacent source context\n\n" + "\n\n".join(adjacent) + "\n"
     )
 
@@ -167,7 +168,7 @@ def create_batches(
     unit_ids: list[str] | None = None,
 ) -> list[BatchManifest]:
     config = load_project(root)
-    batch_settings = load_profile(config.profile).get("batch", {})
+    batch_settings = config.settings.batch.model_dump()
     soft_max_assets = int(batch_settings.get("soft_max_assets", 60))
     if max_words is None:
         max_words = int(batch_settings.get("max_source_words", 900))
@@ -243,7 +244,8 @@ def create_batches(
     words = 0
     for selected_index, unit in enumerate(selected):
         unit_words = _word_count(unit.source_text) if unit.translatable else 0
-        heading_boundary = unit.kind == "heading" and current and words >= max_words * 0.55
+        heading_boundary = (batch_settings["preserve_heading_boundaries"]
+                            and unit.kind == "heading" and current and words >= max_words * 0.55)
         page_gap = bool(current and unit.page - current[-1].page > 1)
         word_boundary = bool(
             current

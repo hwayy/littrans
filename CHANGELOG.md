@@ -15,6 +15,42 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.0-dev.1] - 2026-09-30
+
+### Added
+
+- Versioned shared settings, private machine bindings and separate workflow state, with
+  initialization presets expanded once and generated schemas/field references.
+- Transactional config/context CLI management, semantic conflict detection, preserved YAML
+  comments, explicit terminology promotion and configuration impact previews.
+- Per-host defaults, all worker roles and three independent audit-lens overrides, resolved
+  consistently by task dispatch, model reports and native agent generation.
+- Saved task policy snapshots and domain-based receipt validation; source/translation policy
+  consumers and configurable asset transcription delivery requirements.
+
+### Changed
+
+- External reviewer definitions use stable IDs with primary/fallback references, local commands,
+  explicit timeouts and confidence-or-severity rechecks.
+- Migration guidance covers only the new-project rebuild path for this release. Skills and
+  reference documents route configuration through CLI transactions.
+
+### Fixed
+
+- Ordinary state saves reject missing/invalid settings instead of regenerating defaults.
+- The retained external-migrate entry rejects historical projects and cannot rewrite v7 manifests.
+- Equivalent numeric settings retain consistent semantic hashes and no-op behavior.
+- Rebuilding validates copied context before publishing the destination; glossary validation
+  rejects duplicate YAML keys and conflicting approved translations in overlapping scopes.
+- Strict typing covers configuration boundaries; content-keyed YAML parsing preserves direct
+  edit detection while avoiding repeated parsing of unchanged policy.
+
+### Compatibility
+
+- Requires project manifest v7 and settings schema v1. Preserve older projects and rebuild in
+  a new directory; no transparent migration or transfer of historical approvals is provided.
+- Temporary local installation suffixes are not part of the committed release version.
+
 ## [0.8.3-dev.3] - 2026-09-30
 
 ### Changed

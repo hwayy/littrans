@@ -21,11 +21,10 @@ missing commands, authentication, quota, timeout, invalid output or unverifiable
 advance to the next fallback. Valid findings and inconclusive verdicts do not rotate providers.
 No reviewer usage balancing, reservations or external second opinions are used.
 
-For old projects, preview `translation review external-migrate PROJECT`, then run it with
-`--apply`. It backs up `project.yaml`, selects the first old reviewer as primary, and flattens
-each reviewer's model fallbacks before the next reviewer. Historical records remain intact.
-Old host-subagent records and external second opinions are historical only; valid CLI primary
-records may still count, subject to current fingerprints and recheck requirements.
+Older project schemas must be rebuilt into a new v7 project. Historical approvals are not
+inherited. Configure the new project using `config apply`; the legacy external-only migration
+command cannot upgrade an older project manifest. Executable bindings belong in
+`settings.local.yaml`; see [configuration](configuration.md).
 
 Each external process receives only source, target, relevant images, checklist, style and
 approved/relevant terminology. Existing findings and translator rationale are excluded.
@@ -35,8 +34,8 @@ version, fingerprints and attempt telemetry. Never convert external acceptance i
 ## Blind host recheck
 
 An inconclusive content verdict, blocker/major finding, or finding below the confidence threshold
-requires a fresh native host translation-reviewer subagent. Codex/OpenCode use the generated
-`littrans-translation-reviewer`; Claude/Cursor/Qoder reuse `literature-technical-reviewer`
+requires a fresh native host translation-reviewer subagent. Codex uses `littrans-translation-reviewer`; OpenCode uses the generated
+`littrans-external-recheck`; Claude/Cursor/Qoder reuse `literature-technical-reviewer`
 (with its discovered namespace). The external-recheck handoff overrides its ordinary lens
 and output format; no new external-review agent is installed. Failed or unverified CLI calls
 require CLI fallback/retry, not host recheck.

@@ -12,6 +12,7 @@ from typing import Any
 
 import pymupdf
 import pytest
+from config_fixtures import save_project
 from typer.testing import CliRunner
 
 import littrans
@@ -24,7 +25,7 @@ from littrans.models import SourceUnit, UnitKind
 from littrans.project import initialize_project
 from littrans.record import record_tracking
 from littrans.rendering import _continues_paragraph
-from littrans.storage import load_project, save_project
+from littrans.storage import load_project
 
 
 def _pdf(path: Path) -> Path:

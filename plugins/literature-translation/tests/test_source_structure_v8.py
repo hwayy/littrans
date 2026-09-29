@@ -11,6 +11,7 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.fidelity import (
     _compose_accents,
@@ -30,7 +31,7 @@ from littrans.source_structure import (
     plan_structure,
     styled_text,
 )
-from littrans.storage import initialize_project_dirs, read_jsonl, save_project, sha256_file
+from littrans.storage import initialize_project_dirs, read_jsonl, sha256_file
 
 
 class _Page:

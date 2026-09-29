@@ -1,74 +1,60 @@
-# Migrating to LitTrans 0.8.3-dev.3
+# Migrating to LitTrans 0.9.0-dev.1
 
-This guide targets the latest 0.8 build. Release history belongs in
-[CHANGELOG](https://github.com/hwayy/littrans/blob/dev/0.8/CHANGELOG.md); command syntax is in the [CLI reference](references/cli-reference.md).
+This release requires project manifest v7 and settings schema v1. Unsupported versions are
+rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
+for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
 
-## Prepare and identify the project
+## Preserve the old project
 
-Checkpoint workers and save successful responses. Back up the complete project record,
-including receipt packets and provenance. Retain old plugin caches while tasks may use them.
-Do not run different builds against the same project.
+Checkpoint workers, retain their successful responses and back up the entire project. Keep
+its recorded plugin installation available. Do not point old and new clients at the same
+project directory. Install the new plugin and start a fresh session; `littrans doctor` must
+report the target build. Installation details are in [installation](references/installation.md).
 
-Read `schema_version` in `project.yaml`: schema 6 supports an in-place upgrade; older schemas
-require a new directory. `derived/provenance.json` records the previous plugin build.
-Install the target on every participating host using the [installation guide](references/installation.md),
-start a fresh session, and run `littrans doctor` to confirm the version and build digest.
+## Rebuild into a new directory
 
-## Upgrade a schema-6 project in place
+Run `littrans project rebuild OLD NEW` with a nonexistent destination. The source must match
+its recorded SHA-256. Rebuild reuses verified source and context material; historical task
+results, source receipts, translations and approvals do not become evidence in the new project.
+Review copied brief, style, glossary and structure guidance before using them. Historical model
+answers must not enter blind review tasks. Keep `OLD` unchanged for recovery.
 
-1. Run `littrans project scaffold PROJECT --refresh`, retaining any `--repo-root` selection.
-   Scaffolding updates plugin-owned guidance and creates missing files; it preserves user-owned
-   launchers and handbooks. Review old launchers against [runtime](references/runtime.md)
-   before replacing them, keeping a backup.
-2. Run `littrans project models PROJECT --host HOST`. Resolve advisories while preserving
-   intentional model choices. For generated Codex or OpenCode agents, run `project agents
-   PROJECT --host HOST --check`, then `--write` with the original `--workspace`. Back up
-   conflicting user edits and reconcile them explicitly. Restart the host to load definitions.
-3. If external review is configured, follow the next section before resuming it.
-4. Run `littrans source verify PROJECT`, `littrans glossary check PROJECT`, and
-   `littrans workflow status PROJECT --batch-ids BATCH_IDS`. Restore missing receipt packets
-   or provenance from the backup. Re-run stale QA and create fresh independent review tasks
-   for evidence the gates reject. Valid translations and approvals need no blanket reset.
-5. Run `littrans project tracked PROJECT` and commit required record files. Re-render after
-   changed source or review results. Use the four coordinator Skills for new work; workers
-   use saved task instructions. See [task protocol](references/task-protocol.md).
+## Configure the new project
 
-Re-extraction is optional and bounded to pages needing correction. `source extract PROJECT
---replace --pages PAGES` preserves recorded layout and overrides. Use `--redetect` or
-`--discard-overrides` only intentionally; review invalidated pages again. See
-[source processing](references/source-processing.md) for correction and recovery details.
+Run `littrans config validate NEW --host HOST` and `littrans config show NEW --effective --host HOST`.
+Policies are saved in `settings.yaml`; machine paths are in ignored `settings.local.yaml`.
+The manifest identifies the source; `derived/project-state.json` stores workflow state.
+Runtime operations do not inherit updated plugin presets.
 
-## Migrate external review when needed
+Use `config set` for individual changes or `config apply` for a complete candidate with related
+reviewer edits. Preview with `--dry-run`; use the current digest with `--expect` for concurrent
+imports. Use `context apply` for shared content. Importing content does not approve it.
+To move the source, update `source_path` with `config set NEW source_path PATH --local`;
+the replacement must have the same hash. A different source document requires a new project.
 
-Preview `littrans translation review external-migrate PROJECT`, then apply with `--apply`
-after reviewing the changes. The command retains a byte-for-byte `project.yaml` backup and
-converts legacy balancing to one reviewer with ordered fallbacks. Projects without external
-review, or already using configuration v2, need no conversion.
+Review resolved models, audit lenses, wave limits and external reviewer definitions. Local
+executable bindings do not override project policy. Explicit unsupported host settings must be
+cleared before dispatch. For OpenCode native agents, run `project agents NEW --host opencode
+--check`, then `--write`; reconcile user-edited files and reload the host.
 
-External gates use provider CLI results. Historical native-host results and external second
-opinions remain records but do not satisfy this gate. Required rechecks use blind host tasks
-and explicit coordinator adjudication. Migration does not change provider accounts.
-See [external review](references/external-review.md) for authentication and recovery.
+## Establish current evidence
 
-## Rebuild an older project
+Probe and extract source, create independent source-review tasks, receive their results and
+require `source verify`. Inspect `source render` before batching and translation. Complete QA,
+three independent audit lenses and configured external review/rechecks. Original assets remain
+preserved; configured transcription and visual-evidence requirements can block final delivery.
+Policy snapshots bind running tasks, so stale results must not be relabeled as current.
 
-Keep `OLD` intact and run `littrans project rebuild OLD NEW`, where `NEW` does not exist.
-Rebuild reuses the source PDF, brief, style, glossary and documentation. It does not transfer
-extractions, translations, verification receipts, batches or approvals as current evidence.
+After configuration changes, follow the CLI's impact report and gate diagnostics. Re-run the
+listed verification or reviews; no configuration command automatically rebatches, deletes
+historical results or starts paid external calls. Confirm `config validate`, workflow status,
+record tracking and rendered output before delivery.
 
-Reload the new project, confirm its source fingerprint and copied context, and inspect
-`project models NEW --host HOST`. Probe and extract source, complete independent source review,
-then require `source verify` and inspect `source render`. Create fresh batches and translation
-tasks only for the requested scope. Structured asset transcription is optional in this branch;
-original evidence remains the fallback. Historical answers must not enter blind reviews.
+## Recover
 
-## Validate and recover
+If rebuilding fails, keep the old project and retry in a fresh destination after correcting
+the reported source or context problem. To resume old work, use `OLD` with its recorded plugin
+build in a fresh session. Do not copy new approvals back into it. Restore a complete backup
+when rolling back a modified project; preserve both records until recovery is verified.
 
-Resume from persisted workflow status and import saved successful responses before dispatching
-missing work. Imports are idempotent; task completion alone is not approval. Inspect rendered
-output and report pending work separately from delivered translation.
-
-If upgrading fails, stop new workers, restore the complete backup and use its recorded plugin
-build in a fresh session. For a rebuild, resume `OLD` with its old installation; do not copy
-new evidence into it. Keep both directories until the new workflow is verified. Windows cache
-relocation and layout setup are documented in [runtime](references/runtime.md).
+Version history is maintained in [CHANGELOG](https://github.com/hwayy/littrans/blob/dev/0.9/CHANGELOG.md).

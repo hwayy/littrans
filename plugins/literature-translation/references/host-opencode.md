@@ -5,14 +5,14 @@ explicitly. Set `LITTRANS_PLUGIN_ROOT` for the project launcher when using a cus
 
 ## Install and update project agents
 
-Run `project models PROJECT --host opencode` to inspect `project.yaml` policies, then:
+Run `project models PROJECT --host opencode` to inspect `settings.yaml` policies, then:
 
 ```text
 project agents PROJECT --host opencode --check
 project agents PROJECT --host opencode --write
 ```
 
-Generation installs four skills, seven `littrans-*` agents and their instruction resources.
+Generation installs four skills, role-specific `littrans-*` agents plus revision, recheck and three audit-lens variants and their instruction resources.
 Use `--workspace REPOSITORY` when discovery should start at a containing repository.
 Files stay portable: worker paths are anchored to the supplied task handoff or agent definition,
 not the process working directory or Git root. Supply an absolute handoff path when dispatching.
@@ -25,7 +25,7 @@ OpenCode 1.x is not supported by this generated format.
 
 ## Model policy
 
-`project init` copies defaults from `profiles/host-models.yaml` into `agent_models.opencode`:
+`project init` copies defaults from `profiles/host-models.yaml` into `settings.yaml` under `agents.opencode.roles`:
 
 | Project role | Native agent | Default model / variant |
 | --- | --- | --- |
@@ -39,11 +39,11 @@ OpenCode 1.x is not supported by this generated format.
 `model: "provider/model#variant"`. Model-only policies omit the variant. An embedded variant
 must agree with `reasoning_effort`; effort without a model is rejected before any files are
 written. These are native agent settings, not model arguments on a single subagent call.
-Scout and terminology roles have no model policy and inherit the parent model.
+Scout and terminology inherit host defaults unless explicitly configured. Revision inherits translation and external recheck inherits audit; each can override independently. Use `littrans-translation-reviewer-fidelity`, `-technical`, and `-chinese-style` for the three lenses, `littrans-revise` for revision, and `littrans-external-recheck` for recheck.
 
-Existing projects keep their policy, including an empty `opencode: {}`. To adopt the new
-defaults, copy the OpenCode section from the shipped profile into the project's `agent_models`.
-To inherit instead, leave both model and effort unset. Rerun `--check` / `--write` after policy
+Existing projects retain saved policy across plugin updates. Use `config reset --dry-run` to
+preview an explicit preset reset, or `config set/unset/apply` to change selected overrides.
+Absent override fields inherit; explicit null restores host defaults. Rerun `--check` / `--write` after policy
 changes and restart OpenCode. Check output includes the planned native model selectors.
 User-edited managed files are preserved and reported as conflicts: back up and relocate those
 files before regeneration, then reconcile intentional customizations explicitly.

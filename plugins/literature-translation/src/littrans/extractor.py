@@ -2454,7 +2454,7 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
             if project_config is not None and (
                 invalidated_translation_ids or removed_translation_ids
             ):
-                mutation_paths.append(project_root / "project.yaml")
+                mutation_paths.append(project_root / "derived/project-state.json")
             if issues:
                 mutation_paths.append(issues_path)
             receipts_path = project_root / _APPLIED_MATH_OVERRIDE_RECEIPTS

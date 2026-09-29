@@ -33,8 +33,8 @@ Once the source is ready:
 > a bilingual reading edition.
 
 You can request source preparation, terminology work or translation separately. Optional
-formula and table transcription can follow later; original images remain available when a
-structured replacement has not been verified.
+formula and table transcription can follow later when project policy permits it; original
+images remain available. Required transcription must pass before final delivery.
 
 If you prefer direct CLI setup:
 

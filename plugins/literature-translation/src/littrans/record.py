@@ -43,7 +43,7 @@ RECORD_GLOBS = (
 )
 # Initialization and rebuild always write these, so a missing one is a lost record file,
 # not a stage the project has not reached yet.
-INITIAL_RECORD_FILES = ("project.yaml", "derived/provenance.json")
+INITIAL_RECORD_FILES = ("project.yaml", "settings.yaml", "derived/project-state.json", "derived/provenance.json")
 RECORD_FILES = ("derived/units.jsonl", "derived/fidelity-assets.jsonl")
 GAP_REPORT_LIMIT = 20
 
@@ -98,6 +98,8 @@ def record_sets(root: Path) -> tuple[set[str], set[str], list[str]]:
     for directory in sorted(path for path in (root / "batches").glob("*") if path.is_dir()):
         must_track.update(f"batches/{directory.name}/{name}" for name in BATCH_FILES if (directory / name).is_file())
     must_ignore: set[str] = set()
+    if (root / "settings.local.yaml").exists():
+        must_ignore.add("settings.local.yaml")
     if (root / "derived" / "fidelity-assets.jsonl").is_file():
         for asset in load_assets(root).values():
             for fragment in asset.fragments:

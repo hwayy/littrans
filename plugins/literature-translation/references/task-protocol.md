@@ -3,6 +3,11 @@ The task envelope wraps an existing domain packet. Native packet schemas, valida
 approval gates remain authoritative. The envelope snapshots role instructions and reference
 files; workers load only their role and the references it requests.
 
+The envelope also saves `policy_snapshot` and consumed-domain digests. Workers follow that
+snapshot and submit configuration proposals separately. Reception compares the relevant
+current policy; dispatch-only changes preserve existing content evidence. See
+[configuration](configuration.md#policy-and-evidence).
+
 ## Create and execute
 See the [task interface and result contracts](cli-reference.md#task-contract) for stages,
 selectors, command parameters and encodings. For blind external-review comparisons, see

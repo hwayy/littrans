@@ -204,7 +204,7 @@ def layout_install(
 def project_init(
     source: PathArg,
     project: PathArg,
-    profile: str = typer.Option("technical-book"),
+    profile: str = typer.Option("technical-book", "--preset", "--profile"),
     title: str | None = typer.Option(None),
     source_language: str = typer.Option("en"),
     target_language: str = typer.Option("zh-CN"),
@@ -213,7 +213,7 @@ def project_init(
         help="Where the handbook, records, ledger and launcher go when the project is nested in a larger repository (default: PROJECT).",
     ),
 ) -> None:
-    """Create a private schema-6 project with its record structure scaffolded."""
+    """Create a schema-7 project with a fully expanded settings preset."""
     scaffold_report: dict[str, Any] = {}
     config = initialize_project(
         source, project, profile, title, source_language, target_language,
@@ -581,7 +581,7 @@ def review_external(project: PathArg, batch_id: str, dry_run: bool = typer.Optio
 
 @review_app.command("external-migrate")
 def review_external_migrate(project: PathArg, apply: bool = typer.Option(False)) -> None:
-    """Preview the external-review configuration migration; --apply backs up and writes it."""
+    """Retained entry: validate v7 and direct configuration edits to config apply."""
     from littrans.external_recheck import migrate_external_config
     emit(migrate_external_config(project, apply))
 
@@ -721,6 +721,8 @@ def status(project: PathArg) -> None:
 
 def _register_v08_routes() -> None:
     from littrans.cli_compat import move_command, move_group
+    from littrans.cli_config import register as register_config
+    register_config(app)
 
     context_app = typer.Typer(no_args_is_help=True, help="Translation context and terminology.")
     app.add_typer(context_app, name="context")
@@ -739,6 +741,7 @@ def _register_v08_routes() -> None:
 
 
 _register_v08_routes()
+
 
 
 @project_app.command("agents")

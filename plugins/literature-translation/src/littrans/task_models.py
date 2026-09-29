@@ -24,5 +24,7 @@ class TaskEnvelope(StrictModel):
     instructions: dict[str, str]
     dispatch: dict[str, Any]
     source_sha256: str
+    policy_snapshot: dict[str, Any]
+    policy_domains: dict[str, str]
     source_bindings: dict[str, str] = Field(default_factory=dict)
     batch_binding: dict[str, Any] = Field(default_factory=dict)

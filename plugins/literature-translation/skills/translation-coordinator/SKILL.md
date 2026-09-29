@@ -5,6 +5,12 @@ description: Coordinate LitTrans batching, isolated translation and revision, QA
 
 # Translation Coordinator
 
+Validate effective project configuration for the selected host before creating tasks.
+Use `config` CLI for accepted policy changes; inspect affected tasks and evidence.
+Dispatch each stage and audit lens with its resolved role policy. A task's saved
+policy snapshot controls its work. When receive reports stale policy, retain the
+result and create a fresh task. See [configuration](../../references/configuration.md).
+
 You coordinate; fresh workers write translations and audit them.
 
 Read [task protocol](../../references/task-protocol.md), [translation workflow](../../references/translation-workflow.md), and [release gates](../../references/release-gates.md).

@@ -22,7 +22,8 @@ from littrans.storage import (
 READ_ONLY = {"document-scout", "terminology-researcher", "asset-reviewer", "translation-reviewer"}
 POLICY_ROLES = {"translator": "translate", "asset-transcriber": "transcribe",
                 "translation-reviewer": "audit", "asset-reviewer": "asset-audit",
-                "source-reviewer": "source-review"}
+                "source-reviewer": "source-review", "document-scout": "scout",
+                "terminology-researcher": "terminology"}
 
 
 def opencode_model(model: str | None, effort: str | None) -> str | None:
@@ -62,8 +63,16 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
             # Keep sibling skill links intact; shared references live in our managed tree.
             planned[f".opencode/skills/{skill.parent.name}/SKILL.md"] = skill.read_text(
                 encoding="utf-8").replace("../../references/", f"../../../{prefix}/references/")
-    for role in sorted((resources / "roles").glob("*.md")):
-        name = "littrans-" + role.stem
+    definitions: list[tuple[Path, str, str | None, str]] = [(role, POLICY_ROLES.get(role.stem, role.stem), None, "littrans-" + role.stem)
+                   for role in sorted((resources / "roles").glob("*.md"))]
+    if host == "opencode":
+        definitions.extend((resources / "roles/translation-reviewer.md", "audit", lens,
+                            "littrans-translation-reviewer-" + lens)
+                           for lens in ("fidelity", "technical", "chinese-style"))
+        definitions.extend((resources / "roles" / file, role, None, "littrans-" + role)
+                           for role, file in (("revise", "translator.md"),
+                                              ("external-recheck", "translation-reviewer.md")))
+    for role, dispatch_role, lens, name in definitions:
         if host == "codex":
             instruction = (
                 "Use the assigned task handoff (start.md) as the path anchor. "
@@ -98,7 +107,7 @@ def configure_agents(project: Path, host: str, workspace: Path | None = None,
                 "References resolve relative to the role file actually read. "
                 "Follow only the assigned scope; task completion does not grant domain approval."
             )
-            policy = config.dispatch(host, POLICY_ROLES.get(role.stem, role.stem))
+            policy = config.dispatch(host, dispatch_role, lens)
             model = opencode_model(policy.model, policy.reasoning_effort)
             models[name] = model
             body = f"---\ndescription: LitTrans {role.stem}\nmode: subagent\n"

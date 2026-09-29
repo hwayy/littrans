@@ -42,9 +42,9 @@ point; `main` remains the development branch.
     `~/.qoder-cn/settings.json`, and verify the installed version.
 16. Start a new agent session for the updated plugin on each host.
 
-## 0.8 acceptance evidence
+## Acceptance evidence
 
-Before releasing 0.8, retain the source-coverage sample report, independent production/review
+Before releasing a build, retain the source-coverage sample report, independent production/review
 results, original-image fallback checks, offline renderer checks and installable build validation.
 Source PDFs and private results stay outside the tracked plugin. Report known omissions, cuts,
 translation defects, reliable structured coverage, fallback proportion and unavailable usage
@@ -98,7 +98,7 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Compatibility policy
 
 - Patch releases contain compatible fixes and workflow refinements.
-- During 0.x development, minor releases may change the project contract. LitTrans 0.6 requires a new schema-6 project via `project rebuild OLD NEW` for projects from 0.5 or earlier; old approvals are not migrated. Projects from any 0.6 or 0.7 build upgrade in place.
+- During 0.x development, minor releases may change the project contract. This branch requires a v7 project and settings schema v1. Rebuild older projects into a fresh directory; old approvals are not migrated.
 - Major releases may require an explicit project migration.
 - Long-running translation projects should record the LitTrans version used for each formal
   processing stage.

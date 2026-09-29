@@ -15,5 +15,9 @@ source verify or workflow status. Global brief/style edits invalidate translatio
 coverage; glossary edits use existing per-unit dependencies; page rules use their source scope.
 
 Workers submit evidence-backed proposals in task results; one coordinator merges them into
-the appropriate shared file, preserving user-owned content. Record accepted/rejected decisions
+complete candidate resources through `context apply`, preserving user-owned content. Record accepted/rejected decisions
 and unresolved conflicts. Never promote a candidate solely because it was suggested.
+
+Use [configuration](configuration.md#context-resources) for transactional imports, conflict
+detection and terminology promotion. Overlapping approved scopes cannot prescribe conflicting
+translations. Imports validate content; source review and approval still require their own gates.

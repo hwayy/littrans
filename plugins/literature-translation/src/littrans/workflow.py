@@ -298,6 +298,12 @@ def _batch_stage_details(
     if any(unit_id not in translations for unit_id in manifest.translatable_unit_ids):
         return "translate", {}
     lane = _snapshot_lane(root, manifest, snapshot)
+    from littrans.policy import required_transcriptions
+    required = required_transcriptions(root, list(lane["states"]))
+    if any(lane["states"][key]["state"] in {"transcribe", "fallback"} for key in required):
+        return "transcribe", {}
+    if any(lane["states"][key]["state"] == "asset-audit" for key in required):
+        return "asset-audit", {}
     if lane["recovery"]:
         return "transcribe", {}
     if any(row["state"] == "asset-audit" and row["semantic_uncertainty"] for row in lane["states"].values()):
@@ -475,8 +481,10 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         lane = _snapshot_lane(root, by_id[bid], snapshot)
         if stage != "complete" and not optional_assets:
             # Revision is translator work: it reuses the translate model policy.
-            role = "translate" if stage == "revise" else "audit" if stage == "external-recheck" else stage
-            dispatch = config.dispatch(host, role)
+            role = stage
+            from littrans.models import RoleDispatch
+            from littrans.settings import ROLES
+            dispatch = config.dispatch(host, role) if role in ROLES else RoleDispatch()
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
                           "model": dispatch.model,
                           "reasoning_effort": dispatch.reasoning_effort,
@@ -525,7 +533,8 @@ def workflow_next(
 ) -> dict[str, Any]:
     require_current_project_schema(root, "Workflow coordination")
     resolved_host = resolve_coordination_host(host)
-    resolved_limit = resolve_wave_limit(resolved_host, limit)
+    resolved_limit = resolve_wave_limit(resolved_host, limit if limit is not None else
+                                       load_project(root).settings.agents[resolved_host].wave_size)
     external_batch_ids: set[str] | None = None
     if start_at is not None or through is not None:
         ordered = _bounded_manifest_series(
@@ -1087,8 +1096,8 @@ def create_workflow_packet(
         raise ValueError("translation packets do not accept a lens")
     # Revision is translator work; every other packet stage names its own role.
     # An unconfigured role dispatches on the host's default, reported as an advisory.
-    dispatch_role = "translate" if stage in {"translate", "revise"} else stage
-    dispatch = load_project(root).dispatch(host, dispatch_role)
+    dispatch_role = stage
+    dispatch = load_project(root).dispatch(host, dispatch_role, lens)
     selected_model = dispatch.model
     selected_effort = dispatch.reasoning_effort
     manifests = _validate_batch_set(root, batch_ids)
@@ -1550,7 +1559,7 @@ def import_review_set(
                     context_unit_ids=context_ids,
                 )
             )
-        mutation_paths = [root / "translations" / "current.jsonl", root / "project.yaml"]
+        mutation_paths = [root / "translations" / "current.jsonl", root / "derived/project-state.json"]
         for plan in plans:
             mutation_paths.extend(
                 [

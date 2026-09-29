@@ -2533,6 +2533,9 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         ]
         return max(previous, default=-1) + 0.5
     units.sort(key=order)
+    from littrans.configuration import read_settings
+    source_policy = read_settings(root)
+    structure["outline_source"] = source_policy.outline_source
     units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()})
     units = assemble_structure(units, by_id, structure, _make_unit, rejoin=lambda text: _rejoin_line_breaks(text, hyphenation))
     # Adjacent inline fragments coalesce in both channels: a reviewer's units may name
@@ -2575,6 +2578,21 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             # carried over as recorded keeps the hash the pipeline gave it.
             extra = {k: item.get(k, default) for k, default in OVERRIDE_UNIT_DEFAULTS.items()}
             units.append(_make_unit(number, item["unit_id"], item["source_markdown"], item["bbox"], by_id, item.get("kind", "paragraph"), **extra))
+    # Explicit reviewer corrections win over automatic outline/language policy.
+    if not (override and "units" in override):
+        titles = {title.strip(): level for level, title, p in doc.get_toc() if p == number}
+        from littrans.semantics import detect_code_language
+        for unit in units:
+            before_policy = (unit.kind, unit.code_language)
+            if source_policy.outline_source != "font-and-numbering" and unit.source_text.strip() in titles:
+                unit.kind = UnitKind.HEADING
+            elif source_policy.outline_source == "pdf-bookmarks" and unit.kind == UnitKind.HEADING:
+                unit.kind = UnitKind.PARAGRAPH
+            if unit.kind == UnitKind.CODE:
+                unit.code_language = detect_code_language(unit.source_text) if source_policy.translation.code.detect_language else None
+            if (unit.kind, unit.code_language) != before_policy:
+                unit.source_hash = _hash({"prepared_source_hash": unit.source_hash,
+                                          "kind": unit.kind.value, "code_language": unit.code_language})
     # Structure assembly can change grouping or create coalesced assets after export.
     # Bind the final semantics before publishing either assets or their source units.
     for asset in assets:
@@ -3034,6 +3052,8 @@ def _current_page(root: Path, number: int, all_units: list[SourceUnit] | None = 
 
     dependencies = [u for u in page_evidence_units(number, all_units) if u.page != number]
     ledger = {key: value for key, value in ledger.items() if key != "generator"}
+    from littrans.configuration import policy_domains, read_settings
+    ledger = {**ledger, "source_policy": policy_domains(read_settings(root).payload())["source"]}
     payload = {"ledger": ledger, "units": [u.model_dump(mode="json", exclude={"verification_status"}) for u in units], "dependency_units": [u.model_dump(mode="json", exclude={"verification_status"}) for u in dependencies], "assets": [a.model_dump(mode="json") for a in selected], "files": files}
     return {"page": number, "fingerprint": _hash(payload), **payload}
 

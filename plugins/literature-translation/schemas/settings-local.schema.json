@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Path"
+    },
+    "commands": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Commands",
+      "type": "object"
+    }
+  },
+  "title": "LocalSettings",
+  "type": "object"
+}

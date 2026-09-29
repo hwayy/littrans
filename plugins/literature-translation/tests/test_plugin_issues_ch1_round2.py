@@ -12,11 +12,12 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.evidence import fold_regex_pattern, fold_term_text, term_matches
 from littrans.fidelity import prepare_source
 from littrans.models import AssetRef, ProjectConfig, SourceUnit, UnitKind
-from littrans.storage import initialize_project_dirs, read_jsonl, save_project, sha256_file
+from littrans.storage import initialize_project_dirs, read_jsonl, sha256_file
 
 
 class _Page:

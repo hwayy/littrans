@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 from littrans.build_info import build_identity
 from littrans.hosts import (
-    DISPATCH_ROLES,
     SUBAGENT_DISPATCH,
     dispatch_advisories,
     resolve_coordination_host,
@@ -103,7 +102,8 @@ def initialize_project(
 
     # Initialization also writes into an ancestor record root. Snapshot only paths this
     # call may touch, then remove only its new files and empty directories on failure.
-    targets = {root / "project.yaml", root / "derived" / "provenance.json"}
+    targets = {root / "project.yaml", root / "settings.yaml", root / "settings.local.yaml", root / "derived/project-state.json",
+               root / "derived" / "provenance.json"}
     targets.update(
         (root if spec.at_project_root else record_root) / spec.relative
         for spec in SCAFFOLD_FILES
@@ -164,7 +164,7 @@ def initialize_project(
 
 
 def rebuild_project(old: Path, new: Path) -> ProjectConfig:
-    """Create a v6 workspace from source/context only, without inheriting approvals."""
+    """Create a v7 workspace from validated source/context, without inheriting approvals."""
     from littrans.scaffold import scaffold_project
 
     old, new = old.resolve(), new.resolve()
@@ -173,7 +173,12 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
     payload = yaml.safe_load((old / "project.yaml").read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Invalid historical project configuration")
-    source = Path(payload["source_path"])
+    if payload.get("schema_version") == 7:
+        current = load_project(old)
+        payload = current.model_dump(mode="json")
+    local_path = old / "settings.local.yaml"
+    local = yaml.safe_load(local_path.read_text(encoding="utf-8")) if local_path.exists() else {}
+    source = Path(local.get("source_path") or payload["source_path"])
     if not source.is_absolute():
         source = old / source
     if sha256_file(source) != payload["source_sha256"]:
@@ -192,6 +197,8 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         )
         config.source_path = copied_source.relative_to(staging).as_posix()
         config.rights_status = payload.get("rights_status", config.rights_status)
+        from littrans.configuration import edit
+        edit(staging, "document.rights_status", config.rights_status)
         copied = ["source"]
         # The decision trace travels with the context it explains; approvals do not.
         for directory in ("context", "glossary", "docs"):
@@ -199,9 +206,8 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
                 shutil.copytree(old / directory, staging / directory, dirs_exist_ok=True)
                 copied.append(directory)
         scaffold_project(staging, refresh=True)
-        if payload.get("external_review") is not None:
-            from littrans.models import ExternalReviewConfig
-            config.external_review = ExternalReviewConfig.model_validate(payload["external_review"])
+        from littrans.context_config import validate
+        validate(staging)
         save_project(staging, config)
         write_json(staging / "derived" / "provenance.json", {
             "source_path": config.source_path, "source_sha256": config.source_sha256,
@@ -238,6 +244,11 @@ DEFAULT_REFERENCE_KIND = "reference"
 def _validate_term(path: Path, term: dict[str, Any]) -> None:
     """Refuse an entry whose source forms could never be matched as written."""
     source = str(term.get("source", ""))
+    scope = term.get("scope", "document")
+    if not isinstance(scope, str) or not scope.strip() or (
+        scope.startswith("page:") and not re.fullmatch(r"page:[1-9]\d*", scope)
+    ):
+        raise ValueError(f"{path}: term {source!r} has invalid scope")
     status = term.get("status", APPROVED_STATUS)
     if path.name == "approved.yaml" and (
         not isinstance(status, str)
@@ -268,7 +279,9 @@ def _validate_term(path: Path, term: dict[str, Any]) -> None:
 def _read_term_file(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    from littrans.configuration import yaml_read
+    # Round-trip YAML nodes belong to the editor, not packet/domain serializers.
+    data = json.loads(json.dumps(yaml_read(path)))
     if not isinstance(data, dict) or not isinstance(data.get("terms", []), list):
         raise ValueError(f"{path} must contain a terms list")
     terms = []
@@ -294,6 +307,23 @@ def load_terms(root: Path, filename: str = "approved.yaml", *, enforced_only: bo
         if enforced_only and str(term.get("status", APPROVED_STATUS)) != APPROVED_STATUS:
             continue
         terms.append(term)
+    if filename == "approved.yaml" and enforced_only:
+        from littrans.evidence import fold_term_text
+        units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
+        for index, left in enumerate(terms):
+            left_forms = {fold_term_text(str(value)) for value in
+                          (left.get("source", ""), *(left.get("aliases") or []))}
+            for right in terms[index + 1:]:
+                right_forms = {fold_term_text(str(value)) for value in
+                               (right.get("source", ""), *(right.get("aliases") or []))}
+                if not left_forms & right_forms or left.get("target") == right.get("target"):
+                    continue
+                a, b = left.get("scope", "document"), right.get("scope", "document")
+                overlap = a == b or "document" in (a, b) or any(
+                    a in {unit.parent_id, f"page:{unit.page}"}
+                    and b in {unit.parent_id, f"page:{unit.page}"} for unit in units)
+                if overlap:
+                    raise ValueError(f"Approved terminology scope conflict: {left.get('source')!r} ({a}, {b})")
     return terms
 
 
@@ -380,10 +410,13 @@ def project_status(root: Path) -> dict[str, Any]:
 def schema_models() -> dict[str, type[BaseModel]]:
     from littrans.fidelity_models import FidelityAsset
     from littrans.representation_models import AssetReviewSubmission, AssetSubmission
+    from littrans.settings import LocalSettings, ProjectManifest, ProjectSettings
     from littrans.task_models import TaskEnvelope
     return {
         "task-envelope.schema.json": TaskEnvelope,
-        "project.schema.json": ProjectConfig,
+        "project.schema.json": ProjectManifest,
+        "settings.schema.json": ProjectSettings,
+        "settings-local.schema.json": LocalSettings,
         "source-unit.schema.json": SourceUnit,
         "translation-record.schema.json": TranslationRecord,
         "review-issue.schema.json": ReviewIssue,
@@ -402,39 +435,20 @@ def schema_models() -> dict[str, type[BaseModel]]:
 def dispatch_report(
     root: Path, host: str | None = None, reported: Iterable[str] | None = None
 ) -> dict[str, Any]:
-    """The resolved per-role dispatch policy for one host, with its advisories.
-
-    Feeds `project models`, the CLI's stderr advisories and the workflow JSON. Every
-    finding is advisory: an unset model or effort dispatches on the host's default,
-    and a value a host cannot take is still recorded in the packet. `reported` narrows
-    the advisories to the roles a command is about to dispatch; the policy itself is
-    always reported in full.
-    """
+    """Expose the shared effective policy plus legacy host advisories."""
+    from littrans.configuration import effective
+    view = effective(root, host or "auto")
     resolved = resolve_coordination_host(host)
-    config = load_project(root)
     capability = SUBAGENT_DISPATCH[resolved]
-    selected = DISPATCH_ROLES if reported is None else tuple(reported)
-    roles: dict[str, dict[str, str | None]] = {}
+    selected = tuple(view["roles"]) if reported is None else tuple(reported)
     advisories: list[str] = []
-    for role in DISPATCH_ROLES:
-        dispatch = config.dispatch(resolved, role)
-        roles[role] = dispatch.model_dump(mode="json")
+    for role, dispatch in view["roles"].items():
         if role in selected:
-            advisories.extend(
-                dispatch_advisories(resolved, role, dispatch.model, dispatch.reasoning_effort)
-            )
-    return {
-        "host": resolved,
-        "supports": {
-            "model": capability.model,
-            "reasoning_effort": capability.reasoning_effort,
-            # The effort the plugin's agent definitions fix on this host, if any.
-            "agent_effort": capability.agent_effort,
-            **({"project_agent_config": True} if capability.project_agent_config else {}),
-        },
-        "roles": roles,
-        "advisories": advisories,
-    }
+            advisories.extend(dispatch_advisories(
+                resolved, role, dispatch["model"], dispatch["reasoning_effort"]))
+    return {**view, "supports": {**view["supports"], "agent_effort": capability.agent_effort},
+            "advisories": advisories}
+
 
 
 def role_dispatch(root: Path, host: str | None, role: str) -> dict[str, str | None]:

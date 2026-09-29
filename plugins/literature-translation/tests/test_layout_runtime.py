@@ -7,13 +7,14 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from fidelity_fixtures import layout_probe_stdout
 from typer.testing import CliRunner
 
 from littrans import cli, layout_runtime
 from littrans.fidelity import prepare_source
 from littrans.models import ProjectConfig
-from littrans.storage import initialize_project_dirs, save_project, sha256_file
+from littrans.storage import initialize_project_dirs, sha256_file
 
 runner = CliRunner()
 

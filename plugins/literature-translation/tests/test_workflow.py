@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from fidelity_fixtures import confirm_structure_checks, original_image_evidence
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -107,7 +108,6 @@ from littrans.storage import (
     load_project,
     read_json,
     read_jsonl,
-    save_project,
     sha256_file,
     sha256_text,
     write_json,
@@ -1122,6 +1122,8 @@ def test_end_to_end_gate_and_render(prepared_project: Path) -> None:
 def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     prepared_project: Path,
 ) -> None:
+    from littrans.configuration import edit
+    edit(prepared_project, "translation.reader_notes.require_primary_https_sources", False)
     units = read_jsonl(prepared_project / "derived" / "units.jsonl", SourceUnit)
     paragraphs = [
         unit

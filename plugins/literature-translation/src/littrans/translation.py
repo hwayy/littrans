@@ -52,6 +52,10 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
         from littrans.context_packets import validate_translation_images
         for record in submitted:
             unit = units[record.unit_id]
+            from littrans.policy import record_errors
+            policy_errors = record_errors(root, unit, record)
+            if policy_errors:
+                raise ValueError("; ".join(policy_errors))
             validate_translation_images(root, unit, record.image_evidence)
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")

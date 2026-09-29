@@ -9,9 +9,9 @@ Manage shared context and accepted proposals; workers investigate, and the coord
 
 Read [context management](../../references/context-management.md) and [task protocol](../../references/task-protocol.md).
 
-1. Run context check. Keep document-brief and style-guide as stable project-wide rules. Keep chapter-specific names and senses in scoped glossary entries rather than appending them to global rules.
+1. Run `config validate PROJECT --host HOST` and `context validate PROJECT`. Keep document-brief and style-guide as stable project-wide rules. Keep chapter-specific names and senses in scoped glossary entries rather than appending them to global rules.
 2. Dispatch document-scout or terminology tasks with a bounded page scope and explicit question. Receive findings/proposals with source evidence. Conflicting proposals remain unresolved until a reasoned decision is recorded.
-3. Save context snapshot before an accepted change. Merge approved/reference/candidate terminology deliberately, preserving their distinct semantics. Never let parallel workers edit shared files.
+3. Save context snapshot before an accepted change. Prepare complete candidate resources and use `context apply PROJECT MANIFEST --dry-run`, then apply with the observed `--expect` hash. Approved terminology changes require a reason; promotion updates candidate and approved resources together. See [configuration](../../references/configuration.md). Never let workers edit shared files.
 4. Run context glossary check and lookup for the affected pages, then context impact. Use source verify and workflow status for authoritative affected coverage. A snapshot is not an approval.
 5. Source structure changes are proposed to Source Processor for validation and application. This skill does not certify extraction rules or rewrite source evidence.
 

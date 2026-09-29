@@ -130,7 +130,7 @@ def test_packets_carry_reference_terms_grouped_by_kind_only_when_relevant(tmp_pa
     refresh_batch(root, manifests[0].batch_id)
     assert "# Reference terminology (not gated)" in context.read_text(encoding="utf-8")
     parts = audit_context_parts(root, units)
-    assert set(parts) == {"document-brief", "style-guide", "approved-terms", "reference-terms"}
+    assert set(parts) == {"document-brief", "style-guide", "approved-terms", "reference-terms", "translation-policy"}
     assert parts["reference-terms"]["lines"] > 0
 
 
@@ -313,7 +313,7 @@ def test_generated_gitignore_keeps_the_record_in_and_the_source_out(tmp_path: Pa
     # An existing .gitignore only gains the runtime-state pair, once.
     atomic_write_text(root / ".gitignore", "*.bak\n")
     assert scaffold_project(root)["refreshed"] == [".gitignore"]
-    assert (root / ".gitignore").read_text(encoding="utf-8") == "*.bak\n.littrans/*\n!.littrans/work/\n"
+    assert (root / ".gitignore").read_text(encoding="utf-8") == "*.bak\n.littrans/*\n!.littrans/work/\nsettings.local.yaml\n"
     assert scaffold_project(root)["refreshed"] == []
 
 

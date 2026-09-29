@@ -145,7 +145,7 @@ def test_optional_assets_and_reviewed_translation_with_untranscribed_assets(proj
     labelled = render_project(project, None, name="with-candidate", batch_id=bid)
     assert "originals_only_reason" not in labelled
     labelled_html = Path(labelled["html"]).read_text(encoding="utf-8")
-    assert "转写未完成" in labelled_html
+    assert "转写未完成" not in labelled_html
     assert "asset-original" in labelled_html
     assert read_json(Path(labelled["render_qa"]))["selection"]["originals_only_reason"] is None
 

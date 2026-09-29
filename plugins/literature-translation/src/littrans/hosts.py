@@ -32,7 +32,8 @@ HOST_MODELS_FILE = "host-models.yaml"
 # The roles a project may give a dispatch model and a reasoning effort of their own.
 # `translate` also covers `revise`, which is translator work; `source-review` is the
 # page-by-page review and correction of prepared source.
-DISPATCH_ROLES: tuple[str, ...] = ("translate", "transcribe", "audit", "asset-audit", "source-review")
+DISPATCH_ROLES: tuple[str, ...] = ("translate", "revise", "transcribe", "audit", "asset-audit",
+                                  "source-review", "external-recheck", "scout", "terminology")
 DISPATCH_FIELDS: tuple[str, ...] = ("model", "reasoning_effort")
 
 

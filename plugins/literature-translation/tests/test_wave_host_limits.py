@@ -6,7 +6,6 @@ import pytest
 from test_efficiency_v4 import _make_project
 
 from littrans.hosts import (
-    DISPATCH_ROLES,
     LENS_REVIEWER_BATCH_MAX,
     WAVE_BATCH_SET_MAX,
     WAVE_LIMITS,
@@ -101,7 +100,7 @@ def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     assert defaults["codex"] == {"translate": writer, "transcribe": writer, "audit": reviewer,
                                  "asset-audit": reviewer, "source-review": reviewer}
     # Claude Code takes no per-dispatch effort: the agents' frontmatter sets it.
-    assert defaults["claude"] == {role: {"model": "sonnet"} for role in DISPATCH_ROLES}
+    assert defaults["claude"] == {role: {"model": "sonnet"} for role in ("translate", "transcribe", "audit", "asset-audit", "source-review")}
     assert defaults["cursor"] == {}
     assert defaults["qoder"] == {}
     config = ProjectConfig(project_id="p", title="t", source_path="s.pdf", source_sha256="0" * 64,

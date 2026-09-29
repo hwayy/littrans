@@ -80,7 +80,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
             "If recoverable prose and formulas are trapped in a mixed-region, request source splitting before translating its companion. "
             "Do not read transcription candidates. Record viewed source image hashes in image_evidence "
             "on translation records. If mathematical meaning is unclear, record uncertainties. "
-            "For table, mixed-region and figure assets include asset_translations: translated text, "
+            "For table and mixed-region assets, and figures when saved policy requests internal text translation, include asset_translations: translated text, "
             "table cells or figure labels. If an image has only mathematical/technical notation, "
             "set language_present=false and explain in notes; the technical auditor must verify this. "
             "The v6 asset-reference contract overrides incompatible historical style instructions. "

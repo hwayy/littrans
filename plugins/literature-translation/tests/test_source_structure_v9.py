@@ -13,12 +13,13 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 
 from littrans.fidelity import _make_unit, prepare_source
 from littrans.fidelity_models import FidelityAsset, FidelityFragment
 from littrans.models import ProjectConfig, SourceUnit, UnitKind
 from littrans.source_structure import assemble_structure, plan_structure
-from littrans.storage import initialize_project_dirs, read_jsonl, save_project, sha256_file
+from littrans.storage import initialize_project_dirs, read_jsonl, sha256_file
 
 FONT = 10.0
 MARGIN = 50.0

@@ -1,5 +1,7 @@
 # Source Processing
 
+For source receipts and asset boundaries, see [fidelity workflow](fidelity-workflow.md).
+
 ## Source preparation
 
 ### Layout runtime

@@ -1,19 +1,13 @@
 from pathlib import Path
 
 import pytest
+from config_fixtures import save_project
 from test_workflow_v6 import project as workflow_project
 
 from littrans import fidelity
 from littrans.models import RoleDispatch, SourceUnit, UnitKind
 from littrans.rendering import render_project
-from littrans.storage import (
-    load_project,
-    read_json,
-    read_jsonl,
-    save_project,
-    write_json,
-    write_jsonl,
-)
+from littrans.storage import load_project, read_json, read_jsonl, write_json, write_jsonl
 from littrans.workflow import create_workflow_packet
 
 project = workflow_project
@@ -29,7 +23,7 @@ def test_asset_packet_honors_workflow_host(
     cfg = load_project(project)
     cfg.agent_models["codex"] = {}
     cfg.agent_models["claude"] = {
-        "transcribe": RoleDispatch(model="selected-model", reasoning_effort="high")
+        "transcribe": RoleDispatch(model="selected-model")
     }
     save_project(project, cfg)
     if stage == "asset-audit":
@@ -123,7 +117,7 @@ def test_asset_cli_explicit_host(
     cfg = load_project(project)
     cfg.agent_models["codex"] = {}
     cfg.agent_models["claude"] = {
-        "transcribe": RoleDispatch(model="selected-model", reasoning_effort="high")
+        "transcribe": RoleDispatch(model="selected-model")
     }
     save_project(project, cfg)
     selector = (

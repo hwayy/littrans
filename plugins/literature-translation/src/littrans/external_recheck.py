@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import uuid
 from pathlib import Path
 from typing import Any
 
 from littrans.models import (
-    ExternalReviewConfig,
     ExternalReviewRun,
     IssueStatus,
     ReviewIssue,
@@ -16,8 +14,6 @@ from littrans.models import (
     utc_now,
 )
 from littrans.storage import (
-    atomic_write_bytes,
-    atomic_write_text,
     load_project,
     project_write_lock,
     read_json,
@@ -29,62 +25,10 @@ from littrans.storage import (
 
 
 def migrate_external_config(root: Path, apply: bool = False) -> dict[str, Any]:
-    import yaml
-
-    path = root / "project.yaml"
-    with project_write_lock(root):
-        original_bytes = path.read_bytes()
-        original = original_bytes.decode("utf-8")
-        project = yaml.safe_load(original)
-        old = project.get("external_review")
-        if not old:
-            return {"changed": False, "applied": False}
-        if "reviewers" not in old:
-            ExternalReviewConfig.model_validate(old)
-            return {"changed": False, "applied": False}
-        chain = []
-        used: set[str] = set()
-        for reviewer in old["reviewers"]:
-            primary = {key: value for key, value in reviewer.items() if key != "fallbacks"}
-            if primary["id"] in used:
-                raise ValueError("Duplicate legacy reviewer ID")
-            used.add(primary["id"])
-            chain.append(primary)
-            for number, fallback in enumerate(reviewer.get("fallbacks", []), 1):
-                identity = f"{primary['id']}-fallback-{number}"
-                while identity in used or any(r["id"] == identity for r in old["reviewers"]):
-                    identity += "-migrated"
-                used.add(identity)
-                chain.append(
-                    {**primary, "id": identity, "model_identity": None, "effort": None, **fallback}
-                )
-        if not chain:
-            raise ValueError("Legacy external review has no reviewers")
-        recheck = {
-            key: value for key, value in old.get("second_opinion", {}).items() if key != "mode"
-        }
-        config = ExternalReviewConfig.model_validate(
-            {
-                "schema_version": 2,
-                "enabled": old.get("enabled", True),
-                "reviewer": chain[0],
-                "fallbacks": chain[1:],
-                "recheck": recheck,
-                "domain_expertise": old.get("domain_expertise"),
-            }
-        )
-        result = {
-            "changed": True,
-            "applied": apply,
-            "external_review": config.model_dump(mode="json"),
-        }
-        if apply:
-            backup = root / f"project.yaml.external-v1-{uuid.uuid4().hex[:8]}.bak"
-            atomic_write_bytes(backup, original_bytes)
-            project["external_review"] = result["external_review"]
-            atomic_write_text(path, yaml.safe_dump(project, allow_unicode=True, sort_keys=False))
-            result["backup"] = str(backup)
-        return result
+    """Retained command entry: v7 has no in-place legacy configuration migration."""
+    load_project(root)  # Reject unsupported manifests without changing their bytes.
+    return {"changed": False, "applied": False,
+            "next_actions": ["config show PROJECT", "config apply PROJECT CANDIDATE --dry-run"]}
 
 
 def _binding(root: Path, run: ExternalReviewRun) -> str:

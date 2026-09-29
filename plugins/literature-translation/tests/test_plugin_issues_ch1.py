@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 import pytest
+from config_fixtures import save_project
 from test_efficiency_v4 import _make_project, _submit
 
 from littrans.evidence import fold_term_text, relevant_terms, term_matches, term_source_text
@@ -16,13 +17,7 @@ from littrans.fidelity import _rejoin_line_breaks, prepare_source
 from littrans.models import ProjectConfig, SourceUnit
 from littrans.project import load_terms
 from littrans.quality import run_qa
-from littrans.storage import (
-    initialize_project_dirs,
-    read_jsonl,
-    save_project,
-    sha256_file,
-    write_yaml,
-)
+from littrans.storage import initialize_project_dirs, read_jsonl, sha256_file, write_yaml
 
 
 @pytest.mark.parametrize("glossary, extracted", [
