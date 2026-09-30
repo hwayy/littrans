@@ -94,7 +94,7 @@ def test_models_and_effort_are_mapped_without_silent_loss(tmp_path: Path) -> Non
     command = build_codex_command(reviewer(), packet, tmp_path)
     assert 'model_reasoning_effort="low"' in command and "--sandbox" in command
     assert "--image" in command
-    command = build_opencode_command(reviewer("opencode-cli"), packet, "Review")
+    command = build_opencode_command(reviewer("opencode-cli"), packet, tmp_path / "review-prompt.md")
     assert "openai/gpt-6-luna#low" in command and "--standalone" in command
     assert "--variant" not in command and "--thinking" not in command
     assert "--file" in command
@@ -105,13 +105,72 @@ def test_models_and_effort_are_mapped_without_silent_loss(tmp_path: Path) -> Non
     custom = ExternalReviewerConfig(
         id="x", driver="opencode-cli", command="opencode", model="p/m#custom"
     )
-    assert "p/m#custom" in build_opencode_command(custom, packet, "Review")
+    assert "p/m#custom" in build_opencode_command(custom, packet, tmp_path / "review-prompt.md")
     with pytest.raises(ValueError, match="effort must be omitted"):
         ExternalReviewerConfig(
             id="x", driver="cursor-cli", command="cursor", model="auto", effort="high"
         )
     with pytest.raises(ValueError, match="extra"):
         ExternalReviewerConfig(id="x", driver="codex-cli", command="codex", model="x", fallbacks=[])
+
+
+def test_opencode_packet_is_attached_not_passed_on_the_command_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows CreateProcess refuses command lines over 32,767 characters."""
+    import subprocess
+
+    from littrans import external_cli
+    from littrans.external_cli import invoke_cli, preview_command
+
+    packet = tmp_path / "packet" / "packet.md"
+    (packet.parent / "pages").mkdir(parents=True)
+    (packet.parent / "pages/page-0001.png").write_bytes(b"image")
+    body = "PACKET_BODY_SENTINEL " + "长句证据 evidence " * 8000
+    packet.write_text(body, encoding="utf-8")
+    assert len(body) > 100_000
+    item = ExternalReviewerConfig(
+        id="backup", driver="opencode-cli", command="opencode", model="openai/gpt-6-luna#low"
+    )
+    calls: list[tuple[list[str], dict]] = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[1] == "--version":
+            return subprocess.CompletedProcess(command, 0, "opencode v2.0.6\n", "")
+        if command[1] == "run":
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps({"type": "step", "sessionID": "ses_1"}) + "\n", ""
+            )
+        return subprocess.CompletedProcess(command, 1, "", "export failed")
+
+    monkeypatch.setattr(external_cli.shutil, "which", lambda _: "opencode")
+    monkeypatch.setattr(subprocess, "run", run)
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(external.ExternalInvocationError, match="export failed"):
+        invoke_cli(item, packet, work, {})
+    invocations = [(command, kwargs) for command, kwargs in calls if command[1] in {"run", "session"}]
+    assert [command[1] for command, _ in invocations] == ["run", "session"]
+    command, kwargs = invocations[0]
+    assert sum(len(part) for part in command) < 8_000
+    assert not any("PACKET_BODY_SENTINEL" in part for part in command)
+    files = [command[index + 1] for index, part in enumerate(command) if part == "--file"]
+    assert Path(files[0]).name == "review-prompt.md" and files[1].endswith("page-0001.png")
+    assert "PACKET_BODY_SENTINEL" in Path(files[0]).read_text(encoding="utf-8")
+    assert command[-1] == external_cli.OPENCODE_MESSAGE
+    for _, options in invocations:
+        assert options["stdin"] is subprocess.DEVNULL and "input" not in options
+        # OpenCode reads PWD: a coordinator shell's PWD would load its own agents and files.
+        assert options["env"]["PWD"] == str(work.resolve()) and options["cwd"] == work
+    attempt = json.loads((work / "attempts.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert attempt["effort"] == "low" and attempt["failure_type"] != "timeout"
+    preview = preview_command(item, packet, tmp_path / "dry-run")
+    assert preview["prompt_delivery"] == "file"
+    assert Path(preview["prompt_path"]).read_text(encoding="utf-8") == Path(files[0]).read_text(
+        encoding="utf-8"
+    )
+    assert not any("PACKET_BODY_SENTINEL" in part for part in preview["command"])
 
 
 def test_legacy_migration_refuses_to_change_historical_projects(tmp_path: Path) -> None:
@@ -430,6 +489,36 @@ def test_live_external_cli(driver: str, tmp_path: Path, monkeypatch: pytest.Monk
 
 
 @pytest.mark.skipif(
+    os.environ.get("LITTRANS_LIVE_EXTERNAL") != "1", reason="Explicit paid CLI smoke only"
+)
+def test_live_opencode_large_packet(tmp_path: Path) -> None:
+    """A real batch packet can exceed the Windows command-line limit."""
+    root, manifests = _make_project(tmp_path, 1)
+    batch = manifests[0].batch_id
+    config = load_project(root)
+    config.external_review = ExternalReviewConfig(reviewer=reviewer("opencode-cli"))
+    save_project(root, config)
+    brief = root / "context/document-brief.md"
+    notes = "\n".join(
+        f"- Background note {index}: the synthetic interface vocabulary is reviewed for "
+        "consistent terminology; it adds no translation requirement."
+        for index in range(400)
+    )
+    brief.write_text(brief.read_text(encoding="utf-8") + "\n## Background notes\n\n" + notes + "\n",
+                     encoding="utf-8")
+    _submit(
+        root, batch, target_text=" ".join(["架构 框架 绑定 属性 控件 布局 事件 样式 模板"] * 14)
+    )
+    _audit_and_approve(root, batch)
+    text, _ = external._packet_text(root, batch, list(external.load_manifest(root, batch).unit_ids))
+    assert len(text) > 40_000
+    status = external.run_external_review(root, batch)
+    assert status["primary"]["success"], status["primary"]["summary"]
+    assert status["primary"]["model_verified"]
+    assert status["primary"]["actual_effort"] == "low"
+
+
+@pytest.mark.skipif(
     os.environ.get("LITTRANS_LIVE_ANTIGRAVITY") != "1",
     reason="Explicit authentication-failure smoke only",
 )
@@ -452,7 +541,7 @@ def test_live_antigravity_authentication_fallback(tmp_path: Path) -> None:
 
 
 def test_external_process_environment_detaches_parent_session(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from littrans.external_cli import invocation_environment
 
@@ -460,6 +549,10 @@ def test_external_process_environment_detaches_parent_session(
     monkeypatch.setenv("CODEX_THREAD_ID", "parent")
     monkeypatch.setenv("CURSOR_AGENT", "parent")
     monkeypatch.setenv("LITTRANS_TEST_KEEP", "kept")
+    monkeypatch.setenv("PWD", str(Path.cwd()))
     env = invocation_environment()
     assert all(name not in env for name in ("CLAUDECODE", "CODEX_THREAD_ID", "CURSOR_AGENT"))
     assert env["LITTRANS_TEST_KEEP"] == "kept" and os.environ["CLAUDECODE"] == "1"
+    # A coordinator shell's PWD must never select the external CLI's project.
+    assert invocation_environment(tmp_path)["PWD"] == str(tmp_path.resolve())
+    assert os.environ["PWD"] == str(Path.cwd())

@@ -230,11 +230,10 @@ class ExternalReviewerConfig(StrictModel):
         if self.effort is not None and not self.effort.strip():
             raise ValueError("effort must not be empty")
         if self.driver is ExternalReviewDriver.OPENCODE_CLI:
-            model, marker, variant = self.model.partition("#")
-            if "/" not in model or not all(model.split("/", 1)) or (marker and not variant):
-                raise ValueError("opencode-cli model must be provider/model[#variant]")
-            if marker and self.effort is not None and variant != self.effort:
-                raise ValueError("OpenCode model variant conflicts with effort")
+            # The invocation builds its selector with this same function; validate here
+            # so a malformed model fails configuration instead of consuming a fallback.
+            from littrans.agent_config import opencode_model
+            opencode_model(self.model, self.effort)
 
         return self
 

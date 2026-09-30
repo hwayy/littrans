@@ -15,6 +15,51 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.0-dev.2] - 2026-09-30
+
+### Added
+
+- `project rebuild --settings preserve|preset [--preset NAME]`. A v7 rebuild keeps its validated
+  `settings.yaml` byte for byte and migrates reviewer executable bindings by default; the explicit
+  preset mode keeps `document` and reports every reset field. The command output and
+  `derived/rebuild-provenance.json` list preserved, reset, locally migrated and unmigrated
+  configuration with next actions.
+
+### Changed
+
+- `workflow next` and `workflow status` return one audit ready task per lens still missing
+  coverage, each with `lens` and that lens's resolved model and effort; OpenCode ready tasks name
+  their native agent.
+- Dispatch advisories name the `settings.yaml` path that holds each policy
+  (`agents.HOST.roles.ROLE` or `agents.HOST.audit_lenses.LENS`) instead of v6 `agent_models` keys.
+- OpenCode external review receives its prompt as an attached `review-prompt.md` with a fixed
+  short message.
+
+### Fixed
+
+- OpenCode external review failed on Windows once a packet exceeded the 32,767-character command
+  line, reported as a missing command (WinError 206).
+- External CLI processes bind `PWD` to their private work directory and close stdin. OpenCode 2.0.6
+  resolves its project from an inherited shell `PWD`, so reviews started from Git Bash failed with
+  `Agent not found`, or could load the coordinator directory's own agents and files.
+- v7 rebuilds silently reset agents, translation and verification policy and external reviewers
+  to preset defaults.
+- Bare executable names in `settings.local.yaml` commands stay PATH lookups instead of resolving
+  under the project root.
+- Packet original-image dispatch records use the revise and audit-lens policies that the packet
+  manifest records.
+- OpenCode reviewer models are validated with the selector rules the invocation uses, so a
+  malformed model fails configuration instead of consuming a fallback.
+- Failed-attempt telemetry keeps the requested OpenCode variant effort.
+- QA policy checks load fidelity assets at most once per record.
+
+### Compatibility
+
+- `project rebuild` output adds a `rebuild` report to the ProjectConfig fields; `rebuild_project`
+  keeps its return type and accepts an optional `report` mapping.
+- Coordinators that expected one audit ready task per batch must dispatch one task per lens; wave
+  limits still count batches.
+
 ## [0.9.0-dev.1] - 2026-09-30
 
 ### Added

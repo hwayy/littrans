@@ -1443,7 +1443,7 @@ def _invoke(
                     from littrans.external_cli import invocation_environment
                     result = subprocess.run(
                         command,
-                        env=invocation_environment(),
+                        env=invocation_environment(work_dir),
                         cwd=work_dir,
                         input=stdin_text,
                         capture_output=True,

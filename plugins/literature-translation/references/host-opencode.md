@@ -49,7 +49,9 @@ User-edited managed files are preserved and reported as conflicts: back up and r
 files before regeneration, then reconcile intentional customizations explicitly.
 
 Verify all roles with `opencode debug agents` from the configured directory in a fresh process,
-and confirm actual child-session model/variant records. Higher-priority host configuration or
+and confirm actual child-session model/variant records. The first query in a newly created
+directory can return an empty list while the background service loads it; repeat it before
+concluding that agents are missing. Higher-priority host configuration or
 an unavailable provider/model must be reported, never silently replaced. Generated files alone
 do not prove which model ran.
 
@@ -62,6 +64,10 @@ coordinator to persist and import. Dispatch within actual host capacity.
 An unset native child inherits the parent session's selected model and variant. A new top-level
 `opencode run` session has its own selection: set `--model provider/model#variant` explicitly;
 do not assume it inherits a previous main session or that `--agent` selects the model.
+OpenCode 2.0.6 resolves the project directory from `PWD`, not the process working directory: when
+a script or another process starts `opencode run` in a different directory, set `PWD` to that
+directory, or it loads the caller's `.opencode` agents and files. LitTrans external CLI review
+does this, attaches its prompt as a file and closes stdin.
 For fresh-session handoff use a primary-capable coordinator with the saved task instructions;
 the generated `mode: subagent` definitions are intended for native child dispatch.
 

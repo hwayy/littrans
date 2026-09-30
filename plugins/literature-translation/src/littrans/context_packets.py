@@ -39,7 +39,8 @@ TARGET_TEXT_CONTRACTS = (
 
 
 def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *,
-                     include_adjacent: bool = False, host: str | None = None) -> dict[str, Any]:
+                     include_adjacent: bool = False, host: str | None = None,
+                     lens: str | None = None) -> dict[str, Any]:
     from littrans.fidelity_models import asset_reference_ids, load_assets
     assets = load_assets(root)
     adjacent = adjacent_source_units(root, units) if include_adjacent else []
@@ -64,8 +65,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
     config = load_project(root)
     # Only this packet's own dispatch policy: a writer has no use for the other
     # hosts' configuration, and either field may be unset on the host's default.
-    dispatch = (config.dispatch(host, "translate" if role == "revise" else role)
-                if host else RoleDispatch())
+    dispatch = config.dispatch(host, role, lens) if host else RoleDispatch()
     return {
         "source_sha256": config.source_sha256,
         "role": role,

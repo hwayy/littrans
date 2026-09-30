@@ -16,7 +16,15 @@ from littrans.models import (
     ExternalReviewerConfig,
     ProjectConfig,
 )
-from littrans.settings import ROLES, LocalSettings, ProjectSettings, digest, preset
+from littrans.settings import (
+    INHERITED_ROLES,
+    LENSES,
+    ROLES,
+    LocalSettings,
+    ProjectSettings,
+    digest,
+    preset,
+)
 from littrans.storage import atomic_write_text, project_write_lock, sha256_file
 
 COMMANDS = {"claude-code": "claude", "antigravity": "antigravity", "cursor-cli": "agent",
@@ -59,6 +67,14 @@ def read_local(root: Path) -> LocalSettings:
     return LocalSettings.model_validate(yaml_read(path)) if path.exists() else LocalSettings()
 
 
+def resolve_command_binding(root: Path, command: str) -> str:
+    """A bare executable name stays a PATH lookup; path-like bindings resolve against root."""
+    path = Path(command)
+    if path.is_absolute():
+        return str(path)
+    return command if path.parent == Path(".") else str((root / path).resolve())
+
+
 def bind(config: ProjectConfig, root: Path) -> ProjectConfig:
     settings, local = read_settings(root), read_local(root)
     if set(local.commands) - settings.external_review.reviewers.keys():
@@ -81,8 +97,7 @@ def bind(config: ProjectConfig, root: Path) -> ProjectConfig:
             definition = external.reviewers[key]
             command = local.commands.get(key)
             if command is not None:
-                path = Path(command)
-                command = str(path if path.is_absolute() else (root / path).resolve())
+                command = resolve_command_binding(root, command)
             result = ExternalReviewerConfig(id=key, command=command or COMMANDS[definition.driver],
                                             **definition.model_dump())
             result._timeout_seconds = external.timeout_seconds
@@ -104,7 +119,7 @@ def effective(root: Path, host: str = "auto") -> dict[str, Any]:
     capability = SUBAGENT_DISPATCH[selected]
     policy = settings.agents[selected]
     roles = {role: policy.resolve(role) for role in ROLES}
-    lenses = {lens: policy.resolve("audit", lens) for lens in ("fidelity", "technical", "chinese-style")}
+    lenses = {lens: policy.resolve("audit", lens) for lens in LENSES}
     errors = []
     for role, values in {**roles, **{f"audit_lenses.{k}": v for k, v in lenses.items()}}.items():
         for key, value in values.items():
@@ -123,7 +138,7 @@ def effective(root: Path, host: str = "auto") -> dict[str, Any]:
     origins = {}
     for role in ROLES:
         origin = {key: f"agents.{selected}.defaults.{key}" for key in ("model", "reasoning_effort")}
-        inherited = {"revise": "translate", "external-recheck": "audit"}.get(role)
+        inherited = INHERITED_ROLES.get(role)
         for item in ([inherited] if inherited else []) + [role]:
             if item in policy.roles:
                 origin.update({key: f"agents.{selected}.roles.{item}.{key}"

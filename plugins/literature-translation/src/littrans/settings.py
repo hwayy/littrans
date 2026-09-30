@@ -13,6 +13,8 @@ from littrans.models import ExternalReviewerConfig, StrictModel
 ROLES = ("translate", "revise", "transcribe", "source-review", "asset-audit", "audit",
          "external-recheck", "scout", "terminology")
 LENSES = ("fidelity", "technical", "chinese-style")
+# Roles whose unset fields inherit another role's policy before the role's own override.
+INHERITED_ROLES = {"revise": "translate", "external-recheck": "audit"}
 
 
 class SettingsModel(StrictModel):
@@ -63,7 +65,7 @@ class HostPolicy(SettingsModel):
         if role not in ROLES or (lens is not None and (role != "audit" or lens not in LENSES)):
             raise ValueError("Unknown role/lens")
         result = self.defaults.model_dump()
-        inherited = {"revise": "translate", "external-recheck": "audit"}.get(role)
+        inherited = INHERITED_ROLES.get(role)
         for key in ([inherited] if inherited else []) + [role]:
             if key in self.roles:
                 result.update(self.roles[key].model_dump(exclude_unset=True))

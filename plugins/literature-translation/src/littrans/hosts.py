@@ -191,7 +191,8 @@ def normalize_agent_models(policy: object) -> dict[str, dict[str, dict[str, str]
 
 
 def dispatch_advisories(
-    host: str, role: str, model: str | None, reasoning_effort: str | None
+    host: str, role: str, model: str | None, reasoning_effort: str | None,
+    *, lens: str | None = None,
 ) -> tuple[str, ...]:
     """Report, without blocking, where a role's policy and the host's launcher disagree.
 
@@ -202,49 +203,52 @@ def dispatch_advisories(
     capability = SUBAGENT_DISPATCH.get(cast(CoordinationHost, host))
     if capability is None:
         return ()
+    # The settings.yaml path that holds this policy, and the dispatch it governs.
+    path = f"agents.{host}." + (f"audit_lenses.{lens}" if lens else f"roles.{role}")
+    label = f"{role} ({lens} lens)" if lens else role
     notes: list[str] = []
     if capability.project_agent_config:
         if model:
             notes.append(
-                f"agent_models.{host}.{role} is applied through generated native agents, not "
+                f"{path} is applied through generated native agents, not "
                 "per-call model arguments. Run `project agents PROJECT --host opencode --check` "
                 "and --write after policy changes, then start a fresh OpenCode session. "
                 "Verify the child session's actual model/variant."
             )
         elif reasoning_effort:
             notes.append(
-                f"agent_models.{host}.{role}.reasoning_effort requires an explicit provider/model "
+                f"{path}.reasoning_effort requires an explicit provider/model "
                 "to select a native model variant; generation rejects effort-only policies. "
                 "Unset both fields to inherit the parent model and variant."
             )
         return tuple(notes)
     if model and not capability.model:
         notes.append(
-            f"agent_models.{host}.{role}.model is set to {model}, but the plugin cannot "
+            f"{path}.model is set to {model}, but the plugin cannot "
             f"choose a subagent model per dispatch on {host}; that host's own policy "
             "decides which model runs the task. The packet still records the value."
         )
     elif not model and capability.model:
         notes.append(
-            f"agent_models.{host}.{role}.model is not set; the {role} dispatch follows "
+            f"{path}.model is not set; the {label} dispatch follows "
             f"{host}'s default subagent model."
         )
     if reasoning_effort and capability.agent_effort:
         notes.append(
-            f"agent_models.{host}.{role}.reasoning_effort is set to {reasoning_effort}, "
+            f"{path}.reasoning_effort is set to {reasoning_effort}, "
             f"but it is not applied: {host} takes no reasoning effort per dispatch, and "
             f"the LitTrans agents run at the `effort: {capability.agent_effort}` their "
-            f"frontmatter declares. Remove agent_models.{host}.{role}.reasoning_effort "
-            "from project.yaml."
+            f"frontmatter declares. Set {path}.reasoning_effort "
+            "to null in settings.yaml."
         )
     elif reasoning_effort and not capability.reasoning_effort:
         notes.append(
-            f"agent_models.{host}.{role}.reasoning_effort is set to {reasoning_effort}, "
+            f"{path}.reasoning_effort is set to {reasoning_effort}, "
             f"but the plugin cannot choose a reasoning effort per dispatch on {host}."
         )
     elif not reasoning_effort and capability.reasoning_effort:
         notes.append(
-            f"agent_models.{host}.{role}.reasoning_effort is not set; the {role} dispatch "
+            f"{path}.reasoning_effort is not set; the {label} dispatch "
             f"follows {host}'s default reasoning effort."
         )
     return tuple(notes)

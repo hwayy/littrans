@@ -249,18 +249,32 @@ littrans project tracked PROJECT
 
 ### littrans project rebuild
 
-Rebuild an older project in a new workspace.
+Rebuild a project in a new workspace, keeping v7 policy by default.
 
 ```text
-littrans project rebuild OLD NEW
+littrans project rebuild OLD NEW [OPTIONS]
 ```
 
 | Parameter | Type | Required | Default | Choices | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `OLD` | `path` | yes | `required` | `[]` | Existing project to preserve. |
 | `NEW` | `path` | yes | `required` | `[]` | New project directory. |
+| `--settings` | `str` | no | `null` | `[]` | `preserve` (default for v7) or `preset` (required for older formats). |
+| `--preset` | `str` | no | `null` | `[]` | Preset for `--settings preset`; defaults to the old project's preset. |
 
-Preserves OLD; NEW must be a new destination. Copies source and reusable context/glossary/docs, not historical derived approval state. Returns [ProjectConfig](#model-projectconfig).
+Preserves OLD; NEW must be a new destination. Copies source and reusable context/glossary/docs, not
+translations, batches, QA, reviews, evidence, workflow progress or approvals. A v7 OLD keeps its
+validated `settings.yaml` byte for byte and migrates `settings.local.yaml` executable bindings for
+reviewers the new settings define (relative paths become absolute; bare command names stay PATH
+lookups). `--settings preset` explicitly starts from a preset while keeping `document`. Older formats
+can only start from a preset. The local `source_path` is replaced by the copied source; generated
+native agent files and legacy manifest policy are not migrated.
+
+Returns [ProjectConfig](#model-projectconfig) plus `rebuild`: `copied`, `inherited_approvals` and
+`configuration` with `mode`, `source_schema_version`, `preset`, `preserved` (top-level sections),
+`reset` (`path`, `before`, `after`, `operation` for each changed field), `local_migrated` (`path`,
+`binding` of `path` or `command-name`), `not_migrated` (`path`, `reason`) and `next_actions`. The same
+`configuration` is recorded in `derived/rebuild-provenance.json`, without machine paths.
 
 Example:
 
@@ -1989,7 +2003,11 @@ wave also includes `requested_batch_ids`. Complete output can still include opti
 Workflow status returns `batch_ids`, `host`, `stage`, `stages`, `audit_stale`, `reading_complete`,
 `assets` (per-batch lanes), `ready_tasks`, `optional_asset_tasks`, `assets_complete`, `complete`,
 `unbatched_pages`, `dispatch_advisories`. Ready-task objects describe the applicable domain packet
-and dispatch. Their stage-specific inputs are the same contracts used by packet commands.
+and dispatch. Their stage-specific inputs are the same contracts used by packet commands. An audit
+batch yields one ready task per lens still missing current coverage (all three when none is
+recorded), each with `lens` and that lens's resolved `model` / `reasoning_effort`; create one audit
+task per entry. On OpenCode, ready tasks for dispatchable stages include `native_agent`. The wave
+limit still counts batches, not lens tasks.
 
 Workflow metrics fields are `batch_ids`, `history_records`, `semantic_noop_records`,
 `semantic_noop_ratio`, `legacy_packet_bytes`, `generated_packet_bytes`,

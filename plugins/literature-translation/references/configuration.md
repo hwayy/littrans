@@ -9,7 +9,9 @@ match the manifest hash. Credentials remain in the external provider's CLI.
 Initialize with `project init SOURCE PROJECT --preset technical-book` (or
 `research-paper`). Presets are expanded once. A plugin upgrade does not change
 saved settings. Older project formats are rejected; `project rebuild OLD NEW`
-copies reusable source/context into a new project without inheriting approvals.
+copies reusable source/context into a new project without inheriting approvals. A v7 rebuild
+keeps `settings.yaml` and reviewer executable bindings unless `--settings preset` is given, and
+reports what was preserved, reset and not migrated.
 
 ## Read and validate
 

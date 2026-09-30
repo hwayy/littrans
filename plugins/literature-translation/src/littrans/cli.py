@@ -295,9 +295,21 @@ def source_verify(
 
 
 @project_app.command("rebuild")
-def project_rebuild(old: PathArg, new: PathArg) -> None:
-    """Build a new v6 workspace; preserve the historical project and its evidence."""
-    emit(rebuild_project(old, new))
+def project_rebuild(
+    old: PathArg,
+    new: PathArg,
+    settings: str | None = typer.Option(
+        None, "--settings",
+        help="preserve (default for v7) keeps settings.yaml; preset starts from a preset (required for older formats).",
+    ),
+    preset: str | None = typer.Option(
+        None, "--preset", help="Preset for --settings preset (default: the old project's preset)."
+    ),
+) -> None:
+    """Build a new v7 workspace; preserve the historical project and its evidence."""
+    report: dict[str, Any] = {}
+    config = rebuild_project(old, new, settings=settings, preset=preset, report=report)
+    emit({**config.model_dump(mode="json"), "rebuild": report})
 
 
 @source_app.command("probe")

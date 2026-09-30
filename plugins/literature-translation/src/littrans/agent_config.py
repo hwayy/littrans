@@ -42,6 +42,14 @@ def opencode_model(model: str | None, effort: str | None) -> str | None:
     return f"{base}#{effort or variant}" if effort or variant else base
 
 
+def opencode_native_agent(stage: str, lens: str | None = None) -> str:
+    """The generated OpenCode agent that executes one task stage and audit lens."""
+    from littrans.tasks import ROLES
+    name = {"revise": "littrans-revise", "external-recheck": "littrans-external-recheck"}.get(
+        stage, "littrans-" + ROLES[stage])
+    return f"{name}-{lens}" if stage == "audit" and lens else name
+
+
 def configure_agents(project: Path, host: str, workspace: Path | None = None,
                      write: bool = False) -> dict[str, Any]:
     config = load_project(project)

@@ -1,4 +1,4 @@
-# Migrating to LitTrans 0.9.0-dev.1
+# Migrating to LitTrans 0.9.0-dev.2
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
@@ -18,6 +18,12 @@ its recorded SHA-256. Rebuild reuses verified source and context material; histo
 results, source receipts, translations and approvals do not become evidence in the new project.
 Review copied brief, style, glossary and structure guidance before using them. Historical model
 answers must not enter blind review tasks. Keep `OLD` unchanged for recovery.
+
+A v7 `OLD` keeps its validated `settings.yaml` (agents, translation and verification policy,
+external reviewers) and the executable bindings of reviewers it defines. Add `--settings preset`
+(optionally `--preset NAME`) to start from a preset instead. Older formats always start from a
+preset. Read the returned `rebuild.configuration` report: `preserved`, `reset`, `local_migrated`,
+`not_migrated` and `next_actions`. It is also saved in `derived/rebuild-provenance.json`.
 
 ## Configure the new project
 

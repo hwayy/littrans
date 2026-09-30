@@ -7,7 +7,12 @@ from littrans.models import SourceUnit, TranslationRecord
 
 
 def record_errors(root: Path, unit: SourceUnit, record: TranslationRecord) -> list[str]:
+    from functools import cache
+
+    from littrans.fidelity_models import asset_reference_ids, load_assets
     policy = read_settings(root).translation
+    # Loaded at most once per record, and only when an asset check needs it.
+    assets = cache(lambda: load_assets(root))
     errors = []
     note = record.reader_note
     if note:
@@ -20,28 +25,22 @@ def record_errors(root: Path, unit: SourceUnit, record: TranslationRecord) -> li
     if policy.figures.internal_labels == "preserve" and (record.figure_labels or any(a.figure_labels for a in record.asset_translations)):
         errors.append("Figure-label policy preserves original labels")
     if policy.figures.internal_labels == "preserve" and record.asset_translations:
-        from littrans.fidelity_models import load_assets
-        assets = load_assets(root)
         for item in record.asset_translations:
-            if item.asset_id in assets and assets[item.asset_id].kind == "figure" and (item.target_text or item.target_table):
+            if item.asset_id in assets() and assets()[item.asset_id].kind == "figure" and (item.target_text or item.target_table):
                 errors.append("Figure policy preserves internal image text")
     if policy.tables.translation == "cells":
         if unit.kind == "table" and record.target_table is None:
             errors.append("Table policy requires translated cells")
-        from littrans.fidelity_models import load_assets
-        assets = load_assets(root)
         for item in record.asset_translations:
-            if item.asset_id in assets and assets[item.asset_id].kind == "table" and item.language_present and item.target_table is None:
+            if item.asset_id in assets() and assets()[item.asset_id].kind == "table" and item.language_present and item.target_table is None:
                 errors.append(f"Table {item.asset_id} requires translated cells")
     for annotation in record.code_annotations:
         enabled = policy.code.translate_comments if annotation.kind == "comment" else policy.code.translate_string_literals
         if not enabled:
             errors.append(f"Code {annotation.kind} annotations are disabled")
         if annotation.asset_id:
-            from littrans.fidelity_models import asset_reference_ids, load_assets
-            assets = load_assets(root)
             if (annotation.asset_id not in asset_reference_ids(unit.source_markdown or unit.source_text)
-                    or annotation.asset_id not in assets or assets[annotation.asset_id].kind != "code"):
+                    or annotation.asset_id not in assets() or assets()[annotation.asset_id].kind != "code"):
                 errors.append("Code annotation must reference an original code asset in this unit")
         elif unit.kind != "code":
             errors.append("Code annotations require a code source unit")

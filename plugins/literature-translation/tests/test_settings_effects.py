@@ -40,3 +40,63 @@ def test_task_receipt_checks_consumed_policy_domains(project, key, value, stale)
             receive_task(project, task["task_id"])
     else:
         assert receive_task(project, task["task_id"])["state"] == "imported"
+
+
+def _audit_ready(tmp_path: Path) -> tuple[Path, str]:
+    from test_efficiency_v4 import _make_project, _submit
+
+    from littrans.quality import run_qa
+    root, manifests = _make_project(tmp_path, 1)
+    batch = manifests[0].batch_id
+    edit(root, "agents.claude.roles.audit.model", "sonnet")
+    edit(root, "agents.claude.audit_lenses.technical.model", "opus")
+    _submit(root, batch)
+    assert run_qa(root, batch).passed
+    return root, batch
+
+
+def _lens_models(tasks: list[dict]) -> dict[str, str | None]:
+    assert {task["stage"] for task in tasks} == {"audit"}
+    return {task["lens"]: task["model"] for task in tasks}
+
+
+def test_audit_ready_tasks_resolve_each_lens_policy(tmp_path: Path) -> None:
+    from littrans.workflow import create_workflow_packet, workflow_next, workflow_status
+    root, batch = _audit_ready(tmp_path)
+    expected = {"fidelity": "sonnet", "technical": "opus", "chinese-style": "sonnet"}
+    wave = workflow_next(root, host="claude")
+    assert wave["stage"] == "audit"
+    assert _lens_models(wave["ready_tasks"]) == expected
+    assert _lens_models(workflow_status(root, [batch], host="claude")["ready_tasks"]) == expected
+    # Lens advisories name the settings path that actually holds the lens policy.
+    assert not any("agent_models" in note for note in wave["dispatch_advisories"])
+    packet = create_workflow_packet(root, "audit", [batch], "technical", host="claude")
+    assert packet.model == "opus"
+    original = read_json(root / packet.storage_root / packet.packet_id / "original-images.json")
+    assert original["dispatch"]["model"] == "opus"
+
+
+def test_audit_ready_tasks_list_only_missing_lenses(tmp_path: Path) -> None:
+    from test_efficiency_v4 import _packet_dir
+
+    from littrans.workflow import create_workflow_packet, import_review_set, workflow_next
+    root, batch = _audit_ready(tmp_path)
+    packet = create_workflow_packet(root, "audit", [batch], "fidelity", host="claude")
+    issues = _packet_dir(root, packet) / "issues.jsonl"
+    write_jsonl(issues, [])
+    import_review_set(root, _packet_dir(root, packet) / "manifest.json", issues)
+    wave = workflow_next(root, host="claude")
+    assert _lens_models(wave["ready_tasks"]) == {"technical": "opus", "chinese-style": "sonnet"}
+
+
+def test_opencode_ready_tasks_name_native_lens_agents(tmp_path: Path) -> None:
+    from littrans.workflow import workflow_next
+    root, _ = _audit_ready(tmp_path)
+    tasks = workflow_next(root, host="opencode")["ready_tasks"]
+    assert {task["lens"]: task["native_agent"] for task in tasks} == {
+        lens: f"littrans-translation-reviewer-{lens}" for lens in ("fidelity", "technical", "chinese-style")}
+    from littrans.storage import load_project
+    config = load_project(root)
+    for task in tasks:
+        dispatch = config.dispatch("opencode", "audit", task["lens"])
+        assert (task["model"], task["reasoning_effort"]) == (dispatch.model, dispatch.reasoning_effort)

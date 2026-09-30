@@ -461,6 +461,9 @@ def _editable_revision_batches(root: Path, batch_ids: list[str], snapshot: Workf
 
 def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                  host: str, *, optional_assets: bool = False) -> list[dict[str, Any]]:
+    from littrans.agent_config import opencode_native_agent
+    from littrans.models import RoleDispatch
+    from littrans.settings import LENSES, ROLES
     config = load_project(root)
     tasks: list[dict[str, Any]] = []
     by_id = {m.batch_id: m for m in snapshot.manifests}
@@ -479,16 +482,29 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                                              "fresh literature-source-reviewer subagent for its pages before resuming."})
             continue
         lane = _snapshot_lane(root, by_id[bid], snapshot)
-        if stage != "complete" and not optional_assets:
-            # Revision is translator work: it reuses the translate model policy.
-            role = stage
-            from littrans.models import RoleDispatch
-            from littrans.settings import ROLES
-            dispatch = config.dispatch(host, role) if role in ROLES else RoleDispatch()
+        if stage == "audit" and not optional_assets:
+            # Each lens is its own fresh task with its own resolved lens policy.
+            coverage = audit_coverage(root, bid, manifest=by_id[bid], all_units=snapshot.unit_map,
+                                      translations=snapshot.translations, runs=snapshot.audit_runs[bid])
+            for lens in [lens for lens in LENSES if coverage["missing"][lens]] or list(LENSES):
+                dispatch = config.dispatch(host, stage, lens)
+                tasks.append({"batch_id": bid, "stage": stage, "lens": lens,
+                              "depends_on": ["source-fidelity"],
+                              "model": dispatch.model,
+                              "reasoning_effort": dispatch.reasoning_effort,
+                              "fresh_context": True})
+                if host == "opencode":
+                    tasks[-1]["native_agent"] = opencode_native_agent(stage, lens)
+        elif stage != "complete" and not optional_assets:
+            # Revision and external recheck resolve their own policy, inheriting
+            # translate and audit respectively where they leave fields unset.
+            dispatch = config.dispatch(host, stage) if stage in ROLES else RoleDispatch()
             tasks.append({"batch_id": bid, "stage": stage, "depends_on": ["source-fidelity"],
                           "model": dispatch.model,
                           "reasoning_effort": dispatch.reasoning_effort,
                           "fresh_context": True})
+            if host == "opencode" and stage in ROLES:
+                tasks[-1]["native_agent"] = opencode_native_agent(stage)
             if stage == "external-recheck":
                 tasks[-1].update(execution="host-subagent", instruction="Create an external-recheck task, claim with a new subagent executor, and dispatch only its blind evidence packet.")
             elif stage == "external-adjudicate":
@@ -505,6 +521,8 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
                               "model": dispatch.model,
                               "reasoning_effort": dispatch.reasoning_effort,
                               "fresh_context": True})
+                if host == "opencode":
+                    tasks[-1]["native_agent"] = opencode_native_agent(role)
                 if role == "transcribe" and lane["recovery"]:
                     tasks[-1]["recovery"] = True
     return tasks
@@ -517,7 +535,7 @@ def _with_advisories(root: Path, host: str, payload: dict[str, Any]) -> dict[str
     replay identity and an asset packet's id hashes its whole payload.
     """
     roles = dict.fromkeys(
-        "translate" if task.get("stage") == "revise" else "audit" if task.get("stage") == "external-recheck" else str(task.get("stage", ""))
+        f"audit:{task['lens']}" if task.get("lens") else str(task.get("stage", ""))
         for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]
     )
     payload["dispatch_advisories"] = dispatch_report(root, host, roles)["advisories"]
@@ -1181,7 +1199,8 @@ def create_workflow_packet(
         "shared": ("shared.md", _shared_context(root, selected_units))
     }
     from littrans.context_packets import original_context
-    original = original_context(root, selected_units, stage, include_adjacent=True, host=host)
+    original = original_context(root, selected_units, stage, include_adjacent=True, host=host,
+                                lens=lens)
     planned_files["original-images"] = (
         "original-images.json", json.dumps(original, ensure_ascii=False, indent=2) + "\n",
     )

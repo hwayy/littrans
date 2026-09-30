@@ -94,8 +94,6 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
         packet = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
         if packet.get("pending") is False:
             raise ValueError("No pending assets in this scope")
-        if stage in {"translate", "revise"} and len(batches) != 1:
-            raise ValueError("One translation task owns exactly one batch")
     elif asset_ids:
         if stage not in {"transcribe", "asset-audit"}:
             raise ValueError("Asset IDs require an asset task")
@@ -145,10 +143,8 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
                             **config.dispatch(selected_host, stage, lens).model_dump(mode="json")},
                "source_sha256": config.source_sha256}
     if selected_host == "opencode":
-        native = {"revise": "littrans-revise", "external-recheck": "littrans-external-recheck"}.get(stage, "littrans-" + ROLES[stage])
-        if stage == "audit" and lens:
-            native += "-" + lens
-        payload["dispatch"]["native_agent"] = native
+        from littrans.agent_config import opencode_native_agent
+        payload["dispatch"]["native_agent"] = opencode_native_agent(stage, lens)
     from littrans.configuration import policy_domains
     payload["policy_snapshot"] = config.settings.payload()
     payload["policy_domains"] = policy_domains(payload["policy_snapshot"])

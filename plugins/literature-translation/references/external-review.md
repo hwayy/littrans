@@ -31,6 +31,11 @@ approved/relevant terminology. Existing findings and translator rationale are ex
 Use fresh sessions and read-only execution. Keep normalized results, raw responses, CLI metadata,
 version, fingerprints and attempt telemetry. Never convert external acceptance into human approval.
 
+Each process runs in a private work directory with `PWD` bound to it and no inherited stdin, so a
+coordinator shell cannot select its own project configuration or agents. Codex receives the prompt
+on stdin. OpenCode receives it as the attached `review-prompt.md` plus page images and a fixed short
+message, so command lines stay within the Windows 32,767-character limit for any packet size.
+
 ## Blind host recheck
 
 An inconclusive content verdict, blocker/major finding, or finding below the confidence threshold

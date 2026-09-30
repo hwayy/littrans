@@ -21,6 +21,7 @@ from littrans.hosts import (
     resolve_coordination_host,
 )
 from littrans.models import (
+    PROJECT_SCHEMA_VERSION,
     AuditRun,
     BatchManifest,
     ExternalReviewAttempt,
@@ -163,22 +164,68 @@ def initialize_project(
     return config
 
 
-def rebuild_project(old: Path, new: Path) -> ProjectConfig:
-    """Create a v7 workspace from validated source/context, without inheriting approvals."""
+REBUILD_SETTINGS_MODES = ("preserve", "preset")
+# Historical manifests carried policy that v7 keeps in settings.yaml; it is reported, not converted.
+LEGACY_POLICY_FIELDS = ("external_review", "agent_models")
+
+
+def rebuild_project(
+    old: Path,
+    new: Path,
+    *,
+    settings: str | None = None,
+    preset: str | None = None,
+    report: dict[str, Any] | None = None,
+) -> ProjectConfig:
+    """Create a v7 workspace from validated source/context, without inheriting approvals.
+
+    A v7 project keeps its validated ``settings.yaml`` and machine command bindings by
+    default; ``settings="preset"`` explicitly starts from a preset instead. Historical
+    formats have no v7 policy and always start from a preset. ``report`` receives what
+    was preserved, reset and not migrated, which is also recorded in the new project.
+    """
+    from littrans.configuration import (
+        apply,
+        differences,
+        read_local,
+        read_settings,
+        resolve_command_binding,
+    )
     from littrans.scaffold import scaffold_project
+    from littrans.settings import preset as preset_settings
 
     old, new = old.resolve(), new.resolve()
     if new == old or new.exists():
         raise ValueError("Rebuild requires a new, non-existing directory distinct from OLD")
+    if settings not in (None, *REBUILD_SETTINGS_MODES):
+        raise ValueError("Rebuild --settings must be preserve or preset")
     payload = yaml.safe_load((old / "project.yaml").read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Invalid historical project configuration")
-    if payload.get("schema_version") == 7:
-        current = load_project(old)
-        payload = current.model_dump(mode="json")
-    local_path = old / "settings.local.yaml"
-    local = yaml.safe_load(local_path.read_text(encoding="utf-8")) if local_path.exists() else {}
-    source = Path(local.get("source_path") or payload["source_path"])
+    source_schema = payload.get("schema_version")
+    current = source_schema == PROJECT_SCHEMA_VERSION
+    legacy = [key for key in LEGACY_POLICY_FIELDS if payload.get(key)]
+    old_settings = old_local = None
+    if current:
+        # Validates the manifest, settings and machine bindings before anything is copied.
+        payload = load_project(old).model_dump(mode="json")
+        old_settings, old_local = read_settings(old), read_local(old)
+    mode = settings or ("preserve" if current else "preset")
+    if mode == "preserve" and not current:
+        raise ValueError(
+            f"Project schema v{source_schema} has no v7 settings to preserve; "
+            "rebuild it with --settings preset"
+        )
+    if preset is not None and mode != "preset":
+        raise ValueError("--preset requires --settings preset")
+    preset_name = preset or payload.get("profile", "technical-book")
+    if old_local is not None:
+        source_binding = old_local.source_path
+    else:
+        local_path = old / "settings.local.yaml"
+        local = yaml.safe_load(local_path.read_text(encoding="utf-8")) if local_path.exists() else {}
+        source_binding = (local or {}).get("source_path")
+    source = Path(source_binding or payload["source_path"])
     if not source.is_absolute():
         source = old / source
     if sha256_file(source) != payload["source_sha256"]:
@@ -192,13 +239,72 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         if sha256_file(copied_source) != payload["source_sha256"]:
             raise ValueError("Copied source PDF hash changed")
         config = initialize_project(
-            copied_source, staging, payload.get("profile", "technical-book"), payload.get("title"),
+            copied_source, staging, preset_name, payload.get("title"),
             payload.get("source_language", "en"), payload.get("target_language", "zh-CN"),
         )
         config.source_path = copied_source.relative_to(staging).as_posix()
         config.rights_status = payload.get("rights_status", config.rights_status)
-        from littrans.configuration import edit
-        edit(staging, "document.rights_status", config.rights_status)
+        if mode == "preserve":
+            assert old_settings is not None
+            # A byte copy keeps reviewed comments; it must validate to the same policy.
+            shutil.copyfile(old / "settings.yaml", staging / "settings.yaml")
+            if read_settings(staging).payload() != old_settings.payload():
+                raise ValueError("Copied settings.yaml does not reproduce the validated policy")
+        else:
+            document = (old_settings.document.model_dump() if old_settings else
+                        {"title": config.title, "source_language": config.source_language,
+                         "target_language": config.target_language, "rights_status": config.rights_status})
+            candidate = preset_settings(preset_name, document["title"], document["source_language"],
+                                        document["target_language"]).payload()
+            candidate["document"] = document
+            apply(staging, candidate)
+        rebuilt = read_settings(staging)
+        local_migrated: list[dict[str, str]] = []
+        not_migrated: list[dict[str, str]] = []
+        if old_local is not None:
+            commands = {}
+            for key, command in sorted(old_local.commands.items()):
+                if key not in rebuilt.external_review.reviewers:
+                    not_migrated.append({"path": f"settings.local.yaml:commands.{key}",
+                                         "reason": "The rebuilt settings do not define this reviewer."})
+                    continue
+                # Relative bindings are anchored to OLD; the rebuilt binding names the same file.
+                commands[key] = resolve_command_binding(old, command)
+                local_migrated.append({"path": f"commands.{key}",
+                                       "binding": "command-name" if commands[key] == command
+                                       and not Path(command).is_absolute() else "path"})
+            if commands:
+                apply(staging, {"schema_version": 1, "source_path": None, "commands": commands}, local=True)
+        if source_binding:
+            not_migrated.append({"path": "settings.local.yaml:source_path",
+                                 "reason": f"Replaced by the copied {config.source_path}."})
+        next_actions = []
+        for host in ("codex", "opencode"):
+            if (old / f".littrans/host-agents/{host}.json").is_file():
+                not_migrated.append({"path": f".littrans/host-agents/{host}.json",
+                                     "reason": "Generated native agent files are not copied."})
+                next_actions.append(f"project agents NEW --host {host} --check")
+        for key in legacy:
+            not_migrated.append({"path": f"project.yaml:{key}",
+                                 "reason": "Legacy policy is not converted; configure it with config apply."})
+        after = rebuilt.payload()
+        sections = [key for key in after if key != "schema_version"]
+        if old_settings is not None:
+            reset = differences(old_settings.payload(), after)
+            changed = {item["path"].split(".", 1)[0] for item in reset}
+            preserved = [key for key in sections if key not in changed]
+        else:
+            preserved = ["document"]
+            reset = [{"path": key, "before": None, "after": after[key], "operation": "preset-default"}
+                     for key in sections if key != "document"]
+        if mode == "preset" or legacy:
+            next_actions.append("config show NEW; config apply NEW CANDIDATE --dry-run")
+        configuration = {
+            "mode": mode, "source_schema_version": source_schema,
+            "preset": {"name": rebuilt.preset.name, "version": rebuilt.preset.version},
+            "preserved": preserved, "reset": reset, "local_migrated": local_migrated,
+            "not_migrated": not_migrated, "next_actions": next_actions,
+        }
         copied = ["source"]
         # The decision trace travels with the context it explains; approvals do not.
         for directory in ("context", "glossary", "docs"):
@@ -211,19 +317,21 @@ def rebuild_project(old: Path, new: Path) -> ProjectConfig:
         save_project(staging, config)
         write_json(staging / "derived" / "provenance.json", {
             "source_path": config.source_path, "source_sha256": config.source_sha256,
-            "rights_status": config.rights_status, "source_is_copied": True,
+            "rights_status": rebuilt.document.rights_status, "source_is_copied": True,
             "generator": build_identity(),
         })
         write_json(staging / "derived" / "rebuild-provenance.json", {
             "historical_project": str(old), "source_sha256": config.source_sha256,
             "copied": copied, "inherited_approvals": False,
             "context_policy": "Historical style text is context; the v6 asset-reference contract takes precedence.",
+            "configuration": configuration,
         })
         if new.exists():
             raise ValueError("Rebuild destination appeared during initialization")
         staging.rename(new)
-
-    return config
+    if report is not None:
+        report.update({"copied": copied, "inherited_approvals": False, "configuration": configuration})
+    return load_project(new)
 
 
 def translation_map(root: Path) -> dict[str, TranslationRecord]:
@@ -446,6 +554,15 @@ def dispatch_report(
         if role in selected:
             advisories.extend(dispatch_advisories(
                 resolved, role, dispatch["model"], dispatch["reasoning_effort"]))
+    # Audit lens tasks are reported as "audit:<lens>"; a lens without its own override
+    # resolves to the audit role and shares its advisories.
+    for lens, dispatch in view["audit_lenses"].items():
+        if f"audit:{lens}" in selected:
+            overridden = dispatch != view["roles"]["audit"]
+            advisories.extend(dispatch_advisories(
+                resolved, "audit", dispatch["model"], dispatch["reasoning_effort"],
+                lens=lens if overridden else None))
+    advisories = list(dict.fromkeys(advisories))
     return {**view, "supports": {**view["supports"], "agent_effort": capability.agent_effort},
             "advisories": advisories}
 
