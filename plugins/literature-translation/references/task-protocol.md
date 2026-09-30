@@ -14,6 +14,8 @@ selectors, command parameters and encodings. For blind external-review compariso
 [external review](external-review.md).
 
 The returned handoff points to start.md beside task.json and its instruction snapshot.
+Snapshots are stored and hashed as LF text, so Git's line-ending conversion of a committed
+task does not invalidate it; any change to their content does.
 Pass its absolute path to the worker. Paths inside the handoff are relative to its directory;
 the project root is four parents above that directory, not necessarily the Git/workspace root.
 Packet paths resolve from that project root. Saved role snapshots take precedence over installed

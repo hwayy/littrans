@@ -270,11 +270,15 @@ lookups). `--settings preset` explicitly starts from a preset while keeping `doc
 can only start from a preset. The local `source_path` is replaced by the copied source; generated
 native agent files and legacy manifest policy are not migrated.
 
-Returns [ProjectConfig](#model-projectconfig) plus `rebuild`: `copied`, `inherited_approvals` and
-`configuration` with `mode`, `source_schema_version`, `preset`, `preserved` (top-level sections),
-`reset` (`path`, `before`, `after`, `operation` for each changed field), `local_migrated` (`path`,
-`binding` of `path` or `command-name`), `not_migrated` (`path`, `reason`) and `next_actions`. The same
-`configuration` is recorded in `derived/rebuild-provenance.json`, without machine paths.
+Returns [ProjectConfig](#model-projectconfig) plus `rebuild`: `copied`, `unvalidated`,
+`inherited_approvals` and `configuration` with `mode`, `source_schema_version`, `preset`,
+`preserved` (top-level sections), `reset` (`path`, `before`, `after`, `operation` for each changed
+field), `local_migrated` (`path`, `binding` of `path` or `command-name`), `not_migrated` (`path`,
+`reason`) and `next_actions`. `unvalidated` lists the copied `context/` and `glossary/` files that
+LitTrans neither validates nor maintains (project-defined records such as an extraction manifest);
+they are copied unchanged and `next_actions` asks to review, move or delete them. The same
+`unvalidated` and `configuration` are recorded in `derived/rebuild-provenance.json`, without
+machine paths. NEW is staged beside it and inherits its parent directory's permissions.
 
 Example:
 

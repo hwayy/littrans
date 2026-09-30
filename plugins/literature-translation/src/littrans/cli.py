@@ -120,6 +120,22 @@ for _stream in (sys.stdout, sys.stderr):
 # relay them on stderr when the command reports.
 pymupdf.TOOLS.mupdf_display_warnings(False)
 
+
+class _StderrMessages:
+    """PyMuPDF's own message channel, resolved per write so a redirected stderr receives it."""
+
+    def write(self, text: str) -> int:
+        return sys.stderr.write(text)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
+
+
+# PyMuPDF also prints through its Python `message`/`log` channels, stdout by default: opening
+# an SVG runs `convert_to_pdf`, which echoes the warnings collected meanwhile (LT-091).
+pymupdf.set_messages(stream=_StderrMessages())
+pymupdf.set_log(stream=_StderrMessages())
+
 PathArg = Annotated[Path, typer.Argument(resolve_path=True)]
 
 

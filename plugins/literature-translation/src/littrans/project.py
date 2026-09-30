@@ -4,7 +4,6 @@ import json
 import re
 import shutil
 import stat
-import tempfile
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -45,6 +44,7 @@ from littrans.storage import (
     save_project,
     sha256_file,
     snapshot_files,
+    staging_directory,
     write_json,
 )
 
@@ -165,6 +165,24 @@ def initialize_project(
 
 
 REBUILD_SETTINGS_MODES = ("preserve", "preset")
+# Context records LitTrans writes itself; the validated resources come from context_config.
+MAINTAINED_CONTEXT_FILES = ("context/decisions.jsonl",)
+
+
+def unvalidated_context_files(root: Path) -> list[str]:
+    """Files under ``context/`` and ``glossary/`` that LitTrans neither validates nor maintains.
+
+    A rebuild copies both directories whole, so project-defined records (an extraction
+    manifest, notes, snapshots) arrive unchanged while whatever they say about the historical
+    project's extraction, packets or approvals may no longer hold.
+    """
+    from littrans.context_config import RESOURCES
+    known = {*RESOURCES.values(), *MAINTAINED_CONTEXT_FILES}
+    return sorted(
+        name for directory in ("context", "glossary") if (root / directory).is_dir()
+        for path in (root / directory).rglob("*") if path.is_file() and path.name != ".gitkeep"
+        if (name := path.relative_to(root).as_posix()) not in known
+    )
 # Historical manifests carried policy that v7 keeps in settings.yaml; it is reported, not converted.
 LEGACY_POLICY_FIELDS = ("external_review", "agent_models")
 
@@ -230,9 +248,8 @@ def rebuild_project(
         source = old / source
     if sha256_file(source) != payload["source_sha256"]:
         raise ValueError("Historical source PDF hash changed")
-    new.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".littrans-rebuild-", dir=new.parent) as temporary:
-        staging = Path(temporary) / "project"
+    # Staged beside NEW with a plain mkdir, so the project inherits NEW's permissions (LT-099).
+    with staging_directory(new.parent, ".littrans-rebuild-") as staging:
         copied_source = staging / "source" / source.name
         copied_source.parent.mkdir(parents=True)
         shutil.copyfile(source, copied_source)
@@ -311,6 +328,10 @@ def rebuild_project(
             if (old / directory).is_dir():
                 shutil.copytree(old / directory, staging / directory, dirs_exist_ok=True)
                 copied.append(directory)
+        unvalidated = unvalidated_context_files(staging)
+        if unvalidated:
+            next_actions.append("Review, move or delete copied files LitTrans does not validate: "
+                                + ", ".join(unvalidated))
         scaffold_project(staging, refresh=True)
         from littrans.context_config import validate
         validate(staging)
@@ -322,7 +343,7 @@ def rebuild_project(
         })
         write_json(staging / "derived" / "rebuild-provenance.json", {
             "historical_project": str(old), "source_sha256": config.source_sha256,
-            "copied": copied, "inherited_approvals": False,
+            "copied": copied, "unvalidated": unvalidated, "inherited_approvals": False,
             "context_policy": "Historical style text is context; the v6 asset-reference contract takes precedence.",
             "configuration": configuration,
         })
@@ -330,7 +351,8 @@ def rebuild_project(
             raise ValueError("Rebuild destination appeared during initialization")
         staging.rename(new)
     if report is not None:
-        report.update({"copied": copied, "inherited_approvals": False, "configuration": configuration})
+        report.update({"copied": copied, "unvalidated": unvalidated, "inherited_approvals": False,
+                       "configuration": configuration})
     return load_project(new)
 
 

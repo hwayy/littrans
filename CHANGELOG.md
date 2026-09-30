@@ -15,6 +15,35 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.1-dev.1] - 2026-09-30
+
+### Fixed
+
+- Opening an SVG no longer prints MuPDF warnings ahead of the JSON on stdout (LT-091). PyMuPDF's
+  own `message`/`log` channels, which echo the warnings collected by the SVG open check
+  (`convert_to_pdf`), now write to stderr; `mupdf_display_warnings(False)` only covered the warning
+  callback. The regression test runs a real process, because PyMuPDF binds its stream at import
+  and pytest's capture had hidden the echo.
+- `project rebuild` reports the copied `context/` and `glossary/` files that LitTrans neither
+  validates nor maintains as `rebuild.unvalidated`, records them in
+  `derived/rebuild-provenance.json` and adds a review action (LT-098). Nothing is moved or deleted.
+- `project rebuild` and layout-override crops stage in a plainly created directory beside their
+  destination instead of a `tempfile` directory (LT-099). Since Python 3.12.4/3.13, `tempfile`'s
+  mode 0o700 is a protected Windows ACL (SYSTEM, Administrators, owner) that moved content kept,
+  so a project rebuilt by a sandbox account was unreadable to the project owner.
+- Task instruction snapshots are written and hashed as LF text (LT-100). An installed plugin whose
+  Markdown carries CRLF no longer produces snapshots that Git's `eol=lf` normalization changes and
+  `task receive` then rejects as `Task instructions changed`.
+
+### Compatibility
+
+- No project schema or evidence fingerprint changes; no migration is required.
+- New tasks created from a CRLF installation get different instruction digests, hence different
+  task IDs, than 0.9.0 builds gave them. Tasks created by 0.9.0 builds still verify while their
+  snapshot bytes are unchanged.
+- `project rebuild` output and `derived/rebuild-provenance.json` gain `unvalidated`.
+- All plugin manifests and Python package metadata use `0.9.1-dev.1`.
+
 ## [0.9.0-dev.3] - 2026-09-30
 
 ### Fixed

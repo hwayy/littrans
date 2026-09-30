@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
+import shutil
 import tempfile
 import time
 from collections.abc import Iterable, Iterator
@@ -174,6 +176,29 @@ def append_jsonl(path: Path, records: Iterable[BaseModel]) -> None:
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     addition = "".join(record.model_dump_json(exclude_none=True) + "\n" for record in records)
     atomic_write_text(path, existing + addition)
+
+
+@contextmanager
+def staging_directory(parent: Path, prefix: str) -> Iterator[Path]:
+    """A scratch directory under ``parent`` whose contents may be moved into a project.
+
+    ``tempfile`` creates directories with mode 0o700, which Python 3.13 (and 3.12.4+) maps on
+    Windows to a protected ACL for SYSTEM, Administrators and the owner only; everything
+    created inside inherits it and keeps it when moved. A plain mkdir inherits ``parent``'s
+    permissions instead, like any other project file.
+    """
+    parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        path = parent / f"{prefix}{secrets.token_hex(8)}"
+        try:
+            path.mkdir()
+            break
+        except FileExistsError:
+            continue
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def initialize_project_dirs(root: Path) -> None:

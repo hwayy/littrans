@@ -1,13 +1,16 @@
-# Migrating to LitTrans 0.9.0-dev.3
+# Migrating to LitTrans 0.9.1-dev.1
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
 for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
 
 Existing manifest-v7 projects with valid settings schema v1 can continue without rebuilding.
-The operation-local source validation optimization changes no persisted schema or evidence
-fingerprint. Use the rebuild procedure below when moving from an unsupported project format
-or when deliberately starting a separate project.
+This build changes no persisted schema or evidence fingerprint. Use the rebuild procedure below
+when moving from an unsupported project format or when deliberately starting a separate project.
+
+New tasks snapshot and hash their instructions as LF text, so Git's line-ending conversion no
+longer invalidates them. Tasks created by earlier development builds still verify while their
+snapshot bytes are unchanged; keep any `-text` attribute that protects them.
 
 ## Preserve the old project
 
@@ -29,6 +32,10 @@ external reviewers) and the executable bindings of reviewers it defines. Add `--
 (optionally `--preset NAME`) to start from a preset instead. Older formats always start from a
 preset. Read the returned `rebuild.configuration` report: `preserved`, `reset`, `local_migrated`,
 `not_migrated` and `next_actions`. It is also saved in `derived/rebuild-provenance.json`.
+`rebuild.unvalidated` lists copied `context/` and `glossary/` files that LitTrans neither
+validates nor maintains, such as project-defined manifests or notes. They are copied unchanged;
+whatever they record about the old project's extraction, packets or approvals may no longer
+hold, so review, move or delete them before agents navigate by them.
 
 ## Configure the new project
 

@@ -32,7 +32,7 @@ def test_manifest_settings_state_are_separate(configured):
     save_project(configured, config)
     assert (configured / "settings.yaml").read_bytes() == before
     assert (configured / "derived/project-state.json").exists()
-    assert "settings.local.yaml" in (configured / ".gitignore").read_text()
+    assert "settings.local.yaml" in (configured / ".gitignore").read_text(encoding="utf-8")
 
 
 def test_state_save_rejects_missing_or_invalid_settings(configured):
@@ -151,7 +151,7 @@ def test_comment_noop_dryrun_conflict(configured):
     report = edit(configured, "batch.max_source_words", 1100, dry_run=True)
     assert not report["written"] and path.read_bytes() == before
     edit(configured, "batch.max_source_words", 1100)
-    assert path.read_text().startswith("# Keep this project note")
+    assert path.read_text(encoding="utf-8").startswith("# Keep this project note")
     with pytest.raises(ValueError, match="changed"):
         apply(configured, show(configured)["value"], expect=report["previous_sha256"])
     before = path.read_bytes()

@@ -7,7 +7,6 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 import pymupdf as fitz
@@ -61,6 +60,7 @@ from littrans.storage import (
     sha256_file,
     sha256_text,
     snapshot_files,
+    staging_directory,
     write_json,
     write_jsonl,
 )
@@ -2280,8 +2280,7 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
     document = None
     updated: list[SourceUnit] = []
     pending_assets: list[tuple[Path, Path]] = []
-    with TemporaryDirectory(prefix=".littrans-overrides-", dir=project_root) as temp_name:
-        temp_root = Path(temp_name)
+    with staging_directory(project_root, ".littrans-overrides-") as temp_root:
         try:
             for unit in units:
                 revised = _apply_override(unit, overrides)

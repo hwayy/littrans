@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +43,30 @@ def _directory(root: Path, task_id: str) -> Path:
 
 def _relative(root: Path, path: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _instruction_text(path: Path) -> str:
+    """Instruction text with LF line endings, the form a task snapshots and hashes.
+
+    Git may rewrite line endings of a committed snapshot (``eol=lf``, ``core.autocrlf``) and an
+    installed plugin may carry either form; the digest of the LF text survives both (LT-100).
+    """
+    return path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
+def _check_instructions(directory: Path, task: dict[str, Any]) -> None:
+    """Refuse a changed instruction snapshot, whatever its line endings.
+
+    Tasks made by 0.9.0 development builds recorded the digest of the raw bytes; those are
+    still accepted while the bytes are unchanged.
+    """
+    for name, expected in task["instructions"].items():
+        path = directory / "instructions" / name
+        path.resolve().relative_to(directory.resolve())
+        if not path.is_file() or expected not in {
+            sha256_text(_instruction_text(path)), sha256_file(path)
+        }:
+            raise ValueError("Task instructions changed: " + name)
 
 
 def _read_task(directory: Path) -> dict[str, Any]:
@@ -115,7 +138,8 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
     resources = resource_root()
     role_path = resources / "roles" / f"{ROLES[stage]}.md"
     files = [role_path, *sorted((resources / "references").glob("*.md"))]
-    instructions = {path.relative_to(resources).as_posix(): sha256_file(path) for path in files}
+    instructions = {path.relative_to(resources).as_posix(): sha256_text(_instruction_text(path))
+                    for path in files}
     context = context_snapshot(root)
     # Domain validators retain their finer-grained dependency checks. This envelope also
     # refuses results made from a changed global context before any domain mutation.
@@ -167,8 +191,7 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
         if not (directory / "task.json").exists():
             for path in files:
                 target = directory / "instructions" / path.relative_to(resources)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, target)
+                atomic_write_text(target, _instruction_text(path))
             write_json(directory / "task.json", {"task_id": task_id, **payload})
             write_json(directory / "state.json", {"state": "pending", "executor": None})
             atomic_write_text(directory / "start.md", (
@@ -294,11 +317,7 @@ def receive_task(root: Path, task_id: str, result: Path | None = None,
             path.resolve().relative_to(root.resolve())
             if not path.is_file() or sha256_file(path) != expected:
                 raise ValueError("Task input changed: " + name)
-        for name, expected in task["instructions"].items():
-            path = directory / "instructions" / name
-            path.resolve().relative_to(directory.resolve())
-            if not path.is_file() or sha256_file(path) != expected:
-                raise ValueError("Task instructions changed: " + name)
+        _check_instructions(directory, task)
         saved = directory / "result.json"
         if saved.exists() and sha256_file(saved) != digest:
             atomic_write_bytes(directory / f"previous-{sha256_file(saved)}.json", saved.read_bytes())
