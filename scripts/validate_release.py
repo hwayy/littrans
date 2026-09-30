@@ -94,7 +94,7 @@ def unexpected_plugin_workspaces() -> list[str]:
 
 
 def crlf_working_tree_files() -> list[str]:
-    """Tracked text files whose checkout carries CRLF although Git stores them with LF.
+    """Tracked text files whose checkout carries CRLF (all or some lines) although Git stores LF.
 
     Hosts install the plugin from the working tree byte for byte, so such files make an
     installation differ from the commit. Outside a Git checkout there is nothing to compare.
@@ -105,7 +105,8 @@ def crlf_working_tree_files() -> list[str]:
     except (OSError, subprocess.CalledProcessError):
         return []
     return sorted(line.split("\t", 1)[1] for line in result.stdout.splitlines()
-                  if "\t" in line and line.split()[:2] == ["i/lf", "w/crlf"])
+                  if "\t" in line and line.split()[0] == "i/lf"
+                  and line.split()[1] in {"w/crlf", "w/mixed"})
 
 
 def main() -> None:
@@ -130,7 +131,9 @@ def main() -> None:
     if crlf:
         raise ValueError(
             f"{len(crlf)} tracked files are checked out with CRLF although Git stores LF; "
-            "rewrite them from the index (git checkout-index -f -- FILES): " + ", ".join(crlf[:10])
+            "rewrite them from the index (Git skips files it records as unchanged, so change "
+            "their modification time first, then git checkout-index -f -u -- FILES): "
+            + ", ".join(crlf[:10])
             + (" ..." if len(crlf) > 10 else "")
         )
 

@@ -24,8 +24,8 @@ replaced.
   although Git stores LF; hosts install from the working tree byte for byte, so the same commit
   produced a different layout fingerprint and `build_digest` than a clean checkout, and would
   change again whenever Git rewrote the files.
-- Release validation refuses a working tree whose tracked files are checked out with CRLF while
-  Git stores LF, and names them with the command that rewrites them from the index.
+- Release validation refuses a working tree whose tracked files are checked out with CRLF, on
+  all or some lines, while Git stores LF, and names them with how to rewrite them from the index.
 
 ### Compatibility
 

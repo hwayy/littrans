@@ -78,9 +78,11 @@ def test_release_validation_lists_crlf_checkouts(tmp_path: Path) -> None:
     (tmp_path / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
     (tmp_path / "clean.md").write_bytes(b"clean\n")
     (tmp_path / "windows.md").write_bytes(b"windows\n")
+    (tmp_path / "mixed.md").write_bytes(b"one\ntwo\n")
     git("add", ".")
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init")
     (tmp_path / "windows.md").write_bytes(b"windows\r\n")  # an editor rewrote it; Git still sees no change
+    (tmp_path / "mixed.md").write_bytes(b"one\r\ntwo\n")  # a partial rewrite leaves mixed endings
     check = runpy.run_path(str(REPO / "scripts" / "validate_release.py"))["crlf_working_tree_files"]
     check.__globals__["ROOT"] = tmp_path
-    assert check() == ["windows.md"]
+    assert check() == ["mixed.md", "windows.md"]
