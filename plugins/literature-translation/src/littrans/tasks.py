@@ -17,6 +17,7 @@ from littrans.resources import resource_root
 from littrans.storage import (
     atomic_write_bytes,
     atomic_write_text,
+    lf_bytes,
     load_project,
     project_write_lock,
     read_json,
@@ -51,7 +52,7 @@ def _instruction_text(path: Path) -> str:
     Git may rewrite line endings of a committed snapshot (``eol=lf``, ``core.autocrlf``) and an
     installed plugin may carry either form; the digest of the LF text survives both (LT-100).
     """
-    return path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    return lf_bytes(path).decode("utf-8")
 
 
 def _check_instructions(directory: Path, task: dict[str, Any]) -> None:

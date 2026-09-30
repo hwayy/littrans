@@ -46,6 +46,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def lf_bytes(path: Path) -> bytes:
+    """A text file's bytes with CRLF line endings as LF, the form its identity is hashed in.
+
+    A checkout (``core.autocrlf``, an editor on Windows) may write the plugin's own text
+    files with CRLF although Git stores LF; identities of those files must not follow.
+    """
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

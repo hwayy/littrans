@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from littrans.storage import read_json, sha256_file, sha256_text, write_json
+from littrans.storage import lf_bytes, read_json, sha256_file, sha256_text, write_json
 
 READY_MARKER = ".littrans-layout-ready"
 
@@ -198,6 +198,11 @@ def _content_keyed(pages: Any, image_sha256: dict[str, str]) -> dict[str, Any] |
     return {image_sha256[name]: items for name, items in pages.items()}
 
 
+def worker_sha256(worker: Path) -> str:
+    """The worker's identity in a layout fingerprint, independent of the copy's line endings."""
+    return sha256_text(lf_bytes(worker).decode("utf-8"))
+
+
 def layout_result_path(store: Path, fingerprint: str) -> Path:
     """Where a detection result lives: one file per fingerprint, never overwritten by another."""
     return store / f"{fingerprint}.json"
@@ -230,7 +235,7 @@ def detect_layout(images: list[Path], store: Path) -> dict[str, Any]:
     worker = Path(__file__).with_name("layout_worker.py")
     try:
         runtime = _runtime_identity(python)
-        worker_sha = sha256_file(worker)
+        worker_sha = worker_sha256(worker)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"status": "unavailable", "reason": str(exc), "pages": {}}
     image_sha256 = {str(p.resolve()): sha256_file(p) for p in images}

@@ -15,6 +15,26 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.1-dev.2] - 2026-09-30
+
+### Fixed
+
+- The layout worker's hash in layout fingerprints and the build digest are computed from LF
+  text (`storage.lf_bytes`). A Windows checkout had written tracked plugin files with CRLF
+  although Git stores LF; hosts install from the working tree byte for byte, so the same commit
+  produced a different layout fingerprint and `build_digest` than a clean checkout, and would
+  change again whenever Git rewrote the files.
+- Release validation refuses a working tree whose tracked files are checked out with CRLF while
+  Git stores LF, and names them with the command that rewrites them from the index.
+
+### Compatibility
+
+- Layout fingerprints of CRLF installations change once; their next extraction re-runs the
+  detector instead of reusing the stored result. Clean LF installations keep their fingerprints.
+- `build_digest` values of CRLF installations change; the digest is provenance only and is not
+  part of any evidence fingerprint.
+- All plugin manifests and Python package metadata use `0.9.1-dev.2`.
+
 ## [0.9.1-dev.1] - 2026-09-30
 
 ### Fixed

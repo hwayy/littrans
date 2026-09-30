@@ -1,4 +1,4 @@
-# Migrating to LitTrans 0.9.1-dev.1
+# Migrating to LitTrans 0.9.1-dev.2
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
@@ -11,6 +11,11 @@ when moving from an unsupported project format or when deliberately starting a s
 New tasks snapshot and hash their instructions as LF text, so Git's line-ending conversion no
 longer invalidates them. Tasks created by earlier development builds still verify while their
 snapshot bytes are unchanged; keep any `-text` attribute that protects them.
+
+The layout worker's identity in layout fingerprints and the build digest are now computed from
+LF text. Installations copied from a checkout that had written the plugin with CRLF therefore
+get a new layout fingerprint once: the next extraction runs the detector again instead of
+reusing the stored layout result. Clean LF installations are unaffected.
 
 ## Preserve the old project
 

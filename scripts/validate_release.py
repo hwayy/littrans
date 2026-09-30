@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -92,6 +93,21 @@ def unexpected_plugin_workspaces() -> list[str]:
     return sorted(set(unexpected))
 
 
+def crlf_working_tree_files() -> list[str]:
+    """Tracked text files whose checkout carries CRLF although Git stores them with LF.
+
+    Hosts install the plugin from the working tree byte for byte, so such files make an
+    installation differ from the commit. Outside a Git checkout there is nothing to compare.
+    """
+    try:
+        result = subprocess.run(["git", "ls-files", "--eol"], cwd=ROOT, capture_output=True,
+                                text=True, encoding="utf-8", check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return sorted(line.split("\t", 1)[1] for line in result.stdout.splitlines()
+                  if "\t" in line and line.split()[:2] == ["i/lf", "w/crlf"])
+
+
 def main() -> None:
     marketplace_path = ROOT / ".agents" / "plugins" / "marketplace.json"
     cursor_marketplace_path = ROOT / ".cursor-plugin" / "marketplace.json"
@@ -108,6 +124,14 @@ def main() -> None:
         raise ValueError(
             "Generated project workspace/evidence directories must not live under "
             f"the plugin root: {unexpected_workspaces}"
+        )
+
+    crlf = crlf_working_tree_files()
+    if crlf:
+        raise ValueError(
+            f"{len(crlf)} tracked files are checked out with CRLF although Git stores LF; "
+            "rewrite them from the index (git checkout-index -f -- FILES): " + ", ".join(crlf[:10])
+            + (" ..." if len(crlf) > 10 else "")
         )
 
     marketplace = load_json(marketplace_path)

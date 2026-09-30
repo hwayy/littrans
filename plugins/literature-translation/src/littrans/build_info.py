@@ -13,11 +13,16 @@ from typing import Any
 
 import littrans
 from littrans.models import utc_now
+from littrans.storage import lf_bytes
 
 
 @lru_cache(maxsize=1)
 def build_digest() -> str:
-    """Digest Python modules and the resources that affect runtime behaviour."""
+    """Digest Python modules and the resources that affect runtime behaviour.
+
+    All of them are text, digested with LF line endings: the same commit gives the same
+    digest whether a checkout wrote it with CRLF or LF.
+    """
     package = Path(littrans.__file__).resolve().parent
     digest = hashlib.sha256()
     paths = {path.relative_to(package).as_posix(): path for path in package.rglob("*.py")}
@@ -38,7 +43,7 @@ def build_digest() -> str:
             continue
         digest.update(name.encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(lf_bytes(path))
         digest.update(b"\0")
     return digest.hexdigest()[:16]
 
