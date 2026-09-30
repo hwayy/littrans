@@ -16,6 +16,7 @@ from littrans.evidence import (
 from littrans.extractor import parse_page_spec
 from littrans.models import (
     BatchManifest,
+    ProjectConfig,
     ProjectStatus,
     RenderPolicy,
     SourceUnit,
@@ -116,11 +117,18 @@ def batch_source_markdown(root: Path, units: list[SourceUnit]) -> str:
 
 
 def _context_text(
-    root: Path, units: list[SourceUnit], before: SourceUnit | None, after: SourceUnit | None
+    root: Path,
+    units: list[SourceUnit],
+    before: SourceUnit | None,
+    after: SourceUnit | None,
+    *,
+    project_config: ProjectConfig | None = None,
+    completion_cache: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> str:
+    project_config = project_config or load_project(root)
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
     from littrans.structure_profile import structure_context
-    structure = structure_context(root)
+    structure = structure_context(root, project_config=project_config)
     if structure:
         profile = structure["profile"]
         pages = {unit.page for unit in units}
@@ -142,7 +150,9 @@ def _context_text(
     if reference_text:
         term_text += f"```\n\n# Reference terminology (not gated)\n\n```yaml\n{reference_text}"
     approved_memory = translation_memory(
-        root, (unit.unit_id for unit in units), limit=6
+        root, (unit.unit_id for unit in units), limit=6,
+        project_config=project_config,
+        completion_cache=completion_cache,
     )
     memory_text = (
         "\n".join(
@@ -154,7 +164,7 @@ def _context_text(
     return (
         f"{brief.rstrip()}\n\n{style.rstrip()}\n\n# Approved terminology\n\n"
         f"```yaml\n{term_text}```\n\n# Approved translation memory\n\n{memory_text}"
-        f"\n\n# Project translation policy\n\n{load_project(root).settings.translation.model_dump_json(indent=2)}"
+        f"\n\n# Project translation policy\n\n{project_config.settings.translation.model_dump_json(indent=2)}"
         f"\n\n# Adjacent source context\n\n" + "\n\n".join(adjacent) + "\n"
     )
 
@@ -271,6 +281,7 @@ def create_batches(
     )
     all_unit_positions = {unit.unit_id: index for index, unit in enumerate(all_units)}
     manifests: list[BatchManifest] = []
+    completion_cache: dict[tuple[str, str], frozenset[str]] = {}
     for index, group in enumerate(groups, 1):
         batch_id = f"{base_prefix}-b{index:03}"
         batch_dir = batch_directory(root, batch_id)
@@ -296,7 +307,9 @@ def create_batches(
         write_yaml(batch_dir / "manifest.yaml", manifest.model_dump(mode="json"))
         atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
         atomic_write_text(
-            batch_dir / "context.md", _context_text(root, group, before, after)
+            batch_dir / "context.md", _context_text(
+                root, group, before, after, project_config=config, completion_cache=completion_cache
+            )
         )
         write_json(batch_dir / "output-schema.json", _translation_output_schema())
         manifests.append(manifest)
@@ -370,6 +383,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
     before = all_units[start_index - 1] if start_index > 0 else None
     after = all_units[end_index + 1] if end_index + 1 < len(all_units) else None
     with project_write_lock(root):
+        config = load_project(root)
         if removed_unit_ids:
             # The old manifest is still on disk here, so dependency closure can
             # invalidate the newly adjacent units before the removed anchor is lost.
@@ -378,7 +392,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
         write_json(batch_dir / "output-schema.json", _translation_output_schema())
         atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
         atomic_write_text(
-            batch_dir / "context.md", _context_text(root, group, before, after)
+            batch_dir / "context.md", _context_text(root, group, before, after, project_config=config)
         )
         allowed = set(revised.translatable_unit_ids)
         current = translation_map(root)

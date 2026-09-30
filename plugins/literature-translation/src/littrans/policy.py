@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from littrans.configuration import read_settings
-from littrans.models import SourceUnit, TranslationRecord
+from littrans.models import ProjectConfig, SourceUnit, TranslationRecord
 
 
 def record_errors(root: Path, unit: SourceUnit, record: TranslationRecord) -> list[str]:
@@ -51,8 +51,10 @@ def record_errors(root: Path, unit: SourceUnit, record: TranslationRecord) -> li
     return errors
 
 
-def wants_transcription(root: Path, asset: dict[str, Any]) -> bool:
-    policy = read_settings(root).translation
+def wants_transcription(
+    root: Path, asset: dict[str, Any], *, project_config: ProjectConfig | None = None
+) -> bool:
+    policy = (project_config.settings if project_config is not None else read_settings(root)).translation
     if asset["kind"] == "math":
         mode = policy.equations.display if asset.get("display", False) else policy.equations.inline
         return mode == "reviewed-transcription"
@@ -61,16 +63,18 @@ def wants_transcription(root: Path, asset: dict[str, Any]) -> bool:
     return True
 
 
-def required_transcriptions(root: Path, ids: list[str]) -> list[str]:
+def required_transcriptions(
+    root: Path, ids: list[str], *, project_config: ProjectConfig | None = None
+) -> list[str]:
     from littrans.fidelity_models import load_assets
-    settings = read_settings(root)
+    settings = project_config.settings if project_config is not None else read_settings(root)
     assets = load_assets(root)
     required_ids = []
     for key in ids:
         asset = assets[key]
         required = settings.verification.block_unfinished_transcription and asset.kind in {"math", "table", "code"}
         if asset.kind == "math":
-            required |= wants_transcription(root, asset.model_dump(mode="json"))
+            required |= wants_transcription(root, asset.model_dump(mode="json"), project_config=project_config)
         if asset.kind == "table":
             required |= (settings.translation.tables.presentation == "reviewed-transcription"
                          and not settings.translation.tables.image_fallback_in_final)

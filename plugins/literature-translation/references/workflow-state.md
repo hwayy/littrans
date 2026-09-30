@@ -22,6 +22,24 @@ asset progress, not an invented translation-understanding problem. Source/conten
 changes invalidate affected dependencies; presentation changes affect outputs and delivery
 requirements without invalidating unrelated prose audits.
 
+## Status snapshots
+
+Each `workflow next` or `workflow status` invocation validates the source PDF once, then
+shares its project configuration and policy digests across batch scheduling, QA context,
+source fidelity, external-review chains, rechecks and dispatch advisories. A standalone
+`translation review external-status` invocation uses the same operation-local reuse.
+The number of full PDF hashes does not grow with the number of batches or reviewed pages.
+
+Snapshots do not replace evidence checks: changed original images, stale packets, missing
+receipts and changed review context still block the relevant stage. A new invocation reads
+the saved policy and validates the source again. Translation-memory completion results are
+reused only within the operation that owns the validated configuration.
+
+Write boundaries remain independent. State saving validates the current files, and task
+reception compares the freshly validated source identity with the task's recorded identity
+before saving its result. External-review persistence rechecks current inputs after the
+provider returns; it does not reuse the pre-call snapshot.
+
 ## Resume and recovery
 
 Persist successful responses before parsing or import. A cached response is reusable only for the

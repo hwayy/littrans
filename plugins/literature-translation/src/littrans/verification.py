@@ -349,8 +349,8 @@ def verify_extraction(
 ) -> dict[str, Any]:
     if not _allow_legacy_schema:
         from littrans.fidelity import verify_fidelity
-        require_current_project_schema(root, "Source verification")
-        return verify_fidelity(root, page_spec)
+        config = require_current_project_schema(root, "Source verification")
+        return verify_fidelity(root, page_spec, project_config=config)
     config = (
         load_project(root)
         if _allow_legacy_schema

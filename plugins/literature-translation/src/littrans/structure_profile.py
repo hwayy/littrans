@@ -21,6 +21,7 @@ import pymupdf as fitz
 from pydantic import BaseModel, ConfigDict, Field
 
 from littrans.extractor import parse_page_spec
+from littrans.models import ProjectConfig
 from littrans.storage import (
     load_project,
     project_write_lock,
@@ -116,15 +117,16 @@ def guidance_difference(before: Mapping[str, Any] | None, after: Mapping[str, An
     return f'for page {page} (handling_rules: {", ".join(changed)})'
 
 
-def structure_context(root: Path) -> dict[str, Any] | None:
+def structure_context(
+    root: Path, *, project_config: ProjectConfig | None = None
+) -> dict[str, Any] | None:
     """Load immutable-in-packet guidance; reject a profile for another source."""
     path = root / PROFILE_PATH
     if not path.exists():
         return None  # Existing projects remain compatible.
     profile = StructureProfile.model_validate(read_json(path))
-    config = load_project(root)
-    if (profile.source_sha256 != config.source_sha256
-            or sha256_file(config.source(root)) != profile.source_sha256):
+    config = project_config or load_project(root)
+    if profile.source_sha256 != config.source_sha256:
         raise ValueError('Source structure profile belongs to a changed or different PDF')
     if len(set(profile.pages)) != len(profile.pages) or any(p < 1 or p > config.source_pages for p in profile.pages):
         raise ValueError('Invalid source structure page scope')

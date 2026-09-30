@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from littrans.models import RoleDispatch, SourceUnit
+from littrans.models import ProjectConfig, RoleDispatch, SourceUnit
 from littrans.storage import load_project, read_json, read_jsonl, sha256_file
 
 
@@ -38,9 +38,17 @@ TARGET_TEXT_CONTRACTS = (
 )
 
 
-def original_context(root: Path, units: list[SourceUnit], role: str = "translate", *,
-                     include_adjacent: bool = False, host: str | None = None,
-                     lens: str | None = None) -> dict[str, Any]:
+def original_context(
+    root: Path,
+    units: list[SourceUnit],
+    role: str = "translate",
+    *,
+    include_adjacent: bool = False,
+    host: str | None = None,
+    lens: str | None = None,
+    project_config: ProjectConfig | None = None,
+) -> dict[str, Any]:
+    project_config = project_config or load_project(root)
     from littrans.fidelity_models import asset_reference_ids, load_assets
     assets = load_assets(root)
     adjacent = adjacent_source_units(root, units) if include_adjacent else []
@@ -62,7 +70,7 @@ def original_context(root: Path, units: list[SourceUnit], role: str = "translate
         overflow = read_json(ledger_path).get("overflow_evidence") if ledger_path.is_file() else None
         if overflow:
             images[overflow["path"]] = sha256_file(root / overflow["path"])
-    config = load_project(root)
+    config = project_config
     # Only this packet's own dispatch policy: a writer has no use for the other
     # hosts' configuration, and either field may be unset on the host's default.
     dispatch = config.dispatch(host, role, lens) if host else RoleDispatch()

@@ -84,7 +84,7 @@ def test_batch_parent_cannot_be_split_by_intervening_footnote(tmp_path, monkeypa
     ]
     write_jsonl(root / 'derived/units.jsonl', units)
     monkeypatch.setattr('littrans.batching.require_verified_extraction', lambda *args: None)
-    monkeypatch.setattr('littrans.batching._context_text', lambda *args: '')
+    monkeypatch.setattr('littrans.batching._context_text', lambda *args, **kwargs: '')
     batches = create_batches(root, '1', max_words=100)
     assert batches[0].unit_ids == [u.unit_id for u in units[:3]]
     assert batches[1].unit_ids == [units[3].unit_id]

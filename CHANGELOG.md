@@ -15,6 +15,25 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.0-dev.3] - 2026-09-30
+
+### Fixed
+
+- Workflow next/status and external-review status reuse one validated project configuration
+  per invocation instead of repeatedly hashing the full source PDF for each batch, page group
+  and review-chain entry. QA, original-image context, dispatch and source fidelity share that
+  configuration and retain their evidence checks.
+- Batch context and translation-memory lookups reuse the current operation's configuration.
+  Recheck status computes its binding once; task reception compares its freshly validated
+  source identity with the task identity without a second immediate PDF hash.
+
+### Compatibility
+
+- CLI output, project schemas and evidence fingerprint formats are unchanged. No migration
+  is required. Every new invocation revalidates source bytes; source rebinding, state saves,
+  task reception and post-provider persistence retain independent validation boundaries.
+- All plugin manifests and Python package metadata use `0.9.0-dev.3`.
+
 ## [0.9.0-dev.2] - 2026-09-30
 
 ### Added

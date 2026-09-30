@@ -111,10 +111,13 @@ def bind(config: ProjectConfig, root: Path) -> ProjectConfig:
     return config
 
 
-def effective(root: Path, host: str = "auto") -> dict[str, Any]:
+def effective(
+    root: Path, host: str = "auto", *, project_config: ProjectConfig | None = None
+) -> dict[str, Any]:
     from littrans.storage import load_project
-    load_project(root)
-    settings = read_settings(root)
+
+    project_config = project_config or load_project(root)
+    settings = project_config.settings
     selected = resolve_coordination_host(host)
     capability = SUBAGENT_DISPATCH[selected]
     policy = settings.agents[selected]

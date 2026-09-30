@@ -541,11 +541,16 @@ def schema_models() -> dict[str, type[BaseModel]]:
 
 
 def dispatch_report(
-    root: Path, host: str | None = None, reported: Iterable[str] | None = None
+    root: Path,
+    host: str | None = None,
+    reported: Iterable[str] | None = None,
+    *,
+    project_config: ProjectConfig | None = None,
 ) -> dict[str, Any]:
     """Expose the shared effective policy plus legacy host advisories."""
+    project_config = project_config or load_project(root)
     from littrans.configuration import effective
-    view = effective(root, host or "auto")
+    view = effective(root, host or "auto", project_config=project_config)
     resolved = resolve_coordination_host(host)
     capability = SUBAGENT_DISPATCH[resolved]
     selected = tuple(view["roles"]) if reported is None else tuple(reported)

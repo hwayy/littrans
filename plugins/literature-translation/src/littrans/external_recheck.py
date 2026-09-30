@@ -9,6 +9,7 @@ from typing import Any
 from littrans.models import (
     ExternalReviewRun,
     IssueStatus,
+    ProjectConfig,
     ReviewIssue,
     Severity,
     utc_now,
@@ -31,8 +32,11 @@ def migrate_external_config(root: Path, apply: bool = False) -> dict[str, Any]:
             "next_actions": ["config show PROJECT", "config apply PROJECT CANDIDATE --dry-run"]}
 
 
-def _binding(root: Path, run: ExternalReviewRun) -> str:
-    config = load_project(root).external_review
+def _binding(
+    root: Path, run: ExternalReviewRun, *, project_config: ProjectConfig | None = None
+) -> str:
+    project_config = project_config or load_project(root)
+    config = project_config.external_review
     assert config is not None
     return sha256_text(
         json.dumps(
@@ -58,30 +62,34 @@ def _current_run(root: Path, batch_id: str) -> ExternalReviewRun:
     return run
 
 
-def recheck_status(root: Path, run: ExternalReviewRun) -> dict[str, Any]:
+def recheck_status(
+    root: Path, run: ExternalReviewRun, *, project_config: ProjectConfig | None = None
+) -> dict[str, Any]:
+    project_config = project_config or load_project(root)
     from littrans.external_review import _is_cli_run, _needs_recheck, _recheck_unit_ids
 
     required = bool(
-        _is_cli_run(run) and run.success and run.model_verified and _needs_recheck(root, run)
+        _is_cli_run(run) and run.success and run.model_verified and _needs_recheck(root, run, project_config=project_config)
     )
     state: dict[str, Any] = {
         "required": required,
         "complete": not required,
-        "unit_ids": _recheck_unit_ids(root, run) if required else [],
+        "unit_ids": _recheck_unit_ids(root, run, project_config=project_config) if required else [],
         "result": None,
         "adjudication": None,
         "verdict": run.verdict.value,
     }
     if not required:
         return state
-    directory = _directory(root, run)
+    binding = _binding(root, run, project_config=project_config)
+    directory = root / "reviews/external-rechecks" / binding
     receipt = (
         read_json(directory / "receipt.json") if (directory / "receipt.json").exists() else None
     )
     decision = (
         read_json(directory / "decision.json") if (directory / "decision.json").exists() else None
     )
-    if receipt and receipt.get("binding") == _binding(root, run):
+    if receipt and receipt.get("binding") == binding:
         state["result"] = receipt
         state["decision_template"] = {
             "run_id": run.run_id,

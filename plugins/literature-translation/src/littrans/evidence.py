@@ -15,6 +15,7 @@ from littrans.models import (
     PROJECT_SCHEMA_VERSION,
     BatchManifest,
     FigureLabel,
+    ProjectConfig,
     ProjectStatus,
     SourceUnit,
     TranslationRecord,
@@ -673,7 +674,9 @@ def reference_terms_yaml(terms: Iterable[dict[str, Any]]) -> str:
 AUDIT_CONTEXT_PARTS = ("document-brief", "style-guide", "approved-terms", "reference-terms", "translation-policy")
 
 
-def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str, str]:
+def audit_context_sections(
+    root: Path, units: Iterable[SourceUnit], *, project_config: ProjectConfig | None = None
+) -> dict[str, str]:
     """The shared context by part: the two context files whole, the terms filtered per unit."""
     selected = list(units)
     brief = (root / "context" / "document-brief.md").read_text(
@@ -689,7 +692,7 @@ def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str,
     ).strip()
     reference = reference_terms_yaml(relevant_reference_terms(root, selected)).strip()
     from littrans.configuration import read_settings
-    policy = read_settings(root).payload()
+    policy = (project_config.settings if project_config is not None else read_settings(root)).payload()
     translation = policy["translation"]
     translation.pop("equations")
     translation["tables"].pop("presentation")
@@ -703,13 +706,15 @@ def audit_context_sections(root: Path, units: Iterable[SourceUnit]) -> dict[str,
                                               sort_keys=True, ensure_ascii=False)}
 
 
-def audit_context_text(root: Path, units: Iterable[SourceUnit]) -> str:
+def audit_context_text(
+    root: Path, units: Iterable[SourceUnit], *, project_config: ProjectConfig | None = None
+) -> str:
     """Return the exact shared instructions and terminology shown to auditors.
 
     The reference section is present only when an entry matches the units, so a project
     without reference entries keeps the audit context it had before the channel existed.
     """
-    return _render_audit_context(audit_context_sections(root, units))
+    return _render_audit_context(audit_context_sections(root, units, project_config=project_config))
 
 
 def _render_audit_context(parts: dict[str, str]) -> str:
@@ -730,30 +735,40 @@ def _summarize_audit_context(parts: dict[str, str]) -> dict[str, dict[str, Any]]
     }
 
 
-def audit_context_parts(root: Path, units: Iterable[SourceUnit]) -> dict[str, dict[str, Any]]:
+def audit_context_parts(
+    root: Path, units: Iterable[SourceUnit], *, project_config: ProjectConfig | None = None
+) -> dict[str, dict[str, Any]]:
     """Per-part hash and size of the shared context, so staleness can name what grew."""
-    return _summarize_audit_context(audit_context_sections(root, units))
+    return _summarize_audit_context(audit_context_sections(root, units, project_config=project_config))
 
 
-def audit_context_fingerprint(root: Path, units: Iterable[SourceUnit]) -> str:
-    return sha256_text(audit_context_text(root, units))
+def audit_context_fingerprint(
+    root: Path, units: Iterable[SourceUnit], *, project_config: ProjectConfig | None = None
+) -> str:
+    return sha256_text(audit_context_text(root, units, project_config=project_config))
 
 
 def audit_context_fingerprint_and_parts(
-    root: Path, units: Iterable[SourceUnit]
+    root: Path, units: Iterable[SourceUnit], *, project_config: ProjectConfig | None = None
 ) -> tuple[str, dict[str, dict[str, Any]]]:
     """``audit_context_fingerprint`` and ``audit_context_parts`` from one context build."""
-    parts = audit_context_sections(root, units)
+    parts = audit_context_sections(root, units, project_config=project_config)
     return sha256_text(_render_audit_context(parts)), _summarize_audit_context(parts)
 
 
 def translation_memory(
-    root: Path, current_unit_ids: Iterable[str], limit: int = 6
+    root: Path,
+    current_unit_ids: Iterable[str],
+    limit: int = 6,
+    *,
+    project_config: ProjectConfig | None = None,
+    completion_cache: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> list[dict[str, str]]:
     if limit <= 0:
         return []
+    project_config = project_config or load_project(root)
     current_ids = set(current_unit_ids)
-    config = load_project(root)
+    config = project_config
     if config.schema_version != PROJECT_SCHEMA_VERSION:
         return []
     config_external = config.external_review
@@ -829,9 +844,16 @@ def translation_memory(
         for batch_id in sorted({bid for ids in manifest_index.values() for bid in ids})
         for path in _memory_batch_evidence_paths(root, batch_id)
     )
-    complete_batch_ids = _memory_complete_batch_ids(
-        str(root.resolve()), shared_state, evidence_state
-    )
+    cache_key = (shared_state, evidence_state)
+    # This memo belongs to the caller's operation, just like project_config. A
+    # subsequent lookup must freshly validate source bytes and current policy.
+    complete_batch_ids = completion_cache.get(cache_key) if completion_cache is not None else None
+    if complete_batch_ids is None:
+        complete_batch_ids = _memory_complete_batch_ids(
+            str(root.resolve()), shared_state, evidence_state, project_config=config
+        )
+        if completion_cache is not None:
+            completion_cache[cache_key] = complete_batch_ids
     memories: list[dict[str, str]] = []
     for _, _, unit_id, source, target in ranked:
         batch_ids = manifest_index.get(unit_id, ())
@@ -886,9 +908,12 @@ def _memory_manifest_index(
     )
 
 
-@lru_cache(maxsize=8)
 def _memory_complete_batch_ids(
-    root_text: str, shared_state: str, evidence_state: str
+    root_text: str,
+    shared_state: str,
+    evidence_state: str,
+    *,
+    project_config: ProjectConfig | None = None,
 ) -> frozenset[str]:
     """Resolve complete batch IDs from one current, evidence-keyed snapshot."""
     del shared_state, evidence_state
@@ -896,7 +921,7 @@ def _memory_complete_batch_ids(
 
     root = Path(root_text)
     try:
-        snapshot = _load_workflow_snapshot(root)
+        snapshot = _load_workflow_snapshot(root, project_config=project_config)
     except (KeyError, OSError, ValueError):
         return frozenset()
     context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None] = {}

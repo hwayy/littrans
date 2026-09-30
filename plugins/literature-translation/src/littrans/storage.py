@@ -183,6 +183,11 @@ def initialize_project_dirs(root: Path) -> None:
 
 
 def load_project(root: Path) -> ProjectConfig:
+    """Read current policy and verify source bytes; never cache validation across operations.
+
+    Internal read helpers may share this config via ``project_config`` for this
+    operation only. Mutation boundaries must call this again on persisted files.
+    """
     from littrans.configuration import bind, yaml_read
     payload = yaml_read(root / "project.yaml")
     if payload.get("schema_version") != PROJECT_SCHEMA_VERSION:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from littrans.glossary import glossary_check
+from littrans.models import ProjectConfig
 from littrans.storage import load_project, read_json, write_json
 
 CONTEXT_FILES = ("context/document-brief.md", "context/style-guide.md",
@@ -12,8 +13,8 @@ CONTEXT_FILES = ("context/document-brief.md", "context/style-guide.md",
                  "glossary/reference.yaml", "glossary/candidates.yaml")
 
 
-def context_snapshot(root: Path) -> dict[str, Any]:
-    config = load_project(root)
+def context_snapshot(root: Path, *, project_config: ProjectConfig | None = None) -> dict[str, Any]:
+    config = project_config or load_project(root)
     from littrans.context_config import RESOURCES, semantic
     from littrans.settings import digest
     values = semantic(root)

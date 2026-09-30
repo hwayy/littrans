@@ -26,6 +26,7 @@ from littrans.fidelity_models import (
 from littrans.layout_detector import detect_layout, layout_page_items, layout_result_path
 from littrans.models import (
     AssetRef,
+    ProjectConfig,
     RenderPolicy,
     SemanticStatus,
     SourceUnit,
@@ -3019,8 +3020,14 @@ def _current_units(root: Path) -> list[SourceUnit]:
     return all_units
 
 
-def _current_page(root: Path, number: int, all_units: list[SourceUnit] | None = None,
-                  assets: dict[str, FidelityAsset] | None = None) -> dict[str, Any]:
+def _current_page(
+    root: Path,
+    number: int,
+    all_units: list[SourceUnit] | None = None,
+    assets: dict[str, FidelityAsset] | None = None,
+    *,
+    project_config: ProjectConfig | None = None,
+) -> dict[str, Any]:
     ledger = read_json(_page_path(root, number))
     if all_units is None:
         all_units = _current_units(root)
@@ -3053,7 +3060,7 @@ def _current_page(root: Path, number: int, all_units: list[SourceUnit] | None = 
     dependencies = [u for u in page_evidence_units(number, all_units) if u.page != number]
     ledger = {key: value for key, value in ledger.items() if key != "generator"}
     from littrans.configuration import policy_domains, read_settings
-    ledger = {**ledger, "source_policy": policy_domains(read_settings(root).payload())["source"]}
+    ledger = {**ledger, "source_policy": policy_domains((project_config.settings if project_config is not None else read_settings(root)).payload())["source"]}
     payload = {"ledger": ledger, "units": [u.model_dump(mode="json", exclude={"verification_status"}) for u in units], "dependency_units": [u.model_dump(mode="json", exclude={"verification_status"}) for u in dependencies], "assets": [a.model_dump(mode="json") for a in selected], "files": files}
     return {"page": number, "fingerprint": _hash(payload), **payload}
 
@@ -3375,8 +3382,13 @@ def _source_decision_passes(page: dict[str, Any], decision: dict[str, Any]) -> b
 
 
 def _verify_source_receipt(
-    root: Path, current: dict[str, Any], receipt: Any, source_sha: str,
-    *, parsed_packets: dict[tuple[str, str], dict[str, Any]] | None = None,
+    root: Path,
+    current: dict[str, Any],
+    receipt: Any,
+    source_sha: str,
+    *,
+    parsed_packets: dict[tuple[str, str], dict[str, Any]] | None = None,
+    project_config: ProjectConfig | None = None,
 ) -> None:
     if not isinstance(receipt, dict):
         raise ValueError("invalid source review receipt")
@@ -3386,7 +3398,7 @@ def _verify_source_receipt(
     packet = _load_source_packet(root, receipt["packet_id"], receipt["packet_sha256"],
                                  parsed_packets=parsed_packets)
     from littrans.structure_profile import guidance_difference, structure_context
-    difference = guidance_difference(packet.get("document_structure"), structure_context(root), current["page"])
+    difference = guidance_difference(packet.get("document_structure"), structure_context(root, project_config=project_config), current["page"])
     if difference:
         raise ValueError("source structure guidance changed since review " + difference)
     if receipt.get("visual_report_sha256") != packet["visual_report"]["sha256"]:
@@ -3635,9 +3647,12 @@ def _opaque_prose_assets(current: dict[str, Any]) -> list[str]:
     return opaque
 
 
-def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
+def verify_fidelity(
+    root: Path, page_spec: str = "all", *, project_config: ProjectConfig | None = None
+) -> dict[str, Any]:
     root = Path(root).resolve()
-    config = load_project(root)
+    project_config = project_config or load_project(root)
+    config = project_config
     pages = parse_page_spec(page_spec, config.source_pages)
     requested_pages = list(pages)
     from littrans.evidence import page_evidence_units
@@ -3651,23 +3666,20 @@ def verify_fidelity(root: Path, page_spec: str = "all") -> dict[str, Any]:
     verified = []
     # Packets the verified receipts depend on: live directories under packets/.
     receipt_packets: dict[str, list[int]] = {}
-    source_current = sha256_file(config.source(root)) == config.source_sha256
     loaded: tuple[list[SourceUnit], dict[str, FidelityAsset]] | None = None
     parsed_packets: dict[tuple[str, str], dict[str, Any]] = {}
     for p in pages:
         try:
-            if not source_current:
-                raise ValueError("source PDF changed")
             if loaded is None:
                 loaded = (_current_units(root), load_assets(root))
-            current = _current_page(root, p, *loaded)
+            current = _current_page(root, p, *loaded, project_config=project_config)
             opaque = _opaque_prose_assets(current)
             if opaque:
                 raise ValueError("recoverable prose remains inside image assets; re-prepare or split source regions: " + ", ".join(opaque))
             receipt_path = root / f"evidence/pages/fidelity-p{p:04d}.review.json"
             receipt = read_json(receipt_path) if receipt_path.is_file() else {}
             _verify_source_receipt(root, current, receipt, config.source_sha256,
-                                   parsed_packets=parsed_packets)
+                                   parsed_packets=parsed_packets, project_config=project_config)
             refs = Counter(aid for u in current["units"] for aid in asset_reference_ids(u["source_markdown"] or u["source_text"]))
             if refs != Counter({a["id"]: 1 for a in current["assets"]}):
                 raise ValueError("asset references are missing or duplicated")

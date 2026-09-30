@@ -27,6 +27,7 @@ from littrans.models import (
     AuditRun,
     BatchManifest,
     IssueStatus,
+    ProjectConfig,
     ProjectStatus,
     QAItem,
     QAReport,
@@ -150,12 +151,15 @@ def current_qa_context_fingerprint(
     units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
     manifest: BatchManifest | None = None,
+    project_config: ProjectConfig | None = None,
+    policy_digests: dict[str, str] | None = None,
 ) -> str:
     """Hash every QA input outside the batch's own translation fingerprint.
 
     Callers holding a consistent snapshot pass ``units``/``translations``/``manifest``
     so coordination does not re-read the project once per batch.
     """
+    project_config = project_config or load_project(root)
     asset_ids = None
     scoped_units = None
     if units is None:
@@ -183,7 +187,7 @@ def current_qa_context_fingerprint(
     from littrans.context_packets import original_context
 
     try:
-        required_images = original_context(root, [u for u in units if scoped_units is None or u.unit_id in scoped_units])["required_images"]
+        required_images = original_context(root, [u for u in units if scoped_units is None or u.unit_id in scoped_units], project_config=project_config)["required_images"]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         # Coordination must still be able to route damaged source evidence to repair.
         required_images = {"unavailable": str(exc)}
@@ -191,7 +195,7 @@ def current_qa_context_fingerprint(
                                if (scoped_units is None or key in scoped_units)
                                and any(item.strip() for item in record.uncertainties)}
     from littrans.configuration import policy_domains
-    domains = policy_domains(load_project(root).settings.payload())
+    domains = policy_digests or policy_domains(project_config.settings.payload())
     return sha256_text(_qa_context_fingerprint(load_terms(root)) + json.dumps(
         {"assets": uncertainty, "translations": translation_uncertainty, "dependencies": dependency_bindings,
          "required_images": required_images,
@@ -837,9 +841,9 @@ def audit_coverage(
     all_units: dict[str, SourceUnit] | None = None,
     translations: dict[str, Any] | None = None,
     runs: list[AuditRun] | None = None,
-    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None]
-    | None = None,
+    context_cache: dict[tuple[str, ...], tuple[str, dict[str, str]] | None] | None = None,
     validate_packet_closure: bool = True,
+    project_config: ProjectConfig | None = None,
 ) -> dict[str, Any]:
     """Return current per-lens evidence coverage.
 
@@ -905,7 +909,7 @@ def audit_coverage(
     def _context_changes(run: AuditRun, context_ids: tuple[str, ...]) -> list[dict[str, Any]] | None:
         if not run.shared_context_parts:
             return None
-        current_parts = audit_context_parts(root, [all_units[unit_id] for unit_id in context_ids])
+        current_parts = audit_context_parts(root, [all_units[unit_id] for unit_id in context_ids], project_config=project_config)
         changes = []
         for part in AUDIT_CONTEXT_PARTS:
             before = run.shared_context_parts.get(part)
@@ -937,7 +941,8 @@ def audit_coverage(
             context_inputs[context_ids] = (
                 (
                     audit_context_fingerprint(
-                        root, [all_units[unit_id] for unit_id in context_ids]
+                        root, [all_units[unit_id] for unit_id in context_ids],
+                        project_config=project_config,
                     ),
                     {
                         unit_id: translation_unit_fingerprint(

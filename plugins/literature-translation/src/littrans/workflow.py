@@ -30,6 +30,7 @@ from littrans.models import (
     BatchManifest,
     ExternalReviewRun,
     IssueStatus,
+    ProjectConfig,
     ProjectStatus,
     QAReport,
     RenderPolicy,
@@ -70,6 +71,8 @@ class WorkflowSnapshot:
     """One-load, internally consistent view used by workflow coordination."""
 
     root: Path
+    project_config: ProjectConfig
+    policy_digests: dict[str, str]
     manifests: tuple[BatchManifest, ...]
     units: tuple[SourceUnit, ...]
     unit_map: dict[str, SourceUnit]
@@ -101,14 +104,20 @@ def _translation_fingerprint_from_snapshot(
 
 
 def _load_workflow_snapshot(
-    root: Path, external_batch_ids: set[str] | None = None
+    root: Path,
+    external_batch_ids: set[str] | None = None,
+    *,
+    project_config: ProjectConfig | None = None,
 ) -> WorkflowSnapshot:
     # Import lazily to avoid coupling the packet/review implementation at module
     # import time.  The derived external.json file is a convenience cache, not
     # authoritative evidence: rebuild each status from current runs and context.
+    project_config = project_config or load_project(root)
+    from littrans.configuration import policy_domains
     from littrans.external_review import external_review_status
 
-    config = load_project(root)
+    config = project_config
+    policy_digests = policy_domains(config.settings.payload())
     units = tuple(read_jsonl(root / "derived" / "units.jsonl", SourceUnit))
     unit_map = {unit.unit_id: unit for unit in units}
     positions = {unit.unit_id: index for index, unit in enumerate(units)}
@@ -155,6 +164,8 @@ def _load_workflow_snapshot(
                 ),
                 all_units=list(units),
                 translations=translations,
+                project_config=project_config,
+                policy_digests=policy_digests,
             )
             if (
                 config.external_review
@@ -165,6 +176,8 @@ def _load_workflow_snapshot(
         )
     return WorkflowSnapshot(
         root=root,
+        project_config=config,
+        policy_digests=policy_digests,
         manifests=manifests,
         units=units,
         unit_map=unit_map,
@@ -176,7 +189,9 @@ def _load_workflow_snapshot(
         external_enabled=bool(config.external_review and config.external_review.enabled),
         qa_context_fingerprints={
             m.batch_id: current_qa_context_fingerprint(
-                root, m.batch_id, units=list(units), translations=translations, manifest=m
+                root, m.batch_id, units=list(units), translations=translations, manifest=m,
+                project_config=project_config,
+                policy_digests=policy_digests,
             )
             for m in manifests
         },
@@ -291,7 +306,9 @@ def _batch_stage_details(
 
     pages = tuple(sorted(manifest.pages))
     if pages not in snapshot.source_checks:
-        snapshot.source_checks[pages] = bool(verify_fidelity(root, ",".join(map(str, pages)))["passed"])
+        snapshot.source_checks[pages] = bool(verify_fidelity(
+            root, ",".join(map(str, pages)), project_config=snapshot.project_config
+        )["passed"])
     if not snapshot.source_checks[pages]:
         return "source-review", {}
     translations = snapshot.translations
@@ -299,7 +316,7 @@ def _batch_stage_details(
         return "translate", {}
     lane = _snapshot_lane(root, manifest, snapshot)
     from littrans.policy import required_transcriptions
-    required = required_transcriptions(root, list(lane["states"]))
+    required = required_transcriptions(root, list(lane["states"]), project_config=snapshot.project_config)
     if any(lane["states"][key]["state"] in {"transcribe", "fallback"} for key in required):
         return "transcribe", {}
     if any(lane["states"][key]["state"] == "asset-audit" for key in required):
@@ -328,6 +345,7 @@ def _batch_stage_details(
         translations=translations,
         runs=snapshot.audit_runs[batch_id],
         context_cache=context_cache,
+        project_config=snapshot.project_config,
     )
     if not coverage["complete"]:
         return "audit", {
@@ -464,7 +482,7 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
     from littrans.agent_config import opencode_native_agent
     from littrans.models import RoleDispatch
     from littrans.settings import LENSES, ROLES
-    config = load_project(root)
+    config = snapshot.project_config
     tasks: list[dict[str, Any]] = []
     by_id = {m.batch_id: m for m in snapshot.manifests}
     if not optional_assets:
@@ -485,7 +503,7 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
         if stage == "audit" and not optional_assets:
             # Each lens is its own fresh task with its own resolved lens policy.
             coverage = audit_coverage(root, bid, manifest=by_id[bid], all_units=snapshot.unit_map,
-                                      translations=snapshot.translations, runs=snapshot.audit_runs[bid])
+                                      translations=snapshot.translations, runs=snapshot.audit_runs[bid], project_config=snapshot.project_config)
             for lens in [lens for lens in LENSES if coverage["missing"][lens]] or list(LENSES):
                 dispatch = config.dispatch(host, stage, lens)
                 tasks.append({"batch_id": bid, "stage": stage, "lens": lens,
@@ -528,17 +546,20 @@ def _ready_tasks(root: Path, batch_ids: list[str], snapshot: WorkflowSnapshot,
     return tasks
 
 
-def _with_advisories(root: Path, host: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _with_advisories(
+    root: Path, host: str, payload: dict[str, Any], *, project_config: ProjectConfig | None = None
+) -> dict[str, Any]:
     """Attach the advisories for the roles this wave is about to dispatch.
 
     Advisories never block and never enter a packet: a manifest is compared for
     replay identity and an asset packet's id hashes its whole payload.
     """
+    project_config = project_config or load_project(root)
     roles = dict.fromkeys(
         f"audit:{task['lens']}" if task.get("lens") else str(task.get("stage", ""))
         for task in [*payload.get("ready_tasks", []), *payload.get("optional_asset_tasks", [])]
     )
-    payload["dispatch_advisories"] = dispatch_report(root, host, roles)["advisories"]
+    payload["dispatch_advisories"] = dispatch_report(root, host, roles, project_config=project_config)["advisories"]
     return payload
 
 
@@ -549,10 +570,10 @@ def workflow_next(
     through: str | None = None,
     host: str | None = None,
 ) -> dict[str, Any]:
-    require_current_project_schema(root, "Workflow coordination")
+    config = require_current_project_schema(root, "Workflow coordination")
     resolved_host = resolve_coordination_host(host)
     resolved_limit = resolve_wave_limit(resolved_host, limit if limit is not None else
-                                       load_project(root).settings.agents[resolved_host].wave_size)
+                                       config.settings.agents[resolved_host].wave_size)
     external_batch_ids: set[str] | None = None
     if start_at is not None or through is not None:
         ordered = _bounded_manifest_series(
@@ -572,7 +593,7 @@ def workflow_next(
                 manifest.batch_id
                 for manifest in ordered[external_lower : external_upper + 1]
             }
-    snapshot = _load_workflow_snapshot(root, external_batch_ids)
+    snapshot = _load_workflow_snapshot(root, external_batch_ids, project_config=config)
     manifests = list(snapshot.manifests)
     if not manifests:
         raise ValueError(
@@ -658,7 +679,7 @@ def workflow_next(
             "through": through,
             "unbatched_pages": unbatched_pages,
         }
-        return _with_advisories(root, resolved_host, payload)
+        return _with_advisories(root, resolved_host, payload, project_config=config)
     stage = stages[start][1]
     batch_ids: list[str] = []
     selected_unit_ids: set[str] = set()
@@ -704,12 +725,12 @@ def workflow_next(
         "schedule": "translation-first-optional-assets",
         "unbatched_pages": unbatched_pages,
     }
-    return _with_advisories(root, resolved_host, payload)
+    return _with_advisories(root, resolved_host, payload, project_config=config)
 
 
 def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = None) -> dict[str, Any]:
     """Return a compact status for an already-selected wave."""
-    require_current_project_schema(root, "Workflow coordination")
+    config = require_current_project_schema(root, "Workflow coordination")
     requested = list(batch_ids)
     resolved_host = resolve_coordination_host(host)
     if (
@@ -720,7 +741,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
         raise ValueError(
             f"workflow status requires 1 to {WAVE_BATCH_SET_MAX} unique batch IDs"
         )
-    snapshot = _load_workflow_snapshot(root, set(requested))
+    snapshot = _load_workflow_snapshot(root, set(requested), project_config=config)
     known = {manifest.batch_id for manifest in snapshot.manifests}
     missing = sorted(set(requested) - known)
     if missing:
@@ -791,7 +812,7 @@ def workflow_status(root: Path, batch_ids: Iterable[str], host: str | None = Non
         "complete": all(stage == "complete" for stage in stages.values()),
         "unbatched_pages": unbatched_pages,
     }
-    return _with_advisories(root, resolved_host, payload)
+    return _with_advisories(root, resolved_host, payload, project_config=config)
 
 
 def _validate_batch_set(

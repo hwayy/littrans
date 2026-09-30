@@ -28,6 +28,26 @@ origins and host capabilities. A dispatch that requests an unsupported model or
 effort fails. Claude agents use their fixed effort; Cursor and Qoder inherit
 their host selection. OpenCode policies require regenerated native agents.
 
+### Source validation and operation-local reuse
+
+Loading a project validates its saved configuration and hashes the complete source PDF.
+`workflow next`, `workflow status` and `translation review external-status` reuse that
+validated configuration within one invocation. Source hashing happens once per invocation,
+independent of batch count, page groups or external-review chain length. Batch context
+generation also reuses the caller's configuration.
+
+This reuse is in memory for the current operation only. The next invocation reloads policy
+and hashes the PDF again, including when its size and modification time have not changed.
+Source-path rebinding must match the manifest identity. State saves still validate the
+persisted configuration and source independently; task reception and external-review
+persistence validate at their own boundaries. Images, packets and review receipts retain
+their content checks.
+
+Python helpers accept an optional keyword-only `project_config` for internal composition.
+Pass only a configuration loaded for the same project in the current operation; do not
+retain it across edits, task imports or external provider calls. Omitting it preserves the
+helper's independent validation behavior. No project migration or cache file is needed.
+
 ## Make changes
 
 ```text

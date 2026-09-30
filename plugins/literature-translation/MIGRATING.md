@@ -1,8 +1,13 @@
-# Migrating to LitTrans 0.9.0-dev.2
+# Migrating to LitTrans 0.9.0-dev.3
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
 for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
+
+Existing manifest-v7 projects with valid settings schema v1 can continue without rebuilding.
+The operation-local source validation optimization changes no persisted schema or evidence
+fingerprint. Use the rebuild procedure below when moving from an unsupported project format
+or when deliberately starting a separate project.
 
 ## Preserve the old project
 

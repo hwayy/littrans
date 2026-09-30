@@ -279,15 +279,15 @@ def receive_task(root: Path, task_id: str, result: Path | None = None,
             return {**task_status(root, task_id), "replayed": True}
         if state["state"] != "claimed":
             raise ValueError("Claim the task with actual execution provenance before importing")
-        if task["context"] != context_snapshot(root):
-            raise ValueError("Task context changed; create a fresh task")
         config = load_project(root)
+        if task["context"] != context_snapshot(root, project_config=config):
+            raise ValueError("Task context changed; create a fresh task")
         from littrans.configuration import policy_domains, task_policy_dependencies
         current_policy = policy_domains(config.settings.payload())
         relevant = task_policy_dependencies(task["stage"])
         if any(task.get("policy_domains", {}).get(key) != current_policy[key] for key in relevant):
             raise ValueError("Task policy changed; create a fresh task")
-        if sha256_file(config.source(root)) != task["source_sha256"]:
+        if config.source_sha256 != task["source_sha256"]:
             raise ValueError("Task source changed")
         for name, expected in task["inputs"].items():
             path = root / name

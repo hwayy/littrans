@@ -42,6 +42,7 @@ from littrans.models import (
     ExternalReviewVerdict,
     IssueStatus,
     IssueType,
+    ProjectConfig,
     ProjectStatus,
     PromptDelivery,
     ReviewIssue,
@@ -185,8 +186,11 @@ class ExternalInvocationError(RuntimeError):
         self.actual_model_label = actual_model_label
 
 
-def _review_config(root: Path) -> ExternalReviewConfig:
-    config = load_project(root).external_review
+def _review_config(
+    root: Path, *, project_config: ProjectConfig | None = None
+) -> ExternalReviewConfig:
+    project_config = project_config or load_project(root)
+    config = project_config.external_review
     if config is None or not config.enabled:
         raise ValueError("External review is not enabled for this project")
     return config
@@ -307,8 +311,9 @@ def _outer_seam_context_ids(
     ]
 
 
-def _domain_expertise(root: Path) -> str:
-    project = load_project(root)
+def _domain_expertise(root: Path, *, project_config: ProjectConfig | None = None) -> str:
+    project_config = project_config or load_project(root)
+    project = project_config
     if project.external_review and project.external_review.domain_expertise:
         return project.external_review.domain_expertise
     return (
@@ -326,7 +331,10 @@ def _external_review_context_fingerprint(
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
     _legacy_v4_full_scope: bool = False,
+    project_config: ProjectConfig | None = None,
+    policy_digests: dict[str, str] | None = None,
 ) -> str:
+    project_config = project_config or load_project(root)
     manifest = load_manifest(root, batch_id)
     covered = list(covered_unit_ids or manifest.unit_ids)
     if _legacy_v4_full_scope and scope is not ReviewScope.FULL:
@@ -359,22 +367,24 @@ def _external_review_context_fingerprint(
         "external-review-context-v2|"
         + PROMPT_VERSION
         + "|"
-        + _domain_expertise(root)
+        + _domain_expertise(root, project_config=project_config)
         + "|"
-        + audit_context_fingerprint(root, selected_units)
+        + audit_context_fingerprint(root, selected_units, project_config=project_config)
         + "|"
         + read_only_fingerprint
-        + "|" + policy_domains(load_project(root).settings.payload())["external"]
+        + "|" + (policy_digests or policy_domains(project_config.settings.payload()))["external"]
     )
 
 
-def _is_pre_v5_migration_review(root: Path, run: ExternalReviewRun) -> bool:
+def _is_pre_v5_migration_review(
+    root: Path, run: ExternalReviewRun, *, project_config: ProjectConfig | None = None
+) -> bool:
     if run.scope is not ReviewScope.FULL:
         return False
     migration_path = root / "evidence" / "migration-v4-v5.json"
     try:
         migration = json.loads(migration_path.read_text(encoding="utf-8"))
-        if not isinstance(migration, dict) or load_project(root).schema_version != 5:
+        if not isinstance(migration, dict) or (project_config or load_project(root)).schema_version != 5:
             return False
         migrated_at = migration.get("migrated_at")
         if (
@@ -404,10 +414,13 @@ def _external_review_context_is_current(
     *,
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
+    project_config: ProjectConfig | None = None,
+    policy_digests: dict[str, str] | None = None,
 ) -> bool:
     if not run.context_fingerprint:
         return False
     try:
+        project_config = project_config or load_project(root)
         current_fingerprint = _external_review_context_fingerprint(
             root,
             run.batch_id,
@@ -415,13 +428,15 @@ def _external_review_context_is_current(
             run.scope,
             all_units=all_units,
             translations=translations,
+            project_config=project_config,
+            policy_digests=policy_digests,
         )
         if run.context_fingerprint == current_fingerprint:
             return True
         # Schema-v4 full reviews deliberately omitted read-only seam units. Preserve
         # that exact historical scope only for evidence that predates a recorded v5
         # migration; newly issued v5 reviews must always match the expanded context.
-        if not _is_pre_v5_migration_review(root, run):
+        if not _is_pre_v5_migration_review(root, run, project_config=project_config):
             return False
         legacy_fingerprint = _external_review_context_fingerprint(
             root,
@@ -431,6 +446,8 @@ def _external_review_context_is_current(
             all_units=all_units,
             translations=translations,
             _legacy_v4_full_scope=True,
+            project_config=project_config,
+            policy_digests=policy_digests,
         )
         return run.context_fingerprint == legacy_fingerprint
     except (KeyError, OSError, ValueError):
@@ -1914,8 +1931,11 @@ def _convert_issues(
     return issues
 
 
-def _needs_recheck(root: Path, run: ExternalReviewRun) -> bool:
-    config = _review_config(root).recheck
+def _needs_recheck(
+    root: Path, run: ExternalReviewRun, *, project_config: ProjectConfig | None = None
+) -> bool:
+    project_config = project_config or load_project(root)
+    config = _review_config(root, project_config=project_config).recheck
     if run.verdict is ExternalReviewVerdict.INCONCLUSIVE or not run.model_verified:
         return True
     issues = {
@@ -1939,7 +1959,10 @@ def _resolved_changes_requested_base(
     *,
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
+    project_config: ProjectConfig | None = None,
+    policy_digests: dict[str, str] | None = None,
 ) -> bool:
+    project_config = project_config or load_project(root)
     if (
         not _is_cli_run(base)
         or base.scope is not ReviewScope.FULL
@@ -1948,7 +1971,9 @@ def _resolved_changes_requested_base(
         or base.verdict is not ExternalReviewVerdict.CHANGES_REQUESTED
         or not base.unit_fingerprints
         or not _external_review_context_is_current(
-            root, base, all_units=all_units, translations=translations
+            root, base, all_units=all_units, translations=translations,
+            project_config=project_config,
+            policy_digests=policy_digests,
         )
     ):
         return False
@@ -1967,17 +1992,21 @@ def _resolved_changes_requested_base(
     ]
     if not substantive or any(issue.status is not IssueStatus.RESOLVED for issue in substantive):
         return False
-    if _needs_recheck(root, base):
+    if _needs_recheck(root, base, project_config=project_config):
         from littrans.external_recheck import recheck_status
-        if not recheck_status(root, base)["complete"]:
+        if not recheck_status(root, base, project_config=project_config)["complete"]:
             return False
     return True
 
 
 def _recheck_unit_ids(
-    root: Path, primary: ExternalReviewRun
+    root: Path,
+    primary: ExternalReviewRun,
+    *,
+    project_config: ProjectConfig | None = None,
 ) -> list[str]:
     """Restrict an opinion to issue units and their real batch-local dependencies."""
+    project_config = project_config or load_project(root)
     manifest = load_manifest(root, primary.batch_id)
     issues = {
         issue.issue_id: issue
@@ -1985,7 +2014,7 @@ def _recheck_unit_ids(
             root / "reviews" / f"{primary.batch_id}.issues.jsonl", ReviewIssue
         )
     }
-    config = _review_config(root).recheck
+    config = _review_config(root, project_config=project_config).recheck
     trigger_units = {
         issue.unit_id
         for issue_id in primary.issue_ids
@@ -2009,8 +2038,11 @@ def _primary_chain_approvable(
     *,
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
+    project_config: ProjectConfig | None = None,
+    policy_digests: dict[str, str] | None = None,
 ) -> bool:
     """Require each incremental primary and its inherited chain to satisfy the gate."""
+    project_config = project_config or load_project(root)
     visited = set(seen or ())
     if primary.run_id in visited:
         return False
@@ -2019,16 +2051,18 @@ def _primary_chain_approvable(
         not _is_cli_run(primary)
         or not primary.success
         or not primary.model_verified
-        or _effective_verdict(root, primary) != "accepted"
+        or _effective_verdict(root, primary, project_config=project_config) != "accepted"
         or not primary.unit_fingerprints
         or not _external_review_context_is_current(
-            root, primary, all_units=all_units, translations=translations
+            root, primary, all_units=all_units, translations=translations,
+            project_config=project_config,
+            policy_digests=policy_digests,
         )
     ):
         return False
-    if _needs_recheck(root, primary):
+    if _needs_recheck(root, primary, project_config=project_config):
         from littrans.external_recheck import recheck_status
-        if not recheck_status(root, primary)["complete"]:
+        if not recheck_status(root, primary, project_config=project_config)["complete"]:
             return False
     if primary.scope is ReviewScope.INCREMENTAL:
         inherited = next(
@@ -2048,6 +2082,8 @@ def _primary_chain_approvable(
                 inherited,
                 all_units=all_units,
                 translations=translations,
+                project_config=project_config,
+                policy_digests=policy_digests,
             )
         return _primary_chain_approvable(
             root,
@@ -2056,6 +2092,8 @@ def _primary_chain_approvable(
             visited,
             all_units=all_units,
             translations=translations,
+            project_config=project_config,
+            policy_digests=policy_digests,
         )
     return True
 
@@ -2114,10 +2152,13 @@ def _is_cli_run(run: ExternalReviewRun) -> bool:
     ))
 
 
-def _effective_verdict(root: Path, run: ExternalReviewRun) -> str:
+def _effective_verdict(
+    root: Path, run: ExternalReviewRun, *, project_config: ProjectConfig | None = None
+) -> str:
+    project_config = project_config or load_project(root)
     from littrans.external_recheck import recheck_status
-    if _needs_recheck(root, run):
-        state = recheck_status(root, run)
+    if _needs_recheck(root, run, project_config=project_config):
+        state = recheck_status(root, run, project_config=project_config)
         if not state["complete"]:
             return "inconclusive"
         return str(state["verdict"])
@@ -2125,24 +2166,34 @@ def _effective_verdict(root: Path, run: ExternalReviewRun) -> str:
 
 
 def external_review_status(
-    root: Path, batch_id: str, *, current_fingerprint: str | None = None,
+    root: Path,
+    batch_id: str,
+    *,
+    current_fingerprint: str | None = None,
     all_units: list[SourceUnit] | None = None,
     translations: dict[str, TranslationRecord] | None = None,
+    project_config: ProjectConfig | None = None,
+    policy_digests: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    project_config = project_config or load_project(root)
+    from littrans.configuration import policy_domains
     from littrans.external_recheck import recheck_status
-    _review_config(root)
+    policy_digests = policy_digests or policy_domains(project_config.settings.payload())
+    _review_config(root, project_config=project_config)
     fingerprint = current_fingerprint or batch_translation_fingerprint(root, batch_id)
     all_runs = read_jsonl(_runs_path(root, batch_id), ExternalReviewRun)
     primary = next((run for run in reversed(all_runs)
                     if _is_cli_run(run) and run.translation_fingerprint == fingerprint
                     and _external_review_context_is_current(root, run, all_units=all_units,
-                                                           translations=translations)), None)
-    recheck = recheck_status(root, primary) if primary else None
+                                                           translations=translations, project_config=project_config, policy_digests=policy_digests)), None)
+    recheck = recheck_status(root, primary, project_config=project_config) if primary else None
     verdict = "missing" if primary is None else "inconclusive"
     if primary and primary.success and primary.model_verified:
-        verdict = _effective_verdict(root, primary)
+        verdict = _effective_verdict(root, primary, project_config=project_config)
         if verdict == "accepted" and not _primary_chain_approvable(
-            root, all_runs, primary, all_units=all_units, translations=translations
+            root, all_runs, primary, all_units=all_units, translations=translations,
+            project_config=project_config,
+            policy_digests=policy_digests,
         ):
             verdict = "inconclusive"
     issues = read_jsonl(root / "reviews" / f"{batch_id}.issues.jsonl", ReviewIssue)

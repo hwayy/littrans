@@ -324,7 +324,7 @@ def test_batch_budget_cannot_split_theorem(tmp_path, monkeypatch):
     ]
     write_jsonl(tmp_path / "derived/units.jsonl", units)
     monkeypatch.setattr("littrans.batching.require_verified_extraction", lambda *args: None)
-    monkeypatch.setattr("littrans.batching._context_text", lambda *args: "")
+    monkeypatch.setattr("littrans.batching._context_text", lambda *args, **kwargs: "")
     batches = create_batches(tmp_path, "1", max_words=100)
     assert [b.unit_ids for b in batches] == [[u.unit_id for u in units[:3]], [units[3].unit_id]]
 
