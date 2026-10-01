@@ -15,6 +15,24 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.1-dev.3] - 2026-10-01
+
+### Fixed
+
+- Composed known operators such as `log log x` stay mathematical notation when TeX's
+  thin spacing makes their native text read `loglog`. Source preparation and the review
+  gate no longer misclassify these applied operators as undeclared translatable language.
+- Recognize `erf` and `erfc` as mathematical operator names, including beside a binary sign.
+  Actual condition words and abbreviations still require declarations.
+- Reuse full native-line bold-variable classification when declaring formula language:
+  a mathematical `T` beside `for` is notation; bold prose words remain language.
+
+### Compatibility
+
+- No schema or task-protocol change. Existing source images and overrides remain usable;
+  remove obsolete operator-only condition declarations through normal source review and
+  recheck the affected pages. Do not declare operators merely to pass a language gate.
+
 ## [0.9.1-dev.2] - 2026-09-30
 
 ### Fixed

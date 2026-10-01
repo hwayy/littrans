@@ -1,12 +1,20 @@
-# Migrating to LitTrans 0.9.1-dev.2
+# Migrating to LitTrans 0.9.1-dev.3
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
 for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
 
 Existing manifest-v7 projects with valid settings schema v1 can continue without rebuilding.
-This build changes no persisted schema or evidence fingerprint. Use the rebuild procedure below
-when moving from an unsupported project format or when deliberately starting a separate project.
+This build changes no persisted schema and does not rewrite existing source evidence. Use the
+rebuild procedure below when moving from an unsupported project format or when deliberately
+starting a separate project.
+
+Applied composed operators such as `log log x`, and the operator names `erf` and `erfc`, no
+longer count as translatable formula conditions. Existing original-image crops remain usable.
+Remove any obsolete operator-only declarations through normal source-review overrides and
+obtain fresh affected review receipts; do not change a receipt or declare an operator merely
+to satisfy the language gate. Actual condition words and abbreviations remain subject to the
+same declaration checks.
 
 New tasks snapshot and hash their instructions as LF text, so Git's line-ending conversion no
 longer invalidates them. Tasks created by earlier development builds still verify while their

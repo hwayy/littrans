@@ -30,7 +30,7 @@ MATH_OPERATORS = {
     "sin", "cos", "tan", "cot", "sec", "csc", "sinh", "cosh", "tanh", "arcsin", "arccos", "arctan",
     "log", "ln", "lg", "exp", "lim", "limsup", "liminf", "sup", "inf", "max", "min", "argmax", "argmin",
     "det", "rank", "diag", "span", "arg", "dim", "ker", "poly", "tr", "cov", "var", "corr", "prob",
-    "sgn", "gcd", "lcm", "supp", "ess", "vol", "mod",
+    "sgn", "gcd", "lcm", "supp", "ess", "vol", "mod", "erf", "erfc",
 }
 # A token of native language: a word of two or more letters, or a letter-dot abbreviation
 # (i.o., a.s., i.e.) that a word pattern would split into single letters.

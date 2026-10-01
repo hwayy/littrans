@@ -1064,6 +1064,22 @@ def _spaced_text(glyphs: list[dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def _known_operator_sequence(text: str) -> bool:
+    """Recognize composed known operators even when TeX spacing joins their names."""
+    compact = re.sub(r"\s+", "", text).lower()
+    if not compact.isalpha():
+        return False
+    counts = {0: 0}
+    for start in range(len(compact)):
+        if start not in counts:
+            continue
+        for name in MATH_OPERATORS:
+            if compact.startswith(name, start):
+                end = start + len(name)
+                counts[end] = max(counts.get(end, 0), counts[start] + 1)
+    return counts.get(len(compact), 0) >= 2
+
+
 def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]],
                              *, measured_ink: bool = True) -> list[dict[str, Any]]:
     """Declare the words a displayed formula keeps inside its crop as formula conditions.
@@ -1083,11 +1099,17 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     """
     owned = [glyph_by_id[gid] for gid in region.get("glyph_ids", []) if gid in glyph_by_id]
     order = {gid: i for i, gid in enumerate(glyph_by_id)}
+    # Reuse preparation's full-line context: an isolated bold T is notation,
+    # while a bold word or citation key must remain language.
+    native_lines: dict[str, list[dict[str, Any]]] = {}
+    for native_glyph in glyph_by_id.values():
+        native_lines.setdefault(native_glyph["line"], []).append(native_glyph)
+    bold_variables = _bold_variable_ids(native_lines)
     conditions: list[dict[str, Any]] = []
     for line in _visual_lines(owned):
         segment: list[dict[str, Any]] = []
         for glyph in [*line, None]:
-            if glyph is not None and not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit()):
+            if glyph is not None and not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit() or glyph["id"] in bold_variables):
                 segment.append(glyph)
                 continue
             # Brackets and spaces at the edges belong to the surrounding notation, as does
@@ -1111,9 +1133,11 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
                 # A name flush against its argument's bracket is an operator whatever its
                 # case ("vol(B)", "mean("); a condition word keeps its text-mode space ("if (").
                 name_only = len(words) == 1 and text == words[0]
-                operator = after is not None and applied and name_only and (
-                    words[0][0].isupper() or words[0].lower() in MATH_OPERATORS
-                    or (flush and after["text"] in OPENING_BRACKETS))
+                operator = after is not None and applied and (
+                    (name_only and (
+                        words[0][0].isupper() or words[0].lower() in MATH_OPERATORS
+                        or (flush and after["text"] in OPENING_BRACKETS)))
+                    or _known_operator_sequence(text))
                 if not operator:
                     # The validator compares against native page order, not visual order.
                     segment.sort(key=lambda g: order[g["id"]])
