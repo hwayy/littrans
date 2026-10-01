@@ -131,13 +131,15 @@ def _figure_page(panels: list[list[float]], captions: list[list[float]], glyphs:
     return _regions(_Page(), [*text, *(glyphs or [])], items)
 
 
-def test_panels_sharing_one_caption_are_one_figure_read_row_by_row() -> None:
+def test_panels_sharing_one_caption_are_one_complete_figure_crop() -> None:
     figures = _figures(_figure_page(PANELS, [CAPTION]))
     assert len(figures) == 1
-    assert [f["bbox"] for f in figures[0]["fragments"]] == PANELS
+    assert figures[0]["bbox"] == [94.0, 86.0, 380.0, 532.0]
+    assert "fragments" not in figures[0]
     assert "figure-panels-joined" in figures[0]["provenance"]
     stacked = _figures(_figure_page([[144.0, 86.0, 331.0, 230.0], [142.0, 230.0, 333.0, 374.0]], [[92.0, 384.0, 383.0, 408.0]]))
-    assert len(stacked) == 1 and len(stacked[0]["fragments"]) == 2
+    assert len(stacked) == 1 and stacked[0]["bbox"] == [142.0, 86.0, 333.0, 374.0]
+    assert "fragments" not in stacked[0]
 
 
 def test_separately_captioned_distant_or_prose_separated_figures_stay_apart() -> None:

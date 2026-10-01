@@ -1,8 +1,47 @@
-# Migrating to LitTrans 0.9.2-dev.1
+# Migrating to LitTrans 0.9.2-dev.2
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
 for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
+
+## Complete composite figure crops
+
+Version 0.9.2-dev.2 exports the panels of one captioned figure as one raw rectangular crop.
+PNG and SVG remain two formats of that single fragment. Caption and prose boundaries still
+prevent joining different printed figures or a region containing intervening text. Figures
+without a detected shared caption, or with sub-captions between panels, require visual review
+and, when justified by the page, a single-region override.
+
+Existing multi-fragment records and HTML remain unchanged until source evidence is replaced
+and the output rendered again. Merely upgrading or running `source render` does not recrop them.
+Back up the project and inspect its recorded `source_overrides` before choosing a route:
+
+- On an unpinned page, run `littrans source extract PROJECT --pages RANGE --replace`.
+  This uses its recorded layout evidence when available and applies the new grouping rule.
+  Without `--replace`, cached pages retain the old fragments.
+- A pinned `regions`, `preserve_asset_id` or `asset_crops` decision replays the old crop even
+  with `--replace`. Use fresh `source review-packets`, replace that figure's region with
+  `{"id":"EXISTING_ID","kind":"figure","bbox":[x0,y0,x1,y1],"display":true}` and omit
+  its `fragments` and `glyph_ids`. Keep the caption outside the box; carry all other regions
+  forward with `preserve_asset_id`, and retain the page's units and other override blocks.
+  A `regions` list replaces all page regions, not just the figure. Remove that figure's
+  obsolete `asset_crops` entries explicitly (use `null` if dropping the whole block).
+  Preview with `source preview-review`, then import through normal source review. Correction
+  does not approve the page; obtain a new independent review of the resulting packet.
+- To deliberately re-derive every decision on a page, use `source extract PROJECT --pages
+  RANGE --replace --discard-overrides`, then review all resulting boundaries and units again.
+  For a separate project, use `project rebuild OLD NEW` and extract/review NEW; rebuild does
+  not inherit old receipts or translations. Keep OLD for recovery.
+
+`asset_crops` changes one existing fragment and cannot collapse several fragments into one.
+Do not widen the first fragment while leaving the others, edit the asset registry by hand,
+or copy old approvals onto changed content. A complete crop changes the content identity
+even when the asset ID is retained. Source receipts and dependent page evidence are
+invalidated as applicable; check source verification, batch/source hashes, translation QA
+and audit evidence before regenerating the final reading edition. Review narrow and wide
+HTML after rendering.
+
+## Other changes
 
 Existing manifest-v7 projects with valid settings schema v1 can continue without rebuilding.
 Existing source evidence is not rewritten. New source-review packets use contract v7;
@@ -11,7 +50,7 @@ is omitted when empty, preserving old unit fingerprints. Use the
 rebuild procedure below when moving from an unsupported project format or when deliberately
 starting a separate project.
 
-Version 0.9.2-dev.1 adds explicit layout adjudications and a whole-page-first review pass.
+This release also includes explicit layout adjudications and a whole-page-first review pass.
 Existing approvals remain valid by default. Use `source scan-layout PROJECT --pages RANGE`
 to scan existing results, then `task create PROJECT --stage source-review --pages RANGE
 --review-mode layout-adjudication` for local supplementary decisions. They are stored in

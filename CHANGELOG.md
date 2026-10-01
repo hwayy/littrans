@@ -15,6 +15,22 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.2-dev.2] - 2026-10-01
+
+### Fixed
+
+- Composite figures sharing one caption export one complete PNG/SVG crop, preserving
+  panel positions, whitespace and relative sizes in narrow and wide HTML layouts.
+  Separately captioned figures and intervening text retain their boundary protections.
+
+### Compatibility
+
+- No schema change. Existing multi-fragment assets and reviewed overrides remain readable
+  and are not rewritten by rendering. Re-extract unpinned pages with `source extract --replace`,
+  or replace a pinned figure with a single raw `regions` crop through source review. Changed
+  source evidence requires fresh independent review and dependent translation validation;
+  see the migration guide before replacing a reviewed page.
+
 ## [0.9.2-dev.1] - 2026-10-01
 
 ### Added

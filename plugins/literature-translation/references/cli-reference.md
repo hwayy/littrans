@@ -1615,7 +1615,7 @@ transaction rolls back on any violation.
       {"id": "eq-3-2", "kind": "math", "bbox": [72.0, 310.5, 318.2, 342.0], "display": true,
        "glyph_ids": ["b3-l4-s0-c0", "b3-l4-s0-c1"],
        "formula_conditions": [{"glyph_ids": ["b3-l4-s2-c0", "b3-l4-s2-c1", "b3-l4-s2-c2"], "source_text": "and"}]},
-      {"id": "fig-3-1", "kind": "figure", "fragments": [{"bbox": [72, 400, 540, 610]}, {"bbox": [72, 620, 540, 700]}]},
+      {"id": "fig-3-1", "kind": "figure", "bbox": [72, 400, 540, 700], "display": true},
       {"preserve_asset_id": "a-p0012-1f2e3d4c5b6a", "grouping_pending": false}
     ],
     "units": [

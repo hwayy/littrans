@@ -5,6 +5,7 @@ tmp/
 /.tmp/
 .venv/
 /.idea/
+/.claude/settings.local.json
 **/__pycache__/
 **/.pytest_cache/
 .pytest-tmp/

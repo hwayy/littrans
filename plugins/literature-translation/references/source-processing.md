@@ -119,11 +119,14 @@ a `figure` unit for a figure and a paragraph otherwise, placed after the last bo
 ends above it. A `figure` or `table` unit made from a native block that holds only
 placeholders (a stray label glyph inside the figure) takes the union of its assets' fragment
 boxes as its `bbox`, as a `visual` unit does. The panels of one composite figure are one
-asset with a fragment per panel, read row by row: figure regions within 1.5 body-font ems of
+asset with one raw crop of their complete outline: figure regions within 1.5 body-font ems of
 each other with no text between them join when exactly one detected figure caption adjoins
 them and none lies among them. When proximity glues separately captioned figures into
 one cluster, the cluster splits by caption ownership — each panel follows the caption
-it overlaps most — and each captioned group joins on its own. Panels that each carry a
+it overlaps most — and each captioned group joins on its own. The PNG and SVG are two
+formats of the same fragment, retaining the printed rows, columns, gaps and relative sizes.
+Internal plot labels and graphical content stay in the crop; the shared caption remains
+native text associated with its figure. Panels that each carry a
 caption, panels with sub-captions or prose between them, and pages without a detected
 caption keep one asset per region. A detector `table` box grows over the header
 rows set above it: a row within two lines of the box's first row whose ink lies inside the

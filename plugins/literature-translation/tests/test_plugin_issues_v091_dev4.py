@@ -114,7 +114,8 @@ def test_mixed_figure_table_panels_share_caption_but_not_table_caption() -> None
     caption = {"label": "figure_caption", "bbox": [0, 210, 420, 230]}
     joined = fidelity._join_figure_panels(regions, [], [caption])
     assert len(joined) == 1 and joined[0]["kind"] == "figure"
-    assert len(joined[0]["fragments"]) == 2
+    assert joined[0]["bbox"] == [0, 0, 210, 100]
+    assert "fragments" not in joined[0]
     own = {"label": "table_caption", "bbox": [0, 204, 200, 208]}
     assert len(fidelity._join_figure_panels(regions, [], [caption, own])) == 2
 

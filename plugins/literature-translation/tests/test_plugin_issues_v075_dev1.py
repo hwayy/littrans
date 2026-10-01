@@ -77,8 +77,9 @@ def test_side_by_side_captioned_stacks_join_one_figure_per_caption() -> None:
              *_line("Figure 11.3. Second", "CMR10", line="b10-l0", y=315.0, x=214.0)]
     figures = _figures(_figure_page([a1, a2, b1, b2], captions, texts))
     assert len(figures) == 2
-    assert [f["bbox"] for f in figures[0]["fragments"]] == [a1, a2]
-    assert [f["bbox"] for f in figures[1]["fragments"]] == [b1, b2]
+    assert figures[0]["bbox"] == [60.0, 88.0, 200.0, 310.0]
+    assert figures[1]["bbox"] == [212.0, 88.0, 352.0, 310.0]
+    assert all("fragments" not in f for f in figures)
     assert all("figure-panels-joined" in f["provenance"] for f in figures)
 
 

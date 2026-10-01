@@ -1877,7 +1877,8 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
     figures glued by proximity: it is split by caption ownership — each panel follows
     the adjoining caption it overlaps most — and each owned group joins on its own
     (LT-099). Panels that each carry a caption, or with sub-captions or prose between
-    them, stay apart. The joined region keeps one fragment per panel, row by row.
+    them, stay apart. The joined region exports one raw crop of the whole outline,
+    preserving panel positions, whitespace, graphics and internal labels together.
     """
     figures = [r for r in regions if r["kind"] in {"figure", "table"}]
     captions = [[float(v) / 2 for v in item["bbox"]] for item in layout
@@ -1957,18 +1958,13 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
             if (len(adjoining) != 1 or any(_intersects(c, union) for c in captions)
                     or any(_inside(g, union) for g in free)):
                 continue
-            # Row by row: a panel whose top lies above the middle of the row's first
-            # panel shares its row; each row reads left to right.
-            rows: list[list[dict[str, Any]]] = []
-            for member in sorted(group, key=lambda m: m["bbox"][1]):
-                first = rows[-1][0]["bbox"] if rows else None
-                if first is not None and member["bbox"][1] < (first[1] + first[3]) / 2:
-                    rows[-1].append(member)
-                else:
-                    rows.append([member])
-            ordered = [m for row in rows for m in sorted(row, key=lambda m: m["bbox"][0])]
-            joined = _join_regions(ordered, glyphs, "figure-panels-joined")
+            joined = _join_regions(group, glyphs, "figure-panels-joined")
             joined["kind"] = "figure"
+            # The whole outline has passed the caption/prose boundary checks. Export
+            # it once, including the space between panels. Member fragments would
+            # reflow in HTML, and explicit glyph export would lose graphical content.
+            joined.pop("fragments", None)
+            joined.pop("glyph_ids", None)
             index = min(i for i, r in enumerate(result) if any(r is m for m in group))
             result = [r for r in result if not any(r is m for m in group)]
             result.insert(index, joined)
