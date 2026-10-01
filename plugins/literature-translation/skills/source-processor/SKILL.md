@@ -21,6 +21,14 @@ Read [source processing](../../references/source-processing.md), [runtime](../..
 3. Create source-review tasks for bounded contiguous ranges. Give original pages and packet evidence, no expected verdict. Import decisions, then dispatch fresh tasks for corrected, blocked or invalidated pages. Apply proposed page_rules centrally; never approve pages under unapplied rules.
 4. Require source verify, then source render and inspect the reading checkpoint. Report any unviewed evidence. Extraction ends before batch creation.
 
+New full reviews use two steps in one task: complete page inspection first, then explicit
+layout adjudications. Keep warning lists after the full reading and avoid repeating resolved
+items. A reviewer may retain the most likely interpretation with uncertainty and evidence;
+include those choices in the final report. Actual corrections need fresh independent review.
+For an existing approved project, use `source scan-layout` only when a rescan is requested,
+then create source-review tasks with `--review-mode layout-adjudication` for selected pages.
+Supplementary decisions preserve existing approval and never approve unreviewed pages.
+
 ## Parse
 
 For verified source, create transcribe tasks scoped by asset IDs or existing batches. Translation can proceed independently; configured transcription requirements must pass before final approval and delivery. Receive candidates, then create distinct asset-audit tasks with originals and actual candidate renders. Retain original-image fallback for pending, uncertain or rejected candidates. Revision requires a fresh packet and independent re-audit.

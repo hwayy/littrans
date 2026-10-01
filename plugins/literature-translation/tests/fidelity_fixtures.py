@@ -208,6 +208,12 @@ def record_fixture_source_issue(root: Path, page: int, message: str) -> None:
 
 def confirm_structure_checks(decision: dict) -> None:
     """A test oracle confirms each listed role and joined block as recorded (LT-086)."""
+    decision["full_page_review_completed"] = True
+    decision["layout_adjudications"] = [{"concern_ids": [row["id"]], "choice": "retain",
+                                         "reason": "Synthetic oracle: geometry matches the generated page.",
+                                         "uncertain": False}
+                                        for row in decision.get("context", {}).get("layout_concerns", [])
+                                        if row["code"] != "grouping-pending"]
     checks = decision.get("context", {}).get("structure_checks", {})
     decision["confirmed_roles"] = [{"unit_id": r["unit_id"], "kind": r["kind"]} for r in checks.get("roles", [])]
     decision["confirmed_joins"] = [{"block": j["block"]} for j in checks.get("joins", [])]

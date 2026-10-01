@@ -489,6 +489,27 @@ Example:
 littrans source import-review PROJECT REVIEW.json --confirm-visual-review
 ```
 
+### littrans source scan-layout
+
+Scan existing source with current layout rules. Writes a supplemental review packet only;
+source records and full-page approvals are unchanged. Returns packet paths and per-page
+pending, adjudicated and uncertain counts. Inspect original context before adjudicating.
+
+```text
+littrans source scan-layout PROJECT [OPTIONS]
+```
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory containing project.yaml. |
+| `--pages` | `str` | no | `"all"` | `[]` | PDF page selection to scan. |
+
+Example:
+
+```text
+littrans source scan-layout PROJECT --pages 35,69,135,151,200
+```
+
 ### littrans source preview-review
 
 Preview corrections without changing source records or approval.
@@ -1237,6 +1258,7 @@ littrans task create PROJECT [OPTIONS]
 | `--host` | `str` | no | `"auto"` | `[]` | Coordination host; command text lists supported values. |
 | `--objective` | `str` | no | `null` | `[]` | Bound scout/terminology objective. |
 | `--revision-notes` | `str` | no | `null` | `[]` | Correction request bound to previous asset evidence. |
+| `--review-mode` | `str` | no | `"full"` | `[]` | Source-review mode: full or layout-adjudication. Other stages require full. |
 
 Choose exactly one selector: batch IDs, pages or asset IDs. See [task contract](#task-contract) for stage requirements. Writes immutable inputs, instruction snapshot and pending state; returns task status/handoff. Does not dispatch a model.
 
@@ -1509,6 +1531,23 @@ packet is missing fails verification with a message naming the packet as a revie
 
 ### Decision fields
 
+New packets use source-review contract version 7. Full reviews additionally require
+`full_page_review_completed: true` and `layout_adjudications`, whose entries contain explicit
+`concern_ids`, `choice: retain|correct`, a non-empty `reason` and Boolean `uncertain`.
+Inspect the complete original and extracted page first, then the folded concerns. Missing,
+duplicate or unknown IDs fail approval; a correction requires an override and a fresh review.
+A reasoned but uncertain interpretation may pass and remains visible in completion summaries.
+`proposed_page_rules: [{"pages": "RANGE", ...}]` cannot overlap submitted page decisions.
+
+`source scan-layout` and `task create --stage source-review --review-mode layout-adjudication`
+create supplemental packets. Only `viewed_original` and the submitted concern decisions are
+required; partial coverage leaves other IDs pending. `context.pending_layout_concern_ids`
+lists remaining work and `context.layout_status` counts pending, adjudicated and uncertain
+items. Previously decided items remain addressable but are not repeated as pending work.
+Evidence is saved independently under `evidence/layout/`, bound to page/context fingerprints,
+rules, guidance and the immutable packet. It cannot grant whole-page approval. Scanning does
+not re-extract source or rewrite receipts. Existing version 6 packets use their original contract.
+
 Each entry of `pages` in the submitted review carries the packet page's `page` and `fingerprint`
 plus the attestation flags from the template: `viewed_original`, `coverage_complete`,
 `boundaries_complete`, `reading_order_correct`, `grouping_checked`, and, when the ledger requires
@@ -1538,8 +1577,8 @@ bound to it keep passing. List containers are flat: a lead-in paragraph is the p
 items and of the displays and explanation paragraphs inside them; to hang a display from the
 item itself, use a `units` override.
 
-The approval gate and the checkpoint's attention list share one predicate
-(`page_review_findings`): an approved page is a page that needs no attention. A page passes
+The approval gate and the checkpoint's defect list share one predicate
+(`page_review_findings`); separately recorded uncertain choices remain visible. A page passes
 only when every required flag is `true`, `issues` is empty, no `override` is present and no
 finding remains: `grouping-pending` (an asset with `grouping_pending` that the decision does
 not list in `accepted_grouping_pending: [{"asset_id", "reason"}]` with a non-empty reason; an
@@ -2195,6 +2234,7 @@ persistent settings; generated project schemas describe the separate manifest.
 | `fragments` | array of [SourceFragment](#model-sourcefragment) | no | `[]` | Ordered original-source fragments belonging to this logical element. |
 | `latex` | string or null | no | `null` | Stored mathematical representation; not a source-region override field. |
 | `equation_number` | string or null | no | `null` | Source equation label retained separately from content. |
+| `equation_numbers` | array of string | no | `[]` | Ordered labels; first matches equation_number. Empty is omitted for legacy fingerprints. |
 | `footnote_number` | string or null | no | `null` | Printed number/label on a footnote definition. |
 | `footnote_refs` | array of string | no | `[]` | Unique IDs of referenced footnote units. |
 | `math_status` | [SemanticStatus](#enum-semanticstatus) or null | no | `null` | Verification state of the mathematical representation. |

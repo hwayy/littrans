@@ -38,10 +38,11 @@ def register(app: typer.Typer, context_app: typer.Typer) -> None:
                batch_ids: str | None = None, pages: str | None = None,
                asset_ids: str | None = None, lens: str | None = None,
                host: str = "auto", objective: str | None = None,
-               revision_notes: str | None = None) -> None:
+               revision_notes: str | None = None, review_mode: str = "full") -> None:
         emit(create_task(project, stage, batch_ids=batch_ids.split(",") if batch_ids else None,
                          pages=pages, asset_ids=asset_ids.split(",") if asset_ids else None,
-                         lens=lens, host=host, objective=objective, revision_notes=revision_notes))
+                         lens=lens, host=host, objective=objective, revision_notes=revision_notes,
+                         review_mode=review_mode))
 
     @task_app.command("status")
     def status(project: Path, task_id: str | None = None) -> None:

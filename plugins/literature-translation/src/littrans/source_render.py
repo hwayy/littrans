@@ -166,12 +166,22 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         if not ledger:
             continue
         receipt_path = root / f"evidence/pages/fidelity-p{page:04d}.review.json"
-        decision = read_json(receipt_path).get("decision", {}) if receipt_path.is_file() else {}
+        receipt = read_json(receipt_path) if receipt_path.is_file() else {}
+        decision = receipt.get("decision", {})
         payload = {"ledger": ledger, "assets": [assets[aid].model_dump(mode="json") for aid in ledger.get("asset_ids", []) if aid in assets]}
+        legacy = False
+        if receipt.get("packet_id"):
+            packet_path = root / "packets" / receipt["packet_id"] / "packet.json"
+            if packet_path.is_file():
+                packet = read_json(packet_path)
+                legacy = packet.get("schema_version") == 6
+                reviewed = next((p for p in packet["pages"] if p["page"] == page), None)
+                if reviewed and receipt.get("fingerprint") == reviewed["fingerprint"]:
+                    payload = {**payload, **{key: reviewed[key] for key in ("layout_contract", "layout_concerns") if key in reviewed}}
         wording = {"grouping-pending": "asset(s) with a pending grouping decision",
                    "undeclared-formula-language": "math asset(s) with undeclared language inside the crop",
                    "recoverable-prose-in-image": "image asset(s) holding recoverable prose"}
-        for finding in page_review_findings(payload, decision):
+        for finding in page_review_findings(payload, decision, legacy=legacy):
             ids = finding.get("asset_ids") or [finding.get("asset_id")]
             listed = ", ".join(f"<code>{html.escape(str(aid))}</code>" for aid in ids)
             attention.append(f"page {page}: {len(ids)} {wording.get(finding['code'], html.escape(finding['code']))} "
@@ -208,8 +218,8 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         articles = []
         for unit in visible:
             meta = f"{html.escape(unit.unit_id)} · {html.escape(unit.kind.value)}"
-            if unit.equation_number:
-                meta += f" · ({html.escape(unit.equation_number)})"
+            if unit.equation_label:
+                meta += f" · ({html.escape(unit.equation_label)})"
             if unit.continues_from_previous:
                 meta += " · continues previous page"
             if unit.continued_to_next:
@@ -243,7 +253,10 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         f"<title>{html.escape(config.title)} — source checkpoint</title><style>{STYLE}</style></head><body>"
         f"<header><h1>{html.escape(config.title)}</h1><p>Source checkpoint · PDF pages {html.escape(page_label)} · {status}"
         f' · <a href="{html.escape(portable_href(config.source(root), output, root))}">PDF</a></p></header><main>'
-        f'<div class="summary">{summary}</div>{attention_html}' + "".join(sections) + "</main></body></html>"
+        f'<div class="summary">{summary}</div>{attention_html}' + "".join(sections)
+        + '<details><summary>Layout adjudication summary (after complete reading)</summary><pre>'
+        + html.escape(json.dumps(verification.get("layout_summary", []), ensure_ascii=False, indent=2))
+        + '</pre></details></main></body></html>'
     )
     if standalone:
         document = _embed_assets(document, output)
@@ -257,5 +270,6 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         "assets": len(referenced),
         "asset_export_methods": dict(sorted(export_methods.items())),
         "source_verified": bool(verification.get("passed")),
+        "layout_summary": verification.get("layout_summary", []),
         "attention": len(attention),
     }

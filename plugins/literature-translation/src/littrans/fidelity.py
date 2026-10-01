@@ -466,10 +466,15 @@ def _authority_transaction(root: Path, pages: list[int]) -> Iterator[None]:
     paths += [root / f"evidence/pages/fidelity-p{p:04d}.review.json" for p in pages]
     paths += [root / "evidence/audits" / f"{p.parent.name}.invalidations.json" for p in (root / "batches").glob("*/manifest.yaml")]
     snapshots = snapshot_files(paths)
+    layout_before = set((root / "evidence/layout").glob("*.json"))
+    layout_snapshots = snapshot_files(list(layout_before))
     try:
         yield
     except BaseException:
         restore_files(snapshots)
+        for path in set((root / "evidence/layout").glob("*.json")) - layout_before:
+            path.unlink()
+        restore_files(layout_snapshots)
         raise
 
 
@@ -887,7 +892,7 @@ def _prose_word_ids(glyphs: list[dict[str, Any]]) -> set[str]:
 
 
 def _tag_glyph_ids(glyphs: list[dict[str, Any]]) -> set[str]:
-    """Glyphs of native lines that are a printed equation label and nothing else.
+    """Printed equation-label glyphs, including labels isolated within native lines.
 
     A label set beside a display (``(3.11)``, at either margin) is neither notation nor
     a continuation of the formula on the line above: its ink is owned by no asset and
@@ -901,6 +906,35 @@ def _tag_glyph_ids(glyphs: list[dict[str, Any]]) -> set[str]:
         text = "".join(g["text"] for g in line if not g["text"].isspace())
         if re.fullmatch(EQUATION_LABEL, text) and all(not MATH_FONT.search(g["font"]) for g in line if inked_glyph(g)):
             ids.update(g["id"] for g in line)
+        elif re.fullmatch(r"(?:" + EQUATION_LABEL + r")+(?:\([a-zivx]+\))?", text):
+            ink = [g for g in line if not g["text"].isspace()]
+            offset = 0
+            ranges = [m.span() for m in re.finditer(EQUATION_LABEL, text)]
+            for g in ink:
+                if any(start <= offset < end for start, end in ranges):
+                    ids.add(g["id"])
+                offset += len(g["text"])
+        else:
+            ink = [g for g in line if not g["text"].isspace()]
+            characters = [g for g in ink for _ in g["text"]]
+            for match in re.finditer(EQUATION_LABEL, text):
+                # A bare (0) or (1) inside a mixed math line is usually an argument,
+                # unlike an isolated native label. Do not promote it from spacing alone.
+                if "." not in match[1]:
+                    continue
+                selected = characters[match.start():match.end()]
+                if not selected or any(MATH_FONT.search(g["font"]) for g in selected):
+                    continue
+                size = max(g.get("size", 10) for g in selected)
+                # A wide gap or a different visual row separates this printed label
+                # from native-line residue. Ordinary "see (3.2)" remains prose.
+                before = characters[match.start() - 1] if match.start() else None
+                after = characters[match.end()] if match.end() < len(characters) else None
+                neighbours = [(before, selected[0]), (selected[-1], after)]
+                if all(a is None or b is None or b["bbox"][0] - a["bbox"][2] > size * .75
+                       or abs(a.get("baseline", a["bbox"][3]) - b.get("baseline", b["bbox"][3])) > size * .5
+                       for a, b in neighbours):
+                    ids.update(g["id"] for g in selected)
     return ids
 
 
@@ -1123,7 +1157,7 @@ def _known_operator_sequence(text: str) -> bool:
 
 
 def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]],
-                             *, measured_ink: bool = True) -> list[dict[str, Any]]:
+                             *, measured_ink: bool = True, legacy: bool = False) -> list[dict[str, Any]]:
     """Declare the words a displayed formula keeps inside its crop as formula conditions.
 
     Case labels ("if x < 0,", "otherwise.", "for any fixed k") are language the
@@ -1148,9 +1182,10 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
         native_lines.setdefault(native_glyph["line"], []).append(native_glyph)
     bold_variables = _bold_variable_ids(native_lines)
     abbreviations: set[str] = set()
-    for native_line in native_lines.values():
+    for native_line in (native_lines.values() if legacy else _visual_lines(list(glyph_by_id.values()))):
         text = "".join(g["text"] for g in native_line)
-        for match in re.finditer(r"(?<![A-Za-z])(?:a\.s\.|i\.o\.|i\.e\.|e\.g\.)(?![A-Za-z])", text):
+        pattern = r"(?<![A-Za-z])(?:a\.s\.|i\.o\.|i\.e\.|e\.g\.)(?![A-Za-z])" if legacy else r"(?<![A-Za-z])(?:i\.i\.d\.|a\.s\.|i\.o\.|i\.e\.|e\.g\.)(?![A-Za-z])"
+        for match in re.finditer(pattern, text):
             offset = 0
             for g in native_line:
                 end = offset + len(g["text"])
@@ -1266,6 +1301,8 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                     protected_prose.add(g["id"])
                 offset = end
     tag_rows = sorted({g.get("baseline", g["bbox"][3]) for g in glyphs if g["id"] in tags})
+    from littrans.layout_geometry import possessive_ids
+    protected_prose.update(possessive_ids(_visual_lines(glyphs)))
     margin = _left_margin(glyphs)
     bold_variables = _bold_variable_ids(lines)
     bullets = _line_bullet_ids(lines)
@@ -1312,7 +1349,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
                     prefix_text = "".join(g["text"] for g in prefix)
                     # A preceding prose article is not a mathematical prefix; an operator name
                     # ("log x", "dim V") is, whatever the space TeX set after it.
-                    if prefix and line[position - 1]["text"].isspace() and glyph["text"] not in "=<>±×÷" and not _operator_name(prefix_text):
+                    if prefix and line[position - 1]["text"].isspace() and glyph["text"] not in "=<>≤≥≠±×÷" and not _operator_name(prefix_text):
                         prefix = []
                         prefix_text = ""
                     if _operator_prefix(prefix_text):
@@ -1418,6 +1455,15 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             # owned glyph ink is the region. Rules and accents merge back below.
             region["bbox"] = _union([g["bbox"] for g in owned if inked_glyph(g)] or [g["bbox"] for g in owned])
         clean.append(region)
+    from littrans.layout_geometry import fraction_components
+    math_ids = {gid for r in clean if r["kind"] == "math" for gid in r.get("glyph_ids", [])}
+    for ids in fraction_components(glyphs, rules, math_ids):
+        if ids.intersection(protected_prose | tags):
+            continue
+        owned = [g for g in glyphs if g["id"] in ids]
+        clean.append({"kind": "math", "bbox": _union([g["bbox"] for g in owned]),
+                      "glyph_ids": [g["id"] for g in owned], "display": False,
+                      "grouping_pending": False, "provenance": ["fraction-bar-components"]})
     math_candidates = [dict(r) for r in clean if r["kind"] == "math" and r.get("glyph_ids")]
     regions = _merge_delimiter_pieces(clean, glyphs, cuts)
     regions = _cluster_drawings(regions)
@@ -1467,6 +1513,8 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             region.pop(key, None)
     regions = _join_line_break_runs(regions)
     regions = _absorb_delimited_rows(regions, glyphs, margin)
+    from littrans.layout_geometry import absorb_formula_row_labels
+    absorb_formula_row_labels(regions, glyphs)
     regions = _join_tag_split_display(regions, glyphs, tags)
     regions = _join_figure_panels(regions, glyphs, layout)
     recovered = []
@@ -2193,7 +2241,8 @@ def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, Fide
 
 
 def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset],
-                            note_numbers: dict[str, str] | None = None) -> list[SourceUnit]:
+                            note_numbers: dict[str, str] | None = None,
+                            glyphs: list[dict[str, Any]] | None = None) -> list[SourceUnit]:
     """Keep display formulas selectable and bind their printed equation labels.
 
     ``note_numbers`` maps footnote unit IDs to their printed numbers so that the
@@ -2218,11 +2267,15 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         refs = asset_reference_ids(text)
         displays = [aid for aid in refs if assets[aid].kind == "math" and assets[aid].display]
         plain = re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip()
-        label = re.fullmatch(number_pattern, plain)
-        if len(refs) == 1 and displays and (not plain or label):
+        numbers = re.findall(number_pattern, plain)
+        labels_only = bool(numbers) and re.fullmatch(r"(?:\s*" + number_pattern + r"\s*)+", plain)
+        if len(refs) == 1 and displays and (not plain or labels_only):
             # The unit covers the displayed formula, not only the PDF block it started in.
             box = _union([unit.bbox, *(f.bbox for f in assets[refs[0]].fragments)])
-            result.append(_make_unit(unit.page, unit.unit_id, "{{asset:" + refs[0] + "}}", box, assets, equation_number=label[1] if label else None))
+            result.append(_make_unit(unit.page, unit.unit_id, "{{asset:" + refs[0] + "}}", box, assets,
+                                     kind="equation",
+                                     equation_number=numbers[0] if numbers else None,
+                                     **({"equation_numbers": numbers} if len(numbers) > 1 else {})))
         elif displays and unit.kind is UnitKind.EQUATION:
             # A display line with translatable prose beside the formula is one unit;
             # a trailing printed label still binds as its equation number.
@@ -2260,6 +2313,8 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
         if unit.kind is not UnitKind.PARAGRAPH or unit.equation_number:
             continue
         text = unit.source_text
+        if len(re.findall(number_pattern, text)) > 1 and re.fullmatch(r"(?:\s*" + number_pattern + r"\s*)+", text):
+            continue  # Bind the complete label list together in the geometric pass below.
         leading = re.match(r"\s*" + number_pattern + r"(?=\s|$)", text)
         trailing = re.search(r"(?<=\s)" + number_pattern + r"\s*$", text)
         for match, neighbour_index in ((leading, index - 1), (trailing, index + 1)):
@@ -2288,6 +2343,19 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
     # Binding a label numbers its display, which then leaves the candidates.
     spans = {i: span for i, other in enumerate(result) if (span := display_span(other)) is not None}
     for index, unit in enumerate(result):
+        numbers = re.findall(number_pattern, unit.source_text.strip())
+        if len(numbers) > 1 and re.fullmatch(r"(?:\s*" + number_pattern + r"\s*)+", unit.source_text):
+            targets = [i for i, span in spans.items() if result[i].page == unit.page
+                       and min(span[1], unit.bbox[3]) - max(span[0], unit.bbox[1]) >= 3]
+            if len(targets) == 1:
+                i = targets[0]
+                other = result[i]
+                result[i] = _make_unit(other.page, other.unit_id, other.source_text, other.bbox, assets,
+                                       kind=other.kind.value, equation_number=numbers[0], equation_numbers=numbers,
+                                       footnote_refs=other.footnote_refs)
+                removed.add(index)
+                spans.pop(i)
+                continue
         label = re.fullmatch(tombstones + number_pattern + tombstones, unit.source_text.strip())
         if not label:
             continue
@@ -2325,7 +2393,73 @@ def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityA
     for tombstone_index, display_index in after_display:
         display = result[display_index]
         ordered.insert(ordered.index(display) + 1, result[tombstone_index])
-    return ordered
+    return _bind_geometric_labels(ordered, assets, glyphs) if glyphs else ordered
+
+
+def _complete_closed_proofs(units: list[SourceUnit], assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
+    """An explicit Proof and closing tombstone delimit a container, not one sentence."""
+    from littrans.source_structure import _starts_statement
+    start: int | None = None
+    for index, unit in enumerate(units):
+        if unit.render_policy == RenderPolicy.OMIT:
+            continue
+        if unit.kind == UnitKind.HEADING or _starts_statement(unit.source_text):
+            start = None
+        if re.match(r"[*\s]*Proof\b", unit.source_text):
+            start = index
+        if start is not None and any(mark in unit.source_text for mark in QED_MARKERS):
+            parent = units[start].unit_id
+            for position in range(start, index + 1):
+                member = units[position]
+                if member.kind.value not in {"paragraph", "equation", "list_item"} or member.render_policy == RenderPolicy.OMIT:
+                    continue
+                extra = {k: getattr(member, k) for k in OVERRIDE_UNIT_DEFAULTS}
+                extra["parent_id"] = parent
+                units[position] = _make_unit(member.page, member.unit_id, member.source_text, member.bbox,
+                                             assets, kind=member.kind.value, **extra)
+            start = None
+    return units
+
+
+def _bind_geometric_labels(units: list[SourceUnit], assets: dict[str, FidelityAsset],
+                           glyphs: list[dict[str, Any]]) -> list[SourceUnit]:
+    """Bind isolated label glyphs even when their text block also contains a list item."""
+    tags = _tag_glyph_ids(glyphs)
+    for line in _visual_lines([g for g in glyphs if g["id"] in tags]):
+        text = "".join(g["text"] for g in line)
+        for match in re.finditer(EQUATION_LABEL, text):
+            offset, owned = 0, []
+            for g in line:
+                if offset < match.end() and offset + len(g["text"]) > match.start():
+                    owned.append(g)
+                offset += len(g["text"])
+            box = _union([g["bbox"] for g in owned])
+            sources = [u for u in units if match[0] in u.source_text
+                       and _intersects(list(u.bbox), box)]
+            targets = [u for u in units if u.kind == UnitKind.EQUATION
+                       and (not u.equation_number or u.equation_number == match[1])
+                       and any(min(f.bbox[3], box[3]) - max(f.bbox[1], box[1]) > 3
+                               for aid in asset_reference_ids(u.source_text) if assets[aid].display
+                               for f in assets[aid].fragments)]
+            if len(sources) != 1 or len(targets) != 1 or sources[0] is targets[0]:
+                continue
+            source, target = sources[0], targets[0]
+            extra = {k: getattr(target, k) for k in OVERRIDE_UNIT_DEFAULTS}
+            extra["equation_number"] = match[1]
+            replacement = _make_unit(target.page, target.unit_id, target.source_text, target.bbox,
+                                     assets, kind=target.kind.value, **extra)
+            units[units.index(target)] = replacement
+            residue = source.source_text.replace(match[0], "", 1).strip()
+            index = units.index(source)
+            if residue:
+                extra = {k: getattr(source, k) for k in OVERRIDE_UNIT_DEFAULTS}
+                remaining = _make_unit(source.page, source.unit_id, residue, source.bbox, assets,
+                                       kind=source.kind.value, **extra)
+                units.pop(index)
+                units.insert(units.index(replacement) + 1, remaining)
+            else:
+                units.pop(index)
+    return units
 
 
 def _expanded_native(page: fitz.Page, original_glyphs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -2730,8 +2864,9 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
     from littrans.configuration import read_settings
     source_policy = read_settings(root)
     structure["outline_source"] = source_policy.outline_source
-    units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()})
+    units = _separate_display_units(units, by_id, {f"p{number:04d}-{bid}": n["number"] for bid, n in structure["notes"].items()}, glyphs)
     units = assemble_structure(units, by_id, structure, _make_unit, rejoin=lambda text: _rejoin_line_breaks(text, hyphenation))
+    units = _complete_closed_proofs(units, by_id)
     # Adjacent inline fragments coalesce in both channels: a reviewer's units may name
     # the coalesced asset the record shows, or its constituents; each merge is kept
     # only when the units reference it.
@@ -2804,6 +2939,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             unit.asset_content_hashes = hashes
             unit.source_hash = _hash({"prepared_source_hash": unit.source_hash, "asset_content_hashes": hashes})
     ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": image_sha256, "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
+    ledger["layout_rule_version"] = "1"
     if crop_diagnostics:
         ledger["crop_diagnostics"] = crop_diagnostics
     if override is not None and override_origin:
@@ -2895,6 +3031,14 @@ def source_packet_liveness(root: Path) -> dict[str, list[str]]:
             raise ValueError(f"invalid source packet ID in page receipt: {path}")
         referenced.add(packet_id)
     packets = sorted(path.name for path in (root / "packets").glob("source-*") if path.is_dir())
+    for path in (root / "evidence/layout").glob("*.json"):
+        from littrans.layout_review import digest
+        data = read_json(path)
+        if data.get("sha256") != digest({k: v for k, v in data.items() if k != "sha256"}):
+            raise ValueError("supplemental layout evidence changed: " + str(path))
+        for record in data["records"]:
+            _load_source_packet(root, record["packet_id"], record["packet_sha256"])
+            referenced.add(record["packet_id"])
     return {"live_source_packets": sorted(referenced),
             "unreferenced_source_packets": [name for name in packets if name not in referenced]}
 
@@ -3113,6 +3257,8 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
                 page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, reviewed_profile=reviewed_profile)
                 if override:
                     discarded.append(number)
+            if not override or discard_overrides:
+                page_units = _continue_numbered_container(units, page_units, {**registry, **{a.id: a for a in page_assets}})
             units.extend(page_units)
             registry.update({a.id: a for a in page_assets})
             ledgers.append(ledger)
@@ -3156,6 +3302,7 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
             "replayed_override_pages": replayed, "redetected_override_pages": redetected, "discarded_override_pages": discarded,
             "reused_layout_pages": reused, "detected_layout_pages": fresh,
             "retained_receipt_pages": retained, "invalidated_pages": invalidated,
+            "layout_concern_counts": packet["layout_concern_counts"],
             "pruned_asset_directories": pruned["removed"], "layout_status": layout["status"], "requires_visual_review": True,
             "review_packet": packet["packet_path"], "visual_report": packet["visual_report"], "document_structure": profile_context, "generator": build_identity()}
 
@@ -3266,9 +3413,43 @@ def _current_page(
     return {"page": number, "fingerprint": _hash(payload), **payload}
 
 
+def _continue_numbered_container(previous: list[SourceUnit], current: list[SourceUnit],
+                                assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
+    from littrans.layout_geometry import consecutive_labels
+    from littrans.source_structure import LIST_LABEL_START, _starts_statement
+    if not current:
+        return current
+    body = [u for u in current if u.render_policy == RenderPolicy.INCLUDE and u.kind == UnitKind.PARAGRAPH]
+    preceding = [u for u in previous if u.page == current[0].page - 1
+                 and u.render_policy == RenderPolicy.INCLUDE and u.kind in {UnitKind.PARAGRAPH, UnitKind.EQUATION}]
+    if not body or not preceding:
+        return current
+    first, tail = body[0], preceding[-1]
+    last_item = next((u for u in reversed(preceding) if u.parent_id == tail.parent_id and LIST_LABEL_START.match(u.source_text)), None)
+    if (last_item is None or not tail.parent_id or any(mark in tail.source_text for mark in QED_MARKERS)
+            or not consecutive_labels(last_item.source_text, first.source_text)
+            or abs(last_item.bbox[0] - first.bbox[0]) > 3):
+        return current
+    parent = next((u for u in previous if u.unit_id == tail.parent_id), None)
+    if parent is None or parent.render_policy == RenderPolicy.OMIT:
+        return current
+    result = []
+    active = True
+    for unit in current:
+        if unit.unit_id != first.unit_id and (_starts_statement(unit.source_text) or re.match(r"[*\s]*Proof\b", unit.source_text) or unit.kind == UnitKind.HEADING):
+            active = False
+        if active and unit.parent_id == first.parent_id and unit.kind in {UnitKind.PARAGRAPH, UnitKind.EQUATION}:
+            extra = {k: getattr(unit, k) for k in OVERRIDE_UNIT_DEFAULTS}
+            extra["parent_id"] = parent.unit_id
+            unit = _make_unit(unit.page, unit.unit_id, unit.source_markdown or unit.source_text,
+                              unit.bbox, assets, kind=unit.kind.value, **extra)
+        result.append(unit)
+    return result
+
+
 def _cross_page_container_candidates(units: list[SourceUnit], page: int) -> list[dict[str, Any]]:
     from littrans.models import FLOAT_KINDS
-    from littrans.source_structure import LIST_LABEL_START, _starts_statement
+    from littrans.source_structure import _starts_statement
 
     body = [u for u in units if u.render_policy == RenderPolicy.INCLUDE
             and u.kind.value not in {*FLOAT_KINDS, "footnote", "bibliography"}]
@@ -3282,19 +3463,22 @@ def _cross_page_container_candidates(units: list[SourceUnit], page: int) -> list
             or _starts_statement(first.source_text) or re.match(r"[*\s]*Proof\b", first.source_text)
             or any(mark in last.source_text for mark in QED_MARKERS)):
         return []
-    if (_starts_statement(parent.source_text) or re.match(r"[*\s]*Proof\b", parent.source_text)) and (
-            LIST_LABEL_START.match(first.source_text) or first.continues_from_previous or last.continued_to_next):
+    if (_starts_statement(parent.source_text) or re.match(r"[*\s]*(?:Proof|Solution|Step|Case)\b", parent.source_text)):
         return [{"unit_id": first.unit_id, "candidate_parent_id": parent.unit_id,
                  "context_page": page - 1, "action": "Inspect the container across the page edge; confirm or correct parent_id through a unit override."}]
     return []
 
 
-def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, Any]:
+def build_source_review_packet(root: Path, page_spec: str = "all", *, review_mode: str = "full") -> dict[str, Any]:
+    from littrans import layout_review
+    if review_mode not in layout_review.MODES:
+        raise ValueError("review_mode must be full or layout-adjudication")
     root = Path(root).resolve()
     config = load_project(root)
     if sha256_file(config.source(root)) != config.source_sha256:
         raise ValueError("source PDF changed; rebuild before reviewing")
     pages = parse_page_spec(page_spec, config.source_pages)
+    assigned = list(pages)
     from littrans.evidence import page_evidence_units
 
     all_units = _current_units(root)
@@ -3302,7 +3486,9 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     candidates = {p: _cross_page_container_candidates(all_units, p) for p in pages}
     pages = sorted(set(pages) | {c["context_page"] for rows in candidates.values() for c in rows})
     pages = sorted(set(pages) | {u.page for page in pages for u in page_evidence_units(page, all_units)})
-    payload: dict[str, Any] = {"schema_version": 6, "kind": "source-fidelity-review", "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
+    pages = sorted(set(pages) | {n for p in assigned for n in (p - 1, p + 1)
+                                if _page_path(root, n).is_file()})
+    payload: dict[str, Any] = {"schema_version": 7, "kind": "source-fidelity-review", "review_mode": review_mode, "assigned_pages": assigned, "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
     # The writing build is recorded but is not part of the packet identity: identical
     # content keeps its packet ID (and its reviews) across builds and reruns.
     payload["generator"] = build_identity()
@@ -3316,16 +3502,22 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
             page["boundary_diagnostics"].extend({"code": "cross-page-container-candidate", **c}
                                                 for c in candidates[page["page"]])
         page["structure_checks"] = _structure_checks(page)
+        page["layout_contract"] = 1
+        context_pages = {row["context_page"] for row in page["boundary_diagnostics"] if "context_page" in row}
+        page["layout_context"] = {str(p["page"]): p["fingerprint"] for p in payload["pages"] if p["page"] in context_pages}
+        page["layout_concerns"] = layout_review.concerns(page)
+        page["layout_binding"] = layout_review.binding(page, profile_context)
+        page["review_mode"] = review_mode
+        if review_mode == "layout-adjudication":
+            decided = layout_review.applicable_decisions(root, page, config.source_sha256)
+            page["layout_status"] = layout_review.summary(page, decided)
+            page["pending_layout_concern_ids"] = [row["id"] for row in page["layout_concerns"] if row["id"] not in decided]
     sections = []
     if profile_context:
         sections.append('<h2>Document-specific structure guidance</h2><pre>' + html.escape(json.dumps(profile_context, ensure_ascii=False, indent=2)) + '</pre>')
     for p in payload["pages"]:
+        detail_start = len(sections)
         ledger = p["ledger"]
-        if ledger.get("crop_diagnostics"):
-            sections.append("<h3>Reviewed crop diagnostics</h3><pre>"
-                            + html.escape(json.dumps(ledger["crop_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
-        if p["boundary_diagnostics"]:
-            sections.append("<h3>Prose/formula boundary diagnostics</h3><pre>" + html.escape(json.dumps(p["boundary_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
         if p["structure_checks"]["roles"] or p["structure_checks"]["joins"]:
             sections.append(f'<h3>PDF page {p["page"]}: roles and joined blocks to confirm one by one</h3><pre>'
                             + html.escape(json.dumps(p["structure_checks"], ensure_ascii=False, indent=2)) + "</pre>")
@@ -3336,6 +3528,14 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
             image_uri = "../../" + quote(ledger["overflow_evidence"]["path"], safe="/")
         source = "\n\n".join(u["source_text"] for u in p["units"])
         sections.append(f'<section><h2>PDF page {p["page"]}</h2><p>Layout: {html.escape(ledger["layout_status"])}; visual review required.</p><svg viewBox="0 0 {ledger["width"]} {ledger["height"]}"><image href="{image_uri}" width="{ledger["width"]}" height="{ledger["height"]}"/>{boxes}</svg><pre>{html.escape(source)}</pre></section>')
+        original = sections.pop()
+        details = sections[detail_start:]
+        del sections[detail_start:]
+        status = '<p>' + html.escape(json.dumps(p["layout_status"])) + '</p>' if "layout_status" in p else ''
+        visible_concerns = [row for row in p["layout_concerns"] if row["id"] in p.get("pending_layout_concern_ids", [r["id"] for r in p["layout_concerns"]])]
+        label = "After location/context inspection" if review_mode == "layout-adjudication" else "After full-page review"
+        sections.extend([original, f'<details><summary>{label}: layout concerns and checks</summary>', status,
+                         *details, '<pre>' + html.escape(json.dumps(visible_concerns, ensure_ascii=False, indent=2)) + '</pre></details>'])
     report_text = '<!doctype html><meta charset="utf-8"><title>Source fidelity review</title><style>body{font:16px sans-serif;max-width:1500px;margin:auto}svg{width:65%;vertical-align:top}pre{white-space:pre-wrap;display:inline-block;width:33%;font:14px sans-serif}</style><h1>Original page, region boundaries and reading sequence</h1>' + "".join(sections)
     report_files = {}
     for page in payload["pages"]:
@@ -3345,6 +3545,7 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
             relative = ledger["overflow_evidence"]["path"]
             report_files[relative] = sha256_file(_path(root, relative))
     payload["visual_report"] = {"path": "coverage.html", "sha256": sha256_text(report_text), "files": report_files}
+    concern_counts = {str(p["page"]): len(p["layout_concerns"]) for p in payload["pages"] if p["page"] in assigned}
     packet_id = "source-" + _source_packet_identity(payload)
     # Do not repair a previously reviewed artifact under the same identity, and do not
     # rewrite it either: its bytes are what existing reviews are bound to.
@@ -3353,7 +3554,7 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
     while directory.exists():
         try:
             _load_source_packet(root, packet_id, sha256_file(packet))
-            return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(directory / "coverage.html"), "pages": pages}
+            return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(directory / "coverage.html"), "pages": pages, "layout_concern_counts": concern_counts}
         except (OSError, ValueError, KeyError):
             payload["previous_visual_packet_id"] = packet_id
             packet_id = "source-" + _source_packet_identity(payload)
@@ -3367,14 +3568,30 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         {"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False,
          "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False,
          "accepted_grouping_pending": [], "confirmed_roles": [], "confirmed_joins": [], "issues": [], "notes": "",
+         "full_page_review_completed": False, "layout_adjudications": [],
          "context": {"formula_conditions": _declared_conditions(p), "grouping_pending": [a["id"] for a in p["assets"] if a.get("grouping_pending")],
                      "findings": page_review_findings(p), "boundary_diagnostics": p["boundary_diagnostics"],
-                     "structure_checks": p["structure_checks"]}}
-        for p in payload["pages"]]}
+                     "structure_checks": p["structure_checks"], "layout_concerns": p["layout_concerns"],
+                     **({key: p[key] for key in ("layout_status", "pending_layout_concern_ids")} if "layout_status" in p else {})}}
+        for p in payload["pages"] if p["page"] in assigned], "proposed_page_rules": []}
     write_json(directory / "review-template.json", review_template)
     report = directory / "coverage.html"
     atomic_write_text(report, report_text)
-    return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(report), "pages": pages}
+    return {"packet_id": packet_id, "packet_path": str(packet), "packet_sha256": sha256_file(packet), "review_template": str(directory / "review-template.json"), "visual_report": str(report), "pages": pages, "layout_concern_counts": concern_counts}
+
+
+def scan_layout(root: Path, page_spec: str = "all") -> dict[str, Any]:
+    """Create a supplemental packet without replacing source or full-page receipts."""
+    from littrans import layout_review
+    result = build_source_review_packet(root, page_spec, review_mode="layout-adjudication")
+    packet = read_json(Path(result["packet_path"]))
+    rows = []
+    for page in packet["pages"]:
+        if page["page"] not in packet["assigned_pages"]:
+            continue
+        decisions = layout_review.applicable_decisions(root, page, packet["source_sha256"])
+        rows.append(layout_review.summary(page, decisions))
+    return {**result, "layout_summary": rows, "source_unchanged": True}
 
 
 def _source_packet_identity(payload: dict[str, Any]) -> str:
@@ -3405,7 +3622,7 @@ def _load_source_packet(
             raise ValueError(f"{packet_path} must contain a JSON object")
         if "source-" + _source_packet_identity(packet) != packet_id:
             raise ValueError("source packet identity mismatch")
-    if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") != 6:
+    if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") not in {6, 7}:
         raise ValueError("invalid source packet contract")
     artifact = packet.get("visual_report", {})
     if artifact.get("path") != "coverage.html" or not artifact.get("sha256"):
@@ -3527,7 +3744,7 @@ def _declared_conditions(page: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _undeclared_formula_language(page: dict[str, Any]) -> dict[str, list[str]]:
+def _undeclared_formula_language(page: dict[str, Any], *, legacy: bool = False) -> dict[str, list[str]]:
     """Language inside a math crop that no formula condition declares, per asset.
 
     The ledger records font-metric boxes, not the ink preparation measured, so the
@@ -3542,7 +3759,7 @@ def _undeclared_formula_language(page: dict[str, Any]) -> dict[str, list[str]]:
         owned = [gid for fragment in asset["fragments"] for gid in fragment["glyph_ids"]]
         declared = {gid for condition in asset.get("formula_conditions", []) for gid in condition["glyph_ids"]}
         missing = [condition["source_text"]
-                   for condition in _auto_formula_conditions({"glyph_ids": owned}, glyph_by_id, measured_ink=False)
+                   for condition in _auto_formula_conditions({"glyph_ids": owned}, glyph_by_id, measured_ink=False, legacy=legacy)
                    if not set(condition["glyph_ids"]) <= declared]
         if missing:
             result[asset["id"]] = missing
@@ -3563,7 +3780,7 @@ def _accepted_grouping_items(decision: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None = None, *, legacy: bool = False) -> list[dict[str, Any]]:
     """What the ledger already knows still needs a reviewer's decision on a packet page.
 
     One predicate serves the approval gate, the review template and the checkpoint's
@@ -3573,12 +3790,21 @@ def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None =
     decision = decision or {}
     findings: list[dict[str, Any]] = []
     accepted = {item["asset_id"]: str(item.get("reason", "")).strip() for item in _accepted_grouping_items(decision)}
+    if page.get("layout_contract"):
+        from littrans.layout_review import adjudications
+        try:
+            resolved = adjudications(page, decision, partial=True)
+            accepted.update({row["asset_id"]: resolved[row["id"]]["reason"]
+                             for row in page["layout_concerns"] if row["code"] == "grouping-pending"
+                             and row["id"] in resolved and resolved[row["id"]]["choice"] == "retain"})
+        except ValueError:
+            pass  # The decision validator reports malformed adjudications.
     pending = [asset["id"] for asset in page["assets"] if asset.get("grouping_pending")]
     unaccepted = [aid for aid in pending if not accepted.get(aid)]
     if unaccepted:
         findings.append({"code": "grouping-pending", "asset_ids": unaccepted,
                          "action": "Decide the grouping with an override, or list each asset in accepted_grouping_pending with a reason."})
-    for aid, texts in _undeclared_formula_language(page).items():
+    for aid, texts in _undeclared_formula_language(page, legacy=legacy).items():
         findings.append({"code": "undeclared-formula-language", "asset_id": aid, "source_texts": texts,
                          "action": "Language inside this math crop is not declared as a formula condition; re-prepare or declare it in a region override."})
     opaque = _opaque_prose_assets(page)
@@ -3588,7 +3814,7 @@ def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None =
     return findings
 
 
-def _source_decision_failures(page: dict[str, Any], decision: dict[str, Any]) -> list[str]:
+def _source_decision_failures(page: dict[str, Any], decision: dict[str, Any], *, legacy: bool = False) -> list[str]:
     """Why a page decision does not approve the page; empty when it does."""
     fields = ["viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked"]
     if page["ledger"]["layout_status"] != "ok":
@@ -3598,12 +3824,24 @@ def _source_decision_failures(page: dict[str, Any], decision: dict[str, Any]) ->
     if any(asset.get("formula_conditions") for asset in page["assets"]):
         fields.append("formula_conditions_checked")
     failures = [f"{key} is not attested" for key in fields if decision.get(key) is not True]
+    if page.get("layout_contract"):
+        from littrans.layout_review import adjudications
+        if decision.get("full_page_review_completed") is not True:
+            failures.append("full_page_review_completed is not attested")
+        try:
+            resolved = adjudications(page, decision, partial=True)
+            missing = [row["id"] for row in page["layout_concerns"]
+                       if row["id"] not in resolved and row["code"] != "grouping-pending"]
+            if missing:
+                failures.append("layout concerns need adjudication: " + ", ".join(missing))
+        except ValueError as exc:
+            failures.append(str(exc))
     if decision.get("override"):
         failures.append("override present: the page is re-prepared and needs a fresh packet")
     if decision.get("issues") != []:
         failures.append("issues are not empty")
     failures.extend(_confirmation_failures(page, decision))
-    for finding in page_review_findings(page, decision):
+    for finding in page_review_findings(page, decision, legacy=legacy):
         ids = finding.get("asset_ids") or [finding.get("asset_id")]
         failures.append(finding["code"] + ": " + ", ".join(str(aid) for aid in ids))
     return failures
@@ -3644,15 +3882,20 @@ def _verify_source_receipt(
     if (len(pages) != 1 or pages[0]["fingerprint"] != current["fingerprint"]
             or receipt.get("fingerprint") != current["fingerprint"]
             or decision.get("page") != current["page"] or decision.get("fingerprint") != current["fingerprint"]
-            or receipt.get("passed") is not True or not _source_decision_passes(pages[0], decision)):
+            or receipt.get("passed") is not True or _source_decision_failures(pages[0], decision, legacy=packet["schema_version"] == 6)):
         raise ValueError("page requires current visual coverage and boundary review")
+    if pages[0].get("layout_context"):
+        all_units, assets = _current_units(root), load_assets(root)
+        for context_page, fingerprint in pages[0]["layout_context"].items():
+            if _current_page(root, int(context_page), all_units, assets)["fingerprint"] != fingerprint:
+                raise ValueError("layout adjudication context changed; review a fresh packet")
 
 
 OVERRIDE_BLOCKS = ("regions", "units", "page_canvas_bbox", "asset_crops")
 # The optional unit fields the pipeline's structure assembly always passes to _make_unit,
 # with the model defaults an override item may leave out.
 OVERRIDE_UNIT_DEFAULTS: dict[str, Any] = {
-    "equation_number": None, "footnote_number": None, "footnote_refs": [], "parent_id": None,
+    "equation_number": None, "equation_numbers": [], "footnote_number": None, "footnote_refs": [], "parent_id": None,
     "continues_from_previous": False, "continued_to_next": False, "render_policy": "include", "translatable": True,
 }
 
@@ -3719,15 +3962,36 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         raise ValueError("source PDF changed since packet creation")
     by_page = {p["page"]: p for p in packet["pages"]}
     decisions = review["pages"]
+    from littrans import layout_review
+    supplemental = packet.get("review_mode") == "layout-adjudication"
+    proposed = review.get("proposed_page_rules", [])
+    if not isinstance(proposed, list):
+        raise ValueError("proposed_page_rules must be a list")
+    proposed_pages: set[int] = set()
+    for proposal in proposed:
+        if not isinstance(proposal, dict) or not isinstance(proposal.get("pages"), str):
+            raise ValueError("proposed_page_rules entries require a pages specification")
+        proposed_pages.update(parse_page_spec(proposal["pages"], config.source_pages))
+    if proposed_pages.intersection(d["page"] for d in decisions):
+        raise ValueError("proposed page rules overlap decisions; omit those pages until guidance is applied")
     if len({d["page"] for d in decisions}) != len(decisions):
         raise ValueError("duplicate page review")
     for decision in decisions:
         p = decision["page"]
+        if packet.get("schema_version") == 7 and p not in packet["assigned_pages"]:
+            raise ValueError("context pages cannot be decided")
         difference = guidance_difference(packet.get("document_structure"), guidance, p)
         if difference:
             raise ValueError(f"source structure guidance changed since packet creation {difference}; create a new packet")
         if p not in by_page or decision["fingerprint"] != by_page[p]["fingerprint"] or _current_page(root, p)["fingerprint"] != decision["fingerprint"]:
             raise ValueError(f"stale or out-of-packet page review: {p}")
+        for context_page, fingerprint in by_page[p].get("layout_context", {}).items():
+            if _current_page(root, int(context_page))["fingerprint"] != fingerprint:
+                raise ValueError("layout context changed; create a fresh packet")
+        if supplemental:
+            layout_review.adjudications(by_page[p], decision, partial=True)
+            if decision.get("viewed_original") is not True:
+                raise ValueError("supplemental adjudication requires viewed_original")
         try:
             _accepted_grouping_items(decision)
         except ValueError as exc:
@@ -3736,6 +4000,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             decision["override"] = _complete_override(root, p, decision["override"])
     changed, approved, deferred = [], [], []
     rejected: dict[int, list[str]] = {}
+    layout_summaries: list[dict[str, Any]] = []
     with ExitStack() as stack:
         stack.enter_context(project_write_lock(root))
         # Authority transactions live on their own stack inside the lock, so closing it
@@ -3745,6 +4010,9 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         for decision in decisions:
             if _current_page(root, decision["page"])["fingerprint"] != decision["fingerprint"]:
                 raise ValueError("source page changed while waiting for project write lock")
+            for context_page, fingerprint in by_page[decision["page"]].get("layout_context", {}).items():
+                if _current_page(root, int(context_page))["fingerprint"] != fingerprint:
+                    raise ValueError("layout context changed while waiting for project write lock")
         units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
         assets = load_assets(root)
         initial_units, initial_assets = list(units), dict(assets)
@@ -3805,23 +4073,35 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 changed.append(p)
         _validate_footnote_relationships(units)
         # Publish the corrected authority before receipts are checked against it.
-        write_jsonl(root / "derived/units.jsonl", units)
-        write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
+        if not supplemental or changed:
+            write_jsonl(root / "derived/units.jsonl", units)
+            write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
         for decision in decisions:
             p = decision["page"]
             if decision.get("override"):
+                continue
+            if supplemental:
+                if (_current_page(root, p, units, assets)["fingerprint"] != decision["fingerprint"]
+                        or any(_current_page(root, int(n), units, assets)["fingerprint"] != fp
+                               for n, fp in by_page[p].get("layout_context", {}).items())):
+                    deferred.append(p)
+                    continue
+                layout_review.save_supplement(root, by_page[p], review, decision)
+                layout_summaries.append(layout_review.summary(by_page[p], layout_review.applicable_decisions(root, by_page[p], config.source_sha256)))
                 continue
             if _current_page(root, p, units, assets)["fingerprint"] != decision["fingerprint"]:
                 deferred.append(p)
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
                 continue
-            failures = _source_decision_failures(by_page[p], decision)
+            failures = _source_decision_failures(by_page[p], decision, legacy=packet["schema_version"] == 6)
             opaque = _opaque_prose_assets(by_page[p])
             if opaque:
                 decision = {**decision, "extraction_issues": [{"code": "recoverable-prose-in-image", "assets": opaque}]}
             passed = not failures
             if passed:
                 approved.append(p)
+                if by_page[p].get("layout_contract"):
+                    layout_summaries.append(layout_review.summary(by_page[p], layout_review.adjudications(by_page[p], decision, partial=True)))
             else:
                 rejected[p] = failures
             receipt = {"fingerprint": decision["fingerprint"], "source_sha256": config.source_sha256,
@@ -3840,17 +4120,19 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
             before.update({p: _page_fingerprint(root, p, initial_units, initial_assets) for p in late if _receipt_path(root, p).is_file()})
         _, invalidated = _settle_receipts(root, [*dependents, *late], before, units, assets)
         for unit in units:
-            if unit.page in decision_pages:
+            if unit.page in decision_pages and (not supplemental or unit.page in changed):
                 unit.verification_status = SemanticStatus.VERIFIED if unit.page in approved else SemanticStatus.UNVERIFIED
             elif unit.page in invalidated:
                 # The neighbour's receipt is gone; its units no longer claim verification.
                 unit.verification_status = SemanticStatus.UNVERIFIED
         units.sort(key=lambda u: u.page)
-        write_jsonl(root / "derived/units.jsonl", units)
+        if not supplemental or changed:
+            write_jsonl(root / "derived/units.jsonl", units)
         # Reclaimed once the corrections are committed and while the lock is still held.
         authority.close()
         pruned = prune_asset_directories(root, assets.values(), apply=True) if changed else {"removed": []}
     return {"approved_pages": approved, "rejected_pages": rejected, "changed_pages": changed, "deferred_pages": sorted(deferred),
+            "layout_summary": layout_summaries,
             "invalidated_pages": invalidated, "requires_new_packet": bool(changed or deferred or invalidated),
             "pruned_asset_directories": pruned["removed"]}
 
@@ -3914,6 +4196,7 @@ def verify_fidelity(
     verified = []
     # Packets the verified receipts depend on: live directories under packets/.
     receipt_packets: dict[str, list[int]] = {}
+    layout_summaries: dict[int, dict[str, Any]] = {}
     loaded: tuple[list[SourceUnit], dict[str, FidelityAsset]] | None = None
     parsed_packets: dict[tuple[str, str], dict[str, Any]] = {}
     for p in pages:
@@ -3921,6 +4204,13 @@ def verify_fidelity(
             if loaded is None:
                 loaded = (_current_units(root), load_assets(root))
             current = _current_page(root, p, *loaded, project_config=project_config)
+            from littrans import layout_review
+            if current["ledger"].get("layout_rule_version"):
+                current["boundary_diagnostics"] = _boundary_diagnostics(current["ledger"]["glyphs"], current["assets"])
+                current["boundary_diagnostics"].extend({"code": "cross-page-container-candidate", **row}
+                                                       for row in _cross_page_container_candidates(loaded[0], p))
+                current["layout_concerns"] = layout_review.concerns(current)
+                layout_summaries[p] = layout_review.summary(current, {})
             opaque = _opaque_prose_assets(current)
             if opaque:
                 raise ValueError("recoverable prose remains inside image assets; re-prepare or split source regions: " + ", ".join(opaque))
@@ -3933,7 +4223,36 @@ def verify_fidelity(
                 raise ValueError("asset references are missing or duplicated")
             verified.append(p)
             receipt_packets.setdefault(str(receipt["packet_id"]), []).append(p)
+            # The receipt check above already rehashed this page's packet and its files.
+            packet = parsed_packets[(receipt["packet_id"], receipt["packet_sha256"])]
+            reviewed = next(row for row in packet["pages"] if row["page"] == p)
+            if reviewed.get("layout_contract"):
+                layout_summaries[p] = layout_review.summary(reviewed, layout_review.adjudications(reviewed, receipt["decision"], partial=True))
         except (OSError, ValueError, KeyError) as exc:
             errors.append({"page": p, "code": "fidelity-source-unverified", "message": str(exc)})
+    # Supplements never grant or revoke a full-page approval; corrupt evidence is
+    # reported separately, and stale bindings are simply inapplicable.
+    from littrans import layout_review
+    from littrans.structure_profile import structure_context
+    guidance = structure_context(root, project_config=project_config)
+    for path in (root / "evidence/layout").glob("*.json"):
+        data = {}
+        try:
+            data = read_json(path)
+            if data.get("page") not in pages:
+                continue
+            if data.get("sha256") != layout_review.digest({k: v for k, v in data.items() if k != "sha256"}):
+                raise ValueError("supplemental layout evidence changed")
+            for record in data["records"]:
+                packet = _load_source_packet(root, record["packet_id"], record["packet_sha256"], parsed_packets=parsed_packets)
+                reviewed = next(row for row in packet["pages"] if row["page"] == data["page"])
+                current = _current_page(root, data["page"], *(loaded or (None, None)))
+                current["layout_context"] = {n: _current_page(root, int(n), *(loaded or (None, None)))["fingerprint"]
+                                              for n in reviewed.get("layout_context", {})}
+                if layout_review.binding(current, guidance) == data["binding"]:
+                    layout_summaries[data["page"]] = layout_review.summary(reviewed, layout_review.applicable_decisions(root, reviewed, config.source_sha256))
+                    receipt_packets.setdefault(record["packet_id"], []).append(data["page"])
+        except (ValueError, KeyError, OSError) as exc:
+            errors.append({"page": data.get("page"), "code": "layout-evidence-invalid", "message": str(exc)})
     return {"passed": not errors, "errors": errors, "verified_pages": verified, "requested_pages": requested_pages, "dependency_pages": sorted(required_pages - set(requested_pages)),
-            "receipt_packets": receipt_packets, "visual_report": None}
+            "receipt_packets": receipt_packets, "visual_report": None, "layout_summary": list(layout_summaries.values())}

@@ -805,6 +805,7 @@ def assemble_structure(
             k: getattr(u, k)
             for k in (
                 "equation_number",
+                "equation_numbers",
                 "footnote_number",
                 "footnote_refs",
                 "parent_id",
@@ -1190,6 +1191,7 @@ def coalesce_inline_assets(units: list[SourceUnit], assets: dict[str, FidelityAs
                 display=False,
                 grouping_pending=False,
                 provenance=["adjacent-inline-fragments"],
+                formula_conditions=[condition for old in ids for condition in assets[old].formula_conditions],
             )
             text = text.replace(match[0], "{{asset:" + aid + "}}", 1)
             for old in ids:
@@ -1198,6 +1200,7 @@ def coalesce_inline_assets(units: list[SourceUnit], assets: dict[str, FidelityAs
             k: getattr(unit, k)
             for k in (
                 "equation_number",
+                "equation_numbers",
                 "footnote_number",
                 "footnote_refs",
                 "parent_id",

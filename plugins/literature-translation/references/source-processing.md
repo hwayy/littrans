@@ -2,6 +2,23 @@
 
 For source receipts and asset boundaries, see [fidelity workflow](fidelity-workflow.md).
 
+New source-review packets use contract v7 and include stable, versioned `layout_concerns`.
+Full reviews require `full_page_review_completed` followed by explicit `layout_adjudications`.
+Each entry names `concern_ids`, `choice` (`retain` or `correct`), a nonempty `reason`, and
+boolean `uncertain`. A correction requires an override and a fresh independent review.
+Reasoned uncertainty may pass; missing content or a missing language declaration may not.
+The [source-review procedure](source-review.md) describes the whole-page-first workflow.
+
+`source scan-layout` creates a supplemental packet without extracting again. Supplemental
+decisions may cover only some concerns, never grant page approval, and live in
+`evidence/layout/`. Source, context or rule changes make old supplements inapplicable.
+Legacy contract-v6 receipts retain their validation rules; scanning is an explicit choice.
+
+`equation_numbers` records several printed labels on one formula. When nonempty its first
+entry equals `equation_number`; duplicates and conflicting first labels are invalid.
+Ordinary single-label records retain `equation_number` alone. Overrides may supply the list;
+source and translated renderers emit all labels once.
+
 ## Source preparation
 
 ### Layout runtime

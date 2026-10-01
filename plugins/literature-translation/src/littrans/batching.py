@@ -72,7 +72,7 @@ def _unit_markdown(unit: SourceUnit, project_root: Path) -> str:
     elif unit.kind == "code":
         body = fenced_code(unit.source_text, unit.code_language)
     elif unit.kind == "equation":
-        number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
+        number = f" \\tag{{{', '.join(unit.equation_numbers) or unit.equation_number}}}" if unit.equation_number else ""
         body = f"$$\n{unit.latex or unit.source_text}{number}\n$$"
     elif unit.kind == "table" and unit.table:
         body = table_to_markdown(unit.table)

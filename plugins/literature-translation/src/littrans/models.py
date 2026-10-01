@@ -436,6 +436,7 @@ class SourceUnit(StrictModel):
     fragments: list[SourceFragment] = Field(default_factory=list)
     latex: str | None = None
     equation_number: str | None = None
+    equation_numbers: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
     footnote_number: str | None = None
     footnote_refs: list[str] = Field(default_factory=list)
     math_status: SemanticStatus | None = None
@@ -451,6 +452,13 @@ class SourceUnit(StrictModel):
 
     @model_validator(mode="after")
     def require_omitted_units_to_be_nontranslatable(self) -> SourceUnit:
+        if self.equation_numbers:
+            if (any(not number.strip() for number in self.equation_numbers)
+                    or len(set(self.equation_numbers)) != len(self.equation_numbers)):
+                raise ValueError("equation_numbers must contain unique nonempty labels")
+            if self.equation_number not in (None, self.equation_numbers[0]):
+                raise ValueError("equation_number must match the first equation_numbers label")
+            self.equation_number = self.equation_numbers[0]
         if self.render_policy is RenderPolicy.OMIT and self.translatable:
             raise ValueError("omitted units cannot be translatable")
         if (self.sidebar_id is None) != (self.sidebar_role is None):
@@ -470,6 +478,10 @@ class SourceUnit(StrictModel):
         if self.callout_kind is not None and self.kind is not UnitKind.NOTE:
             raise ValueError("callout_kind is valid only for note units")
         return self
+
+    @property
+    def equation_label(self) -> str | None:
+        return ") (".join(self.equation_numbers) if self.equation_numbers else self.equation_number
 
 
 _MATH_REVIEW_REPRESENTATION_FIELDS = (

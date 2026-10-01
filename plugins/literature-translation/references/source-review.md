@@ -19,8 +19,8 @@ and cross-page container candidates are prompts for visual judgment, not automat
 For a continuation candidate, inspect the supplied previous-page context and declare a unit
 parent override only when its semantic scope is clear.
 
-1. Read the packet: `packet.json` (units, assets with their regions, the page ledger with unassigned glyphs, the bound `document_structure`), `coverage.html` with its page overlays, and `review-template.json`. Each template page carries a `context` block: declared `formula_conditions`, `grouping_pending` asset IDs, `boundary_diagnostics`, blocking `findings` and the `structure_checks` to confirm one by one. Confirm those lists against the original; do not guess from crops.
-2. Review every assigned page against its original image as described below, and fill its decision in the template.
+1. Read the scope and bound structure guidance, then inspect every assigned original page and its complete extracted reading. Work through all prose, notation, images and structure, including areas with no warning. Record this initial whole-page review with `full_page_review_completed`; a warning-free page still needs every coverage check below.
+2. Only after that pass, open the folded layout concerns and structure checks in `coverage.html` and the template's `context`. Resolve each `layout_concerns` ID in `layout_adjudications`, then complete the existing coverage flags. These are two steps in one task, not an extra approval round. Do not use the concern list as a completeness checklist.
 3. Import with `--confirm-visual-review` only after you have actually viewed each page image and crop you attest. Read the result:
    - `approved_pages` are done.
    - `rejected_pages` lists the failures of each page (they are also in the receipt's `failures`): fix the decision or correct the page.
@@ -42,11 +42,50 @@ Work from the original page outward, not from the detected candidates. Account f
 
 ## Decisions
 
-Fill every field the template asks for (see [decision fields](source-processing.md#decision-fields)):
+For new full-review packets, every layout concern needs an explicit decision:
+
+```json
+{"full_page_review_completed": true, "layout_adjudications": [
+  {"concern_ids": ["layout-ID"], "choice": "retain",
+   "reason": "The original shows a mathematical comma inside this expression.",
+   "uncertain": false}
+]}
+```
+
+Several inspected occurrences of the same form may share a reason by listing their IDs.
+Do not use wildcard acceptance. If two readings remain plausible, choose the most likely,
+explain the evidence and set `uncertain: true`; report these choices together at completion.
+This permits a reasoned interpretation, not missing content or an unfinished correction.
+Use `choice: correct` with a formal override; that page needs a new independent review.
+Grouping concerns use this same mechanism; a retained grouping need not also be entered
+in `accepted_grouping_pending`. Legacy packets retain their original contract.
+
+### Supplemental layout adjudication
+
+`source scan-layout PROJECT --pages RANGE` scans existing extraction without replacing it
+or invalidating full-page approval. A task created with
+`task create PROJECT --stage source-review --pages RANGE --review-mode layout-adjudication`
+uses the same supplementary contract. Inspect the listed location and sufficient surrounding
+original context, set `viewed_original`, and return the selected concern decisions. Partial
+submissions are allowed; omitted concerns remain pending. Full-page flags are not required
+and this mode never grants full-page approval. Neighbour pages remain evidence only.
+
+Supplemental evidence is stored separately in `evidence/layout/`, bound to page and context
+fingerprints, structure guidance and rule version. Repeated imports are idempotent. A changed
+binding makes the old supplement inapplicable. Corrections use the normal override and
+dependency invalidation workflow; obtain a new full review of affected pages afterward.
+
+The importer refuses page-rule proposals overlapping page decisions. Submit proposals in
+the result's `proposed_page_rules` list and omit affected pages until guidance is applied.
+Report remaining uncertain choices, pending concerns and any unviewed evidence explicitly.
+
+### Full-page decision fields
+
+Fill every field the full-review template asks for (see [decision fields](source-processing.md#decision-fields)):
 
 - **Flags.** `viewed_original`, `coverage_complete`, `boundaries_complete`, `reading_order_correct` and `grouping_checked` are always required. `layout_fallback_checked` is required when layout is not `ok`, `formula_conditions_checked` when conditions are declared, and `overflow_canvas_checked` when there is a canvas override. Leave a flag that does not apply `false`.
 - **Structure checks.** Put every row of `structure_checks.roles` into `confirmed_roles` as `{"unit_id", "kind"}`, with the kind you read on the original. Put every row of `structure_checks.joins` into `confirmed_joins` as `{"block"}` once you have checked there is no paragraph break at it. If you read a kind differently (`role-disputed`), or find a break at a join, correct the page with an override instead of confirming the row. The lists hold what preparation knows it decided; text it misplaced without knowing (prose left beside a split formula, say) appears only on the original.
-- **Pending grouping.** An asset with pending grouping blocks approval until you either correct it or list it in `accepted_grouping_pending` as `{"asset_id", "reason"}`.
+- **Pending grouping.** An asset with pending grouping blocks approval until you correct it or explicitly retain its concern with a reason. The legacy `accepted_grouping_pending: [{"asset_id", "reason"}]` spelling remains supported; do not fill both forms for one choice.
 - **Formula conditions.** For a math asset with source-native words (a cases formula's condition words, an inline `i.o.` or `a.s.`), check each declared condition (its ordered `glyph_ids` and exact `source_text`). The words are inside the crop by construction. The question is whether each declaration is right and whether any language in the crop is missing (`undeclared-formula-language`). A `math` region or preserved `math` asset without `formula_conditions` is declared automatically; write the list yourself only to overrule it.
 - **Issues.** `issues` must be empty for approval. Record source and layout defects precisely in `notes` and in your report.
 

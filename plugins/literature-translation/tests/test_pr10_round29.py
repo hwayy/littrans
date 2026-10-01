@@ -119,7 +119,7 @@ def test_prepare_rolls_back_an_inconsistent_footnote_graph(tmp_path: Path, monke
     _, root = _footnote_display_pdf(tmp_path)
     monkeypatch.setattr(fidelity, "detect_layout", _stub_layout(root))
 
-    def broken(units, assets, note_numbers=None):
+    def broken(units, assets, note_numbers=None, glyphs=None):
         return _separate_display_units(units, assets)  # legacy behaviour: numbers unknown
 
     monkeypatch.setattr(fidelity, "_separate_display_units", broken)

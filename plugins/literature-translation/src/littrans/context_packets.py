@@ -96,7 +96,7 @@ def original_context(
         ) + (" Math assets with formula_conditions contain source-native language: translate these conditions in an asset_translations companion; language_present=false is forbidden." if any(assets[aid].formula_conditions for aid in selected) else ""),
         "units": [{"unit_id": u.unit_id, "source_hash": u.source_hash,
                    "source": u.source_markdown or u.source_text, "page": u.page,
-                   "equation_number": u.equation_number, "parent_id": u.parent_id, "footnote_number": u.footnote_number, "footnote_refs": u.footnote_refs} for u in units],
+                   "equation_number": u.equation_number, **({"equation_numbers": u.equation_numbers} if u.equation_numbers else {}), "parent_id": u.parent_id, "footnote_number": u.footnote_number, "footnote_refs": u.footnote_refs} for u in units],
         "read_only_context": [{"unit_id": u.unit_id, "source": u.source_markdown or u.source_text,
                                "page": u.page, "source_hash": u.source_hash} for u in adjacent],
         "assets": [assets[aid].model_dump(mode="json") for aid in selected],

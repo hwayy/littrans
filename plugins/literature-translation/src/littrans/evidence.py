@@ -69,6 +69,7 @@ SOURCE_SEMANTIC_FIELDS = {
     "fragments",
     "latex",
     "equation_number",
+    "equation_numbers",
     "footnote_number",
     "footnote_refs",
     "math_status",
@@ -433,9 +434,9 @@ def equation_markdown(unit: SourceUnit, text: str | None = None) -> str:
         raise ValueError(f"Unit is not an equation: {unit.unit_id}")
     if not equation_is_notation(unit):
         body = text if text is not None else unit.source_text
-        number = f" ({unit.equation_number})" if unit.equation_number and f"({unit.equation_number})" not in body else ""
+        number = f" ({unit.equation_label})" if unit.equation_label and f"({unit.equation_label})" not in body else ""
         return body + number
-    number = f" \\tag{{{unit.equation_number}}}" if unit.equation_number else ""
+    number = f" \\tag{{{', '.join(unit.equation_numbers) or unit.equation_number}}}" if unit.equation_number else ""
     return f"$$\n{unit.latex or unit.source_text}{number}\n$$"
 
 

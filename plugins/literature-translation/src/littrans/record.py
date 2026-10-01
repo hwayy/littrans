@@ -33,6 +33,7 @@ RECORD_GLOBS = (
     "reviews/*.jsonl",
     "reviews/external-dry-run/**/*.json",
     "evidence/pages/*",
+    "evidence/layout/*.json",
     "evidence/audits/*.json",
     "evidence/audits/*.jsonl",
     "evidence/representations/**/*",

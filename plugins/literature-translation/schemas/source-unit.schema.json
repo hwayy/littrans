@@ -369,6 +369,13 @@
       "default": null,
       "title": "Equation Number"
     },
+    "equation_numbers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Equation Numbers",
+      "type": "array"
+    },
     "footnote_number": {
       "anyOf": [
         {

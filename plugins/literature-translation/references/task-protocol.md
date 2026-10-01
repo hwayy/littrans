@@ -1,4 +1,12 @@
 # Task protocol
+
+Source-review tasks accept `--review-mode full` (default) or `layout-adjudication`.
+The domain packet binds the mode and assigned pages; neighbours are read-only evidence.
+Full mode requires whole-page inspection before concern adjudication. Supplemental mode
+accepts partial concern decisions without granting page approval. Both use `task receive`
+and the source importer, including explicit visual confirmation, freshness checks and
+correction invalidation. Put page-rule proposals in `proposed_page_rules`; do not decide
+pages covered by those proposals in the same result. See [source review](source-review.md).
 The task envelope wraps an existing domain packet. Native packet schemas, validation and
 approval gates remain authoritative. The envelope snapshots role instructions and reference
 files; workers load only their role and the references it requests.

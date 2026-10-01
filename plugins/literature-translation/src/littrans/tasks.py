@@ -83,11 +83,14 @@ def _read_task(directory: Path) -> dict[str, Any]:
 def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
                 pages: str | None = None, asset_ids: list[str] | None = None,
                 lens: str | None = None, host: str = "auto",
-                objective: str | None = None, revision_notes: str | None = None) -> dict[str, Any]:
+                objective: str | None = None, revision_notes: str | None = None,
+                review_mode: str = "full") -> dict[str, Any]:
     root = root.resolve()
     config = load_project(root)
     if stage not in ROLES:
         raise ValueError("Unsupported task stage: " + stage)
+    if review_mode not in {"full", "layout-adjudication"} or (review_mode != "full" and stage != "source-review"):
+        raise ValueError("review_mode requires a source-review task and full or layout-adjudication")
     selected_host = resolve_coordination_host(host)
     batches = batch_ids or []
     if sum(bool(value) for value in (batches, pages, asset_ids)) != 1:
@@ -126,7 +129,7 @@ def create_task(root: Path, stage: str, *, batch_ids: list[str] | None = None,
                                     revision_notes=revision_notes)
     elif stage == "source-review":
         from littrans.fidelity import build_source_review_packet
-        packet = build_source_review_packet(root, pages or "all")
+        packet = build_source_review_packet(root, pages or "all", review_mode=review_mode)
     elif stage in {"scout", "terminology"}:
         from littrans.extractor import inspect_source
         inspection = inspect_source(root, pages or "all")

@@ -419,6 +419,13 @@ def source_import_review(project: PathArg, input_file: PathArg, confirm_visual_r
     emit(import_source_review(project, input_file, confirm_visual_review))
 
 
+@source_app.command("scan-layout")
+def source_scan_layout(project: PathArg, pages: str = typer.Option("all")) -> None:
+    """Scan existing extraction for supplemental layout adjudication; retain approval."""
+    from littrans.fidelity import scan_layout
+    emit(scan_layout(project, pages))
+
+
 @source_app.command("preview-review")
 def source_preview_review(project: PathArg, input_file: PathArg,
                           output: Path = typer.Option(..., "--output")) -> None:

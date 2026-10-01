@@ -47,6 +47,9 @@ def approve(root: Path, pages: str = "1", *extra: str) -> dict:
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "independent-test-reviewer"
     for page in review["pages"]:
+        page["full_page_review_completed"] = True
+        from fidelity_fixtures import confirm_structure_checks
+        confirm_structure_checks(page)
         for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "layout_fallback_checked", *extra):
             page[key] = True
         # The reviewer confirms each listed role and joined block as recorded.
@@ -383,7 +386,7 @@ def test_declared_formula_conditions_need_specific_review_and_translation(projec
     packet = build_source_review_packet(project, '1')
     review = read_json(Path(packet['review_template']))
     review['reviewer'] = 'synthetic-formula-oracle'
-    for key in ('viewed_original', 'coverage_complete', 'boundaries_complete', 'reading_order_correct', 'grouping_checked', 'layout_fallback_checked', 'formula_conditions_checked'):
+    for key in ('full_page_review_completed', 'viewed_original', 'coverage_complete', 'boundaries_complete', 'reading_order_correct', 'grouping_checked', 'layout_fallback_checked', 'formula_conditions_checked'):
         review['pages'][0][key] = True
     write_json(project/'formula-review.json', review)
     assert import_source_review(project, project/'formula-review.json', True)['approved_pages'] == [1]

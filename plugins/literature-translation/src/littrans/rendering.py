@@ -501,8 +501,8 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
             # Rows of a displayed block stay rows: hard breaks, not a flowed paragraph.
             safe_text = "  \n".join(row for row in safe_text.split("\n") if row.strip())
         return safe_text + (
-            f" ({unit.equation_number})"
-            if unit.equation_number and f"({unit.equation_number})" not in text
+            f" ({unit.equation_label})"
+            if unit.equation_label and f"({unit.equation_label})" not in text
             else ""
         )
     if unit.sidebar_role is SidebarRole.TITLE:
@@ -529,7 +529,7 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
     if unit.kind is UnitKind.EQUATION:
         # A native-text display line ("Prob", "otherwise.") renders its translation as text.
         if _translated_native_equation(unit, target):
-            number = f" ({unit.equation_number})" if unit.equation_number and f"({unit.equation_number})" not in text else ""
+            number = f" ({unit.equation_label})" if unit.equation_label and f"({unit.equation_label})" not in text else ""
             return safe_text + number
         return equation_markdown(unit, safe_text if not equation_is_notation(unit) else None)
     if unit.kind is UnitKind.FIGURE:
@@ -679,8 +679,8 @@ def _unit_html(
     if (ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}
             and not (unit.kind is UnitKind.TABLE and (target_table or unit.table))):
         number = (
-            f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
-            if unit.equation_number and f"({unit.equation_number})" not in text
+            f'<span class="equation-number">({html.escape(unit.equation_label)})</span>'
+            if unit.equation_label and f"({unit.equation_label})" not in text
             else ""
         )
         if unit.kind is UnitKind.FIGURE:
@@ -719,9 +719,9 @@ def _unit_html(
         )
         display_content = text if display_as_text else (unit.latex or unit.source_text)
         number = (
-            f'<span class="equation-number">({html.escape(unit.equation_number)})</span>'
-            if unit.equation_number and (
-                not display_as_text or f"({unit.equation_number})" not in text
+            f'<span class="equation-number">({html.escape(unit.equation_label)})</span>'
+            if unit.equation_label and (
+                not display_as_text or f"({unit.equation_label})" not in text
             )
             else ""
         )

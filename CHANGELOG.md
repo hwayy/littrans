@@ -15,6 +15,31 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.2-dev.1] - 2026-10-01
+
+### Added
+
+- Versioned layout concerns and explicit reviewer adjudications, including recorded uncertainty.
+- `source scan-layout` and supplemental source-review tasks preserve existing page approvals.
+- Multiple printed equation labels through optional `equation_numbers`.
+
+### Changed
+
+- Full source review inspects whole pages before folded concern lists; rule proposals cannot
+  approve the pages they affect. Supplemental evidence is retained with its bound packets.
+
+### Fixed
+
+- Inline probability abbreviations, declarations lost when joining inline assets, fraction
+  denominators, relation prefixes, baseline possessive suffixes and mixed/multiple labels.
+- Consecutive cross-page list containers retain their parent without changing sentence flags.
+
+### Compatibility
+
+- Existing source-review contracts and single-label fingerprints remain readable. Rescanning
+  old results is explicit; corrections still require fresh independent review. New packets and
+  multiple labels require the updated plugin on every participating host.
+
 ## [0.9.1-dev.4] - 2026-10-01
 
 ### Added

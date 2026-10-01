@@ -1,15 +1,25 @@
-# Migrating to LitTrans 0.9.1-dev.4
+# Migrating to LitTrans 0.9.2-dev.1
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
 for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
 
 Existing manifest-v7 projects with valid settings schema v1 can continue without rebuilding.
-This build changes no persisted schema and does not rewrite existing source evidence. Use the
+Existing source evidence is not rewritten. New source-review packets use contract v7;
+old packets and receipts retain their original review contract. Optional `equation_numbers`
+is omitted when empty, preserving old unit fingerprints. Use the
 rebuild procedure below when moving from an unsupported project format or when deliberately
 starting a separate project.
 
-Version 0.9.1-dev.4 adds exact reviewed `asset_crops` and `source preview-review` without
+Version 0.9.2-dev.1 adds explicit layout adjudications and a whole-page-first review pass.
+Existing approvals remain valid by default. Use `source scan-layout PROJECT --pages RANGE`
+to scan existing results, then `task create PROJECT --stage source-review --pages RANGE
+--review-mode layout-adjudication` for local supplementary decisions. They are stored in
+`evidence/layout/` and do not replace page receipts. Retain this directory and its referenced
+packets in project records. Corrections still invalidate affected source dependencies.
+Upgrade all hosts before using new review packets or multiple equation labels.
+
+The release retains exact reviewed `asset_crops` and `source preview-review` without
 changing project schemas. Upgrade every host before using the new declarations; older
 plugins cannot replay them. A crop changes evidence and requires a fresh independent review.
 Existing source records are left intact until a supported correction or extraction command.
