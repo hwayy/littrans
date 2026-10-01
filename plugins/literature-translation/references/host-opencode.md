@@ -31,9 +31,9 @@ OpenCode 1.x is not supported by this generated format.
 | --- | --- | --- |
 | translate (also revise) | littrans-translator | openai/gpt-6-luna / max |
 | transcribe | littrans-asset-transcriber | openai/gpt-6-luna / max |
-| audit (all three lenses) | littrans-translation-reviewer | openai/gpt-6-sol / high |
-| asset-audit | littrans-asset-reviewer | openai/gpt-6-sol / high |
-| source-review | littrans-source-reviewer | openai/gpt-6-sol / high |
+| audit (all three lenses) | littrans-translation-reviewer | openai/gpt-6.1-sol / high |
+| asset-audit | littrans-asset-reviewer | openai/gpt-6.1-sol / high |
+| source-review | littrans-source-reviewer | openai/gpt-6.1-sol / high |
 
 `project agents --write` renders each model and `reasoning_effort` as
 `model: "provider/model#variant"`. Model-only policies omit the variant. An embedded variant

@@ -1933,7 +1933,7 @@ and exactly one lens. Ordered sets must not overlap and must be consecutive with
 per-batch unit coverage and dependency context. Source-review has its own packet/dispatch response.
 Asset stages use asset packets. A no-pending-work response is not a completed model result.
 
-Wave limits (default / maximum): Codex 3/3, Cursor 6/9, Claude 3/6, Qoder 3/6, OpenCode 3/6,
+Wave limits (default / maximum): Codex 3/6, Cursor 6/9, Claude 3/6, Qoder 3/6, OpenCode 3/6,
 generic 1/3. Unknown or mixed auto-detection uses generic; select OpenCode explicitly.
 `start-at` / `through` constrain batch-series coordination, not physical page numbers. Necessary
 dependency batches may be scheduled outside those bounds and appear separately from requested IDs.

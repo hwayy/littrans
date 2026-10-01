@@ -15,6 +15,19 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.2-dev.3] - 2026-10-02
+
+### Changed
+
+- Recommended Codex and OpenCode audit, asset-audit and source-review models use
+  `gpt-6.1-sol` in place of `gpt-6-sol`, retaining their existing reasoning effort.
+- Codex wave size keeps its default of 3 and permits a maximum of 6.
+
+### Compatibility
+
+- No schema change. Existing project model policies and wave sizes remain unchanged;
+  new projects receive the updated model recommendations.
+
 ## [0.9.2-dev.2] - 2026-10-01
 
 ### Fixed

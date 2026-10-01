@@ -23,8 +23,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 def test_source_review_is_a_dispatch_role_with_shipped_defaults(project: Path) -> None:
     assert "source-review" in DISPATCH_ROLES
     config = load_project(project)
-    assert config.dispatch("codex", "source-review") == RoleDispatch(model="gpt-6-sol", reasoning_effort="high")
-    assert config.dispatch("codex", "audit") == RoleDispatch(model="gpt-6-sol", reasoning_effort="high")
+    assert config.dispatch("codex", "source-review") == RoleDispatch(model="gpt-6.1-sol", reasoning_effort="high")
+    assert config.dispatch("codex", "audit") == RoleDispatch(model="gpt-6.1-sol", reasoning_effort="high")
     assert config.dispatch("claude", "source-review") == RoleDispatch(model="sonnet")
 
 
@@ -36,7 +36,7 @@ def test_review_packets_report_the_dispatch_beside_a_host_independent_packet(pro
     first, second = json.loads(codex.stdout), json.loads(claude.stdout)
     assert first["packet_id"] == second["packet_id"]
     assert first["dispatch"] == {"host": "codex", "role": "source-review",
-                                 "model": "gpt-6-sol", "reasoning_effort": "high"}
+                                 "model": "gpt-6.1-sol", "reasoning_effort": "high"}
     assert second["dispatch"] == {"host": "claude", "role": "source-review",
                                   "model": "sonnet", "reasoning_effort": None}
     assert "dispatch" not in read_json(Path(first["packet_path"]))
@@ -48,12 +48,12 @@ def test_a_source_review_stage_carries_its_role_dispatch(project: Path) -> None:
     wave = workflow_next(project, start_at=bid, through=bid, host="codex")
     assert wave["stage"] == "source-review"
     task = next(task for task in wave["ready_tasks"] if task["stage"] == "source-review")
-    assert (task["model"], task["reasoning_effort"]) == ("gpt-6-sol", "high")
+    assert (task["model"], task["reasoning_effort"]) == ("gpt-6.1-sol", "high")
     assert "literature-source-reviewer" in task["instruction"]
     packet = create_workflow_packet(project, "source-review", [bid], host="codex")
     assert isinstance(packet, dict)
     assert packet["dispatch"]["role"] == "source-review"
-    assert packet["dispatch"]["model"] == "gpt-6-sol"
+    assert packet["dispatch"]["model"] == "gpt-6.1-sol"
 
 
 def test_a_configured_claude_effort_is_reported_as_not_applied(project: Path) -> None:

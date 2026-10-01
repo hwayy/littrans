@@ -44,7 +44,7 @@ class WaveLimit:
 
 
 WAVE_LIMITS: dict[CoordinationHost, WaveLimit] = {
-    "codex": WaveLimit(default=3, maximum=3),
+    "codex": WaveLimit(default=3, maximum=6),
     "cursor": WaveLimit(default=6, maximum=9),
     "claude": WaveLimit(default=3, maximum=6),
     "qoder": WaveLimit(default=3, maximum=6),

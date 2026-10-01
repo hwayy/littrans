@@ -1,12 +1,22 @@
-# Migrating to LitTrans 0.9.2-dev.2
+# Migrating to LitTrans 0.9.2-dev.3
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
 for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
 
+## Updated model recommendations and Codex wave size
+
+New projects recommend `gpt-6.1-sol` for Codex audit, asset-audit and source-review roles,
+and `openai/gpt-6.1-sol` for the same OpenCode roles. Their reasoning effort remains `high`.
+Existing project settings retain their saved models; use `config set` to change each role
+explicitly, and regenerate OpenCode native agents after updating their policies.
+
+Codex keeps a default `agents.codex.wave_size` of 3 and now accepts values up to 6.
+Use `littrans config set PROJECT agents.codex.wave_size 6 --json` to opt in.
+
 ## Complete composite figure crops
 
-Version 0.9.2-dev.2 exports the panels of one captioned figure as one raw rectangular crop.
+This release exports the panels of one captioned figure as one raw rectangular crop.
 PNG and SVG remain two formats of that single fragment. Caption and prose boundaries still
 prevent joining different printed figures or a region containing intervening text. Figures
 without a detected shared caption, or with sub-captions between panels, require visual review

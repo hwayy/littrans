@@ -3,7 +3,7 @@ schema_version: 1
 preset:
   name: technical-book
   version: '1'
-  sha256: 06b0bb628304c4ec62c4a29ca4ad8bf8e028022e4d3f11823ec2b00c191473fe
+  sha256: ab1053896dae0e37bdf0aa25997e63ffe5784c5cbc937974f8ae0a6fc1eb2c06
 document:
   title: Example document
   source_language: en
@@ -27,13 +27,13 @@ agents:
         model: gpt-6-luna
         reasoning_effort: max
       audit:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         reasoning_effort: high
       asset-audit:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         reasoning_effort: high
       source-review:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         reasoning_effort: high
     audit_lenses: {}
     wave_size: 3
@@ -80,13 +80,13 @@ agents:
         model: openai/gpt-6-luna
         reasoning_effort: max
       audit:
-        model: openai/gpt-6-sol
+        model: openai/gpt-6.1-sol
         reasoning_effort: high
       asset-audit:
-        model: openai/gpt-6-sol
+        model: openai/gpt-6.1-sol
         reasoning_effort: high
       source-review:
-        model: openai/gpt-6-sol
+        model: openai/gpt-6.1-sol
         reasoning_effort: high
     audit_lenses: {}
     wave_size: 3

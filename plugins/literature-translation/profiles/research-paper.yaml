@@ -3,7 +3,7 @@ schema_version: 1
 preset:
   name: research-paper
   version: '1'
-  sha256: 1ddc56e30dd298a7e183882c333314218201250b1dabdcc5a4ca159da901a33d
+  sha256: 64edfc97c7cd6a3ce6ee146c27befddc30b6693b33b634140fb4f97e40ed507f
 document:
   title: Example document
   source_language: en
@@ -27,13 +27,13 @@ agents:
         model: gpt-6-luna
         reasoning_effort: max
       audit:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         reasoning_effort: high
       asset-audit:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         reasoning_effort: high
       source-review:
-        model: gpt-6-sol
+        model: gpt-6.1-sol
         reasoning_effort: high
     audit_lenses: {}
     wave_size: 3
@@ -80,13 +80,13 @@ agents:
         model: openai/gpt-6-luna
         reasoning_effort: max
       audit:
-        model: openai/gpt-6-sol
+        model: openai/gpt-6.1-sol
         reasoning_effort: high
       asset-audit:
-        model: openai/gpt-6-sol
+        model: openai/gpt-6.1-sol
         reasoning_effort: high
       source-review:
-        model: openai/gpt-6-sol
+        model: openai/gpt-6.1-sol
         reasoning_effort: high
     audit_lenses: {}
     wave_size: 3

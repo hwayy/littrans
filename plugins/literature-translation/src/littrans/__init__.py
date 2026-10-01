@@ -1,3 +1,3 @@
 """Controlled tooling for agent-assisted literature translation."""
 
-__version__ = "0.9.2-dev.2"
+__version__ = "0.9.2-dev.3"

@@ -34,8 +34,8 @@ def test_opencode_defaults_match_codex() -> None:
 def test_generated_roles_apply_models_and_v2_permissions_together(project: Path) -> None:
     result = configure_agents(project, "opencode", write=True)
     expected = {"translator": "openai/gpt-6-luna#max", "asset-transcriber": "openai/gpt-6-luna#max",
-                "translation-reviewer": "openai/gpt-6-sol#high", "asset-reviewer": "openai/gpt-6-sol#high",
-                "source-reviewer": "openai/gpt-6-sol#high", "document-scout": None,
+                "translation-reviewer": "openai/gpt-6.1-sol#high", "asset-reviewer": "openai/gpt-6.1-sol#high",
+                "source-reviewer": "openai/gpt-6.1-sol#high", "document-scout": None,
                 "terminology-researcher": None}
     for role, model in expected.items():
         head, body = agent(project, role)

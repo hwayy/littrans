@@ -159,6 +159,16 @@ def test_comment_noop_dryrun_conflict(configured):
     assert before == path.read_bytes()
 
 
+def test_codex_wave_size_defaults_three_accepts_six_rejects_seven(configured):
+    assert read_settings(configured).agents["codex"].wave_size == 3
+    edit(configured, "agents.codex.wave_size", 6)
+    assert read_settings(configured).agents["codex"].wave_size == 6
+    before = (configured / "settings.yaml").read_bytes()
+    with pytest.raises(ValueError, match=r"agents\.codex\.wave_size exceeds host maximum"):
+        edit(configured, "agents.codex.wave_size", 7)
+    assert (configured / "settings.yaml").read_bytes() == before
+
+
 def test_dispatch_inheritance_explicit_null_and_lenses(configured):
     edit(configured, "agents.codex.roles.translate.model", "writer")
     assert load_project(configured).dispatch("codex", "revise").model == "writer"

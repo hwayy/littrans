@@ -28,13 +28,14 @@ def no_default_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CODEX_CI", raising=False)
 
 
-def test_codex_wave_limits_remain_three() -> None:
+def test_codex_wave_limits_default_three_max_six() -> None:
     assert WAVE_LIMITS["codex"].default == 3
-    assert WAVE_LIMITS["codex"].maximum == 3
+    assert WAVE_LIMITS["codex"].maximum == 6
     assert LENS_REVIEWER_BATCH_MAX == 3
     assert resolve_wave_limit("codex", None) == 3
-    with pytest.raises(ValueError, match="between 1 and 3 for host codex"):
-        resolve_wave_limit("codex", 4)
+    assert resolve_wave_limit("codex", 6) == 6
+    with pytest.raises(ValueError, match="between 1 and 6 for host codex"):
+        resolve_wave_limit("codex", 7)
 
 
 def test_cursor_wave_limits_default_six_max_nine() -> None:
@@ -96,7 +97,7 @@ def test_host_model_defaults_come_from_profile_file(tmp_path: Path) -> None:
     defaults = host_model_defaults()
     # Every role carries its own model and effort; none is shared across roles.
     writer = {"model": "gpt-6-luna", "reasoning_effort": "max"}
-    reviewer = {"model": "gpt-6-sol", "reasoning_effort": "high"}
+    reviewer = {"model": "gpt-6.1-sol", "reasoning_effort": "high"}
     assert defaults["codex"] == {"translate": writer, "transcribe": writer, "audit": reviewer,
                                  "asset-audit": reviewer, "source-review": reviewer}
     # Claude Code takes no per-dispatch effort: the agents' frontmatter sets it.
@@ -175,8 +176,9 @@ def test_workflow_next_selects_host_sized_waves(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="between 1 and 6 for host qoder"):
         workflow_next(root, limit=7, host="qoder")
 
-    with pytest.raises(ValueError, match="between 1 and 3 for host codex"):
-        workflow_next(root, limit=6, host="codex")
+    assert len(workflow_next(root, limit=6, host="codex")["batch_ids"]) == 6
+    with pytest.raises(ValueError, match="between 1 and 6 for host codex"):
+        workflow_next(root, limit=7, host="codex")
 
 
 def test_status_and_packets_accept_a_cursor_wave(tmp_path: Path) -> None:

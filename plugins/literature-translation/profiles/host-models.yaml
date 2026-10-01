@@ -38,13 +38,13 @@ codex:
     model: gpt-6-luna
     reasoning_effort: max
   audit:
-    model: gpt-6-sol
+    model: gpt-6.1-sol
     reasoning_effort: high
   asset-audit:
-    model: gpt-6-sol
+    model: gpt-6.1-sol
     reasoning_effort: high
   source-review:
-    model: gpt-6-sol
+    model: gpt-6.1-sol
     reasoning_effort: high
 claude:
   # Claude Code model alias passed to the Agent tool's `model` parameter. Effort is
@@ -69,12 +69,12 @@ opencode:
     model: openai/gpt-6-luna
     reasoning_effort: max
   audit:
-    model: openai/gpt-6-sol
+    model: openai/gpt-6.1-sol
     reasoning_effort: high
   asset-audit:
-    model: openai/gpt-6-sol
+    model: openai/gpt-6.1-sol
     reasoning_effort: high
   source-review:
-    model: openai/gpt-6-sol
+    model: openai/gpt-6.1-sol
     reasoning_effort: high
 generic: {}  # Portable fresh-session handoff has no assumed model controls.
