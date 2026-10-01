@@ -372,7 +372,7 @@ def _script_digit_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
         inked = [g for g in line if inked_glyph(g)]
         for index in range(1, len(inked)):
             glyph, previous = inked[index], inked[index - 1]
-            if not (glyph["text"].isdigit() and not MATH_FONT.search(glyph["font"])):
+            if not (glyph["text"].isalnum() and not MATH_FONT.search(glyph["font"])):
                 continue
             baseline, size = glyph.get("baseline", glyph["bbox"][3]), glyph.get("size", 10)
             base_line, base_size = previous.get("baseline", previous["bbox"][3]), previous.get("size", 10)
@@ -380,7 +380,8 @@ def _script_digit_ids(lines: dict[str, list[dict[str, Any]]]) -> set[str]:
             if previous["id"] in ids:
                 if abs(baseline - base_line) < 1 and abs(size - base_size) < 0.5 and -1 <= gap <= size * 0.25:
                     ids.add(glyph["id"])
-            elif (previous["text"].isdigit() and not MATH_FONT.search(previous["font"])
+            elif (((previous["text"].isdigit() and glyph["text"].isdigit())
+                    or MATH_FONT.search(previous["font"]))
                     and size <= base_size * 0.85 and abs(baseline - base_line) >= base_size * 0.1
                     and -1 <= gap <= base_size * 0.25):
                 ids.add(glyph["id"])
@@ -585,6 +586,23 @@ def _boundary_diagnostics(glyphs: list[dict[str, Any]], assets: list[dict[str, A
             diagnostics.append({"code": "prose-boundary-in-math", "asset_id": asset["id"], "glyph_ids": contaminated,
                                 "action": "Inspect original prose/citation context and correct glyph ownership before approval."})
         if not asset.get("display"):
+            # A top-level comma in inline notation may separate clauses or enumerate
+            # mathematical objects. Flag the ambiguity; syntax alone cannot decide it.
+            depth = 0
+            commas = []
+            for g in glyphs:
+                if g["id"] not in ids:
+                    continue
+                if g["text"] in "([{":
+                    depth += 1
+                elif g["text"] in ")]}":
+                    depth = max(0, depth - 1)
+                elif g["text"] == "," and depth == 0:
+                    commas.append(g["id"])
+            if commas:
+                diagnostics.append({"code": "ambiguous-inline-punctuation", "asset_id": asset["id"],
+                                    "glyph_ids": commas,
+                                    "action": "Compare surrounding clauses; keep mathematical commas, split prose boundaries with an override."})
             continue
         # A symbol-face glyph inside a displayed formula's crop but owned elsewhere leaves a
         # hole in the export (the explicit export draws owned paths only). The crop box is
@@ -616,6 +634,20 @@ def _strip_display_prose(owned: list[dict[str, Any]], prose_ids: set[str],
     case label ("vol(B)" under a fraction bar, "0, otherwise.") sits inside the
     formula's horizontal extent and is part of it however wide the gap before it.
     """
+    text = "".join(g["text"] for g in owned)
+    sentence = re.search(r"[.]\s*Then\b", text)
+    if sentence:
+        offset = 0
+        kept = []
+        for g in owned:
+            if offset >= sentence.start():
+                break
+            kept.append(g)
+            offset += len(g["text"])
+        if kept and any(MATH_FONT.search(g["font"]) or MATH_CHAR.search(g["text"]) for g in kept):
+            edge = max(g["bbox"][2] for g in kept)
+            if not any(g["bbox"][2] > edge for g in others or []):
+                return kept
     prose = [g for g in owned if g["id"] in prose_ids]
     mathematical = [g["id"] for g in owned if MATH_FONT.search(g["font"]) or MATH_CHAR.search(g["text"])]
     if not prose or not mathematical:
@@ -733,7 +765,17 @@ def _grow_table_header(bbox: list[float], glyphs: list[dict[str, Any]], margin: 
             break
         top = min(top, min(g["bbox"][1] for g in row) - 0.5)
         lower = baseline
-    return [x0, top, x1, y1] if top < y0 else bbox
+    # Double bottom rules often have their second stroke outside the detector box.
+    # Require matching table columns and no intervening text; a page ornament does
+    # not become table content merely because it is nearby.
+    bottom = y1
+    for rule in sorted(rules, key=lambda r: r[1]):
+        if (0 <= rule[1] - bottom <= size * 0.35
+                and abs(rule[0] - x0) <= size * 0.5 and abs(rule[2] - x1) <= size * 0.5
+                and not any(inked_glyph(g) and x0 <= g["bbox"][0] <= x1
+                            and bottom < (g["bbox"][1] + g["bbox"][3]) / 2 < rule[1] for g in glyphs)):
+            bottom = max(bottom, rule[3] + 0.5)
+    return [x0, top, x1, bottom]
 
 
 def _visual_lines(glyphs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -1105,11 +1147,21 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     for native_glyph in glyph_by_id.values():
         native_lines.setdefault(native_glyph["line"], []).append(native_glyph)
     bold_variables = _bold_variable_ids(native_lines)
+    abbreviations: set[str] = set()
+    for native_line in native_lines.values():
+        text = "".join(g["text"] for g in native_line)
+        for match in re.finditer(r"(?<![A-Za-z])(?:a\.s\.|i\.o\.|i\.e\.|e\.g\.)(?![A-Za-z])", text):
+            offset = 0
+            for g in native_line:
+                end = offset + len(g["text"])
+                if offset < match.end() and end > match.start():
+                    abbreviations.add(g["id"])
+                offset = end
     conditions: list[dict[str, Any]] = []
     for line in _visual_lines(owned):
         segment: list[dict[str, Any]] = []
         for glyph in [*line, None]:
-            if glyph is not None and not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit() or glyph["id"] in bold_variables):
+            if glyph is not None and (glyph["id"] in abbreviations or not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit() or glyph["id"] in bold_variables)):
                 segment.append(glyph)
                 continue
             # Brackets and spaces at the edges belong to the surrounding notation, as does
@@ -1147,6 +1199,22 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     return conditions
 
 
+def _exclude_native_caption(box: list[float], glyphs: list[dict[str, Any]]) -> list[float]:
+    lines: dict[str, list[dict[str, Any]]] = {}
+    for g in glyphs:
+        lines.setdefault(g["line"], []).append(g)
+    for line in lines.values():
+        text = _spaced_text(line).strip()
+        if not re.match(r"(?:Figure|Fig\.|Table|Tab\.)\s+\d+(?:\.\d+)*[.:]\s", text):
+            continue
+        top = min(g["bbox"][1] for g in line)
+        # Only a caption at the lower edge is geometrically separable. Interior
+        # labels and captions interleaved with panels require a reviewed override.
+        if box[1] + (box[3] - box[1]) * 0.5 < top < box[3] and any(_inside(g, box) for g in line):
+            box = [box[0], box[1], box[2], top - 0.5]
+    return box
+
+
 def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[str, Any]],
              ink: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     # Use original visible paths when available: TeX accents and radicals often
@@ -1171,7 +1239,10 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
         label = item.get("label", "")
         kind = "math" if "formula" in label and "number" not in label else "figure" if label in {"image", "figure", "chart", "header_image", "footer_image"} else label if label in {"table", "code"} else None
         if kind:
-            regions.append({"kind": kind, "bbox": [float(v) / 2 for v in item["bbox"]], "provenance": [f"PP-DocLayoutV2:{label}"], "display": label != "inline_formula", "grouping_pending": False})
+            box = [float(v) / 2 for v in item["bbox"]]
+            if kind in {"figure", "table"}:
+                box = _exclude_native_caption(box, glyphs)
+            regions.append({"kind": kind, "bbox": box, "provenance": [f"PP-DocLayoutV2:{label}"], "display": label != "inline_formula", "grouping_pending": False})
     # Native font and character candidates retain small isolated variables.
     lines: dict[str, list[dict[str, Any]]] = {}
     # Some LaTeX builds use T1 SF fonts for prose and OT1 CMR fonts only in
@@ -1183,6 +1254,17 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     # its display as equation_number.
     tags = _tag_glyph_ids(glyphs)
     protected_prose = _prose_boundary_ids(glyphs) | tags
+    # Explanatory abbreviations in ordinary inline prose separate expressions;
+    # probabilistic qualifications (a.s., i.o.) remain inside mathematical crops.
+    for line in lines.values():
+        text = "".join(g["text"] for g in line)
+        for match in re.finditer(r"\b(?:i\.e\.?|e\.g\.?)", text):
+            offset = 0
+            for g in line:
+                end = offset + len(g["text"])
+                if offset < match.end() and end > match.start():
+                    protected_prose.add(g["id"])
+                offset = end
     tag_rows = sorted({g.get("baseline", g["bbox"][3]) for g in glyphs if g["id"] in tags})
     margin = _left_margin(glyphs)
     bold_variables = _bold_variable_ids(lines)
@@ -1336,6 +1418,7 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
             # owned glyph ink is the region. Rules and accents merge back below.
             region["bbox"] = _union([g["bbox"] for g in owned if inked_glyph(g)] or [g["bbox"] for g in owned])
         clean.append(region)
+    math_candidates = [dict(r) for r in clean if r["kind"] == "math" and r.get("glyph_ids")]
     regions = _merge_delimiter_pieces(clean, glyphs, cuts)
     regions = _cluster_drawings(regions)
     # Merge formula components and their rules, but never expand to a PDF text
@@ -1386,6 +1469,21 @@ def _regions(page: fitz.Page, glyphs: list[dict[str, Any]], layout: list[dict[st
     regions = _absorb_delimited_rows(regions, glyphs, margin)
     regions = _join_tag_split_display(regions, glyphs, tags)
     regions = _join_figure_panels(regions, glyphs, layout)
+    recovered = []
+    for region in regions:
+        if region["kind"] in {"figure", "table"}:
+            old_box = region["bbox"]
+            region["bbox"] = _exclude_native_caption(old_box, glyphs)
+            if region["bbox"] != old_box and "glyph_ids" in region:
+                region["glyph_ids"] = [gid for gid in region["glyph_ids"] if _inside(glyph_by_id[gid], region["bbox"])]
+            if region["bbox"] != old_box:
+                for candidate in math_candidates:
+                    gs = [glyph_by_id[gid] for gid in candidate["glyph_ids"]]
+                    if all(_inside(g, old_box) and not _inside(g, region["bbox"]) for g in gs):
+                        recovered.append(candidate)
+    for candidate in recovered:
+        if not any(any(gid in r.get("glyph_ids", []) for gid in candidate["glyph_ids"]) for r in regions):
+            regions.append(candidate)
     for region in regions:
         region.pop("_runs", None)
         region.pop("_continues", None)
@@ -1492,6 +1590,18 @@ def _absorb_delimited_rows(regions: list[dict[str, Any]], glyphs: list[dict[str,
     inked = [g for g in glyphs if inked_glyph(g)]
     rows = _visual_lines(inked)
     prose_ids = _prose_word_ids(glyphs)
+    sentence_tails: set[str] = set()
+    native_lines: dict[str, list[dict[str, Any]]] = {}
+    for g in glyphs:
+        native_lines.setdefault(g["line"], []).append(g)
+    for line in native_lines.values():
+        match = re.search(r"[.]\s*Then\b", "".join(g["text"] for g in line))
+        if match:
+            offset = 0
+            for g in line:
+                if offset >= match.start():
+                    sentence_tails.add(g["id"])
+                offset += len(g["text"])
     result = list(regions)
     index = 0
     while index < len(result):
@@ -1532,9 +1642,11 @@ def _absorb_delimited_rows(regions: list[dict[str, Any]], glyphs: list[dict[str,
             bracketed.append(candidates)
         absorbed: list[dict[str, Any]] = []
         for candidates in bracketed:
+            if re.search(r"[.]\s*Then\b", "".join(g["text"] for g in candidates)):
+                candidates = _strip_display_prose(candidates, prose_ids)
             kept: list[dict[str, Any]] = []
             for previous, g in zip([None, *candidates], candidates, strict=False):
-                if g["text"] in QED_MARKERS:
+                if g["text"] in QED_MARKERS or g["id"] in sentence_tails:
                     break
                 # A wide gap no other row bridges separates the block from what follows it
                 # (an equation number); the aligned condition column of a cases block is
@@ -1668,6 +1780,21 @@ def _join_tag_split_display(regions: list[dict[str, Any]], glyphs: list[dict[str
         displays = [r for r in result if r["kind"] == "math" and r["display"] and r.get("glyph_ids")]
         above = [r for r in displays if r["bbox"][3] <= middle and box[1] - r["bbox"][3] <= size]
         below = [r for r in displays if r["bbox"][1] >= middle and r["bbox"][1] - box[3] <= size]
+        central = [r for r in displays if r["bbox"][1] <= middle <= r["bbox"][3]]
+        if len(central) == len(above) == len(below) == 1:
+            rows = [above[0], central[0], below[0]]
+            union = _union([r["bbox"] for r in rows])
+            ids = {gid for r in rows for gid in r["glyph_ids"]} | own
+            aligned = all(min(a["bbox"][2], b["bbox"][2]) > max(a["bbox"][0], b["bbox"][0])
+                          for a, b in zip(rows, rows[1:], strict=False))
+            if (aligned and not any(labelled(r) for r in rows)
+                    and not any(inked_glyph(g) and g["id"] not in ids and _inside(g, union) for g in glyphs)
+                    and not any(r not in rows and _intersects(r["bbox"], union) for r in result)):
+                joined = _join_regions(rows, glyphs, "shared-middle-label-joined")
+                index = min(i for i, r in enumerate(result) if r in rows)
+                result = [r for r in result if r not in rows]
+                result.insert(index, joined)
+                continue
         if len(above) != 1 or len(below) != 1:
             continue
         upper, lower = above[0], below[0]
@@ -1704,7 +1831,7 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
     (LT-099). Panels that each carry a caption, or with sub-captions or prose between
     them, stay apart. The joined region keeps one fragment per panel, row by row.
     """
-    figures = [r for r in regions if r["kind"] == "figure"]
+    figures = [r for r in regions if r["kind"] in {"figure", "table"}]
     captions = [[float(v) / 2 for v in item["bbox"]] for item in layout
                 if item.get("label") in {"figure_title", "figure_caption"}]
     if len(figures) < 2 or not captions:
@@ -1730,7 +1857,8 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
             a, b = left["bbox"], right["bbox"]
             dx = max(a[0], b[0]) - min(a[2], b[2])
             dy = max(a[1], b[1]) - min(a[3], b[3])
-            if dx > gap or dy > gap:
+            pair_gap = gap * (4 / 3 if {left["kind"], right["kind"]} == {"figure", "table"} else 1)
+            if dx > pair_gap or dy > pair_gap:
                 continue
             union = _union([a, b])
             if any(_inside(g, union) for g in free) or any(_intersects(c, union) for c in captions):
@@ -1763,6 +1891,15 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
                     owned[overlaps.index(best)].append(member)
             groups = [group for group in owned if len(group) >= 2]
         for group in groups:
+            # A figure caption can unify misclassified table panels, but an
+            # independently captioned table must retain its own structure.
+            table_captions = [[float(v) / 2 for v in item["bbox"]] for item in layout
+                              if item.get("label") in {"table_title", "table_caption"}]
+            if not any(m["kind"] == "figure" for m in group) or any(
+                min(c[2], m["bbox"][2]) > max(c[0], m["bbox"][0])
+                and max(c[1] - m["bbox"][3], m["bbox"][1] - c[3]) <= gap
+                for c in table_captions for m in group):
+                continue
             union = _union([m["bbox"] for m in group])
             adjoining = [c for c in captions
                          if min(c[2], union[2]) > max(c[0], union[0])
@@ -1783,6 +1920,7 @@ def _join_figure_panels(regions: list[dict[str, Any]], glyphs: list[dict[str, An
                     rows.append([member])
             ordered = [m for row in rows for m in sorted(row, key=lambda m: m["bbox"][0])]
             joined = _join_regions(ordered, glyphs, "figure-panels-joined")
+            joined["kind"] = "figure"
             index = min(i for i, r in enumerate(result) if any(r is m for m in group))
             result = [r for r in result if not any(r is m for m in group)]
             result.insert(index, joined)
@@ -1882,6 +2020,9 @@ def _asset_content_identity(asset: FidelityAsset) -> str:
     if asset.content_identity_version == 2:
         content = _hash({"original_content": content, "kind": asset.kind, "display": asset.display,
                          "grouping_pending": asset.grouping_pending})
+    crops = sorted(p for p in asset.provenance if p.startswith("reviewed-page-crop:"))
+    if crops:
+        content = _hash({"original_content": content, "reviewed_crops": crops})
     return content
 
 
@@ -1890,6 +2031,30 @@ def _asset(root: Path, doc: fitz.Document, page_number: int, source_hash: str, r
     asset.content_identity_version = 2
     asset.content_sha256 = _asset_content_identity(asset)
     return asset
+
+
+def _raw_fallback_rect(page: fitz.Page, region: dict[str, Any], owned: list[dict[str, Any]],
+                       glyphs: list[dict[str, Any]], padded: fitz.Rect) -> fitz.Rect:
+    from littrans.glyph_export import glyph_ink_boxes
+
+    visible = [g for g in owned if inked_glyph(g)]
+    try:
+        ink = glyph_ink_boxes(page, glyphs)
+    except (ValueError, RuntimeError, SyntaxError):
+        return padded
+    if not visible or any(g["id"] not in ink for g in visible):
+        return padded
+    requested = fitz.Rect(region["bbox"]) & page.rect
+    candidate = fitz.Rect(_union([list(requested), *[
+        list(fitz.Rect(ink[g["id"]]) + (-0.5, -0.5, 0.5, 0.5)) for g in visible]])) & page.rect
+    # Glyph measurements do not account for radicals, rules or raster content.
+    # Retain conservative geometry if narrowing would discard any such evidence.
+    graphical = [fitz.Rect(d["rect"]) for d in page.get_drawings()]
+    graphical += [fitz.Rect(i["bbox"]) for i in page.get_image_info()]
+    if any(padded.intersects(box + (-0.01, -0.01, 0.01, 0.01)) and not candidate.contains(box)
+           for box in graphical):
+        return padded
+    return candidate
 
 
 def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: str, region: dict[str, Any], glyphs: list[dict[str, Any]]) -> FidelityAsset:
@@ -1953,6 +2118,7 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
             # Do not claim a raw crop is an isolated mathematical expression; a figure
             # or table the reviewer declared stays what they said it is.
             export_method = "raw-region"
+            rect = _raw_fallback_rect(page, region, owned, glyphs, rect)
             region = {**{k: v for k, v in region.items() if k != "formula_conditions"}, "grouping_pending": True,
                       "provenance": [*(p for p in region.get("provenance", []) if p != "auto-formula-conditions"), "precise-export-unavailable:" + str(exc)]}
             if region["kind"] == "math":
@@ -2250,6 +2416,9 @@ def _rejoin_line_breaks(text: str, evidence: tuple[Counter[str], Counter[str]]) 
             return f"{head}-{tail}"
         return head + tail
 
+    # Restored prose can cross native blocks, each styled separately. A matching
+    # emphasis seam is not a printed boundary inside a hyphenated word.
+    text = re.sub(r"([A-Za-z]+)-(\*{1,3})[ \t]*\n[ \t]*\2([A-Za-z]+)", r"\1-\n\3", text)
     return re.sub(r"(\}\}|[A-Za-z]*[a-z])-[ \t]*\n[ \t]*([A-Za-z][A-Za-z]*)", rejoin, text)
 
 
@@ -2578,6 +2747,12 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             for old, asset in constituents.items():
                 if old not in by_id and all(tuple(f.glyph_ids) in parts for f in asset.fragments):
                     by_id[old] = asset
+    crop_diagnostics = []
+    if override and override.get("asset_crops"):
+        from littrans.source_crops import apply_crops
+        crop_diagnostics = apply_crops(root, doc, number, source_hash, by_id, override["asset_crops"], glyphs)
+        units = [_make_unit(number, u.unit_id, u.source_markdown or u.source_text, u.bbox, by_id,
+                            u.kind.value, **{key: getattr(u, key) for key in OVERRIDE_UNIT_DEFAULTS}) for u in units]
     assets = list(by_id.values())
     owners = {gid:a.id for a in assets for f in a.fragments for gid in f.glyph_ids}
     if override and "units" in override:
@@ -2629,6 +2804,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             unit.asset_content_hashes = hashes
             unit.source_hash = _hash({"prepared_source_hash": unit.source_hash, "asset_content_hashes": hashes})
     ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": image_sha256, "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
+    if crop_diagnostics:
+        ledger["crop_diagnostics"] = crop_diagnostics
     if override is not None and override_origin:
         # Where the correction came from, so a replayed override stays auditable.
         ledger["source_overrides_origin"] = override_origin
@@ -3089,6 +3266,29 @@ def _current_page(
     return {"page": number, "fingerprint": _hash(payload), **payload}
 
 
+def _cross_page_container_candidates(units: list[SourceUnit], page: int) -> list[dict[str, Any]]:
+    from littrans.models import FLOAT_KINDS
+    from littrans.source_structure import LIST_LABEL_START, _starts_statement
+
+    body = [u for u in units if u.render_policy == RenderPolicy.INCLUDE
+            and u.kind.value not in {*FLOAT_KINDS, "footnote", "bibliography"}]
+    previous = [u for u in body if u.page == page - 1]
+    current = [u for u in body if u.page == page]
+    if not previous or not current:
+        return []
+    last, first = previous[-1], current[0]
+    parent = next((u for u in body if u.unit_id == last.parent_id), last)
+    if (first.parent_id == parent.unit_id or first.kind == UnitKind.HEADING
+            or _starts_statement(first.source_text) or re.match(r"[*\s]*Proof\b", first.source_text)
+            or any(mark in last.source_text for mark in QED_MARKERS)):
+        return []
+    if (_starts_statement(parent.source_text) or re.match(r"[*\s]*Proof\b", parent.source_text)) and (
+            LIST_LABEL_START.match(first.source_text) or first.continues_from_previous or last.continued_to_next):
+        return [{"unit_id": first.unit_id, "candidate_parent_id": parent.unit_id,
+                 "context_page": page - 1, "action": "Inspect the container across the page edge; confirm or correct parent_id through a unit override."}]
+    return []
+
+
 def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, Any]:
     root = Path(root).resolve()
     config = load_project(root)
@@ -3099,6 +3299,8 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
 
     all_units = _current_units(root)
     assets = load_assets(root)
+    candidates = {p: _cross_page_container_candidates(all_units, p) for p in pages}
+    pages = sorted(set(pages) | {c["context_page"] for rows in candidates.values() for c in rows})
     pages = sorted(set(pages) | {u.page for page in pages for u in page_evidence_units(page, all_units)})
     payload: dict[str, Any] = {"schema_version": 6, "kind": "source-fidelity-review", "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
     # The writing build is recorded but is not part of the packet identity: identical
@@ -3110,12 +3312,18 @@ def build_source_review_packet(root: Path, page_spec: str = "all") -> dict[str, 
         payload["document_structure"] = profile_context
     for page in payload["pages"]:
         page["boundary_diagnostics"] = _boundary_diagnostics(page["ledger"]["glyphs"], page["assets"])
+        if candidates.get(page["page"]):
+            page["boundary_diagnostics"].extend({"code": "cross-page-container-candidate", **c}
+                                                for c in candidates[page["page"]])
         page["structure_checks"] = _structure_checks(page)
     sections = []
     if profile_context:
         sections.append('<h2>Document-specific structure guidance</h2><pre>' + html.escape(json.dumps(profile_context, ensure_ascii=False, indent=2)) + '</pre>')
     for p in payload["pages"]:
         ledger = p["ledger"]
+        if ledger.get("crop_diagnostics"):
+            sections.append("<h3>Reviewed crop diagnostics</h3><pre>"
+                            + html.escape(json.dumps(ledger["crop_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
         if p["boundary_diagnostics"]:
             sections.append("<h3>Prose/formula boundary diagnostics</h3><pre>" + html.escape(json.dumps(p["boundary_diagnostics"], ensure_ascii=False, indent=2)) + "</pre>")
         if p["structure_checks"]["roles"] or p["structure_checks"]["joins"]:
@@ -3440,7 +3648,7 @@ def _verify_source_receipt(
         raise ValueError("page requires current visual coverage and boundary review")
 
 
-OVERRIDE_BLOCKS = ("regions", "units", "page_canvas_bbox")
+OVERRIDE_BLOCKS = ("regions", "units", "page_canvas_bbox", "asset_crops")
 # The optional unit fields the pipeline's structure assembly always passes to _make_unit,
 # with the model defaults an override item may leave out.
 OVERRIDE_UNIT_DEFAULTS: dict[str, Any] = {
@@ -3463,6 +3671,22 @@ def _complete_override(root: Path, page: int, override: dict[str, Any]) -> dict[
     path = _page_path(root, page)
     if path.is_file():
         recorded = read_json(path).get("source_overrides") or {}
+    if set(override) == {"asset_crops"}:
+        # A local recrop changes geometry only; carry the existing reading forward.
+        if isinstance(override["asset_crops"], list) and override["asset_crops"]:
+            incoming = override["asset_crops"]
+            keys = {(c.get("asset_id"), c.get("fragment_index")) for c in incoming if isinstance(c, dict)}
+            override = {"asset_crops": [c for c in recorded.get("asset_crops", [])
+                                         if (c["asset_id"], c["fragment_index"]) not in keys] + incoming}
+        override = {**recorded, **override}
+    if "asset_crops" in override and override["asset_crops"] is not None:
+        from littrans.source_crops import bind_crops
+        assets = load_assets(root)
+        crops = bind_crops(override["asset_crops"], assets, page)
+        cropped = {item["asset_id"] for item in crops}
+        if any(r.get("id") in cropped for r in override.get("regions", []) or []):
+            raise ValueError("asset_crops conflicts with rebuilt region; preserve that asset instead")
+        override = {**override, "asset_crops": crops}
     for block in OVERRIDE_BLOCKS:
         if recorded.get(block) is not None and block not in override:
             count = len(recorded[block]) if isinstance(recorded[block], list) else 1

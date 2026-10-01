@@ -214,6 +214,15 @@ def scaffold_project(root: Path, *, repo_root: Path | None = None, refresh: bool
             else:
                 kept.append(label)
             continue
+        if spec.relative == ".gitattributes" and target.exists():
+            body = target.read_text(encoding="utf-8")
+            rule = "**/.littrans/work/tasks/** -text -whitespace"
+            if not body.rstrip().endswith(rule):
+                atomic_write_text(target, body.rstrip() + "\n" + rule + "\n")
+                refreshed.append(label)
+            else:
+                kept.append(label)
+            continue
         if write_text_if_missing(target, render_scaffold_template(spec.template, context)):
             created.append(label)
         else:

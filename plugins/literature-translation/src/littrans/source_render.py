@@ -18,7 +18,7 @@ from littrans.extractor import parse_page_spec
 from littrans.fidelity_models import asset_reference_ids, load_assets
 from littrans.models import RenderPolicy, SourceUnit, UnitKind
 from littrans.rendering import _safe_name, _unit_html
-from littrans.representations import portable_href, resolve_asset_html
+from littrans.representations import AssetRenderCache, portable_href, resolve_asset_html
 from littrans.storage import atomic_write_text, load_project, read_json, read_jsonl
 from littrans.verification import verify_extraction
 
@@ -84,12 +84,13 @@ def _page_ledger(root: Path, page: int) -> dict[str, Any]:
     return read_json(path) if path.is_file() else {}
 
 
-def _unit_body(root: Path, unit: SourceUnit, output: Path, unit_map: dict[str, SourceUnit] | None = None) -> str:
+def _unit_body(root: Path, unit: SourceUnit, output: Path, unit_map: dict[str, SourceUnit] | None = None,
+               cache: AssetRenderCache | None = None) -> str:
     text = unit.source_markdown or unit.source_text
     body = _unit_html(unit, text, source_view=True, unit_map=unit_map)
     if unit.kind is UnitKind.FIGURE and "<figure" not in body:
         body = "<figure>" + body + "</figure>"
-    return resolve_asset_html(root, body, output, originals_only=True)
+    return resolve_asset_html(root, body, output, originals_only=True, cache=cache)
 
 
 def _groups(units: list[SourceUnit]) -> list[list[SourceUnit]]:
@@ -140,6 +141,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
     if not units:
         raise ValueError(f"No prepared source units for pages {page_spec}; run source extract first")
     assets = load_assets(root)
+    cache = AssetRenderCache(root)
     verification = verify_extraction(root, page_spec)
     output = root / "output"
     label = _safe_name(name) if name is not None else f"source-p{min(pages):04d}-p{max(pages):04d}"
@@ -216,7 +218,7 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
                 meta += " · footnotes " + ", ".join(html.escape(r) for r in unit.footnote_refs)
             articles.append(
                 f'<article class="unit kind-{html.escape(unit.kind.value)}" id="{html.escape(unit.unit_id)}">'
-                f'<span class="meta">{meta}</span><div class="body">{_unit_body(root, unit, output, unit_map)}</div></article>'
+                f'<span class="meta">{meta}</span><div class="body">{_unit_body(root, unit, output, unit_map, cache)}</div></article>'
             )
         multi = " multi" if len(visible) > 1 else ""
         sections.append(f'<section class="group{multi}">' + "".join(articles) + "</section>")

@@ -1,4 +1,4 @@
-# Migrating to LitTrans 0.9.1-dev.3
+# Migrating to LitTrans 0.9.1-dev.4
 
 This release requires project manifest v7 and settings schema v1. Unsupported versions are
 rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
@@ -8,6 +8,15 @@ Existing manifest-v7 projects with valid settings schema v1 can continue without
 This build changes no persisted schema and does not rewrite existing source evidence. Use the
 rebuild procedure below when moving from an unsupported project format or when deliberately
 starting a separate project.
+
+Version 0.9.1-dev.4 adds exact reviewed `asset_crops` and `source preview-review` without
+changing project schemas. Upgrade every host before using the new declarations; older
+plugins cannot replay them. A crop changes evidence and requires a fresh independent review.
+Existing source records are left intact until a supported correction or extraction command.
+Re-extraction can merge assets that older unit overrides named separately. Such stale overrides
+are rejected explicitly; refresh the correction against a new packet rather than discard it.
+Refresh `project scaffold` to protect task results and inspection evidence from Git newline
+conversion. Restore already-converted evidence from an intact copy; never adjust its hashes.
 
 Applied composed operators such as `log log x`, and the operator names `erf` and `erfc`, no
 longer count as translatable formula conditions. Existing original-image crops remain usable.

@@ -40,11 +40,11 @@ EQUATION_LABEL = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?|[A-Z]{2,6}\d?|\*{1,3})
 # Printed list labels: a bracketed clause marker ((a), (iv), (2)) or a closed number set
 # in the margin of an exercise or enumerated item (1., 1.11., 3.2.1., 2)). A bare "1.1"
 # without closing punctuation is as likely a section reference wrapped onto a new line.
-LIST_LABEL = re.compile(r"\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)]", re.I)
+LIST_LABEL = re.compile(r"\((?:[a-z]|[ivxlcdm]+|\d+)\)|(?:[a-z]|[ivxlcdm]+)\)|\d{1,3}(?:\.\d{1,3})*[.)]", re.I)
 # The same label opening a unit's text; a number must be followed by a space (after any
 # emphasis marker) so "1.5" inside a formula fragment never counts.
 LIST_LABEL_START = re.compile(
-    r"[*\s]*(?:\((?:[a-z]|[ivxlcdm]+|\d+)\)|\d{1,3}(?:\.\d{1,3})*[.)](?=\**\s))", re.I
+    r"[*\s]*(?:\((?:[a-z]|[ivxlcdm]+|\d+)\)|(?:[a-z]|[ivxlcdm]+)\)(?=\**\s)|\d{1,3}(?:\.\d{1,3})*[.)](?=\**\s))", re.I
 )
 # How far right of the margin a list item's text column may sit: a label such as
 # ``(iii)`` or ``12.`` and the gap after it. A row starting beyond it is a display.
@@ -428,6 +428,20 @@ def plan_structure(
     )
     labels = [(item["label"], [v / 2 for v in item["bbox"]]) for item in layout]
     notes, omitted = {}, {}
+    chapter_headings = set()
+    for block in blocks:
+        gs = [gm[gid] for line in block["lines"] for gid in line]
+        text = "".join(g["text"] for g in gs).strip()
+        if not re.fullmatch(r"(?:Chapter|Part)\s+(?:\d+|[IVXLCDM]+)", text, re.I):
+            continue
+        # A chapter label above a separate large title is opening matter, even if
+        # the detector calls the right-aligned label a running header.
+        if any(other["id"] != block["id"] and 0 <= other["bbox"][1] - block["bbox"][3] <= font_size * 8
+               and any(gm[gid]["size"] >= font_size * 1.25 for line in other["lines"] for gid in line)
+               and any(label in TITLE_LABELS and _contains(gm[gid], box)
+                       for label, box in labels for line in other["lines"] for gid in line)
+               for other in blocks):
+            chapter_headings.add(block["id"])
     display_glyph_ids = display_glyph_ids or set()
     # Page numbers detected at the page edge are running material even when the PDF
     # merges them into the neighbouring paragraph's text block.
@@ -468,7 +482,8 @@ def plan_structure(
             and all(box[1] - 2 <= (g["bbox"][1] + g["bbox"][3]) / 2 <= box[3] + 2 for g in gs)
             for label, box in labels
         ):
-            omitted[b["id"]] = "running-header-or-footer"
+            if b["id"] not in chapter_headings:
+                omitted[b["id"]] = "running-header-or-footer"
         if any(label == "footnote" and any(_contains(g, box) for g in gs) for label, box in labels):
             match = re.match(r"(\d+)(?!\d)(?=\s|[^\W\d_]|[.)：:、．\]）])", "".join(g["text"] for g in gs))
             if match:
@@ -747,6 +762,7 @@ def plan_structure(
         # Present only on pages with labelled items: a page without them keeps a ledger
         # identical to one prepared before labels were recognised.
         **({"list_items": list_items} if list_items else {}),
+        **({"chapter_headings": sorted(chapter_headings)} if chapter_headings else {}),
     }
 
 
@@ -812,6 +828,8 @@ def assemble_structure(
 
     for u in units:
         bid = u.unit_id.split("-", 1)[1]
+        if bid in plan.get("chapter_headings", []):
+            u = rebuild(u, kind="heading", render_policy=RenderPolicy.INCLUDE, translatable=True)
         refs = asset_reference_ids(u.source_text)
         display = any(assets[aid].display for aid in refs) or bid in display_blocks
         # An indented paragraph that stays in its group (an italic continuation of a
@@ -859,7 +877,8 @@ def assemble_structure(
             label = LIST_LABEL_START.match(u.source_text)
             # A bracketed clause ((a), (ii)) belongs to the paragraph or statement that
             # introduces it; a closed number (1.11.) opens an exercise or item of its own.
-            enumerated = label is not None and label[0].lstrip("* \t").startswith("(")
+            enumerated = label is not None and (label[0].lstrip("* \t").startswith("(")
+                                                or label[0].lstrip("* \t")[0].isalpha())
             numbered = label is not None and not enumerated
             proof = bool(re.match(r"[*\s]*Proof\b", u.source_text))
             # A bold run-in label ("2.1.4. Stochastic processes.") opens a paragraph.

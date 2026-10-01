@@ -419,6 +419,14 @@ def source_import_review(project: PathArg, input_file: PathArg, confirm_visual_r
     emit(import_source_review(project, input_file, confirm_visual_review))
 
 
+@source_app.command("preview-review")
+def source_preview_review(project: PathArg, input_file: PathArg,
+                          output: Path = typer.Option(..., "--output")) -> None:
+    """Preview corrections without changing source records or approval."""
+    from littrans.source_crops import preview_review
+    emit(preview_review(project, input_file, output))
+
+
 @assets_app.command("submit")
 def assets_submit(project: PathArg, input_file: PathArg) -> None:
     from littrans.representations import submit_candidates

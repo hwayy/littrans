@@ -15,6 +15,27 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.1-dev.4] - 2026-10-01
+
+### Added
+
+- Reviewed `asset_crops` preserve exact per-fragment page bounds and glyph ownership.
+  `source preview-review` generates candidate images and overlays without changing approval.
+
+### Fixed
+
+- Raw export fallback uses complete measured ink when narrowing retains graphical evidence.
+- Source rendering shares an asset cache; scaffold preserves immutable task bytes across Git checkouts.
+- Source preparation handles math-face abbreviations, text subscripts, one-sided list labels,
+  shared middle-row equation tags, chapter-opening labels, mixed figure/table panels,
+  table bottom rules and native captions. Inline punctuation ambiguity remains a visual decision.
+
+### Compatibility
+
+- No project schema migration. Refresh scaffold for task byte-preservation rules; this cannot
+  restore previously normalized evidence. Existing source records are not rewritten. Corrections
+  need fresh independent review; old plugins do not support the new crop declarations.
+
 ## [0.9.1-dev.3] - 2026-10-01
 
 ### Fixed

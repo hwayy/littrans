@@ -8,3 +8,5 @@ registries or receipts. Propose new structure rules to the coordinator without a
 or approving the pages that depend on them. Return the report specified in the reference:
 approved/blocked pages, proposed rules, outside invalidations and checkpoint evidence.
 Only attest images actually viewed. Missing visual capability blocks visual certification.
+For a local crop defect, use `override.asset_crops` and `source preview-review` as described
+in the reference. Submit the declaration, never edit generated pictures. Preview is not approval.

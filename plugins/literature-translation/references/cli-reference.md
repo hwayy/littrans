@@ -489,6 +489,31 @@ Example:
 littrans source import-review PROJECT REVIEW.json --confirm-visual-review
 ```
 
+### littrans source preview-review
+
+Preview corrections without changing source records or approval.
+
+```text
+littrans source preview-review PROJECT INPUT_FILE --output DIRECTORY
+```
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `PROJECT` | `path` | yes | `required` | `[]` | Project directory containing project.yaml. |
+| `INPUT_FILE` | `path` | yes | `required` | `[]` | Packet-bound source review JSON containing corrections. |
+| `--output` | `path` | yes | `required` | `[]` | New preview directory; inside a project it must be below output/. |
+
+Uses the recorded layout and the same preparation path as import. Writes `index.html`,
+candidate PNG/SVG images and `preview.json` with geometry diagnostics. Returns `preview`,
+`report`, `pages` and an empty `approved_pages`. Existing output directories, stale packets,
+changed source/guidance and invalid corrections are refused. A preview grants no approval.
+
+Example:
+
+```text
+littrans source preview-review PROJECT REVIEW.json --output PROJECT/output/recrop-1
+```
+
 ### littrans source extract
 
 Preserve native prose and original assets.
@@ -1574,12 +1599,26 @@ transaction rolls back on any violation.
   (see [Formula-contained language and page overflow](#formula-contained-language-and-original-page-overflow)).
 - The override is the page's whole correction. It replaces the override the page's ledger
   already records (`source_overrides`), block by block, and it is what `source extract --replace` replays afterwards. A decision whose `override` omits a block the ledger records
-  (`regions`, `units` or `page_canvas_bbox`) is refused — `page 64: the recorded override
+  (`regions`, `units`, `asset_crops` or `page_canvas_bbox`) is refused — `page 64: the recorded override
   carries units (21 entries) that this override omits; carry it forward or set "units": null
   to drop it` — because correcting one formula with `regions` alone would otherwise retire the
   page's pinned `units` without a word. Carry the block forward, or state the drop with `null`
   (the ledger then records the override without it). An override of nothing but `null`
   blocks is not a correction: re-derive such a page with `source extract --pages N --replace --discard-overrides` and review a new packet.
+- `asset_crops` corrects geometry without changing glyph ownership. Each entry is
+  `{"asset_id": "ID", "fragment_index": 0, "bbox": [x0,y0,x1,y1], "reason": "Visual finding"}`.
+  The zero-based index selects one fragment on the reviewed page. Use the packet's PDF
+  coordinates: finite, ordered and within the effective page canvas. PNG/SVG export uses
+  exactly that raw page crop, without padding or metric expansion. The ID, glyphs, conditions
+  and other fragments stay intact; content identity and dependent evidence change.
+  Import binds source SHA256, glyph IDs and fragment count for replay; changed targets fail
+  explicitly. Do not edit saved bindings to bypass a mismatch.
+  A crop-only override carries existing blocks and other crop targets forward. In a full
+  override, carry `asset_crops` forward or use `null` to drop it. A rebuilt region with the
+  same `id` conflicts with a crop: replace that region with `preserve_asset_id`, keeping the
+  rest of the page's regions. Missing ink measurements do not reject the candidate;
+  `crop_diagnostics` reports unmeasured glyphs and ink outside the frame. Check the preview,
+  import the correction, then obtain a fresh independent review. A crop never approves a page.
 - `regions` replaces the detector/native proposals for the page. Each region names `kind`
   (`math`, `table`, `code`, `figure` or `mixed-region`) and either a single `bbox` in PDF points
   or `fragments: [{bbox, glyph_ids?}, ...]` for one logical asset with several ordered fragments

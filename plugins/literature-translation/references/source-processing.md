@@ -396,8 +396,14 @@ later change of `formula_conditions`, `kind`, `display` or `grouping_pending` mo
 `content_sha256`. Units and page ledgers reference the ID, so freezing it is what lets a
 correction survive; a checker that recomputes directory names must therefore accept, for
 every asset a page ledger's `source_overrides.regions[].preserve_asset_id` names, the
-creation-time value (the identity hash without conditions declared after creation). No other
-asset can have a directory name that differs from the rule above.
+creation-time value (the identity hash without conditions declared after creation).
+
+Reviewed `asset_crops` are another explicit export path. Their directory hashes bind the crop
+declaration, source hash, page, original glyph IDs and fragment count, using export method
+`reviewed-page-crop-v1`. The override ledger and `reviewed-page-crop` provenance marker retain
+this evidence; these exports do not use the automatic crop's `evidence.json` contract. The
+asset ID stays fixed, while its content hash also binds the crop provenance markers. Consumers
+must use each fragment's recorded paths rather than infer them from an asset ID.
 
 Crop directories under `derived/assets/fidelity/<hash>/` are addressed by export identity, so a
 changed geometry writes a new directory. Once `source extract --replace` or an override import
@@ -459,6 +465,12 @@ See the [CLI contract](cli-reference.md#override-contract).
 See the [CLI contract](cli-reference.md#formula-contained-language-and-original-page-overflow).
 
 ## Narrow original-glyph corrections
+
+For an exact visual recrop, use [asset_crops](cli-reference.md#override-contract) and
+`source preview-review`. It preserves ownership separately from the output box, works on
+each fragment of math, figures and tables, and replays through ordinary source extraction.
+Automatic fallback now uses measured ink when complete and when no graphical evidence would
+be discarded; incomplete measurements retain conservative bounds and the review warning.
 
 When a region includes neighboring prose, a source reviewer may explicitly name its existing PDF
 `glyph_ids`. The narrow glyph exporter copies the selected original PDF vector paths and supported

@@ -33,7 +33,8 @@ plugin upgrade run `tools/lt.cmd project scaffold {{ project_rel }} --refresh` s
 - **Never add a public remote.** The record embeds excerpts of a copyrighted source.
 - **The source PDF never enters git; the extraction and its decision trace do.**
   `tools/lt.cmd project tracked {{ project_rel }}` is the authority — it asks git.
-- **Write LF, never CRLF.** Pass `newline="\n"` from Python; pin `eol=lf` in `.gitattributes`.
+- **Write new text with LF.** Keep task results and inspection evidence byte-for-byte;
+  their subtree uses `-text -whitespace` in `.gitattributes`.
 - **Always pass `--pages`.** It defaults to the whole document.
 - **One host writes at a time.** Pull before writing, run `project tracked` before
   committing, push after; a conflict in a record file means both hosts wrote — take one side

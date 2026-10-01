@@ -13,6 +13,12 @@ The procedure a `literature-source-reviewer` subagent follows for its assigned p
 
 ## Loop
 
+Use `source preview-review PROJECT REVIEW.json --output PROJECT/output/PREVIEW` to measure
+and try a local crop before submission. The directory must be new. Ambiguous inline punctuation
+and cross-page container candidates are prompts for visual judgment, not automatic corrections.
+For a continuation candidate, inspect the supplied previous-page context and declare a unit
+parent override only when its semantic scope is clear.
+
 1. Read the packet: `packet.json` (units, assets with their regions, the page ledger with unassigned glyphs, the bound `document_structure`), `coverage.html` with its page overlays, and `review-template.json`. Each template page carries a `context` block: declared `formula_conditions`, `grouping_pending` asset IDs, `boundary_diagnostics`, blocking `findings` and the `structure_checks` to confirm one by one. Confirm those lists against the original; do not guess from crops.
 2. Review every assigned page against its original image as described below, and fill its decision in the template.
 3. Import with `--confirm-visual-review` only after you have actually viewed each page image and crop you attest. Read the result:
@@ -45,6 +51,16 @@ Fill every field the template asks for (see [decision fields](source-processing.
 - **Issues.** `issues` must be empty for approval. Record source and layout defects precisely in `notes` and in your report.
 
 ## Corrections
+
+For a local boundary defect, declare `override.asset_crops` with the asset ID, zero-based
+fragment index, exact PDF-coordinate bbox and the reason established from the original.
+Run `source preview-review PROJECT REVIEW.json --output PROJECT/output/recrop-N` in a new
+directory. This command is permitted for assigned pages, including in a task envelope:
+it writes candidate images and diagnostics only. Compare PNG, SVG and the original overlay;
+adjust the declaration as needed. Unsupported automatic ink measurement is a diagnostic,
+not a requirement to wait for a plugin release. Keep ownership and report uncertain content.
+Submit the correction through the existing task result; the coordinator imports it and
+dispatches a fresh independent review. Do not attest the corrected page from the old packet.
 
 Correct a page by adding an `override` to its decision, using `regions`, `units` or `page_canvas_bbox` (see the [override contract](source-processing.md#override-contract)). A decision that carries an override is not an approval: the import re-prepares the page from it and ignores its flags, so the corrected page is approved only from its fresh packet. Prefer `regions` alone and let structure assembly rebuild the units; write `units` only when assembly cannot express the reading.
 

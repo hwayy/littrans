@@ -27,6 +27,14 @@ Read-only native reviewers return content; the coordinator saves it as result.js
 Writers may save it themselves. The coordinator receives it with task receive PROJECT TASK_ID.
 Source and asset reviews additionally require --confirm-visual-review after actual inspection.
 
+Source-review workers may run `source preview-review` for assigned corrections, then return
+the packet-bound `asset_crops` declaration in their native result. Preview does not import
+the result or certify the new images; corrected pages require a fresh independent task.
+Task results and inspection evidence are bound by original bytes. Scaffold protects the
+task subtree with `-text -whitespace`; keep that rule after general text normalization rules.
+Refresh existing scaffolds to add it. It cannot recover bytes already changed by a checkout:
+restore those records from an intact copy, without replacing their recorded hashes.
+
 ## Recovery and authority
 Task status reports pending/claimed/imported and result_available separately. A saved result
 survives a failed import. Correct serialization offline, preserve prior responses and retry.
