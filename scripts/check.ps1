@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
     }
 }
 
-& $VenvPython -c "import hatchling"
+& $VenvPython -c "import hatchling" >$null 2>&1
 if ($LASTEXITCODE -ne 0) {
     & $VenvPython -m pip install --quiet --disable-pip-version-check "hatchling>=1.25"
     if ($LASTEXITCODE -ne 0) {

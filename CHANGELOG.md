@@ -19,6 +19,8 @@ replaced.
 
 ### Fixed
 
+- Windows release checks suppress the expected missing-Hatchling traceback during dependency
+  detection while retaining installation failure reporting.
 - Composite figures sharing one caption export one complete PNG/SVG crop, preserving
   panel positions, whitespace and relative sizes in narrow and wide HTML layouts.
   Separately captioned figures and intervening text retain their boundary protections.
