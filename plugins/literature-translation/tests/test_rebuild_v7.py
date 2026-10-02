@@ -105,7 +105,7 @@ def test_v7_rebuild_preserves_validated_settings_and_bindings(configured, tmp_pa
         if old_local.source_path else []
     )
     assert configuration == {
-        "mode": "preserve", "source_schema_version": 7,
+        "mode": "preserve", "source_schema_version": 8,
         "preset": {"name": "technical-book", "version": "1"},
         "preserved": SECTIONS, "reset": [],
         "local_migrated": [{"path": "commands.backup", "binding": "command-name"},
@@ -187,7 +187,7 @@ def test_historical_project_reports_preset_defaults_and_legacy_policy(tmp_path: 
     seed_project(old, config)
     before = snapshot(old)
     new = tmp_path / "rebuilt"
-    with pytest.raises(ValueError, match="no v7 settings to preserve"):
+    with pytest.raises(ValueError, match="no current v8 settings to preserve"):
         rebuild_project(old, new, settings="preserve")
     assert not new.exists()
 
@@ -212,6 +212,6 @@ def test_rebuild_cli_reports_configuration(configured, tmp_path: Path) -> None:
                                       "--settings", "preset", "--preset", "technical-book"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
-    assert payload["schema_version"] == 7
+    assert payload["schema_version"] == 8
     assert payload["rebuild"]["configuration"]["mode"] == "preset"
     assert payload["rebuild"]["inherited_approvals"] is False

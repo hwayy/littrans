@@ -146,13 +146,19 @@ def _semantic_context_units(
 
 
 def _semantic_errors(root: Path, units: list[SourceUnit]) -> list[dict[str, Any]]:
-    errors: list[dict[str, Any]] = []
+    from littrans.paragraphs import structure_errors
+    errors: list[dict[str, Any]] = [
+        {"code": "invalid-paragraph-relationship", "unit_id": uid, "message": message}
+        for uid, message in structure_errors(list(units))
+    ]
     seen: set[str] = set()
     sidebar_members: dict[str, list[tuple[int, SourceUnit]]] = {}
     for index, unit in enumerate(units):
         if unit.unit_id in seen:
             errors.append({"code": "duplicate-unit-id", "unit_id": unit.unit_id})
         seen.add(unit.unit_id)
+        if unit.paragraph and unit.verification_status is not SemanticStatus.VERIFIED:
+            errors.append({"code": "unconfirmed-paragraph-structure", "unit_id": unit.unit_id})
         if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", unit.source_text):
             errors.append({"code": "source-control-character", "unit_id": unit.unit_id})
         if unit.kind is UnitKind.EQUATION:

@@ -190,15 +190,18 @@ def test_two_labels_on_one_formula_are_each_retained() -> None:
     assert len(result) == 1 and result[0].equation_numbers == ["1.1", "1.2"]
 
 
-def test_consecutive_container_keeps_sentence_flags_and_stops_at_qed() -> None:
+def test_consecutive_labels_only_propose_cross_page_container_membership() -> None:
     parent = fidelity._make_unit(1, "theorem", "Theorem 1.", [0, 0, 100, 10], {}, parent_id="theorem")
     tail = fidelity._make_unit(1, "item2", "(ii) Second", [0, 30, 100, 40], {}, parent_id="theorem")
     current = fidelity._make_unit(2, "item3", "(iii) Third", [0, 0, 100, 10], {}, parent_id="item3")
-    result = fidelity._continue_numbered_container([parent, tail], [current], {})
-    assert result[0].parent_id == "theorem"
-    assert not result[0].continues_from_previous
+    candidates = fidelity._cross_page_container_candidates([parent, tail, current], 2)
+    assert candidates[0]["candidate_parent_id"] == "theorem"
+    assert current.parent_id == "item3"
+    assert not current.continues_from_previous
     tail.source_text += " □"
-    assert fidelity._continue_numbered_container([parent, tail], [current], {})[0].parent_id == "item3"
+    if tail.paragraph:
+        tail.paragraph = tail.paragraph.model_copy(update={"body_text": tail.source_text, "body_markdown": tail.source_markdown or tail.source_text})
+    assert fidelity._cross_page_container_candidates([parent, tail, current], 2) == []
 
 
 def test_adjudications_do_not_cover_unlisted_defects(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,6 +247,8 @@ def test_closed_proof_groups_paragraphs_without_joining_sentences() -> None:
     assert [u.parent_id for u in result] == ["0", "0", "0", "3"]
     assert not any(u.continues_from_previous for u in result)
     units[2].source_text = "Theorem 2. A new statement. □"
+    if units[2].paragraph:
+        units[2].paragraph = units[2].paragraph.model_copy(update={"body_text": units[2].source_text, "body_markdown": units[2].source_markdown or units[2].source_text})
     assert fidelity._complete_closed_proofs(units, {})[1].parent_id == "1"
 
 

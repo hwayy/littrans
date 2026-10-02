@@ -25,7 +25,7 @@ def configured(tmp_path: Path) -> Path:
 
 def test_manifest_settings_state_are_separate(configured):
     manifest = yaml_read(configured / "project.yaml")
-    assert manifest["schema_version"] == 7
+    assert manifest["schema_version"] == 8
     assert "title" not in manifest and "status" not in manifest
     before = (configured / "settings.yaml").read_bytes()
     config = load_project(configured)
@@ -351,7 +351,8 @@ def test_outline_policy_consumes_pdf_bookmarks(tmp_path, mode, expected):
     edit(root, "outline_source", mode)
     prepare_source(root, allow_missing_layout=True)
     units = read_jsonl(root / "derived/units.jsonl", SourceUnit)
-    assert units[0].kind == expected
+    assert units[0].kind == "paragraph"
+    assert units[0].is_heading == (expected == "heading")
 
 
 @pytest.mark.parametrize("mode,blocked", [("original", False), ("reviewed-transcription", True)])

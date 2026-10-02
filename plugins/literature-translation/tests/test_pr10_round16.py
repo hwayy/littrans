@@ -20,8 +20,12 @@ def test_asset_table_complete_reading_outputs(project, originals_only):
     unit = next(u for u in units if u.page == 1 and u.asset_content_hashes)
     aid = next(iter(unit.asset_content_hashes))
     unit.kind = UnitKind.TABLE
+    unit.paragraph = None
+    unit.paragraph_id = None
     unit.translatable = True
     unit.source_text = unit.source_markdown = "SOURCE_LABEL {{asset:" + aid + "}}"
+    if unit.paragraph:
+        unit.paragraph = unit.paragraph.model_copy(update={"body_text": unit.source_text, "body_markdown": unit.source_markdown or unit.source_text})
     unit.table = TableData(rows=[["SOURCE_LABEL", "{{asset:" + aid + "}}"]], column_count=2, header_rows=0)
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")

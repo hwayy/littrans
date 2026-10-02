@@ -2216,24 +2216,49 @@ def _asset_impl(root: Path, doc: fitz.Document, page_number: int, source_hash: s
 
 
 def _make_unit(page: int, uid: str, text: str, bbox: Any, assets: dict[str, FidelityAsset], kind: str = "paragraph", **extra: Any) -> SourceUnit:
+    from littrans.models import ParagraphData
+    hint = kind if kind in {"heading", "list_item"} else None
+    if hint:
+        kind = "paragraph"
     refs = asset_reference_ids(text)
     hashes = {aid: assets[aid].content_sha256 for aid in refs}
-    extra.setdefault("protected_tokens", protected_tokens(re.sub(r"\{\{asset:[^}]+\}\}", "", text), heading=kind == "heading"))
-    extra.setdefault("translatable", True)
-    payload = {"page": page, "text": text, "bbox": _box(bbox), "asset_content_hashes": hashes, "kind": kind, **extra}
     prose = re.sub(r"\{\{asset:[^}]+\}\}", "", text).strip()
     pure_math = kind != "footnote" and bool(refs) and not prose and all(assets[aid].kind == "math" for aid in refs)
     if pure_math:
         kind = "equation"
-        payload["kind"] = kind
         extra["translatable"] = any(assets[aid].formula_conditions for aid in refs)
-        payload["translatable"] = extra["translatable"]
     elif kind == "equation" and prose and extra.get("render_policy", "include") != "omit":
-        # A displayed line that also carries prose ("... for all times t > 0.") keeps
-        # translatable text even when it was rebuilt from a formula-only unit.
         extra["translatable"] = True
-        payload["translatable"] = True
-    return SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox), source_text=text, source_markdown=text, source_hash=_hash(payload), confidence=0, latex=None, asset_content_hashes=hashes, asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox) for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
+    extra.setdefault("translatable", True)
+    if kind == "paragraph":
+        data = extra.get("paragraph")
+        if isinstance(data, dict):
+            data = ParagraphData.model_validate(data)
+        if data is None:
+            data = ParagraphData(body_text=text, body_markdown=text,
+                                 candidates=([{ "kind": "outline" if hint == "heading" else "label",
+                                                "reason": "layout detector"}] if hint else []))
+        elif not data.label:
+            data = data.model_copy(update={"body_text": text, "body_markdown": text})
+        extra["paragraph"] = data
+    else:
+        extra.pop("paragraph", None)
+        if extra.get("paragraph_id") == uid:
+            extra.pop("paragraph_id")
+    if extra.get("paragraph"):
+        data = extra["paragraph"]
+        prose = data.body_markdown or data.body_text
+        if data.label:
+            prose += "\n" + "\n".join(p.source_text for p in data.label.parts if p.policy == "translatable")
+    extra.setdefault("protected_tokens", protected_tokens(prose))
+    unit = SourceUnit(unit_id=uid, page=page, kind=UnitKind(kind), bbox=_box(bbox),
+                      source_text=text, source_markdown=text, source_hash="pending", confidence=0,
+                      latex=None, asset_content_hashes=hashes,
+                      asset_refs=[AssetRef(kind="fidelity", path=f.png_path, bbox=f.bbox)
+                                  for aid in dict.fromkeys(refs) for f in assets[aid].fragments], **extra)
+    from littrans.paragraphs import source_binding
+    unit.source_hash = source_binding(unit)
+    return unit
 
 
 def _separate_display_units(units: list[SourceUnit], assets: dict[str, FidelityAsset],
@@ -2399,7 +2424,7 @@ def _complete_closed_proofs(units: list[SourceUnit], assets: dict[str, FidelityA
     for index, unit in enumerate(units):
         if unit.render_policy == RenderPolicy.OMIT:
             continue
-        if unit.kind == UnitKind.HEADING or _starts_statement(unit.source_text):
+        if unit.is_heading or _starts_statement(unit.source_text):
             start = None
         if re.match(r"[*\s]*Proof\b", unit.source_text):
             start = index
@@ -2600,6 +2625,7 @@ def _boundary_space(left: dict[str, Any] | None, right: dict[str, Any] | None,
 def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str, layout: dict[str, Any], override: dict[str, Any] | None = None,
                   override_origin: dict[str, Any] | None = None,
                   reviewed_profile: tuple[bool, dict[str, Any] | None] = (False, None)) -> tuple[list[SourceUnit], list[FidelityAsset], dict[str, Any]]:
+    from littrans.paragraphs import source_binding
     page = doc[number - 1]
     original_page_bbox = list(page.rect)
     original_glyphs, original_blocks = _native(page)
@@ -2821,7 +2847,22 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
                     kind = "table"
                 if kind in {"figure", "table"}:
                     box = _union([f.bbox for aid in block_refs for f in by_id[aid].fragments])
-            units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, box, by_id, kind=kind, footnote_refs=list(dict.fromkeys(footnote_refs))))
+            paragraph = None
+            if kind in {"paragraph", "heading", "list_item"}:
+                from littrans.models import ParagraphData, ParagraphLayout
+                lines = [[glyph_by_id[gid] for gid in line if inked_glyph(glyph_by_id[gid])]
+                         for line in block["lines"]]
+                starts = [line[0]["origin"][0] for line in lines if line]
+                body_start = min(starts[1:]) if len(starts) > 1 else (starts[0] if starts else box[0])
+                paragraph = ParagraphData(body_text=text, body_markdown=text,
+                    layout=ParagraphLayout(left_indent_pt=body_start - structure["margin"],
+                        first_line_offset_pt=(starts[0] - body_start) if starts else 0,
+                        font_size_pt=structure["font_size"]),
+                    candidates=([{"kind": "outline" if kind == "heading" else "label",
+                                  "reason": "layout or glyph evidence"}]
+                                if kind != "paragraph" else []))
+            units.append(_make_unit(number, f"p{number:04d}-{block['id']}", text, box, by_id, kind=kind,
+                                    paragraph=paragraph, footnote_refs=list(dict.fromkeys(footnote_refs))))
     for asset in assets:
         if asset.id not in emitted:
             fragment = asset.fragments[0]
@@ -2903,6 +2944,7 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
             )
         units = []
         for item in override["units"]:
+            UnitKind(item.get("kind", "paragraph"))
             if item.get("latex") is not None:
                 raise ValueError("source preservation cannot import LaTeX")
             # The same optional keys the pipeline's structure assembly passes, so a unit
@@ -2914,16 +2956,16 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         titles = {title.strip(): level for level, title, p in doc.get_toc() if p == number}
         from littrans.semantics import detect_code_language
         for unit in units:
-            before_policy = (unit.kind, unit.code_language)
+            before_policy = (unit.kind, unit.code_language, unit.paragraph.model_dump() if unit.paragraph else None)
             if source_policy.outline_source != "font-and-numbering" and unit.source_text.strip() in titles:
-                unit.kind = UnitKind.HEADING
-            elif source_policy.outline_source == "pdf-bookmarks" and unit.kind == UnitKind.HEADING:
+                if unit.paragraph is not None:
+                    unit.paragraph = unit.paragraph.model_copy(update={"outline_level": titles[unit.source_text.strip()]})
+            elif source_policy.outline_source == "pdf-bookmarks" and unit.is_heading:
                 unit.kind = UnitKind.PARAGRAPH
             if unit.kind == UnitKind.CODE:
                 unit.code_language = detect_code_language(unit.source_text) if source_policy.translation.code.detect_language else None
-            if (unit.kind, unit.code_language) != before_policy:
-                unit.source_hash = _hash({"prepared_source_hash": unit.source_hash,
-                                          "kind": unit.kind.value, "code_language": unit.code_language})
+            if (unit.kind, unit.code_language, unit.paragraph.model_dump() if unit.paragraph else None) != before_policy:
+                unit.source_hash = source_binding(unit)
     # Structure assembly can change grouping or create coalesced assets after export.
     # Bind the final semantics before publishing either assets or their source units.
     for asset in assets:
@@ -2931,9 +2973,8 @@ def _page_prepare(root: Path, doc: fitz.Document, number: int, source_hash: str,
         asset.content_sha256 = _asset_content_identity(asset)
     for unit in units:
         hashes = {aid: by_id[aid].content_sha256 for aid in asset_reference_ids(unit.source_markdown or unit.source_text)}
-        if hashes != unit.asset_content_hashes:
-            unit.asset_content_hashes = hashes
-            unit.source_hash = _hash({"prepared_source_hash": unit.source_hash, "asset_content_hashes": hashes})
+        unit.asset_content_hashes = hashes
+        unit.source_hash = source_binding(unit)
     ledger = {"schema_version": 6, "page": number, "source_sha256": source_hash, "width": page.rect.width, "height": page.rect.height, "page_image": str(image_path.relative_to(root)).replace("\\", "/"), "page_image_sha256": image_sha256, "layout_status": layout["status"], "layout_reason": layout.get("reason"), "layout_fingerprint": layout.get("fingerprint"), "glyphs": [{**g, "owner": owners.get(g["id"], "native-text")} for g in glyphs], "vector_regions": [_box(d["rect"]) for d in page.get_drawings()], "raster_regions": [_box(i["bbox"]) for i in page.get_image_info()], "asset_ids": list(by_id), "unit_ids": [u.unit_id for u in units], "grouping_pending": [a.id for a in assets if a.grouping_pending], "reading_order_review_required": True, "source_overrides": override, "structure": {k: v for k, v in structure.items() if k != "blocks"}}
     ledger["layout_rule_version"] = "1"
     if crop_diagnostics:
@@ -3253,16 +3294,22 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
                 page_units, page_assets, ledger = _page_prepare(root, doc, number, digest, page_layout, reviewed_profile=reviewed_profile)
                 if override:
                     discarded.append(number)
-            if not override or discard_overrides:
-                page_units = _continue_numbered_container(units, page_units, {**registry, **{a.id: a for a in page_assets}})
             units.extend(page_units)
             registry.update({a.id: a for a in page_assets})
             ledgers.append(ledger)
         # Reject an inconsistent footnote graph before publishing; a failure here
         # rolls the whole page set back instead of leaving unverifiable units.
+        units.sort(key=lambda u: u.page)
+        from littrans.paragraphs import bind_sections, structure_errors
+        units = bind_sections(units)
+        problems = structure_errors(units)
+        if problems:
+            raise ValueError(f"Invalid paragraph relationships: {problems}")
         _validate_footnote_relationships(units)
         _invalidate(root, old, units)
         units.sort(key=lambda u: u.page)
+        from littrans.paragraphs import bind_sections
+        units = bind_sections(units)
         write_jsonl(root / "derived/units.jsonl", units)
         write_jsonl(root / "derived/fidelity-assets.jsonl", registry.values())
         for ledger in ledgers:
@@ -3287,6 +3334,8 @@ def prepare_source(root: Path, page_spec: str = "all", replace: bool = False,
             for unit in units:
                 if unit.page in statuses:
                     unit.verification_status = statuses[unit.page]
+            from littrans.paragraphs import bind_sections
+            units = bind_sections(units)
             write_jsonl(root / "derived/units.jsonl", units)
         # Crops the replaced pages no longer refer to are reclaimed once the new authority
         # is committed (the transaction snapshots files, not directories) and before the
@@ -3361,6 +3410,10 @@ def _current_units(root: Path) -> list[SourceUnit]:
     if len({u.unit_id for u in all_units}) != len(all_units):
         raise ValueError("duplicate source unit IDs anywhere in project")
     _validate_footnote_relationships(all_units)
+    from littrans.paragraphs import structure_errors
+    problems = structure_errors(all_units)
+    if problems:
+        raise ValueError(f"Invalid paragraph relationships: {problems}")
     return all_units
 
 
@@ -3378,6 +3431,30 @@ def _current_page(
     if assets is None:
         assets = load_assets(root)
     units = [u for u in all_units if u.page == number]
+    glyph_map = {g["id"]: g for g in ledger["glyphs"]}
+    for unit in units:
+        label = unit.paragraph.label if unit.paragraph else None
+        if not label:
+            continue
+        if not label.evidence.glyph_ids:
+            if ledger["glyphs"]:
+                raise ValueError(f"Label requires available native glyph evidence: {unit.unit_id}")
+            continue
+        ids = label.evidence.glyph_ids
+        selected_glyphs = [g for g in ledger["glyphs"] if g["id"] in ids]
+        if [g["id"] for g in selected_glyphs] != ids or any(gid not in glyph_map for gid in ids):
+            raise ValueError(f"Label glyphs must belong to the page in native order: {unit.unit_id}")
+        def compact(value: str) -> str:
+            return re.sub(r"\s|(?<!\\)[*_]{1,3}", "", value)
+        if compact("".join(g["text"] for g in selected_glyphs)) != compact(label.source_text):
+            raise ValueError(f"Label glyphs do not reproduce the label parts: {unit.unit_id}")
+        box = label.evidence.bbox
+        if box is None or any(not _inside(g, list(box)) for g in selected_glyphs):
+            raise ValueError(f"Label box must contain its glyphs: {unit.unit_id}")
+        if any(not _inside(g, list(unit.bbox)) for g in selected_glyphs):
+            raise ValueError(f"Label glyphs must belong to their source unit: {unit.unit_id}")
+        if any(g.get("owner", "native-text") != "native-text" for g in selected_glyphs):
+            raise ValueError(f"Label glyphs overlap an asset: {unit.unit_id}")
     selected = [assets[aid] for aid in ledger["asset_ids"]]
     files = {ledger["page_image"]: sha256_file(_path(root, ledger["page_image"]))}
     if files[ledger["page_image"]] != ledger["page_image_sha256"]:
@@ -3409,40 +3486,6 @@ def _current_page(
     return {"page": number, "fingerprint": _hash(payload), **payload}
 
 
-def _continue_numbered_container(previous: list[SourceUnit], current: list[SourceUnit],
-                                assets: dict[str, FidelityAsset]) -> list[SourceUnit]:
-    from littrans.layout_geometry import consecutive_labels
-    from littrans.source_structure import LIST_LABEL_START, _starts_statement
-    if not current:
-        return current
-    body = [u for u in current if u.render_policy == RenderPolicy.INCLUDE and u.kind == UnitKind.PARAGRAPH]
-    preceding = [u for u in previous if u.page == current[0].page - 1
-                 and u.render_policy == RenderPolicy.INCLUDE and u.kind in {UnitKind.PARAGRAPH, UnitKind.EQUATION}]
-    if not body or not preceding:
-        return current
-    first, tail = body[0], preceding[-1]
-    last_item = next((u for u in reversed(preceding) if u.parent_id == tail.parent_id and LIST_LABEL_START.match(u.source_text)), None)
-    if (last_item is None or not tail.parent_id or any(mark in tail.source_text for mark in QED_MARKERS)
-            or not consecutive_labels(last_item.source_text, first.source_text)
-            or abs(last_item.bbox[0] - first.bbox[0]) > 3):
-        return current
-    parent = next((u for u in previous if u.unit_id == tail.parent_id), None)
-    if parent is None or parent.render_policy == RenderPolicy.OMIT:
-        return current
-    result = []
-    active = True
-    for unit in current:
-        if unit.unit_id != first.unit_id and (_starts_statement(unit.source_text) or re.match(r"[*\s]*Proof\b", unit.source_text) or unit.kind == UnitKind.HEADING):
-            active = False
-        if active and unit.parent_id == first.parent_id and unit.kind in {UnitKind.PARAGRAPH, UnitKind.EQUATION}:
-            extra = {k: getattr(unit, k) for k in OVERRIDE_UNIT_DEFAULTS}
-            extra["parent_id"] = parent.unit_id
-            unit = _make_unit(unit.page, unit.unit_id, unit.source_markdown or unit.source_text,
-                              unit.bbox, assets, kind=unit.kind.value, **extra)
-        result.append(unit)
-    return result
-
-
 def _cross_page_container_candidates(units: list[SourceUnit], page: int) -> list[dict[str, Any]]:
     from littrans.models import FLOAT_KINDS
     from littrans.source_structure import _starts_statement
@@ -3455,7 +3498,7 @@ def _cross_page_container_candidates(units: list[SourceUnit], page: int) -> list
         return []
     last, first = previous[-1], current[0]
     parent = next((u for u in body if u.unit_id == last.parent_id), last)
-    if (first.parent_id == parent.unit_id or first.kind == UnitKind.HEADING
+    if (first.parent_id == parent.unit_id or first.is_heading
             or _starts_statement(first.source_text) or re.match(r"[*\s]*Proof\b", first.source_text)
             or any(mark in last.source_text for mark in QED_MARKERS)):
         return []
@@ -3484,7 +3527,7 @@ def build_source_review_packet(root: Path, page_spec: str = "all", *, review_mod
     pages = sorted(set(pages) | {u.page for page in pages for u in page_evidence_units(page, all_units)})
     pages = sorted(set(pages) | {n for p in assigned for n in (p - 1, p + 1)
                                 if _page_path(root, n).is_file()})
-    payload: dict[str, Any] = {"schema_version": 7, "kind": "source-fidelity-review", "review_mode": review_mode, "assigned_pages": assigned, "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
+    payload: dict[str, Any] = {"schema_version": 8, "kind": "source-fidelity-review", "review_mode": review_mode, "assigned_pages": assigned, "source_sha256": sha256_file(config.source(root)), "pages": [_current_page(root, p, all_units, assets) for p in pages]}
     # The writing build is recorded but is not part of the packet identity: identical
     # content keeps its packet ID (and its reviews) across builds and reruns.
     payload["generator"] = build_identity()
@@ -3562,9 +3605,10 @@ def build_source_review_packet(root: Path, page_spec: str = "all", *, review_mod
     # decisions, findings) so the reviewer confirms a list instead of guessing from crops.
     review_template = {"packet_id": packet_id, "packet_sha256": sha256_file(packet), "visual_report_sha256": payload["visual_report"]["sha256"], "reviewer": "", "pages": [
         {"page": p["page"], "fingerprint": p["fingerprint"], "viewed_original": False, "coverage_complete": False, "boundaries_complete": False, "reading_order_correct": False,
-         "grouping_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False,
+         "grouping_checked": False, "paragraphs_checked": False, "outline_checked": False, "layout_fallback_checked": False, "formula_conditions_checked": False, "overflow_canvas_checked": False,
          "accepted_grouping_pending": [], "confirmed_roles": [], "confirmed_joins": [], "issues": [], "notes": "",
          "full_page_review_completed": False, "layout_adjudications": [],
+         "confirmed_paragraphs": [], "paragraph_uncertainties": [],
          "context": {"formula_conditions": _declared_conditions(p), "grouping_pending": [a["id"] for a in p["assets"] if a.get("grouping_pending")],
                      "findings": page_review_findings(p), "boundary_diagnostics": p["boundary_diagnostics"],
                      "structure_checks": p["structure_checks"], "layout_concerns": p["layout_concerns"],
@@ -3618,7 +3662,7 @@ def _load_source_packet(
             raise ValueError(f"{packet_path} must contain a JSON object")
         if "source-" + _source_packet_identity(packet) != packet_id:
             raise ValueError("source packet identity mismatch")
-    if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") not in {6, 7}:
+    if packet.get("kind") != "source-fidelity-review" or packet.get("schema_version") != 8:
         raise ValueError("invalid source packet contract")
     artifact = packet.get("visual_report", {})
     if artifact.get("path") != "coverage.html" or not artifact.get("sha256"):
@@ -3637,7 +3681,7 @@ def _load_source_packet(
     return packet
 
 
-STRUCTURE_ROLE_KINDS = {"heading", "caption"}
+STRUCTURE_ROLE_KINDS = {"caption"}
 
 
 def _excerpt(text: str, limit: int = 80) -> str:
@@ -3668,7 +3712,9 @@ def _structure_checks(page: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         text = unit.get("source_text") or ""
         chunk = unit["unit_id"][len(prefix):]
         label = overruled.get(chunk)
-        if not (unit["kind"] in STRUCTURE_ROLE_KINDS or label or _starts_statement(text)
+        paragraph = unit.get("paragraph") or {}
+        if not (paragraph.get("outline_level") or paragraph.get("candidates")
+                or unit["kind"] in STRUCTURE_ROLE_KINDS or label or _starts_statement(text)
                 or RUN_IN_LABEL.match(text) or re.match(r"[*\s]*Proof\b", text)):
             continue
         row = {"unit_id": unit["unit_id"], "kind": unit["kind"], "text": _excerpt(re.sub(r"\{\{asset:[^}]+\}\}", "[asset]", text))}
@@ -3693,7 +3739,14 @@ def _structure_checks(page: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         owners = [u for u in readable if _inside(first, u["bbox"])]
         owner = min(owners, key=lambda u: (u["bbox"][2] - u["bbox"][0]) * (u["bbox"][3] - u["bbox"][1]), default=None)
         joins.append({"block": block, "unit_id": owner["unit_id"] if owner else None, "text": _excerpt(text, 60)})
-    return {"roles": roles, "joins": joins}
+    paragraphs = []
+    for unit in readable:
+        if unit["kind"] != "paragraph":
+            continue
+        properties = {key: unit.get(key) for key in ("paragraph", "paragraph_id", "item_id",
+                      "parent_item_id", "parent_id", "container_role", "section_id")}
+        paragraphs.append({"unit_id": unit["unit_id"], "structure_sha256": _hash(properties), **properties})
+    return {"roles": roles, "joins": joins, "paragraphs": paragraphs}
 
 
 def _confirmation_failures(page: dict[str, Any], decision: dict[str, Any]) -> list[str]:
@@ -3712,6 +3765,13 @@ def _confirmation_failures(page: dict[str, Any], decision: dict[str, Any]) -> li
                          + json.dumps(joins, ensure_ascii=False)[:200])
     confirmed = {r["unit_id"]: r["kind"] for r in roles}
     failures = []
+    paragraphs = decision.get("confirmed_paragraphs") or []
+    if not isinstance(paragraphs, list) or any(not isinstance(row, dict) for row in paragraphs):
+        raise ValueError("confirmed_paragraphs must be an array of unit_id/structure_sha256 objects")
+    bindings = {row.get("unit_id"): row.get("structure_sha256") for row in paragraphs}
+    expected = {row["unit_id"]: row["structure_sha256"] for row in checks.get("paragraphs", [])}
+    if bindings != expected or len(paragraphs) != len(bindings):
+        failures.append("paragraph-structure-unconfirmed: confirm every paragraph body, outline, label, layout and membership")
     missing = [r["unit_id"] for r in checks.get("roles", []) if r["unit_id"] not in confirmed]
     if missing:
         failures.append("role-unconfirmed: " + ", ".join(missing))
@@ -3812,7 +3872,7 @@ def page_review_findings(page: dict[str, Any], decision: dict[str, Any] | None =
 
 def _source_decision_failures(page: dict[str, Any], decision: dict[str, Any], *, legacy: bool = False) -> list[str]:
     """Why a page decision does not approve the page; empty when it does."""
-    fields = ["viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked"]
+    fields = ["viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct", "grouping_checked", "paragraphs_checked", "outline_checked"]
     if page["ledger"]["layout_status"] != "ok":
         fields.append("layout_fallback_checked")
     if page["ledger"].get("overflow_evidence"):
@@ -3820,6 +3880,8 @@ def _source_decision_failures(page: dict[str, Any], decision: dict[str, Any], *,
     if any(asset.get("formula_conditions") for asset in page["assets"]):
         fields.append("formula_conditions_checked")
     failures = [f"{key} is not attested" for key in fields if decision.get(key) is not True]
+    if decision.get("paragraph_uncertainties"):
+        failures.append("unresolved paragraph label, outline or membership uncertainty")
     if page.get("layout_contract"):
         from littrans.layout_review import adjudications
         if decision.get("full_page_review_completed") is not True:
@@ -3892,6 +3954,7 @@ OVERRIDE_BLOCKS = ("regions", "units", "page_canvas_bbox", "asset_crops")
 # with the model defaults an override item may leave out.
 OVERRIDE_UNIT_DEFAULTS: dict[str, Any] = {
     "equation_number": None, "equation_numbers": [], "footnote_number": None, "footnote_refs": [], "parent_id": None,
+    "paragraph": None, "paragraph_id": None, "item_id": None, "parent_item_id": None, "container_role": None, "section_id": None,
     "continues_from_previous": False, "continued_to_next": False, "render_policy": "include", "translatable": True,
 }
 
@@ -3974,7 +4037,7 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
         raise ValueError("duplicate page review")
     for decision in decisions:
         p = decision["page"]
-        if packet.get("schema_version") == 7 and p not in packet["assigned_pages"]:
+        if packet.get("schema_version") == 8 and p not in packet["assigned_pages"]:
             raise ValueError("context pages cannot be decided")
         difference = guidance_difference(packet.get("document_structure"), guidance, p)
         if difference:
@@ -4068,8 +4131,17 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 (root / f"evidence/pages/fidelity-p{p:04d}.review.json").unlink(missing_ok=True)
                 changed.append(p)
         _validate_footnote_relationships(units)
+        units.sort(key=lambda u: u.page)
+        from littrans.paragraphs import bind_sections, structure_errors
+        units = bind_sections(units)
+        problems = structure_errors(units)
+        if problems:
+            raise ValueError(f"Invalid paragraph relationships: {problems}")
+        _invalidate(root, initial_units, units)
         # Publish the corrected authority before receipts are checked against it.
         if not supplemental or changed:
+            from littrans.paragraphs import bind_sections
+            units = bind_sections(units)
             write_jsonl(root / "derived/units.jsonl", units)
             write_jsonl(root / "derived/fidelity-assets.jsonl", assets.values())
         for decision in decisions:
@@ -4123,6 +4195,8 @@ def import_source_review(root: Path, input_file: Path, confirm_visual_review: bo
                 unit.verification_status = SemanticStatus.UNVERIFIED
         units.sort(key=lambda u: u.page)
         if not supplemental or changed:
+            from littrans.paragraphs import bind_sections
+            units = bind_sections(units)
             write_jsonl(root / "derived/units.jsonl", units)
         # Reclaimed once the corrections are committed and while the lock is still held.
         authority.close()

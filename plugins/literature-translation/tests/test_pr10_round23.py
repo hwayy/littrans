@@ -51,6 +51,8 @@ def test_footnote_companions_remain_in_definition(project, kind, originals_only)
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     note = next(u for u in units if u.page == 1 and u.translatable)
     note.kind = UnitKind.FOOTNOTE
+    note.paragraph = None
+    note.paragraph_id = None
     note.footnote_number = "1"
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")

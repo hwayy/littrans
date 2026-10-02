@@ -79,12 +79,14 @@ def test_markdown_footnote_calls_have_unique_definitions(project: Path) -> None:
     for page in (1, 2):
         caller = next(u for u in units if u.page == page and u.kind is UnitKind.PARAGRAPH)
         caller.source_text = caller.source_markdown = "Call[^1]"
+        if caller.paragraph:
+            caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
         caller.footnote_refs = [f"note-{page}"]
         units.append(
             caller.model_copy(
                 update={
                     "unit_id": f"note-{page}",
-                    "kind": UnitKind.FOOTNOTE,
+                    "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
                     "source_text": "Definition",
                     "source_markdown": "Definition",
                     "footnote_number": "1",
@@ -151,7 +153,7 @@ def test_markdown_calls_preserve_literal_code_and_multiline_note() -> None:
     note = caller.model_copy(
         update={
             "unit_id": "note",
-            "kind": UnitKind.FOOTNOTE,
+            "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
             "page": 2,
             "footnote_number": "1",
             "source_text": "First\nSecond",
@@ -202,11 +204,11 @@ def test_expanded_asset_stays_inside_markdown_note(
     from littrans import rendering
 
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
-    caller = next(u for u in units if u.kind is UnitKind.PARAGRAPH)
+    caller = next(u for u in units if u.kind is UnitKind.PARAGRAPH and not u.is_heading)
     note = caller.model_copy(
         update={
             "unit_id": "expanded-note",
-            "kind": UnitKind.FOOTNOTE,
+            "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
             "source_text": "TOKEN",
             "source_markdown": "TOKEN",
             "footnote_number": "1",

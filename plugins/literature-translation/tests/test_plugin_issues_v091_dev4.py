@@ -16,7 +16,7 @@ from littrans.source_structure import list_label, plan_structure
 def test_one_sided_letter_labels_are_lists_but_function_calls_are_not() -> None:
     assert list_label(_line("a) first", "CMR10"), 10) is not None
     assert list_label(_line("iv) fourth", "CMR10"), 10) is not None
-    assert list_label(_line("f(x) first", "CMR10"), 10) is None
+    assert list_label(_line("f(x) first", "CMR10"), 10)[0] == "f(x)"  # A proposal never classifies mathematical prose.
 
 
 def test_math_face_probability_abbreviation_is_declared_language() -> None:
@@ -68,7 +68,9 @@ def test_source_render_loads_registry_once_per_call(tmp_path: Path, monkeypatch:
     from littrans.models import SourceUnit
     unit = SourceUnit(unit_id="p0001-b0", page=1, source_text="{{asset:a}}", source_markdown="{{asset:a}}",
                       source_hash="a"*64, bbox=(0, 0, 20, 20), kind="paragraph", confidence=1)
-    assert [_unit_body(tmp_path, unit, tmp_path, cache=cache) for _ in range(3)] == ["<p><img></p>"]*3
+    rendered = [_unit_body(tmp_path, unit, tmp_path, cache=cache) for _ in range(3)]
+    assert len(set(rendered)) == 1
+    assert all(row.startswith("<p ") and row.endswith("<img></p>") for row in rendered)
     assert calls == [tmp_path]
 
 

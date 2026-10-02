@@ -28,8 +28,10 @@ def adjacent_source_units(root: Path, units: list[SourceUnit]) -> list[SourceUni
 
 TARGET_TEXT_CONTRACTS = (
     "Contracts (writers follow them; auditors must not report them as defects): "
-    "list_item targets carry no leading bullet or number, heading targets carry no '#' "
-    "and note targets carry no admonition shell because the renderer owns those markers; "
+    "paragraph target_text contains body/title text only, with no label or heading shell; "
+    "translate only translatable label.parts into label_translations keyed by part_id; "
+    "literal label parts and outline levels are renderer-owned; "
+    "note targets carry no admonition shell because the renderer owns those markers; "
     "each {{asset:ID}} placeholder stays verbatim with no space between Chinese text and "
     "the placeholder; Chinese prose uses full-width punctuation (，。；：！？) except inside "
     "code, identifiers and formulas; an image containing only mathematical or technical "

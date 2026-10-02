@@ -12,6 +12,7 @@ from typing import Any
 import pymupdf as fitz
 import pytest
 from config_fixtures import save_project
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
 
 from littrans.fidelity import (
     _compose_accents,
@@ -25,7 +26,6 @@ from littrans.fidelity_models import FidelityAsset, FidelityFragment
 from littrans.models import ProjectConfig, SourceUnit, UnitKind
 from littrans.source_structure import (
     _bold_run_in,
-    assemble_structure,
     font_style,
     inked_glyph,
     plan_structure,
@@ -220,7 +220,7 @@ def test_prepared_lists_are_one_structure(list_project: Path, monkeypatch: pytes
     prepare_source(list_project)
     units = [u for u in read_jsonl(list_project / "derived/units.jsonl", SourceUnit) if u.render_policy.value == "include"]
     intro = next(u for u in units if u.source_text.startswith("We then"))
-    items = [u for u in units if u.kind is UnitKind.LIST_ITEM]
+    items = [u for u in units if u.paragraph and any(c.get("kind") == "label" for c in u.paragraph.candidates)]
     after = next(u for u in units if u.source_text.startswith("This book"))
     assert len(items) == 2 and all(u.parent_id == intro.unit_id for u in items)
     assert after.parent_id == after.unit_id

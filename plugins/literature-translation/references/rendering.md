@@ -11,17 +11,19 @@ bootstrap is omitted. The edition header, `*.quality.md` and `render-qa.json` (`
 reflect the lowest record status among the rendered units, not the project-wide status. Formal
 dependency cover selection considers only current QA/audit/external evidence.
 
-A paragraph continues across a page edge when the sender's `continued_to_next` is set (its
-last line ends mid-sentence), or when the receiver's `continues_from_previous` is set and the
-sender's text does not end in terminal punctuation; the receiver's flag is never set on a unit
-that opens with a bold run-in label, a theorem statement, `Proof` or a list label, nor on one
-whose first letter is a capital (`This gives`, `Then` open a sentence; `where the notation …`
-continues one; a script without letter case keeps the geometric reading). The flags express
-a continued sentence; a container that continues on the next page (a proof, an exercise) is
-recorded by a reviewed `parent_id` override, never inferred. A figure, table or caption set
-at the page top or bottom is a float: the flags are decided on the first body unit after the
-floats at the top and the last one before the floats at the bottom. Batching and audit
-closure read the same pair of flags, across any floats between the sender and the receiver.
+Paragraph fragments with the same reviewed `paragraph_id` form a continuation chain,
+including across adjacent pages and intervening floats. A new paragraph keeps a separate ID;
+item and container membership do not merge its text with the preceding paragraph.
+
+Labels are assembled from their recorded parts, with literal text unchanged and language
+parts translated. Only the logical paragraph head displays the label. Numbered body paragraphs
+remain paragraphs, and bullets appear only when present in the source label. Layout uses the
+recorded indentation and alignment, allowing a translated label to expand without hiding text.
+
+Outline levels 1–6 render as HTML `h1`–`h6` and Markdown headings. Deeper levels use HTML
+`role="heading"` with `aria-level`; Markdown also uses embedded HTML when layout cannot be
+represented faithfully. The contents combines each heading's label and all body fragments
+once, preserving its outline level. Target contents uses translated language parts and titles.
 
 Reading output appends image-language companions after a complete continuation chain; footnote
 companions remain inside their Markdown definitions. Markdown footnote calls and definitions use

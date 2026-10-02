@@ -72,6 +72,7 @@ from littrans.models import (
     TranslationRecord,
     UnitKind,
 )
+from littrans.paragraphs import source_binding
 from littrans.project import initialize_project, translation_map
 from littrans.quality import (
     NUMBER_RE,
@@ -417,10 +418,10 @@ def _build_prepared_project(tmp_path: Path) -> Path:
                 elif text == "a = b + 3":
                     text, bbox, kind = '{{asset:math-' + str(page) + '}}', [280, 220, 335, 242], "equation"
                 else:
-                    kind = "heading" if text.startswith("Section ") else "paragraph"
-                units.append({"unit_id": f"p{page:04d}-b{index}", "kind": kind, "bbox": bbox, "source_markdown": text})
+                    kind = "paragraph"
+                units.append({"unit_id": f"p{page:04d}-b{index}", "kind": kind, "bbox": bbox, "source_markdown": text, "paragraph": {"body_text": text, "body_markdown": text, "outline_level": 1 if text.startswith("Section ") else None}})
             decision["override"] = {"regions": [
-                {"id": f"code-{page}", "kind": "code", "bbox": [78, 178, 210, 210], "display": True},
+                {"id": f"code-{page}", "kind": "code", "paragraph": None, "paragraph_id": None, "bbox": [78, 178, 210, 210], "display": True},
                 {"id": f"math-{page}", "kind": "math", "bbox": [280, 220, 335, 242], "display": True},
             ], "units": units}
     path = root / "tmp" / "workflow-fixture-regions.json"
@@ -444,7 +445,7 @@ def test_extraction_is_stable_and_preserves_structure(legacy_extractor_project: 
     assert [(unit.unit_id, unit.source_hash) for unit in first] == [
         (unit.unit_id, unit.source_hash) for unit in second
     ]
-    assert any(unit.kind == "heading" for unit in first)
+    assert any(unit.is_heading or (unit.paragraph and unit.paragraph.candidates) for unit in first)
     assert any(unit.kind == "code" and not unit.translatable for unit in first)
     assert any(
         "years using" in unit.source_text and unit.kind == "paragraph" and unit.translatable
@@ -497,7 +498,7 @@ def test_equation_asset_failure_does_not_replace_authoritative_units(
             "overrides": [
                 {
                     "unit_id": unit.unit_id,
-                    "kind": "equation",
+                    "kind": "equation", "paragraph": None, "paragraph_id": None,
                     "latex": "a=b",
                     "verified": True,
                     "reason": "Verified display equation against the PDF.",
@@ -564,7 +565,7 @@ def test_late_override_interruption_restores_ledgers_and_published_asset(
             "overrides": [
                 {
                     "unit_id": unit.unit_id,
-                    "kind": "equation",
+                    "kind": "equation", "paragraph": None, "paragraph_id": None,
                     "latex": "a=b",
                     "verified": True,
                     "reason": "Verified display equation against the PDF.",
@@ -617,9 +618,10 @@ def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
             "overrides": [
                 {
                     "unit_id": unit.unit_id,
-                    "kind": "heading",
+                    "kind": "paragraph",
+                    "paragraph": {"body_text": unit.source_text},
                     "verified": True,
-                    "reason": "Verified title.",
+                    "reason": "Verified sidebar title.",
                 },
                 {
                     "unit_id": unit.unit_id,
@@ -633,7 +635,7 @@ def test_duplicate_unit_overrides_compose_in_file_order(tmp_path: Path) -> None:
     )
 
     updated = apply_layout_overrides(root)[0]
-    assert updated.kind is UnitKind.HEADING
+    assert updated.kind is UnitKind.PARAGRAPH
     assert updated.sidebar_id == "p0001-sidebar-001"
     assert updated.sidebar_role is SidebarRole.TITLE
 
@@ -687,7 +689,7 @@ def test_layout_override_can_insert_a_verified_unit_idempotently(tmp_path: Path)
     assert [unit.unit_id for unit in second_pass] == [first.unit_id, inserted_id, second.unit_id]
     inserted = second_pass[1]
     assert inserted.verification_status.value == "verified"
-    assert inserted.source_hash == sha256_text(inserted.source_text)
+    assert inserted.source_hash == source_binding(inserted)
 
 
 def test_bbox_selector_is_not_a_bbox_update(tmp_path: Path) -> None:
@@ -766,7 +768,8 @@ def test_unit_specific_override_does_not_match_other_units_by_bbox(tmp_path: Pat
             TranslationRecord(
                 unit_id=first.unit_id,
                 target_text="修正后的译文。",
-                source_hash=sha256_text(corrected),
+                source_hash=source_binding(
+                    first.model_copy(update={"source_text": corrected, "verification_status": "verified"})),
             )
         ],
     )
@@ -890,7 +893,8 @@ def test_layout_overrides_only_invalidate_affected_translations(
             "overrides": [
                 {
                     "unit_id": affected.unit_id,
-                    "kind": "heading",
+                    "kind": "paragraph",
+                    "paragraph": {"body_text": affected.source_text, "outline_level": 2},
                     "verified": True,
                     "reason": "Visually verified this unit as a heading.",
                 }
@@ -905,7 +909,8 @@ def test_layout_overrides_only_invalidate_affected_translations(
         )
     }
     assert current[affected.unit_id].status is ProjectStatus.DRAFT
-    assert current[unaffected.unit_id].status is ProjectStatus.EXTERNAL_REVIEWED
+    # Changing the heading also changes the following paragraph's section context.
+    assert current[unaffected.unit_id].status is ProjectStatus.DRAFT
     assert load_project(legacy_extractor_project).status is ProjectStatus.DRAFT
 
     write_yaml(
@@ -970,7 +975,7 @@ def test_external_review_packet_normalizes_chinese_captions(
     target_unit = next(
         unit
         for unit in units
-        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and not unit.is_heading and unit.translatable
     )
     units = [
         unit.model_copy(update={"kind": UnitKind.CAPTION})
@@ -1128,7 +1133,7 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
     paragraphs = [
         unit
         for unit in units
-        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and not unit.is_heading and unit.translatable
     ]
     first, second = paragraphs[:2]
     revised = []
@@ -1138,7 +1143,7 @@ def test_reader_note_on_continued_paragraph_is_emitted_after_full_chain(
             # must not override the fixture's terminal punctuation.
             unit = unit.model_copy(update={"continued_to_next": True})
         if unit.unit_id == second.unit_id:
-            unit = unit.model_copy(update={"continues_from_previous": True})
+            unit = unit.model_copy(update={"continues_from_previous": True, "paragraph_id": first.unit_id})
         revised.append(unit)
     write_jsonl(prepared_project / "derived" / "units.jsonl", revised)
 
@@ -1191,7 +1196,7 @@ def test_reader_notes_from_all_continued_table_fragments_are_rendered(
     candidates = [
         unit
         for unit in units
-        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and not unit.is_heading and unit.translatable
     ][:2]
     assert len(candidates) == 2
     replacements: dict[str, SourceUnit] = {}
@@ -1204,7 +1209,7 @@ def test_reader_notes_from_all_continued_table_fragments_are_rendered(
         )
         replacements[unit.unit_id] = unit.model_copy(
             update={
-                "kind": UnitKind.TABLE,
+                "kind": UnitKind.TABLE, "paragraph": None, "paragraph_id": None,
                 "table": source_table,
                 "verification_status": SemanticStatus.VERIFIED,
                 "continues_from_previous": index == 1,
@@ -1245,7 +1250,7 @@ def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None
     paragraphs = [
         unit
         for unit in units
-        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and unit.translatable
+        if unit.page == 1 and unit.kind is UnitKind.PARAGRAPH and not unit.is_heading and unit.translatable
     ]
     first, second = paragraphs[:2]
     revised = []
@@ -1253,15 +1258,16 @@ def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None
         if unit.unit_id == first.unit_id:
             unit = unit.model_copy(
                 update={
-                    "kind": UnitKind.LIST_ITEM,
+                    "kind": UnitKind.PARAGRAPH,
                     "continued_to_next": True,
                 }
             )
         elif unit.unit_id == second.unit_id:
             unit = unit.model_copy(
                 update={
-                    "kind": UnitKind.LIST_ITEM,
+                    "kind": UnitKind.PARAGRAPH,
                     "continues_from_previous": True,
+                    "paragraph_id": first.unit_id,
                 }
             )
         revised.append(unit)
@@ -1283,7 +1289,8 @@ def test_continued_list_item_renders_as_one_item(prepared_project: Path) -> None
     )
     markdown = Path(outputs["markdown"]).read_text(encoding="utf-8")
     first_body = first.source_text.lstrip("• ")
-    assert markdown.count(f"- 译文：{first_body}") == 1
+    assert markdown.count(f"译文：{first_body}") == 1
+    assert "\n- 译文：" not in markdown
     assert f"\n- 译文：{second.source_text}" not in markdown
     assert f'<a id="{second.unit_id}"></a>译文：{second.source_text}' in markdown
     html = Path(outputs["html"]).read_text(encoding="utf-8")
@@ -1329,8 +1336,8 @@ def test_render_policy_omit_is_persistent_and_excluded_from_batches(
 @pytest.mark.parametrize(
     ("kind", "target"),
     [
-        (UnitKind.HEADING, "## 标题"),
-        (UnitKind.LIST_ITEM, "• 项目"),
+        (UnitKind.PARAGRAPH, "## 标题"),
+        (UnitKind.PARAGRAPH, "• 项目"),
         (UnitKind.NOTE, "> [!NOTE]\n> 正文"),
         (UnitKind.NOTE, "注意：正文"),
         (UnitKind.NOTE, "新增内容：正文"),
@@ -1348,7 +1355,9 @@ def test_target_structure_contract_rejects_renderer_owned_markup(
         source_hash=sha256_text("Source"),
         confidence=1.0,
     )
-    assert _target_structure_error(unit, target)
+    if unit.paragraph and target.startswith("##"):
+        unit.paragraph.outline_level = 2
+    assert bool(_target_structure_error(unit, target)) == (target != "• 项目")
 
 
 def test_bilingual_note_labels_are_localized_by_the_renderer() -> None:
@@ -1432,7 +1441,7 @@ def test_figure_label_view_is_explicit_even_when_body_text_matches() -> None:
 def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
     title = SourceUnit(
         unit_id="p0001-u001-sidebar",
-        kind=UnitKind.HEADING,
+        kind=UnitKind.PARAGRAPH,
         page=1,
         bbox=(0, 0, 1, 1),
         source_text="DPI SCALING",
@@ -1452,7 +1461,7 @@ def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
         sidebar_role=SidebarRole.BODY,
         confidence=1.0,
     )
-    assert _target_markdown(title, "DPI 缩放") == "> **DPI 缩放**"
+    assert _target_markdown(title, "DPI 缩放") == "> DPI 缩放"
     assert _target_markdown(body, "侧栏正文。") == "> 侧栏正文。"
     assert 'class="sidebar-fragment sidebar-title"' in _unit_html(
         title, "DPI 缩放", source_view=False
@@ -1470,7 +1479,7 @@ def test_sidebar_structure_is_explicit_and_renderer_owned() -> None:
 def test_sidebar_contiguity_ignores_omitted_running_headers(tmp_path: Path) -> None:
     title = SourceUnit(
         unit_id="p0001-u001-sidebar",
-        kind=UnitKind.HEADING,
+        kind=UnitKind.PARAGRAPH,
         page=1,
         bbox=(0, 0, 10, 10),
         source_text="SIDEBAR",
@@ -1576,18 +1585,26 @@ def test_empty_brace_code_does_not_require_an_indented_body(tmp_path: Path) -> N
 def test_ordered_list_marker_is_renderer_owned() -> None:
     unit = SourceUnit(
         unit_id="p0001-u001-list",
-        kind=UnitKind.LIST_ITEM,
+        kind=UnitKind.PARAGRAPH,
         page=1,
         bbox=(0, 0, 1, 1),
         source_text="2. Choose 96 dpi.",
         source_hash=sha256_text("2. Choose 96 dpi."),
         confidence=1.0,
     )
-    assert _comparison_source_text(unit) == "Choose 96 dpi."
-    assert _target_markdown(unit, "选择 96 dpi。").startswith("2. 选择 96 dpi。")
-    assert '<ol start="2"><li>选择 96 dpi。</li></ol>' == _unit_html(
-        unit, "选择 96 dpi。", source_view=False
+    from littrans.models import (
+        ParagraphData,
+        ParagraphLabel,
+        ParagraphLabelEvidence,
+        ParagraphLabelPart,
     )
+    unit.paragraph = ParagraphData(type="numbered", body_text="Choose 96 dpi.", label=ParagraphLabel(
+        parts=[ParagraphLabelPart(part_id="n", source_text="2.")],
+        evidence=ParagraphLabelEvidence(page=1, source_range=(0, 2))))
+    assert _comparison_source_text(unit) == "Choose 96 dpi."
+    assert _target_markdown(unit, "选择 96 dpi。").startswith("2\\. 选择 96 dpi。")
+    markup = _unit_html(unit, "选择 96 dpi。", source_view=False)
+    assert "<ol" not in markup and markup.count("2.") == 1
 
 
 def test_batch_scoped_render_excludes_other_units_on_the_same_pages(
@@ -2844,7 +2861,7 @@ def test_grouped_code_secondary_ids_are_unique_in_bilingual_html(
             SourceUnit.model_validate(
                 {
                     **unit.model_dump(mode="json"),
-                    "kind": "code",
+                    "kind": "code", "paragraph": None, "paragraph_id": None,
                     "source_text": source,
                     "source_markdown": None,
                     "source_hash": sha256_text(source),

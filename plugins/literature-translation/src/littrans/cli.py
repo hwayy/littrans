@@ -316,16 +316,24 @@ def project_rebuild(
     new: PathArg,
     settings: str | None = typer.Option(
         None, "--settings",
-        help="preserve (default for v7) keeps settings.yaml; preset starts from a preset (required for older formats).",
+        help="preserve (default for v8) keeps settings.yaml; preset starts from a preset (required for older formats).",
     ),
     preset: str | None = typer.Option(
         None, "--preset", help="Preset for --settings preset (default: the old project's preset)."
     ),
 ) -> None:
-    """Build a new v7 workspace; preserve the historical project and its evidence."""
+    """Build a new v8 workspace; preserve the historical project and its evidence."""
     report: dict[str, Any] = {}
     config = rebuild_project(old, new, settings=settings, preset=preset, report=report)
     emit({**config.model_dump(mode="json"), "rebuild": report})
+
+
+@project_app.command("upgrade")
+def project_upgrade(old: PathArg, new: PathArg,
+                    dry_run: bool = typer.Option(False, "--dry-run")) -> None:
+    """Upgrade v7 paragraphs into a separate v8 workspace without inheriting approvals."""
+    from littrans.upgrade import upgrade_project
+    emit(upgrade_project(old, new, dry_run=dry_run))
 
 
 @source_app.command("probe")
@@ -624,7 +632,7 @@ def review_external(project: PathArg, batch_id: str, dry_run: bool = typer.Optio
 
 @review_app.command("external-migrate")
 def review_external_migrate(project: PathArg, apply: bool = typer.Option(False)) -> None:
-    """Retained entry: validate v7 and direct configuration edits to config apply."""
+    """Retained entry: validate v8 and direct configuration edits to config apply."""
     from littrans.external_recheck import migrate_external_config
     emit(migrate_external_config(project, apply))
 

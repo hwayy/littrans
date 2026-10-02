@@ -69,6 +69,11 @@
   <p>PDF 页 {{ pages }} · {{ config.source_language }} → {{ config.target_language }} · {{ status }}{% if allow_draft %}<span class="badge">预览</span>{% endif %}</p>
 </header>
 <main>
+{% if contents %}
+<nav aria-label="目录"><ul style="list-style:none;padding:0">
+{% for entry in contents %}<li data-outline-level="{{ entry.level }}" style="margin-left:{{ entry.level - 1 }}em"><a href="#{{ entry.unit_id }}">{{ entry.title }}</a></li>{% endfor %}
+</ul></nav>
+{% endif %}
 {% for row in rows %}
   {% if not loop.first and row.unit.page - loop.previtem.unit.page > 1 %}<div class="page-gap">选定试译范围：PDF p.{{ loop.previtem.unit.page }} → p.{{ row.unit.page }}</div>{% endif %}
   <article id="{{ row.unit.unit_id }}"{% if row.unit.sidebar_id %} class="sidebar{% if row.sidebar_start %} sidebar-start{% endif %}{% if row.sidebar_end %} sidebar-end{% endif %}" data-sidebar-id="{{ row.unit.sidebar_id }}"{% endif %}>

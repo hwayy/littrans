@@ -461,7 +461,7 @@ def test_cross_batch_seam_enters_only_the_local_dependency_context(tmp_path: Pat
     units_path = root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(update={"continued_to_next": True})
-    units[1] = units[1].model_copy(update={"continues_from_previous": True})
+    units[1] = units[1].model_copy(update={"continues_from_previous": True, "paragraph_id": units[0].unit_id})
     write_jsonl(units_path, units)
     review_fixture_metadata(root)
     for batch in manifests:
@@ -609,7 +609,7 @@ def test_workflow_status_rechecks_audit_packet_dependency_closure(
 
     units_path = root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
-    units[1] = units[1].model_copy(update={"continues_from_previous": True})
+    units[1] = units[1].model_copy(update={"continues_from_previous": True, "paragraph_id": units[0].unit_id})
     write_jsonl(units_path, units)
     review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
@@ -629,7 +629,7 @@ def test_single_batch_render_includes_cross_batch_continuation_chain(
     units_path = root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(update={"continued_to_next": True})
-    units[1] = units[1].model_copy(update={"continues_from_previous": True})
+    units[1] = units[1].model_copy(update={"continues_from_previous": True, "paragraph_id": units[0].unit_id})
     write_jsonl(units_path, units)
     review_fixture_metadata(root)
     assert verify_extraction(root, "all", force=True)["passed"]
@@ -658,7 +658,7 @@ def test_sidebar_dependency_batches_are_listed_in_external_review_summary(
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(
         update={
-            "kind": UnitKind.HEADING,
+            "kind": UnitKind.PARAGRAPH,
             "sidebar_id": "cross-batch-sidebar",
             "sidebar_role": SidebarRole.TITLE,
         }
@@ -729,7 +729,7 @@ def test_full_external_packet_includes_cross_batch_sidebar_context(
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(
         update={
-            "kind": UnitKind.HEADING,
+            "kind": UnitKind.PARAGRAPH,
             "sidebar_id": "external-sidebar",
             "sidebar_role": SidebarRole.TITLE,
         }
@@ -970,4 +970,4 @@ def test_qa_warns_on_halfwidth_punctuation_and_packets_state_contracts(tmp_path:
     assert not isinstance(audit, list)
     audit_text = (root / audit.files[f"{batch.batch_id}:audit"]).read_text(encoding="utf-8")
     assert "Contracts" in audit_text
-    assert "list_item targets carry no leading bullet" in audit_text
+    assert "label_translations" in audit_text

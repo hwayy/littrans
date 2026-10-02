@@ -22,6 +22,7 @@ from typing import Any
 
 import pymupdf as fitz
 import pytest
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
 from test_fidelity_source import project as fidelity_project
 from test_source_structure_v8 import _line, _owned_text, _Page
 
@@ -52,7 +53,6 @@ from littrans.scaffold import ensure_project_ignore
 from littrans.source_structure import (
     MATH_OPERATORS,
     _line_starts,
-    assemble_structure,
     plan_structure,
 )
 from littrans.storage import read_json, read_jsonl, write_json
@@ -295,21 +295,14 @@ def test_a_flush_run_in_label_at_the_page_top_does_not_continue_the_previous_pag
     assert not assemble_structure([theorem], {}, plan, _make_unit)[0].continues_from_previous
 
 
-def test_rendering_reads_both_page_edge_flags() -> None:
+def test_rendering_uses_reviewed_paragraph_ids() -> None:
     sender = _unit("p0001-b9", "the spectral gap of the", [58.7, 600, 400, 610], page=1)
     receiver = _unit("p0002-b1", "network corresponds to", [58.7, 90, 400, 100])
-    # The sender's flag alone carries the sentence across the page (LT-057).
-    assert _continues_paragraph(sender.model_copy(update={"continued_to_next": True}), receiver)
-    assert not _continues_paragraph(sender, receiver)
-    # A receiver flagged on geometry alone does not join a sentence the sender closed (LT-056).
-    closed = _unit("p0001-b9", "the spectral gap of the chain.", [58.7, 600, 400, 610], page=1)
-    flagged = receiver.model_copy(update={"continues_from_previous": True})
-    assert not _continues_paragraph(closed, flagged)
-    assert _continues_paragraph(sender, flagged)
-    assert not _continues_paragraph(sender.model_copy(update={"continued_to_next": True}), receiver.model_copy(update={"kind": UnitKind.HEADING}))
-
-
-# --- LT-058 / LT-069(b) ------------------------------------------------------------------
+    assert not _continues_paragraph(sender.model_copy(update={"continued_to_next": True}), receiver)
+    receiver = receiver.model_copy(update={"paragraph_id": sender.unit_id})
+    assert _continues_paragraph(sender, receiver)
+    closed = sender.model_copy(update={"source_text": "the chain."})
+    assert _continues_paragraph(closed, receiver)
 
 def test_a_printed_equation_label_never_continues_the_formula_above_it() -> None:
     prose = _line("in the limit h → 0+", ["CMR10"] * 13 + ["CMMI10", "CMR10", "CMSY10", "CMR10", "CMR10", "CMR10"], line="b1-l0", y=90.0, x=100.0)
@@ -363,7 +356,9 @@ def test_an_enumerated_clause_after_white_space_stays_in_its_introducing_group()
     plan = _plan(margin=101.0, indent_style=False, first_x={"b2": 58.7, "b3": 84.5, "b12": 81.5},
                  blocks=[{"id": "b3", "paragraph_break": True}, {"id": "b12", "paragraph_break": True}])
     result = assemble_structure([intro, first, second], {}, plan, _make_unit)
-    assert [u.parent_id for u in result] == ["p0002-b2", "p0002-b2", "p0002-b2"]
+    # Labels are proposals; white-space-separated paragraphs need reviewed membership.
+    assert [u.paragraph_id for u in result] == [u.unit_id for u in result]
+    assert all(u.paragraph.type.value == "plain" and u.item_id is None for u in result)
 
 
 def test_a_parent_merged_away_is_redirected_to_the_survivor_group() -> None:
@@ -443,10 +438,10 @@ def test_a_unit_carried_over_as_recorded_keeps_the_hash_the_pipeline_gave_it(pro
     pinned = []
     for u in before.values():
         item: dict[str, Any] = {"unit_id": u.unit_id, "kind": u.kind.value, "bbox": list(u.bbox), "source_markdown": u.source_markdown or u.source_text}
-        for key in ("equation_number", "parent_id", "render_policy", "translatable", "continues_from_previous"):
+        for key in ("equation_number", "parent_id", "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id", "render_policy", "translatable", "continues_from_previous"):
             value = getattr(u, key)
             if value not in (None, False, True, "include") or key == "parent_id":
-                item[key] = value
+                item[key] = value.model_dump(mode="json") if key == "paragraph" and value else value
         if not u.translatable:
             item["translatable"] = False
         if u.render_policy.value == "omit":
@@ -504,7 +499,7 @@ def test_the_override_channel_coalesces_adjacent_inline_fragments_too(project: P
     assert len(merged) == 1 and len(merged[0].fragments) == 2
     units = [u for u in read_jsonl(project / "derived/units.jsonl", SourceUnit) if u.page == 1]
     pinned = [{"unit_id": u.unit_id, "kind": u.kind.value, "bbox": list(u.bbox), "source_markdown": u.source_markdown or u.source_text,
-               "parent_id": u.parent_id, "render_policy": u.render_policy.value, "translatable": u.translatable} for u in units]
+               "parent_id": u.parent_id, "paragraph": u.paragraph.model_dump(mode="json") if u.paragraph else None, "paragraph_id": u.paragraph_id, "section_id": u.section_id, "render_policy": u.render_policy.value, "translatable": u.translatable} for u in units]
     packet = build_source_review_packet(project, "1")
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "corrector"
@@ -619,7 +614,8 @@ def test_an_enumerated_sibling_returns_to_the_parent_its_enumeration_opened_with
     plan = _plan(margin=101.0, first_x={"b2": 58.7, "b4": 82.1, "b5": 119.0, "b6": 82.1, "b8": 119.0},
                  blocks=[{"id": "b2", "paragraph_break": True}, {"id": "b4", "paragraph_break": True}, {"id": "b6", "paragraph_break": True}])
     result = assemble_structure([intro, first, extension, second, closing], {}, plan, _make_unit)
-    assert [u.parent_id for u in result] == ["p0124-b2", "p0124-b2", "p0124-b5", "p0124-b2", "p0124-b8"]
+    assert [u.paragraph_id for u in result] == [u.unit_id for u in result]
+    assert all(u.item_id is None for u in result)
 
 
 def test_a_heading_closes_an_enumeration_so_the_next_list_hangs_from_its_own_intro() -> None:
@@ -631,4 +627,5 @@ def test_a_heading_closes_an_enumeration_so_the_next_list_hangs_from_its_own_int
     plan = _plan(margin=101.0, first_x={"b1": 58.7, "b2": 82.1, "b3": 58.7, "b4": 58.7, "b5": 82.1},
                  blocks=[{"id": "b2", "paragraph_break": True}, {"id": "b5", "paragraph_break": True}])
     result = assemble_structure([intro, first, heading, intro2, item], {}, plan, _make_unit)
-    assert [u.parent_id for u in result] == ["p0003-b1", "p0003-b1", "p0003-b3", "p0003-b4", "p0003-b4"]
+    assert result[3].parent_id == result[3].unit_id
+    assert all(u.item_id is None for u in result)

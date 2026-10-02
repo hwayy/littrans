@@ -156,6 +156,9 @@ def test_qa_accepts_asset_only_source_with_asset_only_target(project: Path) -> N
     manifest = load_manifest(project, bid)
     target = next(u for u in units if u.unit_id in manifest.translatable_unit_ids and "{{asset:" in u.source_text)
     target.source_text = target.source_markdown = _asset_only(target.source_text)
+    if target.paragraph:
+        target.paragraph = target.paragraph.model_copy(update={
+            "body_text": target.source_text, "body_markdown": target.source_markdown})
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
 

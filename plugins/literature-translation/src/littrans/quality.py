@@ -312,7 +312,7 @@ def _localized_heading_token_present(unit: SourceUnit, token: str, target: str) 
     """Allow CHAPTER only for a numbered heading with the same explicit number."""
     if _localized_run_in_label_token(unit, token, target):
         return True
-    if unit.kind is not UnitKind.HEADING or token != "CHAPTER":
+    if not unit.is_heading or token != "CHAPTER":
         return False
     source = re.match(r"^\s*CHAPTER\s+([1-9]\d*)\b", unit.source_text)
     translated = re.match(r"^\s*第\s*([1-9]\d*)\s*章(?:\s|$|[：:、])", target)
@@ -332,9 +332,8 @@ def _comparison_source_text(
     unit: SourceUnit,
     supplemental_fragments: list[str] | None = None,
 ) -> str:
-    text = unit.source_markdown or unit.source_text
-    if unit.kind is UnitKind.LIST_ITEM:
-        text = re.sub(r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", "", text, count=1)
+    from littrans.paragraphs import language_text
+    text = language_text(unit, markdown=True)
     represented = Counter(
         _semantic_comparison_text(line).casefold()
         for line in text.splitlines()
@@ -353,13 +352,17 @@ def _comparison_source_text(
     return "\n".join([text, *missing])
 
 
-def _target_structure_error(unit: SourceUnit, target: str) -> str | None:
-    if unit.kind is UnitKind.HEADING and re.match(r"^\s*#{1,6}\s+", target):
+def _target_structure_error(unit: SourceUnit, target: str,
+                            label_translations: dict[str, str] | None = None) -> str | None:
+    if unit.is_heading and re.match(r"^\s*#{1,6}\s+", target):
         return "Heading target must contain body text only; the renderer owns the heading marker."
-    if unit.kind is UnitKind.LIST_ITEM and re.match(
-        r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", target
-    ):
-        return "List-item target must contain body text only; the renderer owns the list marker."
+    if unit.paragraph and unit.paragraph.label:
+        from littrans.paragraphs import body_text, label_text
+        source_label = label_text(unit)
+        supplied_labels = {source_label, label_text(unit, label_translations)}
+        if (not body_text(unit).lstrip().startswith(source_label)
+                and any(label and target.lstrip().startswith(label) for label in supplied_labels)):
+            return "Paragraph target repeats its explicit label; submit body text only."
     if unit.kind is UnitKind.NOTE and (
         re.match(r"^\s*>", target)
         or re.search(r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]", target, re.I)
@@ -393,6 +396,9 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         if unit_id in translations:
             errors.extend(QAItem(code="project-policy", severity="error", unit_id=unit_id, message=message)
                           for message in record_errors(root, units[unit_id], translations[unit_id]))
+    from littrans.paragraphs import structure_errors
+    errors.extend(QAItem(code="paragraph-relationship", severity="error", unit_id=uid, message=message)
+                  for uid, message in structure_errors(list(units.values())))
     approved_terms = load_terms(root)
     fingerprint = batch_translation_fingerprint(root, batch_id)
     qa_context_fingerprint = current_qa_context_fingerprint(
@@ -473,7 +479,11 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                     unit_id=unit_id,
                 )
             )
-        effective_target = record.target_text
+        from littrans.paragraphs import label_translation_errors
+        errors.extend(QAItem(code="paragraph-label-mapping", severity="error", unit_id=unit_id,
+                             message=message) for message in label_translation_errors(unit, record.label_translations))
+        effective_target = record.target_text + ("\n" + "\n".join(record.label_translations.values())
+                                                  if record.label_translations else "")
         if record.target_table:
             effective_target += "\n" + "\n".join(
                 " | ".join(row) for row in record.target_table.rows
@@ -529,8 +539,9 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
         # A source that is only asset references (a whole figure/table block) has
         # nothing to translate; any source prose outside the placeholders must
         # still produce target text, or the sentence has been dropped.
-        source_prose = ASSET_RE.sub("", unit.source_markdown or unit.source_text).strip()
-        if not effective_target.strip() and (source_prose or not ASSET_RE.search(record.target_text)):
+        source_prose = ASSET_RE.sub("", _comparison_source_text(unit)).strip()
+        literal_only_heading = bool(unit.is_heading and not source_prose)
+        if not effective_target.strip() and not literal_only_heading and (source_prose or not ASSET_RE.search(record.target_text)):
             errors.append(
                 QAItem(
                     code="empty-translation",
@@ -539,7 +550,7 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                     unit_id=unit_id,
                 )
             )
-        structural_error = _target_structure_error(unit, record.target_text)
+        structural_error = _target_structure_error(unit, record.target_text, record.label_translations)
         if structural_error:
             errors.append(
                 QAItem(
@@ -550,6 +561,11 @@ def _run_qa_locked(root: Path, batch_id: str) -> QAReport:
                 )
             )
         for token in unit.protected_tokens:
+            label = unit.paragraph.label if unit.paragraph else None
+            from littrans.paragraphs import body_text
+            if (label and token not in body_text(unit, markdown=True)
+                    and token in label.source_text):
+                continue
             if ASSET_RE.fullmatch(token):
                 continue
             if not (_semantic_token_present(token, effective_target, semantic_target)

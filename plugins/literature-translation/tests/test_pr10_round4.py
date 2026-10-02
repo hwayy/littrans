@@ -71,7 +71,7 @@ def test_cross_page_footnote_stable_anchor(source_view: bool) -> None:
     note = caller.model_copy(
         update={
             "unit_id": "note",
-            "kind": UnitKind.FOOTNOTE,
+            "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
             "page": 2,
             "source_text": "Note",
             "footnote_number": "1",
@@ -195,12 +195,16 @@ def test_page_scoped_render_includes_cross_page_definition(project: Path) -> Non
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     caller = next(u for u in units if u.page == 1 and u.kind is UnitKind.PARAGRAPH)
     caller.source_text = "A[^1]"
+    if caller.paragraph:
+        caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
     caller.source_markdown = "A[^1]"
+    if caller.paragraph:
+        caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
     caller.footnote_refs = ["test-note"]
     note = caller.model_copy(
         update={
             "unit_id": "test-note",
-            "kind": UnitKind.FOOTNOTE,
+            "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
             "page": 2,
             "source_text": "Note",
             "source_markdown": "Note",
@@ -238,7 +242,7 @@ def test_asset_companion_footnotes_use_referenced_unit() -> None:
     note = caller.model_copy(
         update={
             "unit_id": "note",
-            "kind": UnitKind.FOOTNOTE,
+            "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
             "page": 2,
             "footnote_number": "1",
             "footnote_refs": [],

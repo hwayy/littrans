@@ -19,6 +19,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
 from test_efficiency_v4 import _make_project
 from test_source_structure_v8 import _line
 
@@ -35,7 +36,7 @@ from littrans.hosts import HOST_ENV_SIGNALS
 from littrans.models import RenderPolicy, SourceUnit, UnitKind
 from littrans.project import initialize_project
 from littrans.scaffold import render_scaffold_template, scaffold_context
-from littrans.source_structure import _emphasised_share, assemble_structure
+from littrans.source_structure import _emphasised_share
 from littrans.storage import read_jsonl, write_jsonl
 from littrans.workflow import workflow_next, workflow_status
 

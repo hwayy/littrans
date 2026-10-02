@@ -83,11 +83,13 @@ def test_qa_table_footnote_cells(project, keep_call):
         deep=True, update={"unit_id": "new-table", "asset_refs": [], "asset_content_hashes": {}}
     )
     table.kind = UnitKind.TABLE
+    table.paragraph = None
+    table.paragraph_id = None
     table.parent_id = None
     table.source_text = table.source_markdown = "Label[^1]"
     table.table = TableData(rows=[["Label[^1]"]], column_count=1)
     table.footnote_refs = ["table-note"]
-    note = table.model_copy(deep=True, update={"unit_id": "table-note", "kind": UnitKind.FOOTNOTE,
+    note = table.model_copy(deep=True, update={"unit_id": "table-note", "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
         "source_text": "Note", "source_markdown": "Note", "table": None, "footnote_refs": [], "footnote_number": "1"})
     units.insert(1, table)
     units.insert(2, note)
@@ -112,6 +114,8 @@ def test_companion_cannot_cover_missing_prose(project):
     unit = next(u for u in units if u.page == 1 and u.kind == UnitKind.PARAGRAPH)
     aid = next(iter(load_assets(project)))
     unit.source_text = unit.source_markdown = "The identity holds in 2020. {{asset:" + aid + "}}"
+    if unit.paragraph:
+        unit.paragraph = unit.paragraph.model_copy(update={"body_text": unit.source_text, "body_markdown": unit.source_markdown or unit.source_text})
     unit.protected_tokens = ["2020"]
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
@@ -174,7 +178,7 @@ def test_untranslated_batch_retains_group_context(project, translated_sibling):
     units.insert(1, sibling)
     group = [u for u in units if u.page == 1]
     for unit in group:
-        unit.parent_id = "logical-paragraph"
+        unit.parent_id = group[0].unit_id
     first = next(u for u in group if u.translatable)
     sibling = next(u for u in group if u.unit_id != first.unit_id)
     if translated_sibling:
@@ -224,10 +228,16 @@ def test_dependency_uncertainty_dispatches_editable_owner(project):
     caller = next(u for u in units if u.page == 1 and u.translatable)
     note = next(u for u in units if u.page == 2 and u.translatable)
     note.kind = UnitKind.FOOTNOTE
+    note.paragraph = None
+    note.paragraph_id = None
     note.footnote_number = "1"
     caller.footnote_refs = [note.unit_id]
     caller.source_text += " Call[^1]"
+    if caller.paragraph:
+        caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
     caller.source_markdown = caller.source_text
+    if caller.paragraph:
+        caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
     submit(project, "sample-one-b001")

@@ -15,6 +15,22 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.2-dev.4] - 2026-10-02
+
+### Added
+
+- `project upgrade OLD NEW [--dry-run]` preserves a v7 workspace while staging its v8 conversion.
+
+### Changed
+
+- Paragraphs carry independent outline, label, layout and membership properties across source
+  review, translation and output; recorded labels replace inferred numbering and extra bullets.
+
+### Compatibility
+
+- Project v8 uses SourceUnit v4 and TranslationRecord v3. Upgraded source needs fresh review;
+  retained translations are drafts and historical approvals do not carry forward.
+
 ## [0.9.2-dev.3] - 2026-10-02
 
 ### Changed

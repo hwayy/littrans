@@ -124,6 +124,7 @@ def _context_text(
     *,
     project_config: ProjectConfig | None = None,
     completion_cache: dict[tuple[str, str], frozenset[str]] | None = None,
+    all_units: list[SourceUnit] | None = None,
 ) -> str:
     project_config = project_config or load_project(root)
     brief = (root / "context" / "document-brief.md").read_text(encoding="utf-8")
@@ -145,6 +146,18 @@ def _context_text(
         adjacent.append(f"Previous unit ({before.unit_id}):\n{before.source_text}")
     if after:
         adjacent.append(f"Next unit ({after.unit_id}):\n{after.source_text}")
+    from littrans.paragraphs import outline
+    source_units = all_units if all_units is not None else read_jsonl(root / "derived/units.jsonl", SourceUnit)
+    unit_map = {unit.unit_id: unit for unit in source_units}
+    parents = {row["unit_id"]: row["parent_id"] for row in outline(source_units)}
+    headings: set[str] = set()
+    for unit in units:
+        anchor = unit.section_id
+        while anchor in unit_map:
+            headings.add(anchor)
+            anchor = parents.get(anchor)
+    adjacent.extend(f"Enclosing outline ({unit.unit_id}, level {unit.paragraph.outline_level}):\n{unit.source_text}"
+                    for unit in source_units if unit.unit_id in headings and unit.paragraph)
     term_text = yaml.safe_dump({"approved_terms": terms}, allow_unicode=True, sort_keys=False)
     reference_text = reference_terms_yaml(relevant_reference_terms(root, units))
     if reference_text:
@@ -236,6 +249,8 @@ def create_batches(
     positions = {unit.unit_id: i for i, unit in enumerate(selected)}
     spans: dict[str, list[int]] = {}
     for i, unit in enumerate(selected):
+        if unit.is_heading and i + 1 < len(selected):
+            spans.setdefault("heading:" + unit.unit_id, []).extend([i, i + 1])
         if unit.parent_id:
             spans.setdefault(unit.parent_id, []).append(i)
         for ref in unit.footnote_refs:
@@ -255,7 +270,7 @@ def create_batches(
     for selected_index, unit in enumerate(selected):
         unit_words = _word_count(unit.source_text) if unit.translatable else 0
         heading_boundary = (batch_settings["preserve_heading_boundaries"]
-                            and unit.kind == "heading" and current and words >= max_words * 0.55)
+                            and unit.is_heading and current and words >= max_words * 0.55)
         page_gap = bool(current and unit.page - current[-1].page > 1)
         word_boundary = bool(
             current
@@ -264,10 +279,7 @@ def create_batches(
         )
         hard_boundary = bool(current and words + unit_words > max_words * 1.5)
         asset_boundary = sum(len(u.asset_content_hashes) for u in current) >= soft_max_assets
-        connected = bool(current and 0 <= unit.page - current[-1].page <= 1 and (
-            current[-1].continued_to_next or unit.continues_from_previous
-            or (unit.parent_id and unit.parent_id == current[-1].parent_id)
-        ))
+        connected = bool(current and unit.unit_id in neighbors.get(current[-1].unit_id, ()))
         if current and selected_index not in protected_cuts and not connected and (word_boundary or hard_boundary or heading_boundary or page_gap or asset_boundary):
             groups.append(current)
             current, words = [], 0
@@ -308,7 +320,7 @@ def create_batches(
         atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
         atomic_write_text(
             batch_dir / "context.md", _context_text(
-                root, group, before, after, project_config=config, completion_cache=completion_cache
+                root, group, before, after, project_config=config, completion_cache=completion_cache, all_units=all_units
             )
         )
         write_json(batch_dir / "output-schema.json", _translation_output_schema())
@@ -392,7 +404,7 @@ def refresh_batch(root: Path, batch_id: str) -> BatchManifest:
         write_json(batch_dir / "output-schema.json", _translation_output_schema())
         atomic_write_text(batch_dir / "source.md", batch_source_markdown(root, group))
         atomic_write_text(
-            batch_dir / "context.md", _context_text(root, group, before, after, project_config=config)
+            batch_dir / "context.md", _context_text(root, group, before, after, project_config=config, all_units=all_units)
         )
         allowed = set(revised.translatable_unit_ids)
         current = translation_map(root)

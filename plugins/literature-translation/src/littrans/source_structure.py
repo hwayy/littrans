@@ -37,15 +37,6 @@ MATH_OPERATORS = {
 LANGUAGE_TOKEN = re.compile(r"[A-Za-z](?:\.[A-Za-z])+\.?|[A-Za-z]{2,}")
 # Printed equation labels: (1), (2.3a), (A.4); named tags such as (ODE), (SDE); starred (*).
 EQUATION_LABEL = r"\(((?:[A-Z]\.)?\d+(?:\.\d+)*(?:[a-z])?|[A-Z]{2,6}\d?|\*{1,3})\)"
-# Printed list labels: a bracketed clause marker ((a), (iv), (2)) or a closed number set
-# in the margin of an exercise or enumerated item (1., 1.11., 3.2.1., 2)). A bare "1.1"
-# without closing punctuation is as likely a section reference wrapped onto a new line.
-LIST_LABEL = re.compile(r"\((?:[a-z]|[ivxlcdm]+|\d+)\)|(?:[a-z]|[ivxlcdm]+)\)|\d{1,3}(?:\.\d{1,3})*[.)]", re.I)
-# The same label opening a unit's text; a number must be followed by a space (after any
-# emphasis marker) so "1.5" inside a formula fragment never counts.
-LIST_LABEL_START = re.compile(
-    r"[*\s]*(?:\((?:[a-z]|[ivxlcdm]+|\d+)\)|(?:[a-z]|[ivxlcdm]+)\)(?=\**\s)|\d{1,3}(?:\.\d{1,3})*[.)](?=\**\s))", re.I
-)
 # How far right of the margin a list item's text column may sit: a label such as
 # ``(iii)`` or ``12.`` and the gap after it. A row starting beyond it is a display.
 LIST_TEXT_COLUMN_EM = 4.5
@@ -143,10 +134,17 @@ def list_label(line: list[dict[str, Any]], font_size: float) -> tuple[str, float
             return None
         text += str(g["text"])
         last = g
-    if not LIST_LABEL.fullmatch(text):
-        return None
     body = next((g for g in glyphs[rest:] if inked_glyph(g)), None)
-    return (text, float(body["origin"][0])) if body else None
+    if body is None or last is None or not text:
+        return None
+    # Open-ended geometry/punctuation suggestions, never a finite numbering grammar.
+    gap = float(body["origin"][0]) - float(last["bbox"][2])
+    import unicodedata
+    closed = unicodedata.category(text[-1]).startswith("P")
+    symbol = all(unicodedata.category(char).startswith(("P", "S")) for char in text)
+    if gap < font_size * 0.75 and not (closed or symbol):
+        return None
+    return text, float(body["origin"][0])
 
 
 STATEMENT_NAMES = (
@@ -800,6 +798,16 @@ def assemble_structure(
     # Prose the planner found back left of a hanging list's labels (LT-081).
     item_ends = {chunk["id"] for chunk in plan.get("blocks", ()) if chunk.get("item_end")}
 
+
+    def outline_candidate(unit: SourceUnit) -> bool:
+        return unit.is_heading or bool(unit.paragraph and any(
+            row.get("kind") == "outline" for row in unit.paragraph.candidates))
+
+    def label_candidate(unit: SourceUnit) -> bool:
+        bid = unit.unit_id.split("-", 1)[1]
+        return unit.is_labelled or bool(list_items.get(bid, {}).get("label")) or bool(
+            unit.paragraph and any(row.get("kind") == "label" for row in unit.paragraph.candidates))
+
     def rebuild(u: SourceUnit, text: str | None = None, **changes: Any) -> SourceUnit:
         extra = {
             k: getattr(u, k)
@@ -809,6 +817,7 @@ def assemble_structure(
                 "footnote_number",
                 "footnote_refs",
                 "parent_id",
+                "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id",
                 "continues_from_previous",
                 "continued_to_next",
                 "render_policy",
@@ -829,8 +838,17 @@ def assemble_structure(
 
     for u in units:
         bid = u.unit_id.split("-", 1)[1]
+        proposed_label = list_items.get(bid, {}).get("label")
+        if proposed_label and u.paragraph:
+            u = rebuild(u, paragraph=u.paragraph.model_copy(update={"candidates": [
+                *u.paragraph.candidates, {"kind": "label", "source_text": proposed_label,
+                                         "reason": "glyph spacing and line start"}]}))
         if bid in plan.get("chapter_headings", []):
-            u = rebuild(u, kind="heading", render_policy=RenderPolicy.INCLUDE, translatable=True)
+            from littrans.models import ParagraphData
+            u = rebuild(u, kind="paragraph", paragraph=ParagraphData(
+                body_text=u.source_text, body_markdown=u.source_markdown,
+                candidates=[{"kind": "outline", "reason": "chapter layout"}],
+            ), render_policy=RenderPolicy.INCLUDE, translatable=True)
         refs = asset_reference_ids(u.source_text)
         display = any(assets[aid].display for aid in refs) or bid in display_blocks
         # An indented paragraph that stays in its group (an italic continuation of a
@@ -875,11 +893,11 @@ def assemble_structure(
             # prose after a hanging list is never merged into its last item.
             opens_paragraph = indented or bool(list_items.get(bid, {}).get("paragraph")) or bid in item_ends
             starts_statement = _starts_statement(u.source_text)
-            label = LIST_LABEL_START.match(u.source_text)
+            label = plan.get("list_items", {}).get(bid, {}).get("label")
             # A bracketed clause ((a), (ii)) belongs to the paragraph or statement that
             # introduces it; a closed number (1.11.) opens an exercise or item of its own.
-            enumerated = label is not None and (label[0].lstrip("* \t").startswith("(")
-                                                or label[0].lstrip("* \t")[0].isalpha())
+            enumerated = label is not None and (label.lstrip("* \t").startswith("(")
+                                                or label.lstrip("* \t")[0].isalpha())
             numbered = label is not None and not enumerated
             proof = bool(re.match(r"[*\s]*Proof\b", u.source_text))
             # A bold run-in label ("2.1.4. Stochastic processes.") opens a paragraph.
@@ -887,7 +905,7 @@ def assemble_structure(
             # Paragraph white space above a closed line is the indent of a document that
             # spaces its paragraphs; a displayed element after it stays a child of its paragraph.
             paragraph_break = bid in breaks and not display
-            boundary = u.kind.value in {"heading", "list_item", "figure", "table", "caption", *NOTE_KINDS} or starts_statement or proof or run_in or numbered
+            boundary = (outline_candidate(u) or label_candidate(u) or u.kind.value in {"figure", "table", "caption", *NOTE_KINDS}) or starts_statement or proof or run_in or numbered
             previous_body = next((r for r in reversed(result) if r.render_policy != RenderPolicy.OMIT), None)
             # Prose resuming after a statement's enumerated clauses is the statement's
             # conclusion, even across the white space that closes the list.
@@ -896,7 +914,7 @@ def assemble_structure(
                 and statement is not None
                 and previous_body is not None
                 and previous_body.parent_id == statement
-                and LIST_LABEL_START.match(previous_body.source_text) is not None
+                and label_candidate(previous_body)
             )
             # An indented paragraph set in the statement's own italic face continues the
             # statement ("Conversely, if ..." after a theorem's enumerated clauses); upright
@@ -914,7 +932,7 @@ def assemble_structure(
                 statement = u.unit_id
                 statement_italic = _emphasised_share(u.source_text) >= STATEMENT_ITALIC_SHARE
             elif (
-                u.kind.value == "heading"
+                outline_candidate(u)
                 or proof
                 or ((indented or (paragraph_break and not concludes)) and label is None and u.kind.value != "equation"
                     and not italic_continuation)
@@ -925,15 +943,17 @@ def assemble_structure(
             # item's own indented continuation paragraph does not.
             at_margin = x < plan["margin"] + plan["font_size"] * 0.8
             if (
-                u.kind.value == "heading" or starts_statement or proof or run_in or numbered
+                outline_candidate(u) or starts_statement or proof or run_in or numbered
                 or (paragraph_break and not enumerated and at_margin and u.kind.value != "equation")
             ):
                 enumeration = None
-            # Headings, list items and figure/table elements close their group;
-            # the prose that follows starts a new logical paragraph.
+            # A label does not close its container: an item may contain several
+            # paragraphs. Heading and float boundaries remain candidate evidence.
             after_heading = previous_body is not None and (
-                previous_body.kind.value in {"heading", "caption", "figure", "table"}
-                or (previous_body.kind.value == "list_item" and u.kind.value != "list_item")
+                outline_candidate(previous_body) or previous_body.kind.value in {"caption", "figure", "table"}
+                or (label_candidate(previous_body) and not label_candidate(u)
+                    and x < plan["first_x"].get(previous_body.unit_id.split("-", 1)[1], previous_body.bbox[0]) - plan["font_size"] * 0.5
+                    and "continues" not in list_items.get(bid, {}))
             )
             figure_pair = (
                 previous_body is not None
@@ -942,10 +962,14 @@ def assemble_structure(
                 and previous_body.render_policy != RenderPolicy.OMIT
             )
             list_member = (
-                u.kind.value == "list_item"
+                label_candidate(u)
+                and not numbered
                 and previous_body is not None
+                and not outline_candidate(previous_body)
+                and not (enumerated and enumeration is not None)
+                and not (paragraph_break and at_margin)
                 and previous_body.render_policy != RenderPolicy.OMIT
-                and previous_body.kind.value in {"list_item", "paragraph", "equation"}
+                and previous_body.kind.value in {"paragraph", "equation"}
             )
             # The item this chunk continues, as the planner placed it (its text column).
             continued_item = None
@@ -1013,8 +1037,8 @@ def assemble_structure(
                 (
                     not display
                     and not previous_display
-                    and u.kind.value in {"paragraph", "list_item"}
-                    and previous.kind.value in {"paragraph", "list_item"}
+                    and u.kind.value in {"paragraph"}
+                    and previous.kind.value in {"paragraph"}
                 )
                 or (
                     bid in display_blocks
@@ -1034,12 +1058,12 @@ def assemble_structure(
             and not opens_paragraph
             and not display
             and not previous_display
-            and previous.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
-            and u.kind.value not in {"heading", "caption", "figure", "table", "list_item"}
+            and not outline_candidate(previous) and previous.kind.value not in { "caption", "figure", "table"}
+            and not outline_candidate(u) and u.kind.value not in { "caption", "figure", "table"}
             # A note or reference entry never joins prose, nor prose it; the fragments
             # of one wrapped footnote still do.
             and (previous.kind.value == u.kind.value or not {previous.kind.value, u.kind.value} & NOTE_KINDS)
-            and not LIST_LABEL_START.match(u.source_text)
+            and not label_candidate(u)
             # A printed equation label preparation could not bind stays its own unit.
             and not re.match(r"[*\s]*" + EQUATION_LABEL, u.source_text)
         )):
@@ -1100,7 +1124,7 @@ def assemble_structure(
         # both pages are in hand (rendering), from the sender's continued_to_next.
         opens_own = bool(
             RUN_IN_LABEL.match(opening) or _starts_statement(opening)
-            or re.match(r"[*\s]*Proof\b", opening) or LIST_LABEL_START.match(opening)
+            or re.match(r"[*\s]*Proof\b", opening) or result[first].is_labelled
         )
         # A first line that opens with a capital letter opens a sentence, not a continuation
         # of one ("This gives", "Then"): the flag means the sentence continues, and a sender
@@ -1204,6 +1228,7 @@ def coalesce_inline_assets(units: list[SourceUnit], assets: dict[str, FidelityAs
                 "footnote_number",
                 "footnote_refs",
                 "parent_id",
+                "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id",
                 "continues_from_previous",
                 "continued_to_next",
                 "render_policy",

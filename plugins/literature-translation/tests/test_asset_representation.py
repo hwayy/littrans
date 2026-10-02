@@ -347,6 +347,8 @@ def test_qa_uncertainty_fingerprint_only_invalidates_dependent_batch(project: Pa
 
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     units[0].source_text = "{{asset:a1}}"
+    if units[0].paragraph:
+        units[0].paragraph = units[0].paragraph.model_copy(update={"body_text": units[0].source_text, "body_markdown": units[0].source_markdown or units[0].source_text})
     units.append(units[0].model_copy(update={"unit_id": "u2", "page": 10, "source_text": "{{asset:a2}}", "source_hash": "source-two"}))
     write_jsonl(project / "derived/units.jsonl", units)
     for number, unit in enumerate(units, 1):

@@ -2,7 +2,7 @@
 
 ## Project record and scaffold
 
-`project init` creates the schema-7 directories and grows the record structure a project needs
+`project init` creates the project directories and grows the record structure a project needs
 before its first page is prepared; `project scaffold PROJECT` adds whatever is missing to an
 existing project and `--refresh` regenerates the plugin-owned file after an upgrade. User-owned
 files are written once and never overwritten, so both calls are idempotent on a project in

@@ -1,8 +1,9 @@
-# Migrating to LitTrans 0.9.2-dev.3
+# Migrating to LitTrans 0.9.2-dev.4
 
-This release requires project manifest v7 and settings schema v1. Unsupported versions are
-rejected; there is no transparent upgrade. See [configuration](references/configuration.md)
-for storage and policy semantics and the [CLI reference](references/cli-reference.md) for syntax.
+The target format is project manifest v8, SourceUnit v4, TranslationRecord v3 and settings
+schema v1. Choose the upgrade or rebuild route below before resuming an older workspace.
+See [configuration](references/configuration.md) for policy storage and the
+[CLI reference](references/cli-reference.md) for command syntax.
 
 ## Updated model recommendations and Codex wave size
 
@@ -53,29 +54,14 @@ HTML after rendering.
 
 ## Other changes
 
-Existing manifest-v7 projects with valid settings schema v1 can continue without rebuilding.
-Existing source evidence is not rewritten. New source-review packets use contract v7;
-old packets and receipts retain their original review contract. Optional `equation_numbers`
-is omitted when empty, preserving old unit fingerprints. Use the
-rebuild procedure below when moving from an unsupported project format or when deliberately
-starting a separate project.
+Source review requires contract-v8 packets, including whole-page inspection, paragraph
+confirmations and explicit layout adjudications. Old approvals do not certify upgraded
+structure. Supplemental `source scan-layout` decisions remain separate from full-page approval;
+see [source review](references/source-review.md) for the procedure.
 
-This release also includes explicit layout adjudications and a whole-page-first review pass.
-Existing approvals remain valid by default. Use `source scan-layout PROJECT --pages RANGE`
-to scan existing results, then `task create PROJECT --stage source-review --pages RANGE
---review-mode layout-adjudication` for local supplementary decisions. They are stored in
-`evidence/layout/` and do not replace page receipts. Retain this directory and its referenced
-packets in project records. Corrections still invalidate affected source dependencies.
-Upgrade all hosts before using new review packets or multiple equation labels.
-
-The release retains exact reviewed `asset_crops` and `source preview-review` without
-changing project schemas. Upgrade every host before using the new declarations; older
-plugins cannot replay them. A crop changes evidence and requires a fresh independent review.
-Existing source records are left intact until a supported correction or extraction command.
-Re-extraction can merge assets that older unit overrides named separately. Such stale overrides
-are rejected explicitly; refresh the correction against a new packet rather than discard it.
 Refresh `project scaffold` to protect task results and inspection evidence from Git newline
 conversion. Restore already-converted evidence from an intact copy; never adjust its hashes.
+Refresh corrections against new packets when extraction changes asset IDs or grouping.
 
 Applied composed operators such as `log log x`, and the operator names `erf` and `erfc`, no
 longer count as translatable formula conditions. Existing original-image crops remain usable.
@@ -100,15 +86,26 @@ its recorded plugin installation available. Do not point old and new clients at 
 project directory. Install the new plugin and start a fresh session; `littrans doctor` must
 report the target build. Installation details are in [installation](references/installation.md).
 
-## Rebuild into a new directory
+## Upgrade or rebuild into a new directory
 
-Run `littrans project rebuild OLD NEW` with a nonexistent destination. The source must match
-its recorded SHA-256. Rebuild reuses verified source and context material; historical task
+For a v7 workspace, run `littrans project upgrade OLD NEW --dry-run`, then
+`littrans project upgrade OLD NEW`. NEW must be a separate, nonexistent directory. Upgrade
+stages and validates the conversion before publishing NEW; failure leaves OLD unchanged.
+It preserves full source, original assets, settings and context. The conversion report is
+`derived/paragraph-upgrade.json`; historical units, translations, approvals, overrides and
+task evidence are retained under `history/paragraph-upgrade-v7`. Active translations remain
+drafts with their original bindings. Confirm paragraph structure, separate body and label
+translations, then resubmit through fresh batches. Old heading/list kinds do not establish
+new outline levels or label types; only explicit outline evidence restores a heading level.
+
+Use `littrans project rebuild OLD NEW` for older unsupported formats or to deliberately
+restart extraction without retaining translations. The destination must not exist, and the
+source must match its recorded SHA-256. Rebuild reuses source and context material; historical task
 results, source receipts, translations and approvals do not become evidence in the new project.
 Review copied brief, style, glossary and structure guidance before using them. Historical model
 answers must not enter blind review tasks. Keep `OLD` unchanged for recovery.
 
-A v7 `OLD` keeps its validated `settings.yaml` (agents, translation and verification policy,
+A v8 `OLD` keeps its validated `settings.yaml` (agents, translation and verification policy,
 external reviewers) and the executable bindings of reviewers it defines. Add `--settings preset`
 (optionally `--preset NAME`) to start from a preset instead. Older formats always start from a
 preset. Read the returned `rebuild.configuration` report: `preserved`, `reset`, `local_migrated`,
@@ -151,7 +148,7 @@ record tracking and rendered output before delivery.
 
 ## Recover
 
-If rebuilding fails, keep the old project and retry in a fresh destination after correcting
+If upgrading or rebuilding fails, keep the old project and retry in a fresh destination after correcting
 the reported source or context problem. To resume old work, use `OLD` with its recorded plugin
 build in a fresh session. Do not copy new approvals back into it. Restore a complete backup
 when rolling back a modified project; preserve both records until recovery is verified.

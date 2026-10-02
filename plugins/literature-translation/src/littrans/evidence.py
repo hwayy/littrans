@@ -11,12 +11,12 @@ from typing import Any
 import yaml
 
 from littrans.models import (
-    FLOAT_KINDS,
     PROJECT_SCHEMA_VERSION,
     BatchManifest,
     FigureLabel,
     ProjectConfig,
     ProjectStatus,
+    RenderPolicy,
     SourceUnit,
     TranslationRecord,
     UnitKind,
@@ -42,6 +42,7 @@ from littrans.storage import (
 TRANSLATION_PAYLOAD_FIELDS = {
     "asset_translations",
     "target_text",
+    "label_translations",
     "target_table",
     "figure_labels",
     "reader_note",
@@ -59,6 +60,7 @@ SOURCE_SEMANTIC_FIELDS = {
     "asset_content_hashes",
     "source_markdown",
     "parent_id",
+    "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id",
     "sidebar_id",
     "sidebar_role",
     "callout_kind",
@@ -89,6 +91,7 @@ STRUCTURE_FIELDS = {
     "page",
     "bbox",
     "parent_id",
+    "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id",
     "sidebar_id",
     "sidebar_role",
     "callout_kind",
@@ -248,11 +251,13 @@ def continuation_neighbors(units: list[SourceUnit]) -> dict[str, set[str]]:
     the figures, tables and captions set between its two halves (LT-097): the sentence
     a page ends continues after the float that opens the next page.
     """
-    body = [unit for unit in units if unit.render_policy.value == "include" and unit.kind.value != "footnote"]
-    flow = [unit for unit in body if unit.kind not in FLOAT_KINDS]
-    neighbors: dict[str, set[str]] = {}
-    for left, right in [*zip(body, body[1:], strict=False), *zip(flow, flow[1:], strict=False)]:
-        if (0 <= right.page - left.page <= 1
+    from littrans.paragraphs import relation_neighbors
+    neighbors = relation_neighbors(units)
+    # Non-paragraph callouts/tables retain their explicit physical continuation contract.
+    body = [unit for unit in units if unit.render_policy is RenderPolicy.INCLUDE]
+    for left, right in zip(body, body[1:], strict=False):
+        if (left.kind is right.kind and left.kind is not UnitKind.PARAGRAPH
+                and 0 <= right.page - left.page <= 1
                 and (left.continued_to_next or right.continues_from_previous)):
             neighbors.setdefault(left.unit_id, set()).add(right.unit_id)
             neighbors.setdefault(right.unit_id, set()).add(left.unit_id)
@@ -291,6 +296,13 @@ def dependency_closure(
     # Continued structures and sidebars may pull one another into the closure.
     while True:
         previous_size = len(selected)
+        from littrans.paragraphs import outline
+        outline_parents = {row["unit_id"]: row["parent_id"] for row in outline(units)}
+        for uid in list(selected):
+            heading = units[positions[uid]].section_id
+            while heading in positions:
+                selected.add(heading)
+                heading = outline_parents.get(heading)
         neighbors = continuation_neighbors(units)
         for unit_id in list(selected):
             selected.update(neighbors.get(unit_id, ()))
@@ -366,6 +378,14 @@ def page_evidence_units(page: int, units: list[SourceUnit]) -> list[SourceUnit]:
             index for index, unit in enumerate(units) if unit.sidebar_id in sidebar_ids
         )
         selected_ids = {units[index].unit_id for index in selected_indices}
+        from littrans.paragraphs import outline
+        heading_parents = {row["unit_id"]: row["parent_id"] for row in outline(units)}
+        positions = {unit.unit_id: index for index, unit in enumerate(units)}
+        for index in list(selected_indices):
+            anchor = units[index].section_id
+            while anchor in positions:
+                selected_indices.add(positions[anchor])
+                anchor = heading_parents.get(anchor)
         referenced = {ref for index in selected_indices for ref in units[index].footnote_refs}
         selected_indices.update(index for index, unit in enumerate(units)
                                 if unit.unit_id in referenced or selected_ids.intersection(unit.footnote_refs))
@@ -598,7 +618,8 @@ def without_quoted_titles(text: str, every_quote: bool = False) -> str:
 
 def term_source_text(unit: SourceUnit) -> str:
     """The folded source representation every terminology check matches against."""
-    text = source_representation_text(unit)
+    from littrans.paragraphs import language_text
+    text = language_text(unit, markdown=True) if unit.paragraph else source_representation_text(unit)
     return fold_term_text(without_quoted_titles(text, every_quote=unit.kind is UnitKind.BIBLIOGRAPHY))
 
 

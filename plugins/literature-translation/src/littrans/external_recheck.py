@@ -26,7 +26,7 @@ from littrans.storage import (
 
 
 def migrate_external_config(root: Path, apply: bool = False) -> dict[str, Any]:
-    """Retained command entry: v7 has no in-place legacy configuration migration."""
+    """Retained command entry: v8 has no in-place legacy configuration migration."""
     load_project(root)  # Reject unsupported manifests without changing their bytes.
     return {"changed": False, "applied": False,
             "next_actions": ["config show PROJECT", "config apply PROJECT CANDIDATE --dry-run"]}

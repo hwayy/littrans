@@ -1,8 +1,10 @@
+
 import pymupdf as fitz
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
 
 from littrans.fidelity import _make_unit, _native
 from littrans.rendering import _inline_html, _unit_html
-from littrans.source_structure import assemble_structure, plan_structure, styled_text
+from littrans.source_structure import plan_structure, styled_text
 
 
 def test_bold_and_italic_have_valid_markdown_whitespace():
@@ -278,7 +280,7 @@ def test_continuation_skips_omitted_headers_but_never_missing_pages(tmp_path):
         render_policy=RenderPolicy.OMIT,
         translatable=False,
     )
-    right = _make_unit(2, "p0002-b1", "body.", [50, 50, 200, 60], {})
+    right = _make_unit(2, "p0002-b1", "body.", [50, 50, 200, 60], {}, paragraph_id=left.unit_id)
     distant = _make_unit(
         5, "p0005-b1", "Different page.", [50, 50, 200, 60], {}, continues_from_previous=True
     )

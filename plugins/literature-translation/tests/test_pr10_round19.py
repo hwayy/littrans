@@ -50,8 +50,8 @@ def test_refresh_reopens_stale_read_only(project, translated):
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     first = next(u for u in units if u.page == 1 and u.translatable)
     sibling = first.model_copy(deep=True, update={"unit_id": "readonly", "source_text": "Context", "source_markdown": "Context",
-        "asset_refs": [], "asset_content_hashes": {}, "parent_id": "group"})
-    first.parent_id = "group"
+        "asset_refs": [], "asset_content_hashes": {}, "parent_id": first.unit_id})
+    first.parent_id = first.unit_id
     units.insert(units.index(first) + 1, sibling)
     write_jsonl(project / "derived/units.jsonl", units)
     write_jsonl(project / "translations/current.jsonl", [TranslationRecord(unit_id=sibling.unit_id, source_hash=sibling.source_hash, target_text="旧译文")])
@@ -59,6 +59,8 @@ def test_refresh_reopens_stale_read_only(project, translated):
     batch = create_batches(project, "1", prefix="readonly-check", untranslated_only=True)[0]
     assert sibling.unit_id in batch.read_only_unit_ids
     sibling.source_text = sibling.source_markdown = "Changed context"
+    if sibling.paragraph:
+        sibling.paragraph = sibling.paragraph.model_copy(update={"body_text": sibling.source_text, "body_markdown": sibling.source_markdown or sibling.source_text})
     sibling.source_hash = "changed-source-hash"
     write_jsonl(project / "derived/units.jsonl", units)
     if not translated:

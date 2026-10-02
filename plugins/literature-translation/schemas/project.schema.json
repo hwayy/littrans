@@ -2,7 +2,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": 7,
+      "const": 8,
       "title": "Schema Version",
       "type": "integer"
     },

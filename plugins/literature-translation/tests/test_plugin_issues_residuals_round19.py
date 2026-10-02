@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
 from test_source_structure_v8 import _line
 
 from littrans.fidelity import (
@@ -16,7 +17,7 @@ from littrans.fidelity import (
     _make_unit,
     _trim_prose_edges,
 )
-from littrans.source_structure import assemble_structure, plan_structure
+from littrans.source_structure import plan_structure
 
 # --- LT-060 ------------------------------------------------------------------------------
 
@@ -129,8 +130,8 @@ def test_prose_after_a_hanging_list_stays_a_unit_of_its_own_in_the_same_group() 
                             "first_x": {"b1": 40.0, "b2": 70.0, "b3": 58.0, "b4": 40.0},
                             "list_items": {"b2": {"label": "(i)", "body_x": 94.0}, "b3": {"label": "(iii)", "body_x": 94.0}}}
     merged = assemble_structure(units, {}, {**plan, "blocks": []}, _make_unit)
-    assert [u.unit_id for u in merged] == ["p0002-b1", "p0002-b2", "p0002-b3"]
+    assert [u.unit_id for u in merged] == ["p0002-b1", "p0002-b2", "p0002-b3", "p0002-b4"]
     result = assemble_structure(units, {}, {**plan, "blocks": [{"id": "b4", "item_end": True}]}, _make_unit)
     assert [u.unit_id for u in result] == ["p0002-b1", "p0002-b2", "p0002-b3", "p0002-b4"]
-    # The grouping is the one the prose had before: only the merge is withheld.
-    assert result[3].parent_id == result[2].parent_id
+    # Return to the paragraph margin proposes a new paragraph, not an item continuation.
+    assert result[3].parent_id == result[3].unit_id

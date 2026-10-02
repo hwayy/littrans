@@ -518,6 +518,12 @@ def _packet_text(
         if unit.table:
             source += "\n\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else "[NO TRANSLATION: source-only unit]"
+        if unit.paragraph:
+            source += "\n\nExplicit paragraph attributes:\n" + unit.paragraph.model_dump_json()
+            source += "\nMemberships:\n" + json.dumps({name: getattr(unit, name) for name in (
+                "paragraph_id", "item_id", "parent_item_id", "parent_id", "container_role", "section_id")})
+            if record:
+                target += "\n\nLabel translations:\n" + json.dumps(record.label_translations, ensure_ascii=False)
         if record and unit.kind is UnitKind.CAPTION:
             target = normalize_zh_caption(target)
         if record and record.target_table:
@@ -708,6 +714,8 @@ def _evidence_map(
         if unit.table:
             source += "\n" + "\n".join(" | ".join(row) for row in unit.table.rows)
         target = record.target_text if record else ""
+        if record and unit.paragraph:
+            target += "\n" + "\n".join(record.label_translations.values())
         if record and unit.kind is UnitKind.CAPTION:
             target = normalize_zh_caption(target)
         if record and record.target_table:

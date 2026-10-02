@@ -109,7 +109,7 @@ def test_same_import_dependency_approval_is_deferred(tmp_path, reverse):
         if decision["page"] == 2:
             u = payload["pages"][1]["units"][0]
             # The fixture recorded `regions: []` for the page; a correction carries it forward.
-            decision["override"] = {"regions": [], "units": [{"unit_id": u["unit_id"], "kind": "footnote",
+            decision["override"] = {"regions": [], "units": [{"unit_id": u["unit_id"], "kind": "footnote", "paragraph": None, "paragraph_id": None,
                 "bbox": u["bbox"], "footnote_number": "1", "source_markdown": "Changed note"}]}
         else:
             for key in ("viewed_original", "coverage_complete", "boundaries_complete", "reading_order_correct",

@@ -77,6 +77,296 @@
       "title": "FigureLabel",
       "type": "object"
     },
+    "ParagraphData": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/ParagraphType",
+          "default": "plain"
+        },
+        "outline_level": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outline Level"
+        },
+        "body_text": {
+          "title": "Body Text",
+          "type": "string"
+        },
+        "body_markdown": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Body Markdown"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParagraphLabel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "layout": {
+          "$ref": "#/$defs/ParagraphLayout"
+        },
+        "candidates": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Candidates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "body_text"
+      ],
+      "title": "ParagraphData",
+      "type": "object"
+    },
+    "ParagraphLabel": {
+      "additionalProperties": false,
+      "properties": {
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/ParagraphLabelPart"
+          },
+          "minItems": 1,
+          "title": "Parts",
+          "type": "array"
+        },
+        "evidence": {
+          "$ref": "#/$defs/ParagraphLabelEvidence"
+        }
+      },
+      "required": [
+        "parts",
+        "evidence"
+      ],
+      "title": "ParagraphLabel",
+      "type": "object"
+    },
+    "ParagraphLabelEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "bbox": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bbox"
+        },
+        "glyph_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Glyph Ids",
+          "type": "array"
+        },
+        "source_range": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Range"
+        }
+      },
+      "required": [
+        "page"
+      ],
+      "title": "ParagraphLabelEvidence",
+      "type": "object"
+    },
+    "ParagraphLabelPart": {
+      "additionalProperties": false,
+      "properties": {
+        "part_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "title": "Part Id",
+          "type": "string"
+        },
+        "source_text": {
+          "minLength": 1,
+          "title": "Source Text",
+          "type": "string"
+        },
+        "source_markdown": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Markdown"
+        },
+        "policy": {
+          "default": "literal",
+          "enum": [
+            "literal",
+            "translatable"
+          ],
+          "title": "Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "part_id",
+        "source_text"
+      ],
+      "title": "ParagraphLabelPart",
+      "type": "object"
+    },
+    "ParagraphLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "left_indent_pt": {
+          "default": 0,
+          "title": "Left Indent Pt",
+          "type": "number"
+        },
+        "right_indent_pt": {
+          "default": 0,
+          "title": "Right Indent Pt",
+          "type": "number"
+        },
+        "first_line_offset_pt": {
+          "default": 0,
+          "title": "First Line Offset Pt",
+          "type": "number"
+        },
+        "label_indent_pt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label Indent Pt"
+        },
+        "label_alignment": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Label Alignment",
+          "type": "string"
+        },
+        "label_gap_pt": {
+          "default": 3,
+          "minimum": 0,
+          "title": "Label Gap Pt",
+          "type": "number"
+        },
+        "alignment": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ],
+          "title": "Alignment",
+          "type": "string"
+        },
+        "space_before_pt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Space Before Pt",
+          "type": "number"
+        },
+        "space_after_pt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Space After Pt",
+          "type": "number"
+        },
+        "font_size_pt": {
+          "default": 12,
+          "exclusiveMinimum": 0,
+          "title": "Font Size Pt",
+          "type": "number"
+        }
+      },
+      "title": "ParagraphLayout",
+      "type": "object"
+    },
+    "ParagraphType": {
+      "enum": [
+        "plain",
+        "numbered",
+        "bulleted",
+        "labelled"
+      ],
+      "title": "ParagraphType",
+      "type": "string"
+    },
     "ProjectStatus": {
       "enum": [
         "initialized",
@@ -188,9 +478,7 @@
     },
     "UnitKind": {
       "enum": [
-        "heading",
         "paragraph",
-        "list_item",
         "note",
         "code",
         "equation",
@@ -207,7 +495,8 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": 3,
+      "const": 4,
+      "default": 4,
       "title": "Schema Version",
       "type": "integer"
     },
@@ -280,6 +569,77 @@
       ],
       "default": null,
       "title": "Parent Id"
+    },
+    "paragraph": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ParagraphData"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "paragraph_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Paragraph Id"
+    },
+    "item_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Item Id"
+    },
+    "parent_item_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Item Id"
+    },
+    "container_role": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Container Role"
+    },
+    "section_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Section Id"
     },
     "sidebar_id": {
       "anyOf": [

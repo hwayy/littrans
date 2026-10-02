@@ -22,7 +22,7 @@ class SettingsModel(StrictModel):
 
 
 class ProjectManifest(SettingsModel):
-    schema_version: Literal[7]
+    schema_version: Literal[8]
     project_id: str
     source_path: str
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")

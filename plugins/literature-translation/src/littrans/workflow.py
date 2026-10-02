@@ -916,6 +916,10 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
     )
     if unit.table:
         source = "\n".join(" | ".join(row) for row in unit.table.rows)
+    if unit.paragraph:
+        source += "\n\nExplicit paragraph (body, labels, outline and layout):\n" + unit.paragraph.model_dump_json()
+        source += "\nMemberships:\n" + json.dumps({name: getattr(unit, name) for name in (
+            "paragraph_id", "item_id", "parent_item_id", "parent_id", "container_role", "section_id")})
     if unit.figure_labels:
         source += "\n\nFigure label sources:\n" + "\n".join(
             f"- {label.source}" for label in unit.figure_labels
@@ -932,6 +936,9 @@ def _audit_unit_text(unit: SourceUnit, record: TranslationRecord | None) -> str:
         target = normalize_zh_caption(target)
     if record and record.target_table:
         target = "\n".join(" | ".join(row) for row in record.target_table.rows)
+    if record and unit.paragraph:
+        target += "\n\nLabel translations (literal parts are renderer-owned):\n" + json.dumps(
+            record.label_translations, ensure_ascii=False)
     rendered_figure_labels = effective_figure_labels(unit, record)
     if rendered_figure_labels:
         target += "\n\nFigure label translations:\n" + "\n".join(

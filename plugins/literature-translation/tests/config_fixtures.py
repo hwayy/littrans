@@ -13,7 +13,7 @@ from littrans.storage import save_project as save_state
 def save_project(root: Path, config) -> None:
     if not (root / "project.yaml").exists():
         save_state(root, config)
-    if config.schema_version != 7:
+    if config.schema_version != 8:
         write_yaml(root / "project.yaml", config.model_dump(mode="json", exclude_none=True))
         return
     settings = read_settings(root)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -18,7 +19,7 @@ from littrans.hosts import (
 
 BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN.pattern)]
-PROJECT_SCHEMA_VERSION = 7
+PROJECT_SCHEMA_VERSION = 8
 
 
 def validate_batch_identifier(value: str) -> str:
@@ -49,9 +50,7 @@ class ProjectStatus(StrEnum):
 
 
 class UnitKind(StrEnum):
-    HEADING = "heading"
     PARAGRAPH = "paragraph"
-    LIST_ITEM = "list_item"
     NOTE = "note"
     CODE = "code"
     EQUATION = "equation"
@@ -173,6 +172,7 @@ MathStructuralField = Literal[
     "latex",
     "equation_number",
     "set_bbox",
+    "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id",
     "parent_id",
     "continues_from_previous",
     "continued_to_next",
@@ -415,8 +415,95 @@ class FigureLabel(StrictModel):
     target: str | None = None
 
 
+class ParagraphType(StrEnum):
+    PLAIN = "plain"
+    NUMBERED = "numbered"
+    BULLETED = "bulleted"
+    LABELLED = "labelled"
+
+
+class ParagraphLabelPart(StrictModel):
+    part_id: BatchId
+    source_text: str = Field(min_length=1)
+    source_markdown: str | None = None
+    policy: Literal["literal", "translatable"] = "literal"
+
+
+class ParagraphLabelEvidence(StrictModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    page: int = Field(ge=1)
+    bbox: tuple[float, float, float, float] | None = None
+    glyph_ids: list[str] = Field(default_factory=list)
+    source_range: tuple[int, int] | None = None
+
+    @model_validator(mode="after")
+    def require_binding(self) -> ParagraphLabelEvidence:
+        if not self.glyph_ids and self.source_range is None:
+            raise ValueError("paragraph labels require glyph IDs or a source range")
+        if len(self.glyph_ids) != len(set(self.glyph_ids)):
+            raise ValueError("label glyph IDs must be unique")
+        if any(not value.strip() for value in self.glyph_ids):
+            raise ValueError("label glyph IDs must not be empty")
+        if self.bbox is not None and not (self.bbox[0] < self.bbox[2] and self.bbox[1] < self.bbox[3]):
+            raise ValueError("label bbox must have positive width and height")
+        if self.source_range is not None:
+            start, end = self.source_range
+            if not 0 <= start < end:
+                raise ValueError("invalid label source range")
+        return self
+
+
+class ParagraphLabel(StrictModel):
+    parts: list[ParagraphLabelPart] = Field(min_length=1)
+    evidence: ParagraphLabelEvidence
+
+    @model_validator(mode="after")
+    def unique_parts(self) -> ParagraphLabel:
+        if len({part.part_id for part in self.parts}) != len(self.parts):
+            raise ValueError("label part IDs must be unique")
+        return self
+
+    @property
+    def source_text(self) -> str:
+        return "".join(part.source_text for part in self.parts)
+
+
+class ParagraphLayout(StrictModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    left_indent_pt: float = 0
+    right_indent_pt: float = 0
+    first_line_offset_pt: float = 0
+    label_indent_pt: float | None = None
+    label_alignment: Literal["left", "center", "right"] = "left"
+    label_gap_pt: float = Field(default=3, ge=0)
+    alignment: Literal["left", "center", "right", "justify"] = "left"
+    space_before_pt: float = Field(default=0, ge=0)
+    space_after_pt: float = Field(default=0, ge=0)
+    font_size_pt: float = Field(default=12, gt=0)
+
+
+class ParagraphData(StrictModel):
+    type: ParagraphType = ParagraphType.PLAIN
+    outline_level: int | None = Field(default=None, ge=1, strict=True)
+    body_text: str
+    body_markdown: str | None = None
+    label: ParagraphLabel | None = None
+    layout: ParagraphLayout = Field(default_factory=ParagraphLayout)
+    # Suggestions survive review as evidence; they never supply a rendered label.
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_label_type(self) -> ParagraphData:
+        if self.type is ParagraphType.PLAIN and self.label is not None:
+            raise ValueError("plain paragraphs cannot carry labels")
+        if self.type in {ParagraphType.NUMBERED, ParagraphType.BULLETED} and self.label:
+            if any(part.policy != "literal" for part in self.label.parts):
+                raise ValueError("numbered and bulleted labels must be literal")
+        return self
+
+
 class SourceUnit(StrictModel):
-    schema_version: int = 3
+    schema_version: Literal[4] = 4
     unit_id: str
     kind: UnitKind
     page: int
@@ -426,6 +513,12 @@ class SourceUnit(StrictModel):
     asset_content_hashes: dict[str, str] = Field(default_factory=dict)
     source_markdown: str | None = None
     parent_id: str | None = None
+    paragraph: ParagraphData | None = None
+    paragraph_id: str | None = None
+    item_id: str | None = None
+    parent_item_id: str | None = None
+    container_role: str | None = None
+    section_id: str | None = None
     sidebar_id: str | None = None
     sidebar_role: SidebarRole | None = None
     callout_kind: CalloutKind | None = None
@@ -450,8 +543,76 @@ class SourceUnit(StrictModel):
     confidence: float = Field(ge=0, le=1)
     status: ProjectStatus = ProjectStatus.EXTRACTED
 
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> SourceUnit:
+        values = dict(update or {})
+        if isinstance(values.get("paragraph"), dict):
+            values["paragraph"] = ParagraphData.model_validate(values["paragraph"])
+        kind = values.get("kind", self.kind)
+        if kind != UnitKind.PARAGRAPH and "paragraph" not in values:
+            values["paragraph"] = None
+            if self.paragraph_id == self.unit_id and "paragraph_id" not in values:
+                values["paragraph_id"] = None
+        if (kind == UnitKind.PARAGRAPH and self.paragraph is not None
+                and not self.paragraph.label and "paragraph" not in values):
+            body = {}
+            if "source_text" in values:
+                body["body_text"] = values["source_text"]
+                body["body_markdown"] = values.get("source_markdown", values["source_text"])
+            elif "source_markdown" in values:
+                body["body_markdown"] = values["source_markdown"]
+            if body:
+                values["paragraph"] = self.paragraph.model_copy(update=body)
+        if ("unit_id" in values and self.paragraph_id == self.unit_id
+                and "paragraph_id" not in values):
+            values["paragraph_id"] = values["unit_id"] if kind == UnitKind.PARAGRAPH else None
+        return super().model_copy(update=values, deep=deep)
+
     @model_validator(mode="after")
     def require_omitted_units_to_be_nontranslatable(self) -> SourceUnit:
+        if self.kind is UnitKind.PARAGRAPH:
+            if self.paragraph is None:
+                self.paragraph = ParagraphData(
+                    body_text=self.source_text, body_markdown=self.source_markdown
+                )
+            self.paragraph_id = self.paragraph_id or self.unit_id
+            def comparable(text: str) -> str:
+                return " ".join(re.sub(r"(?<!\\)[*_]{1,3}", "", text).split())
+
+            if not self.paragraph.label and comparable(self.source_text) != comparable(self.paragraph.body_text):
+                raise ValueError("paragraph body must reproduce the complete unlabelled source text")
+            if self.paragraph.type is not ParagraphType.PLAIN:
+                if self.paragraph_id == self.unit_id and self.paragraph.label is None:
+                    raise ValueError("a labelled paragraph head requires an explicit label")
+            if self.paragraph.label:
+                if self.paragraph_id != self.unit_id:
+                    raise ValueError("only a logical paragraph head may own its label")
+                evidence = self.paragraph.label.evidence
+                if evidence.page != self.page:
+                    raise ValueError("label evidence belongs to a different page")
+                if evidence.source_range is not None:
+                    start, end = evidence.source_range
+                    if end > len(self.source_text) or comparable(self.source_text[:start]):
+                        raise ValueError("label source range must bind the paragraph prefix")
+                    if self.source_text[start:end] != self.paragraph.label.source_text:
+                        raise ValueError("label source range does not reproduce its parts")
+                    remaining = self.source_text[:start] + self.source_text[end:]
+                else:
+                    label_text = self.paragraph.label.source_text
+                    remaining = self.source_text.lstrip()
+                    if not remaining.startswith(label_text):
+                        remaining = re.sub(r"(?<!\\)[*_]{1,3}", "", remaining)
+                    if remaining.startswith(label_text):
+                        remaining = remaining[len(label_text):]
+                    else:
+                        raise ValueError("glyph-bound label must reproduce the source prefix")
+                if comparable(remaining) != comparable(self.paragraph.body_text):
+                    raise ValueError("label and body must partition the complete source text")
+                if not self.translatable and any(
+                    part.policy == "translatable" for part in self.paragraph.label.parts
+                ):
+                    raise ValueError("translatable labels require a translatable unit")
+        elif self.paragraph is not None:
+            raise ValueError("paragraph properties are valid only for paragraph units")
         if self.equation_numbers:
             if (any(not number.strip() for number in self.equation_numbers)
                     or len(set(self.equation_numbers)) != len(self.equation_numbers)):
@@ -465,11 +626,10 @@ class SourceUnit(StrictModel):
             raise ValueError("sidebar_id and sidebar_role must be set together")
         if self.sidebar_id is not None and not self.sidebar_id.strip():
             raise ValueError("sidebar_id must not be empty")
-        if self.sidebar_role is SidebarRole.TITLE and self.kind is not UnitKind.HEADING:
-            raise ValueError("a sidebar title must retain heading semantics")
+        if self.sidebar_role is SidebarRole.TITLE and self.kind is not UnitKind.PARAGRAPH:
+            raise ValueError("a sidebar title must be a paragraph")
         if self.sidebar_role is SidebarRole.BODY and self.kind not in {
             UnitKind.PARAGRAPH,
-            UnitKind.LIST_ITEM,
             UnitKind.CODE,
             UnitKind.TABLE,
             UnitKind.FIGURE,
@@ -478,6 +638,14 @@ class SourceUnit(StrictModel):
         if self.callout_kind is not None and self.kind is not UnitKind.NOTE:
             raise ValueError("callout_kind is valid only for note units")
         return self
+
+    @property
+    def is_heading(self) -> bool:
+        return self.paragraph is not None and self.paragraph.outline_level is not None
+
+    @property
+    def is_labelled(self) -> bool:
+        return self.paragraph is not None and self.paragraph.type is not ParagraphType.PLAIN
 
     @property
     def equation_label(self) -> str | None:
@@ -560,9 +728,10 @@ class CodeAnnotation(StrictModel):
 
 
 class TranslationRecord(StrictModel):
-    schema_version: int = 2
+    schema_version: Literal[3] = 3
     unit_id: str
     target_text: str
+    label_translations: dict[str, str] = Field(default_factory=dict)
     target_table: TableData | None = None
     figure_labels: list[FigureLabel] = Field(default_factory=list)
     source_hash: str
@@ -809,6 +978,12 @@ class MathStructuralFinalValues(StrictModel):
     latex: str | None = None
     equation_number: str | None = None
     set_bbox: tuple[float, float, float, float] | None = None
+    paragraph: ParagraphData | None = None
+    paragraph_id: str | None = None
+    item_id: str | None = None
+    parent_item_id: str | None = None
+    container_role: str | None = None
+    section_id: str | None = None
     parent_id: str | None = None
     continues_from_previous: bool | None = None
     continued_to_next: bool | None = None
@@ -881,6 +1056,7 @@ class MathStructuralOverrideDecision(StrictModel):
         elif self.action is MathStructuralAction.REORDER:
             reorder_fields = {
                 "parent_id",
+                "paragraph_id", "item_id", "parent_item_id", "section_id",
                 "continues_from_previous",
                 "continued_to_next",
             }

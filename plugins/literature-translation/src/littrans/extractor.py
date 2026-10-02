@@ -23,6 +23,8 @@ from littrans.models import (
     MathReviewDecision,
     MathStructuralAction,
     MathStructuralOverrideDecision,
+    ParagraphData,
+    ParagraphLayout,
     ProjectStatus,
     RenderPolicy,
     SemanticStatus,
@@ -71,7 +73,6 @@ PROSE_FIGURE_TABLE_RE = re.compile(
     r"(?:and|compares|demonstrates|illustrates|includes|lists|provides|sheds|shows|summarizes)\b",
     re.I,
 )
-LIST_RE = re.compile(r"^(?:[•▪■●○◦–—-]|\(?\d+[.)]|[a-z][.)])\s+", re.I)
 CODE_RE = re.compile(
     r"(?:^\s*using\s+[\w.]+\s*;\s*$|"
     r"^\s*(?:(?:public|private|protected|internal)\s+)?(?:class|interface|enum|namespace)\s+\w+|"
@@ -122,6 +123,7 @@ class BlockCandidate:
     visual_text_status: SemanticStatus | None = None
     figure_labels: list[FigureLabel] | None = None
     callout_kind: CalloutKind | None = None
+    paragraph: ParagraphData | None = None
 
 
 def _callout_kind(text: str) -> CalloutKind | None:
@@ -391,17 +393,15 @@ def _classify_text(
         return UnitKind.FOOTNOTE, 0.78, True
     if _looks_like_equation(text, bbox, page):
         return UnitKind.EQUATION, 0.88, False
-    if LIST_RE.match(one_line):
-        return UnitKind.LIST_ITEM, 0.92, True
     outline_match = max(
         (ratio(one_line.casefold(), title.casefold()) for title in outline_titles), default=0
     )
     if outline_match >= 70 or (
         len(one_line) < 130 and font_size >= max(median_size * 1.28, median_size + 1.5)
     ):
-        return UnitKind.HEADING, min(0.99, 0.78 + outline_match / 500), True
+        return UnitKind.PARAGRAPH, min(0.99, 0.78 + outline_match / 500), True
     if re.match(r"^(references|literature cited|bibliography)$", one_line, re.I):
-        return UnitKind.HEADING, 0.98, True
+        return UnitKind.PARAGRAPH, 0.98, True
     return UnitKind.PARAGRAPH, 0.90, True
 
 
@@ -409,7 +409,7 @@ def _looks_like_figure_labels(candidate: BlockCandidate) -> bool:
     text = candidate.text
     lines = text.splitlines()
     words = text.split()
-    if candidate.kind not in {UnitKind.PARAGRAPH, UnitKind.LIST_ITEM, UnitKind.HEADING}:
+    if candidate.kind not in {UnitKind.PARAGRAPH}:
         return False
     if len(words) > 55 or re.search(r"[.!?]\s+[A-Z]", " ".join(lines)):
         return False
@@ -501,7 +501,7 @@ def _merge_vector_figures(
                     for candidate in result
                     if candidate is not caption
                     and candidate.kind
-                    in {UnitKind.PARAGRAPH, UnitKind.LIST_ITEM, UnitKind.HEADING, UnitKind.EQUATION}
+                    in {UnitKind.PARAGRAPH, UnitKind.EQUATION}
                     and candidate.bbox[1] >= draw_top - 8
                     and candidate.bbox[3] <= caption.bbox[1] + 3
                     and len(candidate.text.split()) <= 55
@@ -582,14 +582,14 @@ def _merge_table_regions(
             candidate.bbox[1]
             for candidate in result
             if candidate.bbox[1] > caption.bbox[3]
-            and candidate.kind
-            in {
-                UnitKind.HEADING,
+            and (candidate.kind in {
                 UnitKind.CAPTION,
                 UnitKind.NOTE,
                 UnitKind.CODE,
                 UnitKind.FIGURE,
-            }
+            } or (candidate.paragraph is not None and (
+                candidate.paragraph.outline_level is not None
+                or any(row.get("kind") == "outline" for row in candidate.paragraph.candidates))))
         ]
         clear_boundary = min(clear_boundaries, default=page.rect.height - 35.0)
         horizontal_rules = sorted(
@@ -617,9 +617,10 @@ def _merge_table_regions(
             for candidate in result
             if candidate.bbox[1] >= caption.bbox[3]
             and candidate.bbox[1] < table_bottom + 2.0
-            and candidate.kind in {UnitKind.PARAGRAPH, UnitKind.LIST_ITEM, UnitKind.TABLE}
+            and candidate.kind in {UnitKind.PARAGRAPH, UnitKind.TABLE}
             and not any(
-                boundary.kind in {UnitKind.HEADING, UnitKind.CAPTION}
+                ((boundary.paragraph is not None and boundary.paragraph.outline_level is not None)
+                 or boundary.kind is UnitKind.CAPTION)
                 and caption.bbox[3] < boundary.bbox[1] < candidate.bbox[1]
                 for boundary in result
             )
@@ -1980,7 +1981,7 @@ def _preflight_math_review_overrides(
                 unit = matches[0]
                 source_matches = (
                     flat_source_hash == unit.source_hash
-                    and sha256_text(unit.source_text) == unit.source_hash
+                    and _current_source_hash(unit)
                 )
                 already_verified = (
                     unit.verification_status is SemanticStatus.VERIFIED
@@ -1994,7 +1995,7 @@ def _preflight_math_review_overrides(
             unit = matches[0]
             source_matches = (
                 flat_source_hash == unit.source_hash
-                and sha256_text(unit.source_text) == unit.source_hash
+                and _current_source_hash(unit)
             )
             guard_matches = (
                 guard.get("page") == unit.page
@@ -2015,13 +2016,18 @@ def _preflight_math_review_overrides(
             )
         if (
             flat_source_hash != matches[0].source_hash
-            or sha256_text(matches[0].source_text) != matches[0].source_hash
+            or not _current_source_hash(matches[0])
         ):
             raise ValueError(
                 f"Guarded math review {decision_id} unit source hash is stale or invalid"
             )
         raise ValueError(f"Guarded math review {decision_id} current SourceUnit state is stale")
     return receipts, authenticated_chains, existing_chain_receipts
+
+
+def _current_source_hash(unit: SourceUnit) -> bool:
+    from littrans.paragraphs import source_binding
+    return unit.source_hash in {source_binding(unit), sha256_text(unit.source_text)}
 
 
 def _code_text_from_page(page: fitz.Page, bbox: tuple[float, float, float, float]) -> str:
@@ -2108,6 +2114,7 @@ def _apply_override(
             "equation_number",
             "code_language",
             "parent_id",
+            "paragraph", "paragraph_id", "item_id", "parent_item_id", "container_role", "section_id",
             "sidebar_id",
             "continues_from_previous",
             "continued_to_next",
@@ -2166,7 +2173,20 @@ def _apply_override(
             if effective_kind is UnitKind.FIGURE:
                 updates["visual_text_status"] = SemanticStatus.VERIFIED
         updates["confidence"] = 1.0
-        revised = revised.model_copy(update=updates)
+        if updates.get("kind", revised.kind) is not UnitKind.PARAGRAPH:
+            updates["paragraph"] = None
+            if revised.paragraph_id == revised.unit_id:
+                updates["paragraph_id"] = None
+        elif "source_text" in updates and "paragraph" not in updates and revised.paragraph and not revised.paragraph.label:
+            updates["paragraph"] = revised.paragraph.model_copy(update={
+                "body_text": updates["source_text"],
+                "body_markdown": updates.get("source_markdown", updates["source_text"]),
+            })
+        revised = SourceUnit.model_validate(revised.model_copy(update=updates).model_dump())
+        if any(name in updates for name in ("paragraph", "paragraph_id", "item_id", "parent_item_id",
+                                             "container_role", "section_id", "kind", "parent_id", "source_text")):
+            from littrans.paragraphs import source_binding
+            revised.source_hash = source_binding(revised)
     return revised
 
 
@@ -2319,8 +2339,10 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                     if not revised.translatable:
                         removed_translation_ids.add(unit.unit_id)
                     elif revised.source_hash != unit.source_hash:
-                        if record.source_hash != revised.source_hash:
+                        if record.source_hash != revised.source_hash and revised.source_text != unit.source_text:
                             removed_translation_ids.add(unit.unit_id)
+                        else:
+                            invalidated_translation_ids.add(unit.unit_id)
                     else:
                         invalidated_translation_ids.add(unit.unit_id)
                 if revised.kind is UnitKind.EQUATION and not revised.asset_refs:
@@ -2357,6 +2379,14 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                     updated.append(inserted)
                     existing_ids.add(inserted.unit_id)
 
+            from littrans.paragraphs import bind_sections, structure_errors
+            updated = bind_sections(updated)
+            problems = structure_errors(updated)
+            if problems:
+                raise ValueError(f"Invalid paragraph relationships: {problems}")
+            previous_hashes = {unit.unit_id: unit.source_hash for unit in units}
+            invalidated_translation_ids.update(unit.unit_id for unit in updated
+                if previous_hashes.get(unit.unit_id) != unit.source_hash and unit.unit_id in previous_hashes)
             staged_translations = [
                 (
                     record.model_copy(update={"status": ProjectStatus.DRAFT})
@@ -2438,9 +2468,10 @@ def _apply_layout_overrides_locked(project_root: Path) -> list[SourceUnit]:
                 )
 
             if translations and (invalidated_translation_ids or removed_translation_ids):
-                if project_config is None:
+                if project_config is None and (project_root / "project.yaml").is_file():
                     project_config = load_project(project_root)
-                project_config.status = ProjectStatus.DRAFT
+                if project_config is not None:
+                    project_config.status = ProjectStatus.DRAFT
 
             # No authoritative file is replaced until the complete staged snapshot,
             # including derived issue state and generated crops, has validated. Keep
@@ -2679,6 +2710,14 @@ def extract_source(
                         bbox=bbox,
                         text=text,
                         kind=kind,
+                        paragraph=(ParagraphData(
+                            body_text=text, body_markdown=source_markdown,
+                            outline_level=next((int(level) for level, title, pn, *_ in document.get_toc()
+                                                if pn == page_number and title.strip() == text.strip()), None),
+                            layout=ParagraphLayout(font_size_pt=font_size),
+                            candidates=([{"kind": "outline", "reason": "font size or PDF bookmark"}]
+                                        if any(pn == page_number and title.strip() == text.strip() for _, title, pn, *_ in document.get_toc()) or font_size >= median_size * 1.28 else []),
+                        ) if kind is UnitKind.PARAGRAPH else None),
                         confidence=confidence,
                         translatable=translatable,
                         font_size=font_size,
@@ -2732,6 +2771,7 @@ def extract_source(
                 source_markdown=candidate.source_markdown,
                 parent_id=parent_id,
                 callout_kind=candidate.callout_kind,
+                paragraph=candidate.paragraph if candidate.kind is UnitKind.PARAGRAPH else None,
                 translatable=candidate.translatable,
                 protected_tokens=protected_tokens(candidate.text),
                 asset_refs=refs,
@@ -2770,8 +2810,8 @@ def extract_source(
                     }
                 )
             extracted.append(unit)
-            if unit.kind is UnitKind.HEADING:
-                parent_id = unit.unit_id
+            if unit.is_heading:
+                parent_id = None
             if unit.confidence < 0.65:
                 issues.append(
                     ExtractionIssue(
@@ -2864,6 +2904,11 @@ def extract_source(
                 update={"continues_from_previous": True}
             )
 
+    from littrans.paragraphs import bind_sections, source_binding
+    from littrans.paragraphs import outline as paragraph_outline
+    extracted = bind_sections(extracted)
+    for unit in extracted:
+        unit.source_hash = source_binding(unit)
     if existing_units and replace:
         old = {unit.unit_id: unit.source_hash for unit in existing_units}
         new = {unit.unit_id: unit.source_hash for unit in extracted}
@@ -2884,10 +2929,7 @@ def extract_source(
             "pages": pages,
             "unit_count": len(extracted),
             "translatable_unit_count": sum(unit.translatable for unit in extracted),
-            "outline": [
-                {"level": level, "title": title, "page": page}
-                for level, title, page, *_rest in document.get_toc(simple=False)
-            ],
+            "outline": paragraph_outline(extracted),
         },
     )
     config.status = ProjectStatus.EXTRACTED

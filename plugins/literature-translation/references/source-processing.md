@@ -2,22 +2,9 @@
 
 For source receipts and asset boundaries, see [fidelity workflow](fidelity-workflow.md).
 
-New source-review packets use contract v7 and include stable, versioned `layout_concerns`.
-Full reviews require `full_page_review_completed` followed by explicit `layout_adjudications`.
-Each entry names `concern_ids`, `choice` (`retain` or `correct`), a nonempty `reason`, and
-boolean `uncertain`. A correction requires an override and a fresh independent review.
-Reasoned uncertainty may pass; missing content or a missing language declaration may not.
-The [source-review procedure](source-review.md) describes the whole-page-first workflow.
-
-`source scan-layout` creates a supplemental packet without extracting again. Supplemental
-decisions may cover only some concerns, never grant page approval, and live in
-`evidence/layout/`. Source, context or rule changes make old supplements inapplicable.
-Legacy contract-v6 receipts retain their validation rules; scanning is an explicit choice.
-
-`equation_numbers` records several printed labels on one formula. When nonempty its first
-entry equals `equation_number`; duplicates and conflicting first labels are invalid.
-Ordinary single-label records retain `equation_number` alone. Overrides may supply the list;
-source and translated renderers emit all labels once.
+Source preparation preserves text, original assets and reading structure for independent
+[source review](source-review.md). Packet fields and supported corrections are defined by the
+[CLI contract](cli-reference.md#source-review-contract).
 
 ## Source preparation
 
@@ -86,8 +73,8 @@ Container kinds are open-ended, including examples, exercises, cases, algorithms
 forms. An enclosing container can include multiple author paragraphs, displays, lists and proofs.
 Keep those internal boundaries: `parent_id` expresses scope, not a command to concatenate every
 child. A paragraph around a display remains one logical scope; a following “where” clause must
-not become an unrelated batch. Continuation across pages requires source indentation and context,
-not punctuation alone.
+not become an unrelated batch. Review indentation and context before recording cross-page
+paragraph fragments; a shared container does not establish paragraph continuity.
 
 ### Prepared units and assets
 
@@ -99,20 +86,12 @@ formula conditions, kind, display and grouping state. Legacy version 1 remains r
 preparation or semantic overrides create version 2 identities and require current
 source/translation evidence.
 
-A chunk's kind starts from the layout detector's label for the box that holds it (`paragraph_title`
-→ `heading`, `figure_title`/`table_caption` … → `caption`), but a heading or caption label stands
-only where the chunk's typography bears it out. A chunk set like running text — median letter
-size within 5 % of the body size, at least 60 % of its letters in the page's body face or a
-non-bold italic, not capitals or small capitals throughout, starting at the margin or a
-paragraph indent — is a `paragraph`, however confident the box: an italic step line ("*Step 2.*
-…"), a run-in theorem line whose statement follows on the same line, a sentence that mentions a
-figure ("Figure 10.2 shows …"). A caption also stands when it is set smaller, opens with a label
-in a face of its own (`**Figure 1.1.**`, small capitals), stands clear of the text start
-(centred or indented), or opens with a closed label (`Figure 3.`, `Table 2:`); a heading when it
-is larger, bold or in a face of its own, in capitals, or stands clear of the text start. The
-overruled label is recorded in the ledger (`structure.overruled_labels`, present only when one
-was overruled) and listed for the reviewer's role check. A title box over a block set like
-running text no longer keeps that block from being cut at an indent or a label.
+Prose and titles use `paragraph` with the [recorded properties](paragraph-model.md).
+Detector heading/list labels, font changes, spacing, line starts and PDF bookmarks propose
+structure candidates. `outline_source` selects outline evidence; source review confirms the
+actual outline, label range, body, layout and membership. Captions remain separate units.
+Typography resembling body text can overrule a detector title or caption proposal; the ledger
+records such decisions in `structure.overruled_labels` for the reviewer's role check.
 
 An asset no text block references becomes a `visual` unit of its own (`p<page>-visual-<asset>`),
 a `figure` unit for a figure and a paragraph otherwise, placed after the last body chunk that
@@ -132,17 +111,12 @@ caption keep one asset per region. A detector `table` box grows over the header
 rows set above it: a row within two lines of the box's first row whose ink lies inside the
 box's columns, that is not a caption (`Table 4.1.`), and that either shares the rows' native
 block or is separated from them by a rule of the table's width belongs to the table, so the
-column headings stay in the asset with the columns they head and never read as prose. When structure assembly merges a chunk into the
-one before it, every later chunk whose parent it was follows the survivor, so no `parent_id`
-names a unit that does not exist; an enumerated item (`(a)`, `(ii)`) hangs from the paragraph,
-statement or proof that introduces the list wherever its label sits — after paragraph white
-space or at a paragraph indent — never from a sibling item, and its later siblings return to
-that same parent whatever group an item's own indented continuation paragraph opened in
-between (an enumeration whose first item opened a group of its own, at a page top, leaves
-each item its own group; a heading, statement, proof, run-in or numbered label, or prose back
-at the margin after white space closes the enumeration). A chunk the planner recorded as an
-item's continuation (`structure.list_items … continues`) returns to the item's group whatever
-opened in between.
+column headings stay in the asset with the columns they head and never read as prose.
+
+When assembly merges a chunk, references to it follow the surviving unit. The ledger's
+`structure.list_items` records label and continuation candidates, including proposed text-column
+positions. These do not establish `paragraph_id`, item membership or nesting; source review
+records those relationships explicitly.
 
 A bare rule — a glyph-free `mixed-region` at most 10 pt tall and at least three times as
 wide as tall, whatever proposed it: a native drawing, a reviewer's region with
@@ -157,7 +131,7 @@ drawing at a time — so a page with hundreds of vector segments is prepared in 
 
 A printed equation label such as `(1.6)` beside a display is bound to the unit's
 `equation_number` and removed from `source_text`; the checkpoint HTML shows it in the unit meta
-line and the Markdown/HTML renderers re-emit `(N)` themselves, like heading and list markers. A
+line and the Markdown/HTML renderers re-emit each label from the saved equation metadata. A
 label that shares its PDF block with the tombstone closing a proof (`□ (1.50)`) binds too; the
 tombstone stays in the reading order, after the display it closes wherever MuPDF put its
 block, and structure assembly attaches it to the paragraph the proof ends in. A native line that is a label and nothing else is text wherever it sits: it is
@@ -187,37 +161,13 @@ block whose next line continues the same baseline (a formula MuPDF split at a ga
 not a row. Translators keep one target row per source row
 (`display-rows-mismatch` warning otherwise). Inline fragments are coalesced along a row only.
 
-A printed list label opening a line is a structure boundary: a closed number (`1.`, `1.11.`,
-`3.2.1.`, `2)`) or a bracketed clause marker (`(a)`, `(iv)`, `(2)`) set in a text face and
-followed by text on the same line. A bare `1.1`, a four-digit year, a number alone on a wrapped
-line (`1.32.`), a label in a mathematical face, a heading inside a title box, a display line and
-running material are not labels. Preparation places a label geometrically before cutting at it —
-it opens its PDF block, follows another label, opens right of the running text or of the open
-item's label (a nested clause), or its text column is an open item's (a sibling returning to the
-label column; hanging numbers such as `1.9.`/`1.10.` share a text column, not an x) — so a
-sentence wrapping onto `2.3. The …` at the text column stays prose. Lines aligned with an item's
-text column are that item's continuation and are never cut as indented paragraphs, even on a
-page whose most common line start is the item column itself. That column is not the page's
-margin when prose sits beside the list: when the most common line start is the text column of
-the page's labelled lines and at least two text lines with a language word (not labels, not
-running material) start left of those labels, the most common such start is the margin, so a
-paragraph indent between the margin and the labels still opens a paragraph (and sets
-`indent_style` and page-top continuations); a page of exercises with no prose beside them keeps
-the item column. Prose resuming at an outer item's
-column after a nested list starts its own chunk. The ledger's `structure.list_items` records
-`{"label", "body_x"}` for each label chunk and `{"continues": <chunk>}` for each continuation
-chunk; the key is absent on pages without labels. A line indented from an open item's text column
-(0.8–2.8 em right of it, carrying a language word) opens a paragraph of that item: its chunk is
-recorded as `{"continues": <item>, "paragraph": true}`, stays in the item's group and is never
-merged into the item's text. Bullet items keep their own rule (a bullet
-always hangs, so prose returning left of the bullet column ends the item). A labelled list
-ends the same way where the page shows it hanging — a line of an item at its text column, or
-labels of different widths aligned on one column (`(i)`/`(ii)`/`(iii)`): a line that starts
-more than half an em left of the open item's label, after a line closing with `.`, `!` or `?`,
-and whose first text-face letter is a capital, opens a chunk of its own (in the item's block
-or as the next block) that assembly never merges into the item. Its group is the one it would
-have had anyway (the list's introducing paragraph). In a list whose items wrap to the margin,
-such a line stays the item's wrap.
+Label and paragraph-break candidates come from native glyph gaps, font changes and line
+starts relative to the body column. Hanging text columns, indentation and paragraph spacing
+help distinguish a wrapped line from a new paragraph or item. The ledger records label text,
+`body_x` and proposed continuations for visual inspection. Reviewers also inspect starts the
+candidate detector missed; numbers, years, cross-references and mathematical parentheses remain
+body text unless the original establishes a label. No finite numbering grammar confirms a
+paragraph's type, outline or membership.
 
 A line of prose that starts mid-row continues its printed row. MuPDF opens a new block after
 a tall operator (`∑` with limits, a big radical) and after the limits of an inline sum, and
@@ -227,8 +177,8 @@ line's vertical extent (a subscript joins through the operator it hangs from; th
 ink decides, since MuPDF puts a radical's origin a text baseline away from its row) and,
 where the row starts at the margin or at an open item's text column, reads the line as the
 row's continuation: its x is the row's start where its own x would read as an indent, it
-continues the item whose column the row starts at (recorded in `structure.list_items`), and
-it never closes the item the row's first line opened. A line without a language word (the
+is recorded as a continuation candidate in `structure.list_items`. Item membership remains
+a source-review decision. A line without a language word (the
 limits themselves, a piece of a display) keeps its own x. Structure assembly's same-line
 merge then keeps the sentence around the operator in one unit.
 
@@ -241,8 +191,7 @@ face, and ends in terminal punctuation or stops short of the running text's righ
 condition alone counts: a full line a tall inline formula pushed down keeps its paragraph, and a
 formula row (`∫ X dP`, a limit, a printed label), a tombstone beside a display or a detector
 display row says nothing about where a paragraph ends, so a flush "provided …" clause after a
-display stays in its paragraph's group. The flag is not recorded in the ledger; a page without
-such a break keeps the fingerprint it had before the rule existed.
+display remains a continuation candidate. Review confirms the actual paragraph boundary.
 
 An `equation` unit without asset placeholders whose text shows no notation (an upright `Prob`
 operator, a lone `otherwise.`) is native text: packets, Markdown and HTML render it — and its
@@ -516,30 +465,15 @@ from prose. Source review and audit dependencies include both caller and footnot
 cross-page links; a changed footnote invalidates its dependent caller's evidence. HTML provides
 links to the original footnote unit anchors and displays its recorded number.
 
-Reviewed `parent_id` groups retain a theorem, lemma, proposition, definition, corollary or claim
-together with enumerated clauses and display equations. Preparation recognizes explicit statement
-labels and enumerated children conservatively; a heading, proof or new indented prose ends the
-inferred statement, and so does prose opening after paragraph white space — unless it resumes
-after the statement's enumerated clauses, when it is the statement's conclusion and keeps its
-group, or it is an indented paragraph set in the statement's own italic face (a theorem body
-at least 60 % italic continued by `*Conversely, if …*`), which continues the statement and is
-never merged into the unit before it. An upright container's later paragraphs (an example
-whose plain indented paragraphs still belong to it) carry no typographic evidence and stay a
-source-review decision, as does container membership across a page edge. A numbered label unit (`1.11. Let …`, an exercise or numbered item) opens a
-parent group of its own unless a statement is open, in which case it joins the statement like a
-bracketed clause; bracketed clauses (`(a)`, `(ii)`) join the paragraph or statement that
-introduces them, and the item's displays and continuation chunks join its group. A label unit
-is never merged into the unit before it, nor is a chunk opening after paragraph white space
-(it starts a group like an indented paragraph; a display after the white space stays a child
-of its paragraph); `footnote` and `bibliography` units open their own group and never merge
-with prose in either direction, while the wrapped fragments of one recognised footnote still
-merge. A word hyphenated across the seam of two merged
-fragments is rejoined by the same document evidence as a line end inside a block
-(`well-`/`known` stays `well-known`). Source review must confirm ambiguous and cross-page boundaries. Children
-retain stable IDs, equation numbers and markup. Batching keeps a whole parent group together and
-bilingual rendering presents contiguous children in one row, preserving child anchors and
-paragraph/list boundaries. Parent groups participate in source evidence and audit dependency
-closure, so changing one clause requires rechecking the whole statement.
+Reviewed `paragraph_id`, `item_id/parent_item_id` and `parent_id/container_role` describe
+paragraph fragments, item scope and semantic containers independently. An item's equations
+and later paragraphs retain its item ID; a new paragraph has its own paragraph ID. Preparation
+may propose statement or proof groups from typography and boundary cues, but source review
+confirms their scope, including cross-page membership and closing marks.
+
+Children retain stable IDs, equation labels and markup. Batching and audit dependencies use
+the reviewed relationships; changing a member can invalidate evidence for its logical group.
+`section_id` supplies heading context without requiring an entire section in one batch.
 
 Continuation dependencies skip omitted running material and footnotes and require physically
 adjacent PDF pages. A fragment at the boundary of a noncontiguous page selection remains a

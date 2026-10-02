@@ -21,7 +21,8 @@ missing commands, authentication, quota, timeout, invalid output or unverifiable
 advance to the next fallback. Valid findings and inconclusive verdicts do not rotate providers.
 No reviewer usage balancing, reservations or external second opinions are used.
 
-Older project schemas must be rebuilt into a new v7 project. Historical approvals are not
+Use `project upgrade OLD NEW` for v7 or rebuild older formats into a new v8 project.
+Historical approvals are not
 inherited. Configure the new project using `config apply`; the legacy external-only migration
 command cannot upgrade an older project manifest. Executable bindings belong in
 `settings.local.yaml`; see [configuration](configuration.md).

@@ -36,17 +36,17 @@ def test_actual_quantities_keep_their_units(source: str) -> None:
 
 
 @pytest.mark.parametrize(("kind", "source", "token", "target", "expected"), [
-    (UnitKind.HEADING, "CHAPTER 1", "CHAPTER", "第 1 章", True),
-    (UnitKind.HEADING, "CHAPTER 1 Introduction", "CHAPTER", "第1章 导言", True),
-    (UnitKind.HEADING, "CHAPTER 1", "CHAPTER", "第 2 章", False),
+    (UnitKind.PARAGRAPH, "CHAPTER 1", "CHAPTER", "第 1 章", True),
+    (UnitKind.PARAGRAPH, "CHAPTER 1 Introduction", "CHAPTER", "第1章 导言", True),
+    (UnitKind.PARAGRAPH, "CHAPTER 1", "CHAPTER", "第 2 章", False),
     (UnitKind.PARAGRAPH, "CHAPTER 1", "CHAPTER", "第 1 章", False),
-    (UnitKind.HEADING, "CHAPTER API", "CHAPTER", "第 1 章", False),
-    (UnitKind.HEADING, "CHAPTER 1 API", "API", "第 1 章", False),
-    (UnitKind.HEADING, "CHAPTER 1", "CHAPTER", "本章", False),
+    (UnitKind.PARAGRAPH, "CHAPTER API", "CHAPTER", "第 1 章", False),
+    (UnitKind.PARAGRAPH, "CHAPTER 1 API", "API", "第 1 章", False),
+    (UnitKind.PARAGRAPH, "CHAPTER 1", "CHAPTER", "本章", False),
 ])
 def test_heading_equivalence_is_scoped(kind: UnitKind, source: str, token: str,
                                       target: str, expected: bool) -> None:
-    unit = SourceUnit(unit_id="test", kind=kind, page=1, bbox=(0, 0, 1, 1),
+    unit = SourceUnit(unit_id="test", kind=kind, paragraph={"body_text": source, "outline_level": 1 if expected else None}, page=1, bbox=(0, 0, 1, 1),
                       source_text=source, source_hash="test", confidence=1)
     assert _localized_heading_token_present(unit, token, target) is expected
     assert not _semantic_token_present(token, target, _semantic_comparison_text(target))

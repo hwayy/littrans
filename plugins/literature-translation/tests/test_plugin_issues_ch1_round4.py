@@ -219,6 +219,13 @@ def test_override_import_names_the_dependency_pages_it_invalidates(continued_pro
     from littrans.models import SourceUnit
     from littrans.storage import read_jsonl
     units = read_jsonl(continued_project / "derived/units.jsonl", SourceUnit)
+    from littrans.paragraphs import source_binding
+    prose = [u for u in units if u.unit_id.endswith("-b0")]
+    prose[1].paragraph_id = prose[0].paragraph_id
+    prose[1].parent_id = prose[0].parent_id
+    prose[1].source_hash = source_binding(prose[1])
+    from littrans.storage import write_jsonl
+    write_jsonl(continued_project / "derived/units.jsonl", units)
     assert {u.page for u in page_evidence_units(2, units)} == {1, 2}
     pending = [a.id for a in load_assets(continued_project).values() if a.grouping_pending]
     packet = build_source_review_packet(continued_project, "1-2")
@@ -232,9 +239,12 @@ def test_override_import_names_the_dependency_pages_it_invalidates(continued_pro
     write_json(continued_project / "review.json", review)
     assert import_source_review(continued_project, continued_project / "review.json", True)["approved_pages"] == [1, 2]
     assert verify_fidelity(continued_project, "1-2")["passed"]
-    result = _override_page_one(continued_project, {"id": "rule", "kind": "mixed-region", "bbox": [95, 25, 155, 55], "grouping_pending": False})
-    assert result["changed_pages"] == [1] and result["invalidated_pages"] == [2] and result["requires_new_packet"]
-    assert not (continued_project / "evidence/pages/fidelity-p0002.review.json").is_file()
+    before = (continued_project / "derived/units.jsonl").read_bytes()
+    # Replacing a referenced paragraph head must include corrected dependent relationships.
+    with pytest.raises(ValueError, match="Invalid paragraph relationships"):
+        _override_page_one(continued_project, {"id": "rule", "kind": "mixed-region", "bbox": [95, 25, 155, 55], "grouping_pending": False})
+    assert (continued_project / "derived/units.jsonl").read_bytes() == before
+    assert (continued_project / "evidence/pages/fidelity-p0002.review.json").is_file()
 
 
 # --- LT-029/LT-031: the gate asks the ledger ---------------------------------------------

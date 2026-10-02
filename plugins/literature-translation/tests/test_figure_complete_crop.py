@@ -81,7 +81,7 @@ def test_six_panels_export_one_raw_image_with_caption_text(figure_project: Path)
 
 
 def test_figure_join_discards_member_fragments_and_glyph_only_export() -> None:
-    regions = [{"kind": "figure", "bbox": box, "glyph_ids": [f"g{i}"],
+    regions = [{"kind": "figure", "paragraph": None, "paragraph_id": None, "bbox": box, "glyph_ids": [f"g{i}"],
                 "fragments": [{"bbox": box, "glyph_ids": [f"g{i}"]}],
                 "display": True, "grouping_pending": False, "provenance": ["test"]}
                for i, box in enumerate(PANELS)]
@@ -95,7 +95,7 @@ def test_whole_outline_with_prose_in_its_empty_corner_stays_separate() -> None:
     # Pairwise unions can be clear while the whole outline encloses unrelated text.
     boxes = [[0, 0, 40, 40], [45, 0, 85, 40], [45, 45, 85, 85]]
     regions: list[dict[str, Any]] = [
-        {"kind": "figure", "bbox": b, "display": True, "grouping_pending": False,
+        {"kind": "figure", "paragraph": None, "paragraph_id": None, "bbox": b, "display": True, "grouping_pending": False,
          "provenance": []} for b in boxes]
     prose = [{"id": "prose", "text": "body", "bbox": [10, 60, 30, 70], "size": 10}]
     caption = {"label": "figure_caption", "bbox": [0, 180, 170, 200]}
@@ -109,7 +109,7 @@ def test_legacy_fragments_require_explicit_region_correction(figure_project: Pat
     review = read_json(Path(packet["review_template"]))
     review["reviewer"] = "synthetic-region-correction"
     # Reproduce a legacy reviewed page: normal replacement must replay its decision.
-    region = {"id": asset.id, "kind": "figure", "bbox": OUTLINE,
+    region = {"id": asset.id, "kind": "figure", "paragraph": None, "paragraph_id": None, "bbox": OUTLINE,
               "fragments": [{"bbox": box} for box in PANELS], "display": True,
               "grouping_pending": False, "provenance": ["synthetic-legacy"]}
     review["pages"][0]["override"] = {"regions": [region]}

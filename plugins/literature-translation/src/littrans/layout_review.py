@@ -34,11 +34,11 @@ def concerns(page: dict[str, Any]) -> list[dict[str, Any]]:
         if unit.get("render_policy") == "omit":
             continue
         text = unit["source_text"]
-        if unit["kind"] == "heading" or _starts_statement(text):
+        if (unit.get("paragraph") or {}).get("outline_level") is not None or _starts_statement(text):
             active = None
         if re.match(r"[*\s]*(?:Proof|Example|Step|Case|Solution)\b", text):
             active = unit
-        elif (active and unit["kind"] in {"paragraph", "equation", "list_item"}
+        elif (active and unit["kind"] in {"paragraph", "equation"}
               and unit.get("parent_id") != active["unit_id"]):
             rows.append({"code": "same-page-container-candidate", "unit_id": unit["unit_id"],
                          "candidate_parent_id": active["unit_id"],

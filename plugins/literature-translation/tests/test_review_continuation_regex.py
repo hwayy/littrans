@@ -112,7 +112,8 @@ def _render_chain(root: Path, pages: list[int], flags: list[tuple[bool, bool]], 
     for index, (page, (receiver, sender)) in enumerate(zip(pages, flags, strict=True)):
         aid, uid = f"a{page}", f"p{page:04d}-b0"
         text = "Consider {{asset:" + aid + "}}" + ("." if closed or index == len(pages) - 1 else " and")
-        unit = SourceUnit(unit_id=uid, page=page, kind="paragraph", bbox=(0, 0, 100, 60),
+        unit = SourceUnit(unit_id=uid, page=page, kind="paragraph",
+                          paragraph_id=f"p{pages[0]:04d}-b0" if not closed and (index == 0 or (page == pages[index-1]+1 and (receiver or flags[index-1][1]))) else uid, bbox=(0, 0, 100, 60),
                           source_text=text, source_hash=f"source-{page}", confidence=1,
                           continues_from_previous=receiver, continued_to_next=sender)
         units.append(unit)
@@ -170,7 +171,7 @@ def test_html_paragraph_rows_follow_the_same_continuation_decision(
     annotation_project: Path, texts: list[str], flags: list[tuple[bool, bool]], joined: bool,
 ) -> None:
     units = [
-        SourceUnit(unit_id=f"p{page:04d}-b0", page=page, kind="paragraph", bbox=(0, 0, 100, 60),
+        SourceUnit(unit_id=f"p{page:04d}-b0", page=page, kind="paragraph", paragraph_id="p0001-b0" if joined else f"p{page:04d}-b0", bbox=(0, 0, 100, 60),
                    source_text=text, source_hash=f"source-{page}", confidence=1,
                    continues_from_previous=receiver, continued_to_next=sender)
         for page, (text, (receiver, sender)) in enumerate(zip(texts, flags, strict=True), start=1)

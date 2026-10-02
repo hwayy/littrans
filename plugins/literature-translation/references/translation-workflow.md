@@ -5,11 +5,13 @@
 Batches are cut when translation starts, at the user's request, never as the last step of source
 preparation: the user may still correct verified source, and a batch freezes the units it was cut
 from. `translation batch create PROJECT --pages PAGES` cuts verified pages into batches of about 900 source words
-and a soft limit of 60 assets at logical boundaries; `--unit-ids` selects an explicit complete
+and a soft limit of 60 assets at reviewed paragraph, item and container boundaries; `--unit-ids` selects an explicit complete
 unit set and `--untranslated-only` limits the editable scope to units without a current
 translation. Both record `frozen_scope: true`. Refresh keeps their selected IDs rather than
 filling interior gaps; removed IDs or newly cut logical groups require an explicit new selection.
-Legacy/range manifests retain interval refresh behavior.
+Legacy/range manifests retain interval refresh behavior. Keep a heading with the content
+immediately following it. Section membership supplies heading context, not an indivisible
+chapter-sized batch; paragraph fragments and item/container relationships determine grouping.
 
 Untranslated-only manifests retain complete selected parent groups. Their `read_only_unit_ids`
 are context, excluded from `translatable_unit_ids` and submission; refresh preserves that boundary
@@ -34,9 +36,10 @@ changes, and existing reports must then rerun.
 
 Rules worth knowing when reading a report:
 
-- A source unit with prose outside its `{{asset:ID}}` placeholders needs target text; a target
+- A paragraph body with prose outside its `{{asset:ID}}` placeholders needs target text; a target
   that consists only of placeholders is an `empty-translation`, while a source that is only an
-  asset reference (a whole figure or table block) needs none.
+  asset reference (a whole figure or table block) needs none. A label-only heading may have
+  an empty body translation, but all translatable label parts require translations.
 - Real footnote calls are counted with multiplicity in prose and table cells; literal
   code/math/escaped syntax (including tilde and backtick fences and escaped dollar delimiters) is
   excluded. Live calls inside image-language companions are rejected.
@@ -62,9 +65,11 @@ for undecided proposals. Finish shared context changes before the audit wave.
 Audit coverage is bound to the brief, the style guide, the relevant approved and reference
 terms and the dependency-closure units of each run (`audit_context_text` is exactly those four
 parts; `project.yaml` is not among them). `audit_coverage` (and `workflow status`,
-`translation review status`) reports why a run no longer counts: `context-changed`, `dependency-changed`,
+`translation review status`) reports why a run no longer counts. Source and structure
+fingerprints include paragraph properties and memberships; translation fingerprints include
+label translations. Outline changes recompute section and heading context. Reported reasons are `context-changed`, `dependency-changed`,
 `unit-changed`, `invalidated`, `closure-incomplete` or `context-units-removed`. A
-`context-changed` run recorded after this version also lists `context_changes` — which part
+`context-changed` run also lists `context_changes` — which part
 (`document-brief`, `style-guide`, `approved-terms`, `reference-terms`) changed and its line
 count before and after — so the cost of growing a whole-file context is visible where it is
 paid. Finish context edits before the audit wave.

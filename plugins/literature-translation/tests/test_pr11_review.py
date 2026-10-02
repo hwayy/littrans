@@ -123,7 +123,9 @@ def _paragraph(text: str, *, page: int, **flags: bool) -> SourceUnit:
 def test_footnote_calls_do_not_hide_terminal_punctuation(ending: str) -> None:
     receiver = _paragraph("A new thought.", page=2, continues_from_previous=True)
     assert not _continues_paragraph(_paragraph(ending, page=1), receiver)
-    assert _continues_paragraph(_paragraph(ending, page=1, continued_to_next=True), receiver)
+    assert not _continues_paragraph(_paragraph(ending, page=1, continued_to_next=True), receiver)
+    receiver.paragraph_id = "p1"
+    assert _continues_paragraph(_paragraph(ending, page=1), receiver)
     assert _continues_paragraph(_paragraph("The result follows[^1]", page=1), receiver)
 
 

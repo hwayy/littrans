@@ -195,11 +195,11 @@ def rebuild_project(
     preset: str | None = None,
     report: dict[str, Any] | None = None,
 ) -> ProjectConfig:
-    """Create a v7 workspace from validated source/context, without inheriting approvals.
+    """Create a v8 workspace from validated source/context, without inheriting approvals.
 
-    A v7 project keeps its validated ``settings.yaml`` and machine command bindings by
+    A v8 project keeps its validated ``settings.yaml`` and machine command bindings by
     default; ``settings="preset"`` explicitly starts from a preset instead. Historical
-    formats have no v7 policy and always start from a preset. ``report`` receives what
+    formats need preset policy and always start from a preset. ``report`` receives what
     was preserved, reset and not migrated, which is also recorded in the new project.
     """
     from littrans.configuration import (
@@ -231,7 +231,7 @@ def rebuild_project(
     mode = settings or ("preserve" if current else "preset")
     if mode == "preserve" and not current:
         raise ValueError(
-            f"Project schema v{source_schema} has no v7 settings to preserve; "
+            f"Project schema v{source_schema} has no current v8 settings to preserve; "
             "rebuild it with --settings preset"
         )
     if preset is not None and mode != "preset":

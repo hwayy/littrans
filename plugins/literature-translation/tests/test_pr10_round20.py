@@ -54,7 +54,7 @@ def test_creation_keeps_stale_records_editable(project, mixed):
     unit = next(u for u in units if u.page == 1 and u.translatable)
     write_jsonl(project / "translations/current.jsonl", [TranslationRecord(unit_id=unit.unit_id, source_hash="old", target_text="过期译文")])
     if mixed:
-        unit.parent_id = "group"
+        unit.parent_id = units[0].unit_id
         sibling = unit.model_copy(deep=True, update={"unit_id": "pending-sibling", "source_text": "Sibling",
             "source_markdown": "Sibling", "asset_refs": [], "asset_content_hashes": {}})
         units.insert(units.index(unit) + 1, sibling)

@@ -7,15 +7,14 @@ most lines of the page start at, so the mode-of-line-starts margin is that colum
 """
 from __future__ import annotations
 
-import re
 from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
+
 from littrans.fidelity import _make_unit, _rejoin_line_breaks
 from littrans.source_structure import (
-    LIST_LABEL_START,
-    assemble_structure,
     list_label,
     plan_structure,
 )
@@ -84,7 +83,7 @@ def test_list_label_reads_the_hanging_number_and_its_text_column() -> None:
     # a four-digit year and a label set in a mathematical face are not list labels.
     assert list_label(_line("1.32.", "b0-l0", 0, 58.7), FONT) is None
     assert list_label(_line("1.1 we saw", "b0-l0", 0, 58.7), FONT) is None
-    assert list_label(_line("2019. The", "b0-l0", 0, 58.7), FONT) is None
+    assert list_label(_line("2019. The", "b0-l0", 0, 58.7), FONT)[0] == "2019."  # Candidate only; no paragraph type decision.
     assert list_label(_line("(1) x = y", "b0-l0", 0, 80, font="CMMI10"), FONT) is None
 
 
@@ -192,13 +191,3 @@ def test_numbered_items_inside_a_statement_stay_with_it() -> None:
     result = assemble_structure(units, assets, plan, _make_unit)
     assert [u.parent_id for u in result] == ["p0001-b0"] * 3 + ["p0001-b3", "p0001-b4", "p0001-b5"]
     assert len(result) == 6
-
-
-def test_unit_label_pattern_requires_a_space_after_a_number() -> None:
-    assert LIST_LABEL_START.match("1.11. Let R be")
-    assert LIST_LABEL_START.match("**1.1.** Let")
-    assert LIST_LABEL_START.match("(iv) The fourth")
-    assert LIST_LABEL_START.match("1.3. {{asset:a-p0047-7377c59ceee6}}")
-    assert not LIST_LABEL_START.match("1.5{{asset:a-p0047-x}} is a fraction")
-    assert not LIST_LABEL_START.match("1.1 Random variables")
-    assert not re.match(LIST_LABEL_START, "(1.6)")

@@ -55,12 +55,18 @@ def test_dependency_floor_supports_identity_exclusions():
 
 
 @pytest.mark.parametrize("field", ["first", "last", "both"])
-@pytest.mark.parametrize("kind", [UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM])
+@pytest.mark.parametrize("kind", [UnitKind.PARAGRAPH, UnitKind.NOTE])
 def test_continuation_companions_follow_complete_prose(project, field, kind):
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     first = next(u for u in units if u.page == 1 and u.translatable)
     last = next(u for u in units if u.page == 2 and u.translatable)
     first.kind = last.kind = kind
+    if kind == UnitKind.PARAGRAPH:
+        last.paragraph_id = first.paragraph_id
+        last.parent_id = first.parent_id
+    else:
+        first.paragraph = last.paragraph = None
+        first.paragraph_id = last.paragraph_id = None
     first.continued_to_next = last.continues_from_previous = True
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")

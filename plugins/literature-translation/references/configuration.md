@@ -1,6 +1,6 @@
 # Project configuration
 
-Schema-7 projects separate the immutable source manifest (`project.yaml`), shared
+Projects separate the immutable source manifest (`project.yaml`), shared
 policy (`settings.yaml`), private machine bindings (`settings.local.yaml`) and
 workflow state (`derived/project-state.json`). Source locations resolve relative
 to the project, regardless of the CLI working directory. A relocated PDF must
@@ -8,10 +8,10 @@ match the manifest hash. Credentials remain in the external provider's CLI.
 
 Initialize with `project init SOURCE PROJECT --preset technical-book` (or
 `research-paper`). Presets are expanded once. A plugin upgrade does not change
-saved settings. Older project formats are rejected; `project rebuild OLD NEW`
-copies reusable source/context into a new project without inheriting approvals. A v7 rebuild
-keeps `settings.yaml` and reviewer executable bindings unless `--settings preset` is given, and
-reports what was preserved, reset and not migrated.
+saved settings. `project rebuild OLD NEW` retains validated current settings and reviewer
+executable bindings unless `--settings preset` is given; it reports preserved, reset and
+unmigrated configuration. See [project commands](cli-reference.md#project-commands) for workspace
+creation and format upgrades.
 
 ## Read and validate
 

@@ -50,9 +50,6 @@ html { scroll-padding-top:7rem; }
 .body { font:17.5px/1.72 Georgia,"Noto Serif SC",serif; overflow-wrap:anywhere; }
 .body p { margin:.15rem 0; }
 .body h2 { margin:.6rem 0 .3rem; font:700 1.35em/1.25 Georgia,serif; }
-.kind-heading .body h2 { font-size:1.5em; }
-.kind-list_item .body ul,.kind-list_item .body ol { margin:.1rem 0; padding-left:1.6rem; }
-.kind-list_item + .kind-list_item { margin-top:-.1rem; }
 .kind-equation .body { text-align:center; padding:.35rem 2.5rem; }
 .kind-equation .fidelity-complex { position:relative; }
 .kind-equation .fidelity-complex > .equation-number { display:inline; position:absolute; right:.25rem; top:50%; transform:translateY(-50%); }
@@ -196,7 +193,8 @@ def render_source_review(root: Path, page_spec: str = "all", name: str | None = 
         if not receipt_path.is_file():
             attention.append(f"page {page}: no approved source review receipt yet")
 
-    sections: list[str] = []
+    from littrans.paragraphs import toc_entries, toc_html
+    sections: list[str] = [toc_html(toc_entries(units))]
     current_page: int | None = None
     for group in _groups(units):
         page = group[0].page

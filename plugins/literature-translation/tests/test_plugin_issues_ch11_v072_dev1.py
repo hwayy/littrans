@@ -194,8 +194,10 @@ def test_a_continuation_reaches_the_prose_beyond_the_float() -> None:
     figure = _unit("p0256-b1", "{{asset:fig}}", [142.0, 86.0, 333.0, 374.0], 256, kind="figure", parent_id="p0256-b1")
     caption = _unit("p0256-b14", "**Figure 11.2.** Plot.", [95.0, 383.0, 382.0, 406.0], 256, kind="caption", parent_id="p0256-b1")
     receiver = _unit("p0256-b15", "Ising model. Indeed, the", [58.7, 428.0, 417.0, 453.0], 256)
+    receiver.paragraph_id = sender.unit_id
     neighbors = continuation_neighbors([sender, figure, caption, receiver])
     assert "p0256-b15" in neighbors["p0255-b47"] and "p0255-b47" in neighbors["p0256-b15"]
     # Without a flag on either side, the float separates two paragraphs.
     plain = sender.model_copy(update={"continued_to_next": False})
+    receiver.paragraph_id = receiver.unit_id
     assert "p0256-b15" not in continuation_neighbors([plain, figure, caption, receiver]).get("p0255-b47", set())

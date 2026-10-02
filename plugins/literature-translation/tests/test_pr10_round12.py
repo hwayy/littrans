@@ -37,7 +37,7 @@ def test_footnote_graph_matches_explicit_numbers(numbers, refs):
         caller.model_copy(
             update={
                 "unit_id": f"note{i}",
-                "kind": UnitKind.FOOTNOTE,
+                "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
                 "source_text": "Note",
                 "footnote_refs": [],
                 "footnote_number": number,
@@ -107,7 +107,7 @@ def test_footnote_graph_ignores_literals_and_allows_repeated_calls(literal):
     note = caller.model_copy(
         update={
             "unit_id": "note",
-            "kind": UnitKind.FOOTNOTE,
+            "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None,
             "source_text": "Note",
             "footnote_refs": [],
             "footnote_number": "12",

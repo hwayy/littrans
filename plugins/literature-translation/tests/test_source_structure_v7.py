@@ -201,7 +201,7 @@ def test_figures_own_their_captions_and_rules_are_omitted(figure_project: Path, 
     assert "Caption of the drawing" in caption.source_text
     after = next(u for u in units if "after the figure" in u.source_text)
     assert after.parent_id == after.unit_id  # prose after the caption starts its own group
-    heading = by_kind[UnitKind.HEADING]
+    heading = by_kind[UnitKind.PARAGRAPH]
     before = next(u for u in units if "before the figure" in u.source_text)
     assert before.parent_id != heading.unit_id  # a heading never owns the following prose
     rules = [u for u in units if u.kind is UnitKind.NOTE and u.render_policy is RenderPolicy.OMIT and "{{asset:" in u.source_text]

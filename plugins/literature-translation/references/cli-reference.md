@@ -247,9 +247,29 @@ Example:
 littrans project tracked PROJECT
 ```
 
+### littrans project upgrade
+
+Convert project v7 into a separate project v8 workspace, staging and validating before commit.
+OLD is unchanged; NEW must not exist. `--dry-run` reports conversion and pending confirmation
+without writing. Copies originals/assets/context, preserves translations as drafts and archives
+old approvals and overrides.
+
+| Parameter | Type | Required | Default | Choices | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `OLD` | `path` | yes | `required` | `[]` | Existing workspace; retained unchanged. |
+| `NEW` | `path` | yes | `required` | `[]` | New workspace directory; must not exist. |
+| `--dry-run` | `boolean` | no | `false` | `[]` | Validate and show changes without writing. |
+
+Example:
+
+```text
+littrans project upgrade /work/old /work/new --dry-run
+```
+
 ### littrans project rebuild
 
-Rebuild a project in a new workspace, keeping v7 policy by default.
+Rebuild a project in a new workspace, keeping v8 policy by default. To retain v7 source,
+draft translations and historical evidence, use `project upgrade` instead.
 
 ```text
 littrans project rebuild OLD NEW [OPTIONS]
@@ -259,11 +279,11 @@ littrans project rebuild OLD NEW [OPTIONS]
 | --- | --- | --- | --- | --- | --- |
 | `OLD` | `path` | yes | `required` | `[]` | Existing project to preserve. |
 | `NEW` | `path` | yes | `required` | `[]` | New project directory. |
-| `--settings` | `str` | no | `null` | `[]` | `preserve` (default for v7) or `preset` (required for older formats). |
+| `--settings` | `str` | no | `null` | `[]` | `preserve` (default for v8) or `preset` (required for older formats). |
 | `--preset` | `str` | no | `null` | `[]` | Preset for `--settings preset`; defaults to the old project's preset. |
 
 Preserves OLD; NEW must be a new destination. Copies source and reusable context/glossary/docs, not
-translations, batches, QA, reviews, evidence, workflow progress or approvals. A v7 OLD keeps its
+translations, batches, QA, reviews, evidence, workflow progress or approvals. A v8 OLD keeps its
 validated `settings.yaml` byte for byte and migrates `settings.local.yaml` executable bindings for
 reviewers the new settings define (relative paths become absolute; bare command names stay PATH
 lookups). `--settings preset` explicitly starts from a preset while keeping `document`. Older formats
@@ -1068,7 +1088,7 @@ littrans translation review external-migrate PROJECT [OPTIONS]
 | `PROJECT` | `path` | yes | `required` | `[]` | Project directory containing project.yaml. |
 | `--apply/--no-apply` | `boolean` | no | `false` | `[]` | Apply the operation. |
 
-Unsupported project formats fail with a rebuild instruction, without writes. For v7 projects,
+Unsupported project formats fail with an upgrade/rebuild instruction, without writes. For v8 projects,
 returns changed=false and applied=false with config CLI next actions; `--apply` cannot rewrite
 the manifest. Manage reviewer definitions through `config apply`.
 
@@ -1359,6 +1379,10 @@ littrans task receive PROJECT TASK_ID --result RESULT.json
 
 ## Data contracts
 
+Current paragraphs use SourceUnit v4, TranslationRecord v3 and project v8. See
+[paragraph model](paragraph-model.md) for body/label partition, outline, PDF-point layout,
+separate memberships, structure confirmations and label_translations.
+
 Field tables below describe serialized public records and accepted inputs. Required means the
 field must be present; nullable required fields still need an explicit null. Defaults are applied
 by the model, while domain importers enforce the additional bindings described here. Output
@@ -1382,7 +1406,7 @@ Examples with placeholder fingerprints illustrate shape only and must be bound t
 
 ### Project configuration
 
-`project.yaml` is the immutable v7 source/project manifest. Shared policies are complete,
+`project.yaml` is the immutable v8 source/project manifest. Shared policies are complete,
 versioned `settings.yaml` objects; `settings.local.yaml` holds ignored source and executable
 bindings. Runtime state is in `derived/project-state.json`. See [configuration](configuration.md)
 and the generated [field reference](settings-fields.md) for the authoritative settings contract.
@@ -1531,7 +1555,7 @@ packet is missing fails verification with a message naming the packet as a revie
 
 ### Decision fields
 
-New packets use source-review contract version 7. Full reviews additionally require
+Source-review packets use contract version 8. Full reviews additionally require
 `full_page_review_completed: true` and `layout_adjudications`, whose entries contain explicit
 `concern_ids`, `choice: retain|correct`, a non-empty `reason` and Boolean `uncertain`.
 Inspect the complete original and extracted page first, then the folded concerns. Missing,
@@ -1546,11 +1570,11 @@ lists remaining work and `context.layout_status` counts pending, adjudicated and
 items. Previously decided items remain addressable but are not repeated as pending work.
 Evidence is saved independently under `evidence/layout/`, bound to page/context fingerprints,
 rules, guidance and the immutable packet. It cannot grant whole-page approval. Scanning does
-not re-extract source or rewrite receipts. Existing version 6 packets use their original contract.
+not re-extract source or rewrite receipts. Historical packets remain evidence; current review requires a fresh packet.
 
 Each entry of `pages` in the submitted review carries the packet page's `page` and `fingerprint`
 plus the attestation flags from the template: `viewed_original`, `coverage_complete`,
-`boundaries_complete`, `reading_order_correct`, `grouping_checked`, and, when the ledger requires
+`boundaries_complete`, `reading_order_correct`, `grouping_checked`, `paragraphs_checked`, `outline_checked`, and, when the ledger requires
 them, `layout_fallback_checked` (layout not `ok`), `overflow_canvas_checked` (a page canvas
 override) and `formula_conditions_checked` (declared formula conditions: the reviewer confirms
 the listed declarations are correct and complete, not that words are absent from the crop).
@@ -1559,7 +1583,7 @@ The template's `context` block lists what the ledger already knows for that page
 `findings` and `structure_checks` — so the review confirms a list instead of guessing from crops.
 
 `structure_checks` holds the page's semantic decisions, one row each (the coverage report prints
-them per page). `roles`: every read unit prepared as a `heading` or `caption`, every unit that
+them per page). `roles`: every outline/label candidate or caption, every unit that
 opens with a statement, run-in or proof label, and every unit whose detector heading/caption
 label preparation overruled (`detector_label`), with its `kind` and an excerpt. `joins`: every
 native text block whose text was joined into another unit rather than becoming one, with that
@@ -1572,14 +1596,17 @@ the block from the text before it. A page passes only when both lists cover thei
 (`role-unconfirmed`, `join-unconfirmed`), a confirmed kind equals the recorded one
 (`role-disputed`: correct the page with a `units` override instead) and no confirmation names a
 unit the list does not hold (`role-not-listed`); an entry in another shape is an error naming
-the page. A packet made before `structure_checks` existed asks for neither list, so receipts
-bound to it keep passing. List containers are flat: a lead-in paragraph is the parent of its
-items and of the displays and explanation paragraphs inside them; to hang a display from the
-item itself, use a `units` override.
+the page. `structure_checks.paragraphs` lists every paragraph's properties, relationships and
+`structure_sha256`. Inspect each paragraph, then submit
+`confirmed_paragraphs: [{"unit_id": "ID", "structure_sha256": "DIGEST"}]` with the exact current
+binding for every row. Put unresolved label, outline or membership questions in
+`paragraph_uncertainties`; a nonempty list blocks approval. Corrections use `override.units`
+and require a fresh packet. Paragraph, item and semantic-container relationships are separate;
+see [paragraph model](paragraph-model.md) for their constraints.
 
 The approval gate and the checkpoint's defect list share one predicate
 (`page_review_findings`); separately recorded uncertain choices remain visible. A page passes
-only when every required flag is `true`, `issues` is empty, no `override` is present and no
+only when every required flag is `true`, `issues` and `paragraph_uncertainties` are empty, no `override` is present and no
 finding remains: `grouping-pending` (an asset with `grouping_pending` that the decision does
 not list in `accepted_grouping_pending: [{"asset_id", "reason"}]` with a non-empty reason; an
 entry in another shape, such as a bare asset ID string, is an error that names the page rather
@@ -1684,8 +1711,9 @@ transaction rolls back on any violation.
 - `units` replaces the page's source units. Each unit needs `unit_id`
   (`[A-Za-z0-9][A-Za-z0-9._-]*`, unique across the project), `source_markdown` (prose with
   `{{asset:ID}}` placeholders and `[^n]` footnote calls) and `bbox`; optional `kind` (default
-  `paragraph`; `footnote`, `heading`, `list_item`, `caption`, `equation`, `figure`, `table`,
-  `note`, `bibliography`), `equation_number`, `footnote_number`, `footnote_refs`, `parent_id`,
+  `paragraph`; `footnote`, `caption`, `equation`, `figure`, `table`,
+  `code`, `note`, `bibliography`), `equation_number`, `footnote_number`, `footnote_refs`, `parent_id`,
+  `paragraph`, `paragraph_id`, `item_id`, `parent_item_id`, `container_role`, `section_id`,
   `continues_from_previous`, `continued_to_next`, `render_policy` (`include`/`omit`) and
   `translatable`. Across the page's units every page asset must be referenced exactly once. When
   `units` is omitted the units are re-derived from the regions with the normal structure
@@ -1693,10 +1721,9 @@ transaction rolls back on any violation.
   channel too: a `units` block may reference the coalesced asset (one ID, as the packet lists
   it) or its constituents; a coalesced asset the block does not reference is restored to the
   assets it was made of before the reference check. A recorded unit is filled with the same
-  optional keys structure assembly passes before its `source_hash` is computed, so identical
-  content hashes identically whichever channel wrote it: the final hash is
-  `hash({prepared_source_hash, asset_content_hashes})` over the unit payload's hash and its
-  assets' `content_sha256`, deterministic for the same content.
+  optional keys structure assembly passes before computing `source_hash`. The binding covers
+  source content, paragraph properties, relationships and referenced `asset_content_hashes`;
+  review status does not change content identity.
 - A region `bbox` (or fragment `bbox`) is the target box: only owned glyph ink is padded by
   0.5pt, so a `fragment.bbox` copied from the packet reproduces the same fragment, `width`,
   `height`, `baseline` and `content_sha256`. Fragment dimensions derive from the 4-decimal
@@ -1746,7 +1773,7 @@ introduced.
 - Source records are `derived/units.jsonl` ([SourceUnit](#model-sourceunit)) and
   `derived/fidelity-assets.jsonl` ([FidelityAsset](#model-fidelityasset)). Each fragment has project-relative image paths and an exact matching file-hash map;
   positive geometry is required. An omitted source unit must be nontranslatable. Sidebar ID/role
-  occur together; title roles require heading kind. Callout kind applies only to note units.
+  occur together; title roles require paragraph kind and do not imply an outline level. Callout kind applies only to note units.
 - A source review receipt is bound to source, page fingerprint, original packet, visual report
   and decision via its stored digest. Keep its packet and referenced files. A verification receipt
   such as [PageVerificationReceipt](#model-pageverificationreceipt) is generated output, not a
@@ -1756,8 +1783,15 @@ introduced.
 
 One [TranslationRecord](#model-translationrecord) per JSONL line; IDs must belong to the batch's
 editable `translatable_unit_ids`, not its `read_only_unit_ids`. The source hash must equal the
-current unit's source hash. Submission requires exactly the full editable unit set once each; missing, duplicate or
+current unit's source hash, and the batch's source pages must have current fidelity approval.
+Submission requires exactly the full editable unit set once each; missing, duplicate or
 out-of-scope units and invalid image evidence are refused. A model-valid record alone does not establish QA or approval.
+
+For a paragraph, `target_text` contains only `paragraph.body_text` translated, including title
+text without Markdown heading markers. `label_translations` maps every translatable label part
+ID to nonempty translated text, with no literal or unknown IDs. Fixed labels are restored by
+the renderer; do not copy them into the body. A label-only heading has an empty `target_text`.
+See [paragraph properties](paragraph-model.md) for source partitions and label formatting.
 
 Translation records retain their unit's `source_hash`, references and an `image_evidence` map of
 inspected original image path to SHA-256 from `original-images.json`. Supplementary translations
@@ -2068,7 +2102,7 @@ consumers should not require cache-hit output to contain fresh-run telemetry.
 | assets status | assets map with state, candidate_sha256 (or null), semantic_uncertainty, reviewer_uncertainty and conditional diagnostics; counts by state |
 | context glossary lookup | selection (selector, unit_count when unit-scoped, scope_applied), approved array, reference map of kind to entry arrays, approved_total, reference_total |
 | context glossary check | prepared_units; approved with total/never_matched; reference with total/by_kind/never_matched; candidates with total |
-| external-migrate | changed=false, applied=false and config next_actions for v7; rejects historical projects |
+| external-migrate | changed=false, applied=false and config next_actions for v8; rejects historical projects |
 | external review dry-run | schema_version=5, executed=false, batch_id, translation_fingerprint, scope, covered_unit_ids, read_only_context_unit_ids, packet_path, packet_sha256, context_fingerprint, page_sha256s, prompt_version, calls |
 
 Layout `identity` reports configured_python, resolved_python, pyvenv_home, pyvenv_version,
@@ -2127,7 +2161,7 @@ also apply. Models shown only as generated output are not writable approval inte
 
 ### Model ProjectConfig
 
-Internal runtime view, assembled from the v7 manifest, saved settings and state. This is not
+Internal runtime view, assembled from the v8 manifest, saved settings and state. This is not
 the `project.yaml` file format. See [configuration](configuration.md) and `config schema` for
 persistent settings; generated project schemas describe the separate manifest.
 
@@ -2214,7 +2248,7 @@ persistent settings; generated project schemas describe the separate manifest.
 
 | Field | Type | Required | Default | Constraints / meaning |
 | --- | --- | --- | --- | --- |
-| `schema_version` | integer | no | `3` | Serialized record schema version; distinct from the plugin release version. |
+| `schema_version` | integer | no | `4` | Serialized record version; distinct from the plugin release version. |
 | `unit_id` | string | yes | `required` | Stable source unit ID. |
 | `kind` | [UnitKind](#enum-unitkind) | yes | `required` | Source semantic kind or asset kind, according to the owning record. |
 | `page` | integer | yes | `required` | One-based PDF page number. |
@@ -2224,6 +2258,12 @@ persistent settings; generated project schemas describe the separate manifest.
 | `asset_content_hashes` | map of string | no | `{}` | Referenced asset IDs mapped to content digests, bound into source identity. |
 | `source_markdown` | string or null | no | `null` | Preserved prose with original-asset placeholders and footnote calls. |
 | `parent_id` | string or null | no | `null` | Logical container's source-unit ID; preserves group dependencies. |
+| `paragraph` | [paragraph properties](paragraph-model.md#paragraph-properties) or null | no | `null` | Body, outline, label parts and PDF-point layout. |
+| `paragraph_id` | string or null | no | `null` | Logical paragraph head; shared by its fragments. |
+| `item_id` | string or null | no | `null` | Item head identifying a complete item including new paragraphs and equations. |
+| `parent_item_id` | string or null | no | `null` | Enclosing item head for nested items. |
+| `container_role` | string or null | no | `null` | Role inside the parent_id semantic container. |
+| `section_id` | string or null | no | `null` | Nearest preceding outline paragraph head; context rather than an atomic batch group. |
 | `sidebar_id` | string or null | no | `null` | Shared identity of a sidebar container. |
 | `sidebar_role` | [SidebarRole](#enum-sidebarrole) or null | no | `null` | Title/body role; must occur together with sidebar_id. |
 | `callout_kind` | [CalloutKind](#enum-calloutkind) or null | no | `null` | Admonition kind, permitted only on note units. |
@@ -2240,8 +2280,8 @@ persistent settings; generated project schemas describe the separate manifest.
 | `math_status` | [SemanticStatus](#enum-semanticstatus) or null | no | `null` | Verification state of the mathematical representation. |
 | `code_language` | string or null | no | `null` | Language identifier for code rendering. |
 | `table` | [TableData](#model-tabledata) or null | no | `null` | Structured source table when present. |
-| `continues_from_previous` | boolean | no | `false` | Unit continues a sentence from the prior adjacent page. |
-| `continued_to_next` | boolean | no | `false` | Unit's sentence continues onto the next adjacent page. |
+| `continues_from_previous` | boolean | no | `false` | Sentence-continuation hint; paragraph fragments use paragraph_id. |
+| `continued_to_next` | boolean | no | `false` | Sentence-continuation hint; paragraph fragments use paragraph_id. |
 | `figure_labels` | array of [FigureLabel](#model-figurelabel) | no | `[]` | Source/target label pairs for figure language. |
 | `visual_text_status` | [SemanticStatus](#enum-semanticstatus) or null | no | `null` | Verification state of image-contained source text. |
 | `verification_status` | [SemanticStatus](#enum-semanticstatus) | no | `"unverified"` | Source unit's recorded verification state. |
@@ -2307,9 +2347,10 @@ persistent settings; generated project schemas describe the separate manifest.
 
 | Field | Type | Required | Default | Constraints / meaning |
 | --- | --- | --- | --- | --- |
-| `schema_version` | integer | no | `2` | Serialized record schema version; distinct from the plugin release version. |
+| `schema_version` | integer | no | `3` | Serialized record version; distinct from the plugin release version. |
 | `unit_id` | string | yes | `required` | Stable source unit ID. |
 | `target_text` | string | yes | `required` | Translated Markdown/prose, retaining required source references. |
+| `label_translations` | map of string | no | `{}` | Exact map of translatable label part IDs to translated text. Literal parts are renderer-owned. |
 | `target_table` | [TableData](#model-tabledata) or null | no | `null` | Optional rectangular translated table. |
 | `figure_labels` | array of [FigureLabel](#model-figurelabel) | no | `[]` | Source/target label pairs for figure language. |
 | `source_hash` | string | yes | `required` | Current source-unit content binding. |
@@ -2317,7 +2358,7 @@ persistent settings; generated project schemas describe the separate manifest.
 | `asset_translations` | array of [AssetTranslation](#model-assettranslation) | no | `[]` | Image-language companions keyed by original asset ID. |
 | `revision` | integer | no | `1` | {"minimum": 1} |
 | `reader_note` | [ReaderNote](#model-readernote) or null | no | `null` | Optional supplemental note with source attribution. |
-| `code_annotations` | array | no | `[]` | Saved policy or supplemental code annotations; see configuration reference. |
+| `code_annotations` | array of object | no | `[]` | Saved policy or supplemental code annotations; see configuration reference. |
 | `term_proposals` | array of [TermProposal](#model-termproposal) | no | `[]` | Unapproved terminology proposals from the translator. |
 | `uncertainties` | array of string | no | `[]` | Unresolved translation questions recorded with the submission. |
 | `status` | [ProjectStatus](#enum-projectstatus) | no | `"draft"` | Stored state; importers control approval transitions. |
@@ -2455,9 +2496,9 @@ persistent settings; generated project schemas describe the separate manifest.
 
 | Field | Type | Required | Default | Constraints / meaning |
 | --- | --- | --- | --- | --- |
-| `schema_version` | 1 | no | `1` | Serialized record schema version; distinct from the plugin release version. |
+| `schema_version` | integer | no | `1` | Serialized record version; distinct from the plugin release version. |
 | `task_id` | string | yes | `required` | {"pattern": "^task-[a-f0-9]{24}$"} |
-| `stage` | enum ["source-review", "translate", "revise", "audit", "transcribe", "asset-audit", "scout", "terminology", "external-recheck"] | yes | `required` | Domain task/packet stage. |
+| `stage` | string | yes | `required` | Domain task/packet stage. |
 | `role` | string | yes | `required` | Worker role or external-review role, according to record type. |
 | `lens` | string or null | yes | `required` | Audit lens; required and validated for audit packets/runs. |
 | `objective` | string or null | yes | `required` | Bound investigation objective, nullable for other stages. |
@@ -2472,7 +2513,7 @@ persistent settings; generated project schemas describe the separate manifest.
 | `dispatch` | object | yes | `required` | Resolved host/role policy and dispatch information. |
 | `source_sha256` | string | yes | `required` | Original PDF SHA-256. |
 | `policy_snapshot` | object | yes | `required` | Saved policy or supplemental code annotations; see configuration reference. |
-| `policy_domains` | object | yes | `required` | Saved policy or supplemental code annotations; see configuration reference. |
+| `policy_domains` | map of string | yes | `required` | Saved policy or supplemental code annotations; see configuration reference. |
 | `source_bindings` | map of string | no | `{}` | Selected unit fingerprints for task receipt validation. |
 | `batch_binding` | object | no | `{}` | Snapshot of the translation batch manifest. |
 
@@ -2688,7 +2729,7 @@ values a particular command rejects; command-specific constraints still apply.
 
 ### Enum UnitKind
 
-`heading`, `paragraph`, `list_item`, `note`, `code`, `equation`, `figure`, `caption`, `table`, `footnote`, `bibliography`.
+`paragraph`, `note`, `code`, `equation`, `figure`, `caption`, `table`, `footnote`, `bibliography`.
 
 ## Configuration management
 

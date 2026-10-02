@@ -21,7 +21,7 @@ Read [source processing](../../references/source-processing.md), [runtime](../..
 3. Create source-review tasks for bounded contiguous ranges. Give original pages and packet evidence, no expected verdict. Import decisions, then dispatch fresh tasks for corrected, blocked or invalidated pages. Apply proposed page_rules centrally; never approve pages under unapplied rules.
 4. Require source verify, then source render and inspect the reading checkpoint. Report any unviewed evidence. Extraction ends before batch creation.
 
-New full reviews use two steps in one task: complete page inspection first, then explicit
+Full reviews use two steps in one task: complete page inspection first, then explicit
 layout adjudications. Keep warning lists after the full reading and avoid repeating resolved
 items. A reviewer may retain the most likely interpretation with uncertainty and evidence;
 include those choices in the final report. Actual corrections need fresh independent review.

@@ -241,7 +241,7 @@ def test_export_fallback_keeps_a_declared_figure(project: Path) -> None:
     with fitz.open(project / "source/book.pdf") as doc:
         glyphs = fidelity._native(doc[0])[0]
         broken = [{**g, "origin": [-1000.0, -1000.0]} for g in glyphs[:2]]
-        asset = _asset_impl(project, doc, 1, "0" * 64, {"kind": "figure", "bbox": [55, 70, 200, 90], "glyph_ids": [g["id"] for g in broken]}, broken)
+        asset = _asset_impl(project, doc, 1, "0" * 64, {"kind": "figure", "paragraph": None, "paragraph_id": None, "bbox": [55, 70, 200, 90], "glyph_ids": [g["id"] for g in broken]}, broken)
     assert asset.kind == "figure" and asset.grouping_pending
     assert asset.fragments[0].export_method == "raw-region"
     assert any(p.startswith("precise-export-unavailable") for p in asset.provenance)

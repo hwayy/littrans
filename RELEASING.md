@@ -98,7 +98,7 @@ into a stable plugin cache or inherit approval from a synthetic smoke project.
 ## Compatibility policy
 
 - Patch releases contain compatible fixes and workflow refinements.
-- During 0.x development, minor releases may change the project contract. This branch requires a v7 project and settings schema v1. Rebuild older projects into a fresh directory; old approvals are not migrated.
+- During 0.x development, minor releases may change the project contract. This branch requires project v8 and settings schema v1. Upgrade v7 or rebuild older formats into a fresh directory; old approvals are not migrated.
 - Major releases may require an explicit project migration.
 - Long-running translation projects should record the LitTrans version used for each formal
   processing stage.

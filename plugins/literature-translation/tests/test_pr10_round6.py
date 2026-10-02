@@ -55,7 +55,7 @@ def test_all_math_delimiters_preserve_literal_calls(math_text: str) -> None:
         footnote_refs=["note"],
     )
     note = caller.model_copy(
-        update={"unit_id": "note", "kind": UnitKind.FOOTNOTE, "footnote_number": "1"}
+        update={"unit_id": "note", "kind": UnitKind.FOOTNOTE, "paragraph": None, "paragraph_id": None, "footnote_number": "1"}
     )
     text = math_text + " Call[^1]"
     result = _markdown_footnote_calls(text, caller, {"note": note})
@@ -78,9 +78,15 @@ def test_existing_source_render_verifies_cross_page_receipt(project: Path, damag
     caller = next(u for u in units if u.page == 1 and u.kind is UnitKind.PARAGRAPH)
     note = next(u for u in units if u.page == 2 and u.kind is UnitKind.PARAGRAPH)
     caller.source_text += " Call[^1]"
+    if caller.paragraph:
+        caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
     caller.source_markdown = (caller.source_markdown or caller.source_text) + " Call[^1]"
+    if caller.paragraph:
+        caller.paragraph = caller.paragraph.model_copy(update={"body_text": caller.source_text, "body_markdown": caller.source_markdown or caller.source_text})
     caller.footnote_refs = [note.unit_id]
     note.kind = UnitKind.FOOTNOTE
+    note.paragraph = None
+    note.paragraph_id = None
     note.footnote_number = "1"
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
@@ -101,7 +107,7 @@ def test_existing_source_render_verifies_cross_page_receipt(project: Path, damag
 
 def test_markdown_escapes_legacy_unsafe_anchor(project: Path) -> None:
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
-    unit = next(u for u in units if u.kind is UnitKind.PARAGRAPH)
+    unit = next(u for u in units if u.kind is UnitKind.PARAGRAPH and not u.is_heading)
     unit.unit_id = 'x"><img src=x onerror=alert(1)>'
     write_jsonl(project / "derived/units.jsonl", units)
     result = render_project(project, "all", name="old-id", allow_draft=True)

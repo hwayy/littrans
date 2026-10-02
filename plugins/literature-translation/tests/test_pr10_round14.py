@@ -57,9 +57,9 @@ def test_pure_math_uncertainty_blocks_qa_and_dispatches_recovery(project, depend
         if asset.id in unit.asset_content_hashes:
             unit.translatable = False
             if dependency:
-                unit.parent_id = "cross-page-group"
+                unit.parent_id = units[0].unit_id
         elif dependency and unit.page == 1:
-            unit.parent_id = "cross-page-group"
+            unit.parent_id = units[0].unit_id
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")
     batch = load_manifest(project, "sample-one-b001") if dependency else create_batches(project, "1", prefix="pure-math")[0]
@@ -93,8 +93,12 @@ def test_table_asset_references_use_cells(project, keep_asset):
     aid = next(iter(unit.asset_content_hashes))
     text = "Label {{asset:" + aid + "}}"
     unit.kind = UnitKind.TABLE
+    unit.paragraph = None
+    unit.paragraph_id = None
     unit.translatable = True
     unit.source_text = unit.source_markdown = text
+    if unit.paragraph:
+        unit.paragraph = unit.paragraph.model_copy(update={"body_text": unit.source_text, "body_markdown": unit.source_markdown or unit.source_text})
     unit.table = TableData(rows=[[text]], column_count=1)
     write_jsonl(project / "derived/units.jsonl", units)
     approve(project, "all")

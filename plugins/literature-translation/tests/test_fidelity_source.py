@@ -149,6 +149,8 @@ def test_source_mutation_invalidates_visual_receipt(project: Path) -> None:
     path = project / "derived/units.jsonl"
     units = read_jsonl(path, SourceUnit)
     units[0].source_markdown = "Dropped formula"
+    if units[0].paragraph:
+        units[0].paragraph = units[0].paragraph.model_copy(update={"body_text": units[0].source_text, "body_markdown": units[0].source_markdown or units[0].source_text})
     write_jsonl(path, units)
     assert not verify_fidelity(project, "1")["passed"]
 
@@ -388,6 +390,8 @@ def test_declared_formula_conditions_need_specific_review_and_translation(projec
     review['reviewer'] = 'synthetic-formula-oracle'
     for key in ('full_page_review_completed', 'viewed_original', 'coverage_complete', 'boundaries_complete', 'reading_order_correct', 'grouping_checked', 'layout_fallback_checked', 'formula_conditions_checked'):
         review['pages'][0][key] = True
+    from fidelity_fixtures import confirm_structure_checks
+    confirm_structure_checks(review['pages'][0])
     write_json(project/'formula-review.json', review)
     assert import_source_review(project, project/'formula-review.json', True)['approved_pages'] == [1]
     assert verify_fidelity(project, '1')['passed']

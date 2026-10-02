@@ -12,7 +12,7 @@ For fidelity, check omissions/additions, qualifications, negation, conditional d
 scope and references. For technical, check mathematical interpretation, notation, quantities,
 dependencies and terminology. For chinese-style, check readable contemporary Chinese,
 explicit logical relationships and consistent expression without changing meaning.
-Check captions, footnotes, table/figure language and cross-page continuity within the packet.
+Check language labels, captions, footnotes, table/figure language and cross-page continuity within the packet.
 Renderer-owned wrappers and original-image placeholders are not missing translation.
 Return JSONL issues, including an empty result when there are no findings. Do not write target
 text, import reviews, close findings or approve. Revisions are reviewed over the packet's

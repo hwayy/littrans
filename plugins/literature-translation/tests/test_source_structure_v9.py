@@ -14,11 +14,12 @@ from typing import Any
 import pymupdf as fitz
 import pytest
 from config_fixtures import save_project
+from paragraph_fixtures import assemble_fixture_structure as assemble_structure
 
 from littrans.fidelity import _make_unit, prepare_source
 from littrans.fidelity_models import FidelityAsset, FidelityFragment
 from littrans.models import ProjectConfig, SourceUnit, UnitKind
-from littrans.source_structure import assemble_structure, plan_structure
+from littrans.source_structure import plan_structure
 from littrans.storage import initialize_project_dirs, read_jsonl, sha256_file
 
 FONT = 10.0
@@ -258,8 +259,8 @@ def test_prepared_spaced_paragraphs_are_separate_units(spaced_project: Path, mon
     monkeypatch.setattr(fidelity, "detect_layout", lambda images, output: {"status": "ok", "fingerprint": "spaced", "pages": {}})
     prepare_source(spaced_project)
     units = [u for u in read_jsonl(spaced_project / "derived/units.jsonl", SourceUnit) if u.render_policy.value == "include"]
-    body = [u for u in units if u.kind is UnitKind.PARAGRAPH]
-    assert [u.source_text[:12] for u in body] == ["The listing ", "The rule kee", "Finally, the", "[1] Companio"]
-    assert all(u.parent_id == u.unit_id for u in body)
+    body = [u for u in units if u.kind is UnitKind.PARAGRAPH and not u.is_heading and not any(c.get("kind") == "outline" for c in u.paragraph.candidates)]
+    assert [u.source_text[:12] for u in body] == ["The listing ", "The rule kee", "Finally, the", "[1] Companio", "[2] Kernel M"]
+    assert all(u.parent_id == u.unit_id for u in body[:3])
     assert all(u.bbox[3] - u.bbox[1] < 40 for u in body[:3])
     assert body[3].bbox[1] > 660

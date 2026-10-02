@@ -189,8 +189,8 @@ def _packet_page(overruled: dict[str, str] | None = None) -> dict[str, Any]:
         g["owner"] = "native-text"
     units = [
         {"unit_id": "p0229-b1", "kind": "paragraph", "source_text": "**Theorem 9.2** Consider the process.", "bbox": [58.7, 100, 300, 124], "render_policy": "include"},
-        {"unit_id": "p0229-b3", "kind": "caption", "source_text": "**Figure 10.1.** A model.", "bbox": [94.5, 300, 300, 311], "render_policy": "include"},
-        {"unit_id": "p0229-b0", "kind": "note", "source_text": "running head", "bbox": [0, 0, 1, 1], "render_policy": "omit"},
+        {"unit_id": "p0229-b3", "kind": "caption", "paragraph": None, "paragraph_id": None, "source_text": "**Figure 10.1.** A model.", "bbox": [94.5, 300, 300, 311], "render_policy": "include"},
+        {"unit_id": "p0229-b0", "kind": "note", "paragraph": None, "paragraph_id": None, "source_text": "running head", "bbox": [0, 0, 1, 1], "render_policy": "omit"},
     ]
     structure: dict[str, Any] = {"omitted": {"b0": "running-header-or-footer"}}
     if overruled:
@@ -209,9 +209,14 @@ def test_structure_checks_list_roles_and_joined_blocks() -> None:
 def test_every_listed_role_and_join_needs_its_own_confirmation() -> None:
     page = _packet_page()
     page["structure_checks"] = _structure_checks(page)
-    assert _confirmation_failures(page, {}) == ["role-unconfirmed: p0229-b1, p0229-b3", "join-unconfirmed: b2"]
+    assert _confirmation_failures(page, {}) == [
+        "paragraph-structure-unconfirmed: confirm every paragraph body, outline, label, layout and membership",
+        "role-unconfirmed: p0229-b1, p0229-b3", "join-unconfirmed: b2"]
     decision = {"confirmed_roles": [{"unit_id": "p0229-b1", "kind": "paragraph"}, {"unit_id": "p0229-b3", "kind": "paragraph"}],
                 "confirmed_joins": [{"block": "b2"}]}
+    decision["confirmed_paragraphs"] = [
+        {"unit_id": row["unit_id"], "structure_sha256": row["structure_sha256"]}
+        for row in page["structure_checks"]["paragraphs"]]
     assert _confirmation_failures(page, decision) == [
         "role-disputed: p0229-b3 is recorded as caption, the review reads paragraph; correct it with a units override"]
     decision["confirmed_roles"][1]["kind"] = "caption"

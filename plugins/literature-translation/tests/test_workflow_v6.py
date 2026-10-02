@@ -185,6 +185,7 @@ def test_only_unified_source_commands_are_exposed() -> None:
 def test_selected_units_cannot_cut_continuations(project: Path) -> None:
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     units[0] = units[0].model_copy(update={"continued_to_next": True})
+    units[1] = units[1].model_copy(update={"paragraph_id": units[0].unit_id})
     write_jsonl(project / "derived/units.jsonl", units)
     with pytest.raises(ValueError, match="cuts a continuation"):
         create_batches(project, "1", prefix="cut", unit_ids=[units[0].unit_id])

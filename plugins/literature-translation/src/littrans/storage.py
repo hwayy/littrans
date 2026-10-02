@@ -227,7 +227,7 @@ def load_project(root: Path) -> ProjectConfig:
     if payload.get("schema_version") != PROJECT_SCHEMA_VERSION:
         raise ValueError(
             f"Project schema v{payload.get('schema_version')} is historical; "
-            "run `littrans project rebuild OLD NEW` to create a separate v7 project. "
+            "run `littrans project upgrade OLD NEW` for v7, or `project rebuild OLD NEW` for older projects. "
             "Existing source, translations and approvals will remain unchanged."
         )
     from littrans.settings import ProjectManifest

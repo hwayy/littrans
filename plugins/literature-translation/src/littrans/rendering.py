@@ -64,7 +64,7 @@ from littrans.semantics import (
     table_to_html,
     table_to_markdown,
 )
-from littrans.source_structure import TERMINAL_PUNCTUATION, language_words
+from littrans.source_structure import language_words
 from littrans.storage import (
     atomic_write_text,
     load_project,
@@ -198,48 +198,20 @@ def _merge_continued_note_html(left: str, right: str, anchor: str) -> str | None
     return left.removesuffix("</p></aside>") + separator + anchor + body + "</p></aside>"
 
 
-def _merge_continued_list_html(left: str, right: str, anchor: str) -> str | None:
-    """Join physical fragments of one logical list item without adding a new marker."""
-    left_match = re.fullmatch(
-        r'(?P<open><(?P<tag>[uo]l)(?: start="\d+")?>)<li>(?P<body>.*)</li></(?P=tag)>',
-        left,
-        flags=re.S,
-    )
-    right_match = re.fullmatch(
-        r'<[uo]l(?: start="\d+")?><li>(?P<body>.*)</li></[uo]l>',
-        right,
-        flags=re.S,
-    )
-    if not left_match or not right_match:
-        return None
-    right_body = right_match.group("body")
-    separator = _continuation_separator(left_match.group("body"), right_body)
-    tag = left_match.group("tag")
-    return (
-        left_match.group("open")
-        + "<li>"
-        + left_match.group("body")
-        + separator
-        + anchor
-        + right_body
-        + f"</li></{tag}>"
-    )
-
-
 def _merge_continued_sidebar_html(left: str, right: str, anchor: str) -> str | None:
     """Join paragraph fragments inside one sidebar without nesting another aside."""
     if not left.endswith("</p></aside>"):
         return None
     match = re.fullmatch(
-        r'<aside class="sidebar-fragment sidebar-body"><p>(.*)</p></aside>',
+        r'<aside class="sidebar-fragment sidebar-body">(<p(?:\s[^>]*)?>.*</p>)</aside>',
         right,
         flags=re.S,
     )
     if match is None:
         return None
-    body = match.group(1)
-    separator = _continuation_separator(left, body)
-    return left.removesuffix("</p></aside>") + separator + anchor + body + "</p></aside>"
+    prefix = '<aside class="sidebar-fragment sidebar-body">'
+    return prefix + _join_paragraph_html(left.removeprefix(prefix).removesuffix("</aside>"),
+                                         match.group(1), anchor) + "</aside>"
 
 
 def _continued_sidebar_markdown(rendered: str) -> str:
@@ -327,15 +299,6 @@ def _note_variant(text: str, explicit: CalloutKind | None = None) -> str:
     if not match:
         return "note"
     return match.group(1).lower().replace("’", "'").replace("what's new", "whats-new")
-
-
-def _list_body(text: str) -> str:
-    return re.sub(r"^\s*(?:[-+*•▪■●]\s+|\d+[.)]\s+)", "", text, count=1)
-
-
-def _list_ordinal(text: str) -> int | None:
-    match = re.match(r"^\s*(\d+)[.)]\s+", text)
-    return int(match.group(1)) if match else None
 
 
 def _coalesce_code_units(
@@ -491,8 +454,21 @@ def _translated_native_equation(unit: SourceUnit, target: str | None) -> bool:
                            or re.search(r"[\u3400-\u9fff]", target)))
 
 
-def _target_markdown(unit: SourceUnit, target: str | None) -> str:
-    text = target if target is not None else unit.source_text
+def _join_paragraph_html(left: str, right: str, anchor: str) -> str:
+    closing = re.search(r"</(?:p|h[1-6])>$", left)
+    if not closing:
+        return left + right
+    inner = re.sub(r"^<[^>]+>|</(?:p|h[1-6])>$", "", right)
+    separator = _continuation_separator(left, inner)
+    end = closing.start()
+    if 'class="paragraph-body"' in left and left[:end].endswith("</span>"):
+        end -= len("</span>")
+    return left[:end] + separator + anchor + inner + left[end:]
+
+
+def _target_markdown(unit: SourceUnit, target: str | None, label_translations: dict[str, str] | None = None) -> str:
+    from littrans.paragraphs import body_text, label_markdown, paragraph_html
+    text = target if target is not None else body_text(unit, markdown=True)
     safe_text = escape_markdown_prose(text)
     if unit.kind is UnitKind.TABLE and unit.table:
         return table_to_markdown(unit.table)
@@ -506,16 +482,28 @@ def _target_markdown(unit: SourceUnit, target: str | None) -> str:
             else ""
         )
     if unit.sidebar_role is SidebarRole.TITLE:
-        return f"> **{safe_text}**"
+        plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
+        return "> " + _target_markdown(plain_unit, target, label_translations)
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
-        inner = _target_markdown(plain_unit, target)
+        inner = _target_markdown(plain_unit, target, label_translations)
         return "\n".join(">" if not line else f"> {line}" for line in inner.splitlines())
-    if unit.kind is UnitKind.HEADING:
-        return f"## {safe_text}"
-    if unit.kind is UnitKind.LIST_ITEM:
-        marker = f"{_list_ordinal(unit.source_text)}." if _list_ordinal(unit.source_text) else "-"
-        return f"{marker} {escape_markdown_prose(_list_body(text))}"
+    if unit.paragraph is not None:
+        data = unit.paragraph
+        label = label_markdown(unit, label_translations)
+        content = label + (" " if label and text else "") + safe_text
+        level = data.outline_level if unit.paragraph_id == unit.unit_id else None
+        if level is not None and level <= 6:
+            return "#" * level + " " + content
+        from littrans.models import ParagraphLayout
+        layout_values = data.layout.model_dump(exclude={"font_size_pt"})
+        if level is not None or layout_values != ParagraphLayout().model_dump(exclude={"font_size_pt"}):
+            return paragraph_html(unit, text, _inline_html, label_translations)
+        # Escape ASCII list punctuation as well as preserving non-ASCII printed marks.
+        content = re.sub(r"^(\s*\d+)([.)])(?=\s|$)", r"\1\\\2", content, flags=re.M)
+        content = re.sub(r"^(\s*)([-+*])(?=\s)", r"\1\\\2", content, flags=re.M)
+        content = re.sub(r"^(\s*)([#>])(?=[#>\s])", r"\1\\\2", content, flags=re.M)
+        return content
     if unit.kind is UnitKind.NOTE:
         lines = escape_markdown_prose(_note_body(text)).splitlines() or [safe_text]
         variant = _note_variant(unit.source_text, unit.callout_kind)
@@ -670,12 +658,16 @@ def _unit_html(
     source_view: bool,
     submitted_translation: bool = False,
     unit_map: dict[str, SourceUnit] | None = None,
+    label_translations: dict[str, str] | None = None,
 ) -> str:
     targets = _footnote_targets(unit, unit_map or {}, source_view)
     scope = f"p{unit.page}-{'source' if source_view else 'target'}"
     def inline(value: str) -> str:
         return _inline_html(value, scope, targets)
-    text = target if target is not None else (unit.source_markdown or unit.source_text)
+    from littrans.paragraphs import body_text, paragraph_html
+    text = target if target is not None else body_text(unit, markdown=True)
+    if unit.paragraph is not None and source_view:
+        text = body_text(unit, markdown=True)
     if (ASSET_RE.search(text) and unit.kind in {UnitKind.CODE, UnitKind.EQUATION, UnitKind.FIGURE, UnitKind.TABLE}
             and not (unit.kind is UnitKind.TABLE and (target_table or unit.table))):
         number = (
@@ -692,12 +684,17 @@ def _unit_html(
             return _display_rows_html(unit, rows, inline, number)
         return f'<div class="fidelity-complex{mixed}">' + inline(text) + number + '</div>'
     if unit.sidebar_role is SidebarRole.TITLE:
-        return '<aside class="sidebar-fragment sidebar-title"><h3>' + inline(text) + "</h3></aside>"
+        plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
+        return '<aside class="sidebar-fragment sidebar-title">' + _unit_html(
+            plain_unit, target, target_table, source_view=source_view,
+            submitted_translation=submitted_translation, label_translations=label_translations,
+            unit_map=unit_map) + "</aside>"
     if unit.sidebar_role is SidebarRole.BODY:
         plain_unit = unit.model_copy(update={"sidebar_id": None, "sidebar_role": None})
         return '<aside class="sidebar-fragment sidebar-body">' + _unit_html(
             plain_unit, target, target_table, source_view=source_view,
             submitted_translation=submitted_translation, unit_map=unit_map
+            , label_translations=label_translations
         ) + "</aside>"
     if unit.kind is UnitKind.CODE:
         language = html.escape(unit.code_language or "text")
@@ -756,16 +753,8 @@ def _unit_html(
             + inline(_note_body(text))
             + "</p></aside>"
         )
-    if unit.kind is UnitKind.HEADING:
-        return "<h2>" + inline(text) + "</h2>"
-    if unit.kind is UnitKind.LIST_ITEM:
-        ordinal = _list_ordinal(unit.source_text)
-        body = inline(_list_body(text))
-        if ordinal is not None:
-            return f'<ol start="{ordinal}"><li>{body}</li></ol>'
-        if re.match(r"^\s*\([A-Za-z]\)", unit.source_text):
-            return '<ul style="list-style:none"><li>' + body + "</li></ul>"
-        return "<ul><li>" + body + "</li></ul>"
+    if unit.paragraph is not None:
+        return paragraph_html(unit, text, inline, None if source_view else label_translations)
     if unit.kind is UnitKind.CAPTION:
         return "<figcaption>" + inline(text) + "</figcaption>"
     if unit.kind is UnitKind.FOOTNOTE:
@@ -810,26 +799,9 @@ def _asset_companions(record: Any, unit: SourceUnit | None = None, unit_map: dic
 
 
 def _continues_paragraph(previous: SourceUnit, unit: SourceUnit) -> bool:
-    """Whether ``unit`` continues the paragraph ``previous`` ended a page with.
-
-    The two page-edge flags are read together, as batching and audit closure read
-    them: the sender's ``continued_to_next`` (its last line ends mid-sentence) carries
-    the continuation even when the receiver's flag is unset, and a receiver's flag set
-    on geometry alone does not glue a paragraph to a sentence the sender closed with
-    terminal punctuation.
-    """
-    if previous.kind is not UnitKind.PARAGRAPH or unit.kind is not UnitKind.PARAGRAPH:
-        return False
-    if not 0 <= unit.page - previous.page <= 1:
-        return False
-    if previous.continued_to_next:
-        return True
-    if not unit.continues_from_previous:
-        return False
-    # A printed full stop can precede the Markdown call inserted for a footnote.
-    # Peel only trailing calls and wrappers, leaving the prose punctuation in place.
-    tail = re.sub(r"(?:\[\^\d+\]|[*_~\s”’\"')\]）】〕])+$", "", previous.source_text)
-    return TERMINAL_PUNCTUATION.search(tail) is None
+    return (previous.kind is UnitKind.PARAGRAPH and unit.kind is UnitKind.PARAGRAPH
+            and previous.paragraph_id == unit.paragraph_id
+            and previous.unit_id != unit.unit_id and 0 <= unit.page - previous.page <= 1)
 
 
 def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -844,7 +816,7 @@ def _group_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if (grouped and unit.parent_id
                 and grouped[-1]["unit"].parent_id == unit.parent_id
                 and not unit.sidebar_id
-                and unit.kind not in {UnitKind.HEADING, UnitKind.FOOTNOTE, UnitKind.NOTE}):
+                and not unit.is_heading and unit.kind not in {UnitKind.FOOTNOTE, UnitKind.NOTE}):
             previous = grouped[-1]
             anchor = html.escape(unit.unit_id)
             previous["source_html"] += f'<a id="{anchor}"></a>' + row["source_html"]
@@ -1201,7 +1173,16 @@ def render_project(
         f"> 翻译状态：{rendered_status}；用途：{config.rights_status}。",
         "",
     ]
+    from littrans.paragraphs import toc_entries, toc_html
+    contents = toc_entries(render_units, translations)
+    if contents:
+        markdown.extend([toc_html(contents), ""])
     rows: list[dict[str, Any]] = []
+    paragraph_ends = {unit.paragraph_id: index for index, unit in enumerate(render_units) if unit.paragraph}
+    paragraph_md_notes: dict[str, list[Any]] = {}
+    paragraph_md_companions: dict[str, list[str]] = {}
+    paragraph_html_notes: dict[str, list[Any]] = {}
+    paragraph_html_companions: dict[str, list[str]] = {}
     pending_markdown_reader_notes: list[Any] = []
     pending_markdown_companions: list[str] = []
     previous_page: int | None = None
@@ -1224,7 +1205,8 @@ def render_project(
         if target is not None:
             bilingual_target = target
         elif not unit.translatable and unit.source_text:
-            bilingual_target = unit.source_text
+            from littrans.paragraphs import body_text
+            bilingual_target = body_text(unit, markdown=True)
         elif not unit.translatable and unit.asset_refs:
             bilingual_target = "[保留原始公式或图像]"
         else:
@@ -1259,7 +1241,7 @@ def render_project(
                 update={"figure_labels": rendered_figure_labels}
             )
         rendered = (escape_markdown_prose(target or render_unit.source_text)
-                    if render_unit.kind is UnitKind.FOOTNOTE else _target_markdown(render_unit, target))
+                    if render_unit.kind is UnitKind.FOOTNOTE else _target_markdown(render_unit, target, record.label_translations if record else None))
         companions = [_asset_companions(item, source_unit, footnote_unit_map)
                       for item, source_unit in companion_sources]
         companion_md = "\n\n".join(md for md, _ in companions if md)
@@ -1268,6 +1250,9 @@ def render_project(
             companion_md = resolve_asset_markdown(root, companion_md, output, originals_only=originals_only, cache=asset_cache)
             if unit.kind is UnitKind.FOOTNOTE:
                 rendered += "\n\n" + companion_md
+            elif unit.paragraph_id and unit.paragraph:
+                paragraph_md_companions.setdefault(unit.paragraph_id, []).append(
+                    _markdown_footnote_calls(companion_md, unit, footnote_unit_map))
             else:
                 pending_markdown_companions.append(_markdown_footnote_calls(companion_md, unit, footnote_unit_map))
         rendered = resolve_asset_markdown(root, rendered, output, originals_only=originals_only, cache=asset_cache)
@@ -1291,25 +1276,8 @@ def render_project(
             markdown[-1] += "\n" + _continued_note_markdown(rendered, anchor)
             markdown.append("")
         elif (
-            unit.continues_from_previous
-            and previous_unit is not None
-            and 0 <= unit.page - previous_unit.page <= 1
-            and previous_unit.kind is UnitKind.LIST_ITEM
-            and unit.kind is UnitKind.LIST_ITEM
-            and markdown
-        ):
-            while markdown and markdown[-1] == "":
-                markdown.pop()
-            continued_body = _list_body(rendered)
-            separator = _continuation_separator(markdown[-1], continued_body)
-            markdown[-1] += f"{separator}{anchor}{continued_body}"
-            markdown.append("")
-        elif (
-            unit.continues_from_previous
-            and previous_unit is not None
-            and 0 <= unit.page - previous_unit.page <= 1
-            and previous_unit.kind is UnitKind.PARAGRAPH
-            and unit.kind is UnitKind.PARAGRAPH
+            previous_unit is not None
+            and _continues_paragraph(previous_unit, unit)
             and previous_unit.sidebar_role is SidebarRole.BODY
             and unit.sidebar_role is SidebarRole.BODY
             and markdown
@@ -1327,12 +1295,30 @@ def render_project(
         ):
             while markdown and markdown[-1] == "":
                 markdown.pop()
-            separator = _continuation_separator(markdown[-1], rendered)
-            markdown[-1] += f"{separator}{anchor}{rendered}"
+            if re.match(r"<(?:p|h[1-6])\s", markdown[-1]) and re.match(r"<(?:p|h[1-6])\s", rendered):
+                markdown[-1] = _join_paragraph_html(markdown[-1], rendered, anchor)
+            else:
+                separator = _continuation_separator(markdown[-1], rendered)
+                markdown[-1] += f"{separator}{anchor}{rendered}"
             markdown.append("")
         else:
             markdown.extend([anchor, rendered, ""])
-        pending_markdown_reader_notes.extend(reader_notes)
+        if unit.paragraph and unit.paragraph_id:
+            paragraph_md_notes.setdefault(unit.paragraph_id, []).extend(reader_notes)
+            paragraph_html_notes.setdefault(unit.paragraph_id, []).extend(reader_notes)
+            paragraph_html_companions.setdefault(unit.paragraph_id, []).append(companion_html)
+            if paragraph_ends[unit.paragraph_id] == unit_index:
+                for companion in paragraph_md_companions.pop(unit.paragraph_id, []):
+                    markdown.extend([companion, ""])
+                for reader_note in paragraph_md_notes.pop(unit.paragraph_id, []):
+                    markdown.extend([*_reader_note_markdown(reader_note), ""])
+                reader_notes = paragraph_html_notes.pop(unit.paragraph_id, [])
+                companion_html = "".join(paragraph_html_companions.pop(unit.paragraph_id, []))
+            else:
+                reader_notes = []
+                companion_html = ""
+        else:
+            pending_markdown_reader_notes.extend(reader_notes)
         # A reader note attached to any fragment of a continued paragraph or
         # callout belongs after the complete logical unit.  Emitting it here
         # would interrupt the sentence at a physical page boundary.
@@ -1346,7 +1332,7 @@ def render_project(
             and 0 <= next_unit.page - unit_last_page <= 1
             and next_unit.continues_from_previous
             and next_unit.kind is unit.kind
-            and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE, UnitKind.LIST_ITEM}
+            and unit.kind in {UnitKind.PARAGRAPH, UnitKind.NOTE}
         )
         ordinary_paragraph = unit.kind is UnitKind.PARAGRAPH and unit.sidebar_role is not SidebarRole.BODY
         if ordinary_paragraph:
@@ -1378,6 +1364,7 @@ def render_project(
             target_table,
             source_view=False,
             submitted_translation=target is not None,
+            label_translations=record.label_translations if record else None,
             unit_map=footnote_unit_map,
         )
         source_html = resolve_asset_html(root, source_html, output, originals_only=originals_only, cache=asset_cache)
@@ -1423,45 +1410,8 @@ def render_project(
                     }
                 )
         elif (
-            unit.continues_from_previous
-            and rows
-            and 0 <= unit.page - rows[-1]["last_page"] <= 1
-            and rows[-1]["unit"].kind is UnitKind.LIST_ITEM
-            and unit.kind is UnitKind.LIST_ITEM
-        ):
-            source_list = _merge_continued_list_html(
-                rows[-1]["source_html"],
-                source_html,
-                f'<a id="{html.escape(unit.unit_id)}"></a>',
-            )
-            target_list = _merge_continued_list_html(
-                rows[-1]["target_html"],
-                target_html,
-                f'<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>',
-            )
-            if source_list is not None and target_list is not None:
-                rows[-1]["source_html"] = source_list
-                rows[-1]["target_html"] = target_list
-                rows[-1]["reader_notes"].extend(reader_notes)
-                rows[-1]["last_page"] = unit_last_page
-            else:
-                rows.append(
-                    {
-                        "unit": unit,
-                        "last_page": unit_last_page,
-                        "source_html": source_html,
-                        "target_html": target_html,
-                        "assets": assets,
-                        "record": record,
-                        "reader_notes": list(reader_notes),
-                    }
-                )
-        elif (
-            unit.continues_from_previous
-            and rows
-            and 0 <= unit.page - rows[-1]["last_page"] <= 1
-            and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
-            and unit.kind is UnitKind.PARAGRAPH
+            rows
+            and _continues_paragraph(rows[-1]["unit"], unit)
             and rows[-1]["unit"].sidebar_role is SidebarRole.BODY
             and unit.sidebar_role is SidebarRole.BODY
         ):
@@ -1498,25 +1448,13 @@ def render_project(
             and rows
             and 0 <= unit.page - rows[-1]["last_page"] <= 1
             and rows[-1]["unit"].kind is UnitKind.PARAGRAPH
-            and source_html.startswith("<p>")
-            and rows[-1]["source_html"].endswith("</p>")
+            and re.match(r"<(?:p|h[1-6])(?:\s|>)", source_html) is not None
+            and re.search(r"</(?:p|h[1-6])>$", rows[-1]["source_html"]) is not None
         ):
-            inline_source = source_html.removeprefix("<p>").removesuffix("</p>")
-            inline_target = target_html.removeprefix("<p>").removesuffix("</p>")
-            source_separator = _continuation_separator(
-                rows[-1]["source_html"], inline_source
-            )
-            target_separator = _continuation_separator(
-                rows[-1]["target_html"], inline_target
-            )
-            rows[-1]["source_html"] = (
-                rows[-1]["source_html"].removesuffix("</p>")
-                + f'{source_separator}<a id="{html.escape(unit.unit_id)}"></a>{inline_source}</p>'
-            )
-            rows[-1]["target_html"] = (
-                rows[-1]["target_html"].removesuffix("</p>")
-                + f'{target_separator}<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>{inline_target}</p>'
-            )
+            rows[-1]["source_html"] = _join_paragraph_html(rows[-1]["source_html"], source_html,
+                f'<a id="{html.escape(unit.unit_id)}"></a>')
+            rows[-1]["target_html"] = _join_paragraph_html(rows[-1]["target_html"], target_html,
+                f'<a href="#{html.escape(unit.unit_id)}" aria-label="continued unit"></a>')
             rows[-1]["reader_notes"].extend(reader_notes)
             rows[-1]["last_page"] = unit_last_page
         else:
@@ -1571,6 +1509,7 @@ def render_project(
         pdf_uri=portable_href(config.source(root), output, root),
         allow_draft=allow_draft,
         mathjax_bootstrap="" if originals_only else mathjax_bootstrap(),
+        contents=contents,
     )
     render_errors = _render_quality_errors(markdown_text, html_text, units)
     if render_errors:

@@ -38,6 +38,8 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
         current_manifest = load_manifest(root, batch_id)
         if current_manifest != manifest:
             raise ValueError("Batch changed while translation submission was being prepared")
+        from littrans.verification import require_verified_extraction
+        require_verified_extraction(root, set(manifest.pages))
         units = {
             unit.unit_id: unit for unit in read_jsonl(root / "derived" / "units.jsonl", SourceUnit)
         }
@@ -59,6 +61,10 @@ def submit_translation(root: Path, batch_id: str, input_path: Path) -> list[Tran
             validate_translation_images(root, unit, record.image_evidence)
             if record.source_hash != unit.source_hash:
                 raise ValueError(f"Source hash mismatch for {record.unit_id}")
+            from littrans.paragraphs import label_translation_errors
+            label_errors = label_translation_errors(unit, record.label_translations)
+            if label_errors:
+                raise ValueError("; ".join(label_errors))
             effective_figure_labels(unit, record)
             prior = current.get(record.unit_id)
             if prior is not None and translations_semantically_equal(

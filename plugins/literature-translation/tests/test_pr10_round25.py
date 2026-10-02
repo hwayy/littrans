@@ -34,6 +34,8 @@ def test_real_math_still_protects_literal_footnotes(formula):
 def test_currency_source_can_be_verified_and_omission_fails_qa(tmp_path):
     root, batches, units = _linked_notes(tmp_path)
     units[0].source_text = units[0].source_markdown = "Prices are $5 [^1] and $10"
+    if units[0].paragraph:
+        units[0].paragraph = units[0].paragraph.model_copy(update={"body_text": units[0].source_text, "body_markdown": units[0].source_markdown or units[0].source_text})
     write_jsonl(root / "derived/units.jsonl", units)
     approve(root, "all")
     _submit(root, batches[1].batch_id, target_text="注释")
@@ -46,6 +48,8 @@ def test_changed_image_receipt_invalidates_cached_qa(project, dependency):
     units = read_jsonl(project / "derived/units.jsonl", SourceUnit)
     if dependency:
         units[0].continued_to_next = units[1].continues_from_previous = True
+        units[1].paragraph_id = units[0].paragraph_id
+        units[1].parent_id = units[0].parent_id
         write_jsonl(project / "derived/units.jsonl", units)
         approve(project, "all")
     for bid in ("sample-one-b001", "sample-two-b001"):

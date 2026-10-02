@@ -536,7 +536,7 @@ def test_historical_benchmark_rejects_v3_and_rebuild_preserves_history(
     rebuilt = tmp_path / "rebuilt"
     result = rebuild_project(root, rebuilt)
 
-    assert result.schema_version == 7
+    assert result.schema_version == 8
     assert result.source_sha256 == config.source_sha256
     assert not read_jsonl(rebuilt / "translations" / "current.jsonl", TranslationRecord)
     assert not list((rebuilt / "batches").glob("*/manifest.yaml"))
@@ -611,7 +611,7 @@ def test_benchmark_reports_legacy_record_only_figure_labels(tmp_path: Path) -> N
     benchmark = namespace["benchmark"]
     root, _ = _make_project(tmp_path, pages=1)
     unit = read_jsonl(root / "derived" / "units.jsonl", SourceUnit)[0].model_copy(
-        update={"kind": UnitKind.FIGURE, "figure_labels": []}
+        update={"kind": UnitKind.FIGURE, "paragraph": None, "paragraph_id": None, "figure_labels": []}
     )
     write_jsonl(root / "derived" / "units.jsonl", [unit])
     record = TranslationRecord(
@@ -1371,7 +1371,7 @@ def test_explicit_fallback_figure_labels_are_semantic_noop(tmp_path: Path) -> No
     units_path = root / "derived" / "units.jsonl"
     unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
         update={
-            "kind": UnitKind.FIGURE,
+            "kind": UnitKind.FIGURE, "paragraph": None, "paragraph_id": None,
             "figure_labels": [
                 FigureLabel(source="Open", target="打开"),
                 FigureLabel(source="Close", target="关闭"),
@@ -1617,7 +1617,7 @@ def test_qa_checks_numbers_and_units_in_overridden_figure_labels(
     original = read_jsonl(units_path, SourceUnit)[0]
     unit = original.model_copy(
         update={
-            "kind": UnitKind.FIGURE,
+            "kind": UnitKind.FIGURE, "paragraph": None, "paragraph_id": None,
             "figure_labels": [
                 FigureLabel(source="Speed 10 m/s", target="速度 10 m/s")
             ],
@@ -1682,7 +1682,7 @@ def test_figure_label_overrides_require_complete_source_mapping(
     original = read_jsonl(units_path, SourceUnit)[0]
     unit = original.model_copy(
         update={
-            "kind": UnitKind.FIGURE,
+            "kind": UnitKind.FIGURE, "paragraph": None, "paragraph_id": None,
             "figure_labels": [
                 FigureLabel(source="Open", target="打开"),
                 FigureLabel(source="Close", target="关闭"),
@@ -1727,7 +1727,7 @@ def test_source_only_change_requires_current_audit_before_formal_render(
     units = read_jsonl(units_path, SourceUnit)
     units[1] = units[1].model_copy(
         update={
-            "kind": UnitKind.CODE,
+            "kind": UnitKind.CODE, "paragraph": None, "paragraph_id": None,
             "translatable": False,
             "code_language": "python",
         }
@@ -1955,7 +1955,7 @@ def test_workflow_does_not_complete_source_only_batch_with_open_blocker(
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(
         update={
-            "kind": UnitKind.CODE,
+            "kind": UnitKind.CODE, "paragraph": None, "paragraph_id": None,
             "translatable": False,
             "code_language": "python",
         }
@@ -2032,6 +2032,7 @@ def test_formal_page_render_rejects_manifest_with_removed_source_unit(
     removed_id = units[1].unit_id
     units[1] = units[1].model_copy(update={"translatable": False})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     refreshed = refresh_batch(root, batch_id)
     assert removed_id in refreshed.unit_ids
     assert removed_id not in refreshed.translatable_unit_ids
@@ -2348,6 +2349,7 @@ def test_renderer_owned_caption_separator_is_semantic_noop(tmp_path: Path) -> No
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(update={"kind": UnitKind.CAPTION})
     write_jsonl(units_path, units)
+    review_fixture_metadata(root)
     unit = units[0]
     input_path = root / "batches" / batch_id / "caption-initial.jsonl"
     write_jsonl(
@@ -2446,6 +2448,9 @@ def test_source_rebinding_does_not_create_translation_revision(
     }[middle_unit_id]
     input_path = root / "batches" / batch_id / "rebind.jsonl"
     write_jsonl(input_path, [current.model_copy(update={"source_hash": new_hash})])
+    with pytest.raises(ValueError, match="verification failed"):
+        submit_translation(root, batch_id, input_path)
+    review_fixture_metadata(root)
     returned = submit_translation(root, batch_id, input_path)
     assert returned[0].revision == current.revision
     assert returned[0].status is ProjectStatus.REVISED
@@ -2457,7 +2462,7 @@ def test_source_rebinding_does_not_create_translation_revision(
         False,
         True,
     ]
-    with pytest.raises(ValueError, match="fidelity-source-unverified"):
+    with pytest.raises(ValueError):
         render_project(root, None, "stale-rebound", batch_id=batch_id)
 
 
@@ -2598,7 +2603,7 @@ def test_dependency_closure_composes_sidebar_and_continuation_dependencies(
     units = read_jsonl(units_path, SourceUnit)
     units[1] = units[1].model_copy(
         update={
-            "kind": UnitKind.HEADING,
+            "kind": UnitKind.PARAGRAPH,
             "sidebar_id": "composed-sidebar",
             "sidebar_role": SidebarRole.TITLE,
         }
@@ -2610,7 +2615,7 @@ def test_dependency_closure_composes_sidebar_and_continuation_dependencies(
             "continued_to_next": True,
         }
     )
-    units[3] = units[3].model_copy(update={"continues_from_previous": True})
+    units[3] = units[3].model_copy(update={"continues_from_previous": True, "paragraph_id": units[2].unit_id})
     write_jsonl(units_path, units)
 
     closure = dependency_closure(root, [manifests[0].batch_id], [units[0].unit_id])
@@ -2743,7 +2748,7 @@ def test_partial_page_verification_inherits_cross_page_blocker(
     units = read_jsonl(units_path, SourceUnit)
     units[0] = units[0].model_copy(
         update={
-            "kind": UnitKind.HEADING,
+            "kind": UnitKind.PARAGRAPH,
             "sidebar_id": "cross-page",
             "sidebar_role": SidebarRole.TITLE,
         }
@@ -2769,9 +2774,10 @@ def test_page_evidence_closes_continuation_and_sidebar_dependencies(
     units[0] = units[0].model_copy(update={"continued_to_next": True})
     units[1] = units[1].model_copy(
         update={
-            "kind": UnitKind.HEADING,
+            "kind": UnitKind.PARAGRAPH,
             "sidebar_id": "continued-sidebar",
             "sidebar_role": SidebarRole.TITLE,
+            "paragraph_id": units[0].unit_id,
         }
     )
     units[2] = units[2].model_copy(
@@ -2898,7 +2904,7 @@ def test_audit_packet_includes_all_rendered_structured_translation_fields(
     units_path = root / "derived" / "units.jsonl"
     unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
         update={
-            "kind": UnitKind.FIGURE,
+            "kind": UnitKind.FIGURE, "paragraph": None, "paragraph_id": None,
             "figure_labels": [
                 FigureLabel(source="Status", target="来源单元旧译")
             ],
@@ -2976,7 +2982,7 @@ def test_audit_packet_includes_source_only_figure_label_targets(
     units_path = root / "derived" / "units.jsonl"
     unit = read_jsonl(units_path, SourceUnit)[0].model_copy(
         update={
-            "kind": UnitKind.FIGURE,
+            "kind": UnitKind.FIGURE, "paragraph": None, "paragraph_id": None,
             "translatable": False,
             "figure_labels": [FigureLabel(source="Ready", target="就绪")],
             "visual_text_status": SemanticStatus.VERIFIED,
@@ -3542,7 +3548,7 @@ def test_review_packets_show_renderer_visible_equations(tmp_path: Path) -> None:
     original = read_jsonl(units_path, SourceUnit)[0]
     unit = original.model_copy(
         update={
-            "kind": UnitKind.EQUATION,
+            "kind": UnitKind.EQUATION, "paragraph": None, "paragraph_id": None,
             "translatable": False,
             "latex": r"E = mc^2",
             "equation_number": "7.3",
@@ -3974,7 +3980,7 @@ def test_incremental_external_packet_keeps_outer_seam_as_read_only_context(
     units_path = root / "derived" / "units.jsonl"
     units = read_jsonl(units_path, SourceUnit)
     units[3] = units[3].model_copy(update={"continued_to_next": True})
-    units[4] = units[4].model_copy(update={"continues_from_previous": True})
+    units[4] = units[4].model_copy(update={"continues_from_previous": True, "paragraph_id": units[3].unit_id})
     write_jsonl(units_path, units)
     config = load_project(root)
     config.external_review = ExternalReviewConfig(
@@ -4114,7 +4120,7 @@ def test_early_schemas_require_rebuild_and_preserve_original_configuration(tmp_p
     with pytest.raises(ValueError, match="project rebuild OLD NEW"):
         workflow_next(root)
     rebuilt = tmp_path / "rebuilt"
-    assert rebuild_project(root, rebuilt).schema_version == 7
+    assert rebuild_project(root, rebuilt).schema_version == 8
     assert (root / "project.yaml").read_bytes() == before
     assert not list((rebuilt / "batches").iterdir())
 
@@ -4272,7 +4278,7 @@ def test_rebuild_initialization_failure_preserves_history_and_allows_retry(tmp_p
     assert not rebuilt.exists()
     assert before == {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     monkeypatch.setattr(project_module, "initialize_project", original)
-    assert rebuild_project(root, rebuilt).schema_version == 7
+    assert rebuild_project(root, rebuilt).schema_version == 8
 
 
 def test_exact_three_batch_render_runs_seam_qa(tmp_path: Path) -> None:

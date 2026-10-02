@@ -39,8 +39,12 @@ def test_continued_table_preserves_later_companions(project, companion_kind):
         aid = next(iter(unit.asset_content_hashes), None)
         text = "Label" + (" {{asset:" + aid + "}}" if aid else "")
         unit.kind = UnitKind.TABLE
+        unit.paragraph = None
+        unit.paragraph_id = None
         unit.translatable = True
         unit.source_text = unit.source_markdown = text
+        if unit.paragraph:
+            unit.paragraph = unit.paragraph.model_copy(update={"body_text": unit.source_text, "body_markdown": unit.source_markdown or unit.source_text})
         unit.table = TableData(rows=[[text]], column_count=1, header_rows=0)
         unit.continues_from_previous = index == 1
         unit.continued_to_next = index == 0
