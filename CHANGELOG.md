@@ -15,6 +15,20 @@ Between releases, every behaviour-changing commit receives a development version
 0.7.5 were never released. Entries for 0.5.0 and earlier describe workflows that 0.6
 replaced.
 
+## [0.9.2-dev.5] - 2026-10-12
+
+### Fixed
+
+- Formula-language review separates tightly spaced upright capital operands of operators with
+  visible mathematical limits from adjacent language conditions. It checks complete native words,
+  respects spaces inside words, and does not exempt italic text or partially cropped words.
+  Conditions still require their complete native glyph declaration.
+
+### Compatibility
+
+- No schema change. Existing formula crops remain usable; refresh affected declarations through
+  normal source review and obtain fresh review receipts after changing source evidence.
+
 ## [0.9.2-dev.4] - 2026-10-02
 
 ### Added

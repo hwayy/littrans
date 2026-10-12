@@ -36,6 +36,7 @@ from littrans.models import (
 from littrans.source_structure import (
     BOLD_FONT,
     EQUATION_LABEL,
+    ITALIC_FONT,
     LANGUAGE_TOKEN,
     MATH_FONT,
     MATH_OPERATORS,
@@ -1156,6 +1157,64 @@ def _known_operator_sequence(text: str) -> bool:
     return counts.get(len(compact), 0) >= 2
 
 
+def _limited_roman_operand_ids(owned: list[dict[str, Any]],
+                               context: list[dict[str, Any]]) -> set[str]:
+    """Upright capital operands of operators with a visibly attached math limit.
+
+    An objective such as ``min MSE`` has neither a math font nor a bracket on its
+    main baseline. It must not join a separated condition on that baseline. Require
+    a known operator, a tightly spaced all-capital operand, and a smaller math glyph
+    above/below the operator itself. Capitals alone or an unrelated nearby script
+    are insufficient. A second operand word is not swallowed, and wide formula
+    spacing ends the run before any separated language condition. Read complete
+    native words, including letters outside the crop, before granting an exemption.
+    """
+    ids: set[str] = set()
+    owned_ids = {g["id"] for g in owned}
+    names = sorted(MATH_OPERATORS, key=lambda name: (-len(name), name))
+    for line in _visual_lines(context):
+        run: list[dict[str, Any]] = []
+        for glyph in [*(g for g in line if inked_glyph(g)), None]:
+            text_letter = glyph is not None and glyph["text"].isalpha() and not MATH_FONT.search(glyph["font"])
+            separated = bool(run and glyph is not None and glyph["bbox"][0] - run[-1]["bbox"][2]
+                             >= max(glyph.get("size", 10), run[-1].get("size", 10)) * 0.5)
+            if glyph is not None and text_letter and not separated:
+                run.append(glyph)
+                continue
+            text = "".join(g["text"] for g in run)
+            for name in names:
+                if not (text.startswith(name) and re.fullmatch(r"[A-Z]{2,}", text[len(name):])):
+                    continue
+                if any(g["id"] not in owned_ids or ITALIC_FONT.search(g["font"]) for g in run):
+                    continue
+                operator: list[dict[str, Any]] = []
+                offset = 0
+                for letter in run:
+                    if offset >= len(name):
+                        break
+                    operator.append(letter)
+                    offset += len(letter["text"])
+                operand = run[len(operator):]
+                # Never split a native glyph internally or absorb another capital word.
+                if (offset != len(name) or _spaced_text(operator) != name
+                        or not re.fullmatch(r"[A-Z]{2,}", _spaced_text(operand))
+                        or any(not inked_glyph(g) and word[0]["bbox"][0] <= g["bbox"][0]
+                               and g["bbox"][2] <= word[-1]["bbox"][2]
+                               for word in (operator, operand) for g in line)):
+                    continue
+                box = _union([g["bbox"] for g in operator])
+                size = max(g.get("size", 10) for g in operator)
+                baseline = operator[0].get("baseline", operator[0]["bbox"][3])
+                if any(inked_glyph(g) and MATH_FONT.search(g["font"]) and g.get("size", 10) <= size * 0.85
+                       and box[0] <= (g["bbox"][0] + g["bbox"][2]) / 2 <= box[2]
+                       and size * 0.6 < abs(g.get("baseline", g["bbox"][3]) - baseline) <= size * 1.5
+                       for g in owned):
+                    ids.update(g["id"] for g in run)
+                break
+            run = [glyph] if glyph is not None and text_letter else []
+    return ids
+
+
 def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict[str, Any]],
                              *, measured_ink: bool = True, legacy: bool = False) -> list[dict[str, Any]]:
     """Declare the words a displayed formula keeps inside its crop as formula conditions.
@@ -1181,6 +1240,7 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     for native_glyph in glyph_by_id.values():
         native_lines.setdefault(native_glyph["line"], []).append(native_glyph)
     bold_variables = _bold_variable_ids(native_lines)
+    limited_operands = _limited_roman_operand_ids(owned, list(glyph_by_id.values()))
     abbreviations: set[str] = set()
     for native_line in (native_lines.values() if legacy else _visual_lines(list(glyph_by_id.values()))):
         text = "".join(g["text"] for g in native_line)
@@ -1196,7 +1256,7 @@ def _auto_formula_conditions(region: dict[str, Any], glyph_by_id: dict[str, dict
     for line in _visual_lines(owned):
         segment: list[dict[str, Any]] = []
         for glyph in [*line, None]:
-            if glyph is not None and (glyph["id"] in abbreviations or not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit() or glyph["id"] in bold_variables)):
+            if glyph is not None and (glyph["id"] in abbreviations or not (MATH_FONT.search(glyph["font"]) or MATH_CHAR.search(glyph["text"]) or glyph["text"].isdigit() or glyph["id"] in bold_variables or glyph["id"] in limited_operands)):
                 segment.append(glyph)
                 continue
             # Brackets and spaces at the edges belong to the surrounding notation, as does

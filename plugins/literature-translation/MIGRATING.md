@@ -1,4 +1,4 @@
-# Migrating to LitTrans 0.9.2-dev.4
+# Migrating to LitTrans 0.9.2-dev.5
 
 The target format is project manifest v8, SourceUnit v4, TranslationRecord v3 and settings
 schema v1. Choose the upgrade or rebuild route below before resuming an older workspace.
@@ -69,6 +69,13 @@ Remove any obsolete operator-only declarations through normal source-review over
 obtain fresh affected review receipts; do not change a receipt or declare an operator merely
 to satisfy the language gate. Actual condition words and abbreviations remain subject to the
 same declaration checks.
+
+Tightly spaced upright capital operands such as `min MSE` and `argmax ELBO` also remain
+notation when a smaller mathematical limit is visibly attached above or below the operator.
+This requires complete native words and does not exempt italic text, partial words or capitals
+without that layout evidence. Adjacent language conditions still require every native glyph,
+including spaces. Existing crops need no format conversion; correct obsolete declarations
+through normal source-review overrides and obtain fresh affected review receipts.
 
 New tasks snapshot and hash their instructions as LF text, so Git's line-ending conversion no
 longer invalidates them. Tasks created by earlier development builds still verify while their
